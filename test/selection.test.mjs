@@ -2,7 +2,7 @@ import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { parseSelection, createSession, deleteSession } = await import('../core/conductor.mjs');
+const { parseSelection, createSession, deleteSession, setTitle } = await import('../core/conductor.mjs');
 
 test('provider:model:effort parsing', () => {
   const cfg = { provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'high' };
@@ -29,6 +29,17 @@ test('session creation validates directory, permission mode and model selection'
   assert.equal(s.title, '123'); deleteSession(s.id);
   const long = createSession({ cwd, title: 'x'.repeat(150) });
   assert.equal(long.title.length, 120); deleteSession(long.id);
+});
+
+test('setTitle renames a chat, trims and clamps, and rejects empty or unknown', () => {
+  const cwd = tmpDir('sel-rename');
+  const s = createSession({ cwd });
+  assert.equal(s.title, 'New chat');
+  assert.equal(setTitle(s.id, '  Refactor the parser  ').title, 'Refactor the parser'); // trimmed
+  assert.equal(setTitle(s.id, 'y'.repeat(150)).title.length, 120); // clamped
+  assert.throws(() => setTitle(s.id, '   '), { status: 400 }); // empty after trim
+  assert.throws(() => setTitle('nope', 'x'), { status: 404 });
+  deleteSession(s.id);
 });
 
 test('sessions use the configured default; any agent provider can conduct, image providers cannot', () => {

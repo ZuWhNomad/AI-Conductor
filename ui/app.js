@@ -32,12 +32,23 @@ function renderSessions() {
   for (const s of S.sessions) {
     const it = el('div', 'item' + (S.current?.id === s.id ? ' active' : ''));
     const t = el('span', 't', s.title || 'New chat'); t.title = `${s.cwd}\n${s.model || 'default model'}`;
+    t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const st = el('span', 'pill' + (s.status === 'running' ? ' running' : ''), s.status === 'running' ? '●' : '');
+    const ren = el('span', 'x', '✎'); ren.title = 'Rename chat';
+    ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
     const x = el('span', 'x', '✕'); x.title = 'Delete chat';
     x.onclick = async (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) { await api.del(`/api/sessions/${s.id}`); } };
-    it.append(t, st, x); it.onclick = () => openSession(s.id);
+    it.append(t, st, ren, x); it.onclick = () => openSession(s.id);
     box.append(it);
   }
+}
+
+async function renameSession(s) {
+  const name = prompt('Rename chat:', s.title || 'New chat');
+  if (name == null) return; // cancelled
+  const next = name.trim();
+  if (!next || next === s.title) return;
+  try { await api.post(`/api/sessions/${s.id}/title`, { title: next }); } catch (e) { alert(`Rename failed: ${e.message}`); }
 }
 
 function meterClass(p) { return p >= 90 ? 'bad' : p >= 70 ? 'warn' : ''; }
@@ -354,7 +365,7 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
-  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
+  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {

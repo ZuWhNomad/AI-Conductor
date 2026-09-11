@@ -89,6 +89,7 @@ async function route(req, res, url) {
     if (m === 'POST' && seg[3] === 'interrupt') return json(res, 200, { ok: await conductor.interrupt(id) });
     if (m === 'POST' && seg[3] === 'stop') return json(res, 200, { ok: conductor.stopSession(id) });
     if (m === 'POST' && seg[3] === 'permission') return json(res, 200, { ok: conductor.answerPermission(id, b.requestId, { allow: !!b.allow, message: b.message }) });
+    if (m === 'POST' && seg[3] === 'title') return json(res, 200, conductor.setTitle(id, b.title));
     if (m === 'POST' && seg[3] === 'model') { await conductor.setModel(id, b.model || null); return json(res, 200, { ok: true }); }
     if (m === 'POST' && seg[3] === 'effort') { conductor.setEffort(id, b.effort || null); return json(res, 200, { ok: true }); }
     if (m === 'POST' && seg[3] === 'mode') { await conductor.setPermissionMode(id, b.permissionMode); return json(res, 200, { ok: true }); }

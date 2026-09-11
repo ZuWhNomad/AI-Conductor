@@ -381,6 +381,16 @@ export function setEffort(sessionId, effort) {
   emit(s, 'updated', { session: publicSession(s) });
 }
 
+/** Rename a chat. A manual title sticks: sendMessage only auto-titles a chat while its title is still 'New chat'. */
+export function setTitle(sessionId, title) {
+  const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
+  const next = String(title ?? '').trim().slice(0, 120);
+  if (!next) throw Object.assign(new Error('title must not be empty'), { status: 400 });
+  s.title = next; s.updatedAt = nowIso(); persistAll();
+  emit(s, 'updated', { session: publicSession(s) });
+  return publicSession(s);
+}
+
 /** Per-chat: may the router spend pay-per-token APIs once the subscription classes are capped? */
 export function setOverflow(sessionId, on) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
