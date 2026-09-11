@@ -1,5 +1,12 @@
 # Conductor 2.0
 
+# TL;DR - Who actually reads the full summary anymore
+Claude ultracode;
+- but with many more models to slave drive
+- Output ranked model+effort selection
+- Use the best worker, at the most economical rate, to complete the task (optimization
+
+Same but more words:
 A Claude Code clone with upgrades: the Claude model you pick is the **conductor** (plans, delegates,
 reviews), and the grunt coding goes to cheaper workers — **GPT-6 Astra through the Codex CLI on
 your ChatGPT subscription**, free local **Ollama** models, or any OpenAI-compatible API (DeepSeek,
@@ -9,32 +16,10 @@ review and fix itself, and a one-script installer to share with friends.
 
 ## Quickstart
 
-**Windows: double-click `Conductor.exe`.** It finds Node, installs dependencies on first run, starts
+1. **Windows: double-click `Conductor.exe`.** It finds Node, installs dependencies on first run, starts
 the app in the background, opens your browser, and shows a small window with a Stop button.
-(`Conductor.cmd` does the same in a console; rebuild the exe with `scripts\build-launcher.cmd`.)
 
-From a terminal (any OS):
-
-```bash
-npm install
-node bin/conductor.mjs doctor        # Node, Claude login, Codex login, Ollama
-node bin/conductor.mjs               # starts http://127.0.0.1:47474 and opens your browser
-```
-
-One-time logins (in a terminal, not in the app):
-
-| Need | Command |
-|---|---|
-| Claude subscription (the conductor) | `claude auth login` (`npm i -g @anthropic-ai/claude-code` if `claude` is missing) |
-| ChatGPT subscription (Astra worker) | `npm i -g @openai/codex` then `codex login` |
-| Google AI Pro/Ultra (Gemini 3.x via Antigravity CLI) | `irm https://antigravity.google/cli/install.ps1 \| iex`, then run `agy` once and sign in |
-| SuperGrok / X Premium+ (Grok CLI) | `irm https://x.ai/cli/install.ps1 \| iex`, then `grok login` |
-| Qwen (free OAuth tier, Qwen Code) | `npm i -g @qwen-code/qwen-code`, then run `qwen` and pick Qwen OAuth |
-| Kimi account (Kimi CLI) | `pip install --user kimi-cli`, then `kimi login` |
-| Local models (free) | install [Ollama](https://ollama.com), then `ollama pull qwen3.8` |
-| API-key providers (optional) | paste keys in **Settings ⚙** |
-
-The **Providers & limits** panel does this for you: a provider that is missing shows **Install**,
+2. The **Providers & limits** panel does this for you: a provider that is missing shows **Install**,
 one that is installed but signed out shows **Sign in**; both open a real terminal window (browser
 logins need one), then press **↻ Refresh**. Subscription CLIs are workers (delegate targets);
 their models appear in the worker picker.
@@ -143,3 +128,32 @@ and API keys (also read from `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, `XAI_API_KE
   Settings ⚙ → **Run doctor** shows what the running app can see.
 
 See `docs/ARCHITECTURE.md` for the design, and `CLAUDE.md` before changing code.
+
+
+
+
+## Quickstart, if you're sadistic and would prefer to use a terminal.
+
+1. Run the exe, same as above (`Conductor.cmd` does the same in a console; rebuild the exe with `scripts\build-launcher.cmd`.)
+2. From a terminal (any OS):
+
+```bash
+npm install
+node bin/conductor.mjs doctor        # Node, Claude login, Codex login, Ollama
+node bin/conductor.mjs               # starts http://127.0.0.1:47474 and opens your browser
+```
+
+3. One-time logins (in a terminal, not in the app):
+
+| Need | Command |
+|---|---|
+| Claude subscription (the conductor) | `claude auth login` (`npm i -g @anthropic-ai/claude-code` if `claude` is missing) |
+| ChatGPT subscription (Astra worker) | `npm i -g @openai/codex` then `codex login` |
+| Google AI Pro/Ultra (Gemini 3.x via Antigravity CLI) | `irm https://antigravity.google/cli/install.ps1 \| iex`, then run `agy` once and sign in |
+| SuperGrok / X Premium+ (Grok CLI) | `irm https://x.ai/cli/install.ps1 \| iex`, then `grok login` |
+| Qwen (free OAuth tier, Qwen Code) | `npm i -g @qwen-code/qwen-code`, then run `qwen` and pick Qwen OAuth |
+| Kimi account (Kimi CLI) | `pip install --user kimi-cli`, then `kimi login` |
+| Local models (free) | install [Ollama](https://ollama.com), then `ollama pull qwen3.8` |
+| API-key providers (optional) | paste keys in **Settings ⚙** |
+
+4. 
