@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor 2.0</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🎼</text></svg>">
+</head>
+<body>
+<aside id="sidebar">
+  <div class="brand"><span class="logo">🎼</span> <b>Conductor</b> <span class="muted">2.0</span> <button id="btn-settings" class="icon" title="Settings">⚙</button></div>
+
+  <section class="panel">
+    <label class="lbl">Project folder</label>
+    <div class="row">
+      <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false">
+      <button id="btn-browse" class="sm" title="Browse folders">…</button>
+    </div>
+    <label class="lbl" style="margin-top:6px">Conductor (provider : model : effort)</label>
+    <div class="row picker">
+      <select id="new-provider" title="Provider"></select>
+      <select id="new-model" title="Model"></select>
+      <select id="new-effort" title="Effort"></select>
+    </div>
+    <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label></div>
+    <button id="btn-new" class="primary wide">+ New chat</button>
+  </section>
+
+  <section class="panel grow">
+    <label class="lbl">Chats</label>
+    <div id="sessions" class="list"></div>
+  </section>
+
+  <section class="panel providers-panel">
+    <div class="row between"><label class="lbl">Providers &amp; limits</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></div>
+    <div id="providers" class="providers"></div>
+    <div id="refresh-meta" class="muted tiny"></div>
+  </section>
+
+  <section class="panel">
+    <div class="row between"><label class="lbl">Self-improvement</label><span id="improve-count" class="pill">0</span></div>
+    <div class="row"><button id="btn-improvements" class="sm">Open log</button><button id="btn-review" class="sm">Run review</button></div>
+  </section>
+</aside>
+
+<main id="main">
+  <header id="chat-header">
+    <div class="title"><span id="chat-title">No chat selected</span> <span id="chat-cwd" class="muted tiny"></span></div>
+    <div class="controls">
+      <select id="provider" title="Conductor provider"></select>
+      <select id="model" title="Conductor model (switches live)"></select>
+      <select id="effort" title="Effort (applies from the next message)"></select>
+      <label class="chk" title="Bypass permission prompts"><input id="bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="overflow" type="checkbox"> API overflow</label>
+      <span id="status" class="pill">idle</span>
+      <button id="btn-stop" class="sm danger" disabled>■ Stop</button>
+    </div>
+  </header>
+
+  <div id="transcript" class="transcript">
+    <div class="empty">Pick a project folder, choose the conductor model, and start a chat.<br><span class="muted">The conductor plans and reviews; workers (Astra via Codex, local Ollama models, API models) do the typing.</span></div>
+  </div>
+
+  <div id="tasks" class="tasks"></div>
+
+  <div id="composer" class="composer">
+    <div id="interim" class="interim" hidden></div>
+    <div class="row">
+      <textarea id="input" rows="2" placeholder="Tell the conductor what to do…  (Enter to send, Shift+Enter for newline, Ctrl+M to dictate)"></textarea>
+      <button id="btn-mic" class="mic" title="Speech to text (Ctrl+M)">🎤</button>
+      <button id="btn-send" class="primary" title="Send (Enter)">Send</button>
+    </div>
+    <div id="stt-hint" class="muted tiny"></div>
+  </div>
+</main>
+
+<div id="modal" class="modal" hidden><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon">✕</button></div><div id="modal-body" class="modal-body"></div></div></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

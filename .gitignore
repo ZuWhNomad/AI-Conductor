@@ -1,0 +1,10 @@
+node_modules/
+.conductor2/
+*.log
+.DS_Store
+Thumbs.db
+.claude/
+*.zip
+Conductor-feedback-*.json
+.env
+.env.*

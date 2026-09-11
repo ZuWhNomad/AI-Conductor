@@ -1,0 +1,163 @@
+#!/usr/bin/env node
+// Conductor 2.0 CLI. `conductor` starts the workbench; see `conductor help`.
+import { parseArgs } from 'node:util';
+import { spawn, execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { REPO_ROOT, stateDir } from '../core/paths.mjs';
+import { loadConfig } from '../core/config.mjs';
+
+const { values: flags, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' },
+  },
+});
+const cmd = positionals[0] || 'start';
+
+const HELP = `conductor 2.0 — multi-model orchestration workbench
+
+  conductor [start] [--port N] [--no-open]   start the local server + open the browser UI
+  conductor doctor                           check Node, Claude login, Codex login, Ollama
+  conductor models [--refresh] [--json]      list models across providers
+  conductor limits [--refresh] [--json]      show usage limits per provider
+  conductor scores [--category C] [--source live|smoke] [--json] [--void-env]
+                                             scorecard: quality, $ and % of window per model, category and level;
+                                             --void-env excludes smoke runs the sandbox blocked (not the model's fault)
+  conductor smoke --models p:m[:e],...  | --all-models  [--tasks id,id] [--keep] [--agents-md FILE --variant NAME]
+                                             run the smoke battery against models to seed the scorecard (spends budget)
+  conductor bench [--run] [--days N] [--refresh]
+                                             models with no battery or a stale one (default 21 days); --run probes then batteries them
+  conductor review [--model M]               headless self-review of this workbench from the improvement log
+  conductor share                            zip this folder (without node_modules/state) to your Desktop
+  conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
+                                             to your Desktop and open the issue page to attach it
+  conductor help`;
+
+function openBrowser(url) {
+  const cmdline = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try { spawn(cmdline[0], cmdline[1], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch {}
+}
+
+if (flags.help || cmd === 'help') { console.log(HELP); process.exit(0); }
+
+if (cmd === 'start') {
+  const { startServer } = await import('../server/index.mjs');
+  const { abortRunning } = await import('../core/tasks.mjs');
+  const cfg = loadConfig();
+  const { url } = await startServer({ port: flags.port ? Number(flags.port) : undefined });
+  console.log(`Conductor 2.0 running at ${url}   (state: ${stateDir()})`);
+  if (!flags['no-open'] && cfg.openBrowser) openBrowser(url);
+  const stop = () => { abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+} else if (cmd === 'doctor') {
+  const { doctorReport } = await import('../server/index.mjs');
+  const r = await doctorReport();
+  for (const row of r.rows) console.log(`${row.name.padEnd(20)} ${String(row.value).padEnd(28)} ${row.status}${row.path ? `   (${row.path})` : ''}`);
+  if (flags.json) console.log(JSON.stringify(r, null, 2));
+  process.exit(0);
+} else if (cmd === 'models' || cmd === 'limits') {
+  const { getModels, refreshModels } = await import('../core/models.mjs');
+  const { getLimits, refreshLimits } = await import('../core/limits.mjs');
+  const { formatModels, formatLimits } = await import('../core/tools.mjs');
+  if (cmd === 'models') { const r = flags.refresh || !getModels().updatedAt ? await refreshModels() : getModels(); console.log(flags.json ? JSON.stringify(r, null, 2) : formatModels(r)); }
+  else { const r = flags.refresh || !getLimits().updatedAt ? await refreshLimits() : getLimits(); console.log(flags.json ? JSON.stringify(r, null, 2) : formatLimits(r)); }
+  process.exit(0);
+} else if (cmd === 'bench') {
+  const { dueForBench, runBench, formatBench } = await import('../core/bench.mjs');
+  const { getModels, refreshModels } = await import('../core/models.mjs');
+  if (flags.refresh || !getModels().updatedAt) await refreshModels();
+  const days = flags.days ? Number(flags.days) : undefined;
+  console.log(formatBench(dueForBench({ days })));
+  if (flags.run) {
+    const { abortRunning, flushRecords, listTasks } = await import('../core/tasks.mjs');
+    const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+    if (open.length) { console.error(`refusing to run: ${open.length} open task(s) in the journal (a running server owns them).`); process.exit(2); }
+    process.on('SIGINT', () => { abortRunning(); setTimeout(() => process.exit(130), 1000); });
+    const results = await runBench({ days, onResult: (r) => console.log(`${r.verdict.padEnd(7)} ${r.provider}:${r.model || 'default'}:${r.effort || 'default'}  ${r.task}${r.notes ? `  ${r.notes.split('\n')[0].slice(0, 100)}` : ''}`) });
+    await flushRecords();
+    for (const r of results) console.log(`${r.provider}:${r.model}:${r.effort || 'default'}  probe ${r.probe}${r.battery ? `  battery ${r.battery}` : ''}${r.probe !== 'pass' && r.notes ? `  (${r.notes.slice(0, 80)})` : ''}`);
+  }
+  process.exit(0);
+} else if (cmd === 'scores') {
+  const { summarize, formatScores, voidTask, rootRuns } = await import('../core/scorecard.mjs');
+  if (flags['void-env']) {
+    // Exclude smoke runs the harness failed (sandbox denied the workspace) — the model never got to work.
+    const { envFailure } = await import('../core/smoke/index.mjs');
+    const { readJson } = await import('../core/paths.mjs');
+    let n = 0;
+    for (const c of rootRuns({ source: 'smoke' })) for (const a of c.attempts) {
+      if (a.verdict !== 'fail') continue;
+      const t = readJson(join(stateDir(), 'tasks', `${a.taskId}.json`));
+      const why = t && envFailure(t);
+      if (why) { voidTask(a.taskId, `environment: ${why}`); n++; console.log(`voided ${a.taskId} ${a.sel} ${a.category}@${a.difficulty}: ${why}`); }
+    }
+    console.log(`${n} run(s) voided`);
+  }
+  const o = { category: flags.category || null, source: flags.source || null };
+  console.log(flags.json ? JSON.stringify(summarize(o), null, 2) : formatScores(o));
+  process.exit(0);
+} else if (cmd === 'smoke') {
+  const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../core/smoke/index.mjs');
+  const { parseSelection } = await import('../core/conductor.mjs');
+  const { getModels, refreshModels } = await import('../core/models.mjs');
+  const { abortRunning, flushRecords, listTasks } = await import('../core/tasks.mjs');
+  // This process runs its own scheduler over the shared journal; a live server's open tasks would be run twice.
+  const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+  if (open.length) { console.error(`refusing to run: ${open.length} task(s) are queued/running/parked in ${stateDir()} (a running server owns them). Wait for them or stop the server first.`); process.exit(2); }
+  let models;
+  if (flags['all-models']) {
+    const reg = getModels().updatedAt ? getModels() : await refreshModels();
+    const { priceFor } = await import('../core/priors.mjs');
+    const proxy = (m) => { const p = priceFor(m.provider, m.id); return p ? p.in + p.out : Infinity; }; // cheapest first, unpriced last
+    models = reg.models.filter((m) => m.kind === 'agent' && reg.providers[m.provider]?.status === 'ok').sort((a, b) => proxy(a) - proxy(b)).map((m) => ({ provider: m.provider, model: m.id, effort: m.efforts?.includes('low') ? 'low' : null }));
+  } else if (flags.models) {
+    models = flags.models.split(',').map((s) => parseSelection(s.trim(), { provider: loadConfig().worker.provider, model: null, effort: null }));
+  } else {
+    console.error(`usage: conductor smoke --models provider:model[:effort][,...] | --all-models  [--tasks id,id] [--keep]\ntasks: ${SMOKE_TASKS.map((t) => t.id).join(', ')}`);
+    process.exit(2);
+  }
+  const tasks = flags.tasks ? flags.tasks.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  process.on('SIGINT', () => { abortRunning(); setTimeout(() => process.exit(130), 1000); });
+  console.log(`smoke: ${models.length} selection(s) x ${(tasks || SMOKE_TASKS).length} task(s); scorecard in ${stateDir()}`);
+  const agentsMd = flags['agents-md'] ? (await import('node:fs')).readFileSync(flags['agents-md'], 'utf8') : null;
+  const results = await runSmoke({ models, tasks, keep: !!flags.keep, agentsMd, variant: flags.variant || (agentsMd ? 'agents-md' : null), onResult: (r) => console.log(formatSmoke([r]).split('\n')[0]) });
+  await flushRecords();
+  console.log('\n' + formatSmoke(results).split('\n').slice(results.length).join('\n'));
+  process.exit(0);
+} else if (cmd === 'review') {
+  const { runOnce, parseSelection } = await import('../core/conductor.mjs');
+  const { buildReviewPrompt } = await import('../core/improve.mjs');
+  let server, r;
+  if (parseSelection(flags.model, loadConfig().conductor).provider !== 'claude') {
+    process.env.CONDUCTOR_NO_POLL ??= '1';
+    const { startServer } = await import('../server/index.mjs');
+    ({ server } = await startServer({ port: 0 }));
+  }
+  try { r = await runOnce({ cwd: REPO_ROOT, prompt: buildReviewPrompt(), model: flags.model || null /* "provider:model:effort" accepted */, onText: (t) => process.stdout.write(t) }); }
+  finally { server?.close(); }
+  console.log(`\n[${r.kind}] ${r.text || r.message || ''}`);
+  process.exit(r.isError || r.kind === 'error' ? 1 : 0);
+} else if (cmd === 'feedback') {
+  const { writeFeedback, issuesUrl } = await import('../core/feedback.mjs');
+  const f = writeFeedback();
+  const url = issuesUrl();
+  console.log(`Wrote ${f}\n(no keys, paths or e-mail addresses in it — open it and check if you like)`);
+  if (url) { console.log(`Attach it to a new issue: ${url}/new?title=Feedback`); if (!flags['no-open']) openBrowser(`${url}/new?title=Feedback&body=${encodeURIComponent('What happened / what would help:\n\n\n(attach the Conductor-feedback-*.json from your Desktop)')}`); }
+  process.exit(0);
+} else if (cmd === 'share') {
+  const out = join(homedir(), 'Desktop', 'Conductor-2.0-share.zip');
+  const excludes = ['node_modules', '.git', '.conductor2'];
+  if (process.platform === 'win32') {
+    const items = (await import('node:fs')).readdirSync(REPO_ROOT).filter((f) => !excludes.includes(f)).map((f) => `'${join(REPO_ROOT, f)}'`).join(',');
+    execFileSync('powershell', ['-NoProfile', '-Command', `Compress-Archive -Force -Path ${items} -DestinationPath '${out}'`], { stdio: 'inherit' });
+  } else {
+    execFileSync('zip', ['-r', out, '.', ...excludes.flatMap((e) => ['-x', `${e}/*`])], { cwd: REPO_ROOT, stdio: 'inherit' });
+  }
+  console.log(`Wrote ${out}\nYour friend unzips it, runs share/install.cmd (or install.sh), then logs in with: claude auth login  and  codex login`);
+} else {
+  console.error(`unknown command ${cmd}\n${HELP}`); process.exit(2);
+}
