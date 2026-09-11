@@ -173,7 +173,7 @@ export async function doctorReport() {
   const rows = [];
   rows.push({ name: 'node', value: process.version, status: Number(process.versions.node.split('.')[0]) >= 22 ? 'ok' : 'need Node 22+' });
   const claude = await PROVIDERS.claude.detect();
-  rows.push({ name: 'claude (Agent SDK)', value: JSON.parse(readFileSync(join(REPO_ROOT, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'), 'utf8')).version, status: claude.loggedIn ? `logged in (${claude.subscription || 'subscription'})` : 'NOT logged in → run: claude auth login' });
+  rows.push({ name: 'claude (Agent SDK)', value: JSON.parse(readFileSync(join(REPO_ROOT, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'), 'utf8')).version, status: claude.loggedIn ? `logged in (${claude.subscription || 'subscription'})` : `NOT logged in → run: ${PROVIDERS.claude.loginCommand()}` });
   const codex = codexCommand();
   rows.push({ name: 'codex', value: codexVersion() || 'missing', status: codex ? ((await PROVIDERS.codex.account().catch(() => ({ loggedIn: false }))).loggedIn ? 'logged in' : 'NOT logged in → run: codex login') : 'install: npm i -g @openai/codex', path: codex ? [codex.command, ...codex.args].join(' ') : findCli('codex') });
   const ol = await PROVIDERS.ollama.detect();

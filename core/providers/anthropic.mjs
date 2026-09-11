@@ -1,15 +1,42 @@
 // Claude provider (the conductor's own vendor): models, account and plan limits via the Agent SDK's
 // control channel. No tokens are spent: these are control requests on an idle session.
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
+import { findCli } from '../proc.mjs';
 
 export const id = 'claude';
 export const label = 'Claude (Anthropic subscription)';
 export const kind = 'claude';
-export const auth = { type: 'subscription', setup: 'Run `claude auth login` in a terminal (one time).' };
-export const loginCommand = () => 'claude auth login';
+
+/**
+ * A runnable `claude` binary. Prefer a global install on PATH; otherwise fall back to the native binary the
+ * Agent SDK bundles (a hard dependency of this repo), so sign-in works even when the user never installed
+ * Claude Code globally. The SDK ships the platform binary as a sibling package: @anthropic-ai/claude-agent-sdk-<plat>-<arch>[-musl]/claude[.exe].
+ */
+export function claudeBin() {
+  const onPath = findCli('claude');
+  if (onPath) return onPath;
+  try {
+    const require = createRequire(import.meta.url);
+    const scope = dirname(dirname(require.resolve('@anthropic-ai/claude-agent-sdk'))); // resolves sdk.mjs → .../node_modules/@anthropic-ai
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const variants = process.platform === 'linux' ? [`linux-${process.arch}`, `linux-${process.arch}-musl`] : [`${process.platform}-${process.arch}`];
+    for (const v of variants) { const p = join(scope, `claude-agent-sdk-${v}`, `claude${ext}`); if (existsSync(p)) return p; }
+  } catch {}
+  return null;
+}
+
+/** Quote the resolved binary so a path with spaces survives the terminal we hand it to. */
+function claudeCmd(sub) {
+  const bin = claudeBin() || 'claude';
+  return `${/\s/.test(bin) ? `"${bin}"` : bin} ${sub}`;
+}
+
+export const auth = { type: 'subscription', setup: 'Click “Sign in” (or run `claude auth login` in a terminal).' };
+export const loginCommand = () => claudeCmd('auth login');
 export const installCommand = () => 'npm i -g @anthropic-ai/claude-code';
 
 /** Open an idle SDK session, run control requests, close it. */
