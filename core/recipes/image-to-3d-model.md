@@ -65,8 +65,14 @@ band(z0, z1, ...)       = linear_extrude of the 2-D union for that height range
 - `mirror([1,0,0])` at the end if the impression must read correctly on the cookie/part (a cutter is the
   mirror of the print it leaves).
 - Put `assert()`s on minimum widths and heights so a bad parameter fails loudly.
-- Export: `openscad.com --export-format binstl -o cutter.stl model.scad`. Render previews from the top in
-  the *impression* orientation (that is what the reviewer compares) and one isometric.
+- Export: `openscad.com --export-format binstl -o cutter.stl model.scad`. Always the **console binary
+  `openscad.com`**, never `openscad.exe` (the GUI binary), and always under a timeout (`timeout 600` /
+  `-print-timeout`): a crash dialog ("exception 0x40000015") blocks the process until someone clicks it.
+  That exception is CGAL aborting on degenerate 2-D input: self-intersecting or coincident-edge polygons,
+  zero-width offsets, duplicate points. Fix the artwork (simplify, remove duplicate/near-duplicate points,
+  keep offsets ≥ 0.1 mm), or union the 2-D profiles with shapely/manifold3d first; do not retry the same
+  export. Render previews from the top in the *impression* orientation (that is what the reviewer compares)
+  and one isometric.
 
 ## 4. Validate (your own checks, then the task's gate)
 - Watertight, one connected body, consistent winding, no duplicate or zero-area triangles.
