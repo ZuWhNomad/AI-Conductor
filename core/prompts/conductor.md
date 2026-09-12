@@ -57,7 +57,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
   one module · 3 multi-file or needs understanding of surrounding code · 4 ambiguous, debugging,
   cross-cutting · 5 design-heavy, high blast radius.
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag
-  `category: "modeling"`. This is **not yet reliable** — no model passes the cookie-cutter benchmark; the best
+  `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/recipes/`) with its spec,
+  so give it the reference images and the engineering numbers. This is **not yet reliable** — no model passes the cookie-cutter benchmark; the best
   results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model (currently
   `claude:opus-5` or `codex:gpt-6-astra`), consider a higher effort than usual, and **tell the user up front**
   that the output will likely need review or iteration before it is usable.

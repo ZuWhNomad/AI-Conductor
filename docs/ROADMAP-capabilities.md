@@ -56,6 +56,9 @@ Pulling a tool from GitHub and running it is a supply-chain risk. Rules:
    tasks empirically. (Small; reuses existing routing.) — *in progress*
 2. **Recipe registry, hand-curated.** `core/recipes.mjs` with a couple of entries (e.g. `pdf-extract` → an
    OCR MCP). Wire the classify → recipe → fallback path into the conductor policy. No auto-research.
+   — *started 2026-09-12*: `core/recipes.mjs` maps a category to an instruction set in `core/recipes/` that is
+   appended to the worker's spec (first entry: `modeling` → `image-to-3d-model.md`, distilled from the Astra
+   ultra pass). Deterministic routes (kind: mcp) are the next step.
 3. **Research-on-miss.** Only after 1–2 show value. Includes the sandbox-vetting step above.
 
 ## Principle

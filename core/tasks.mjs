@@ -12,6 +12,7 @@ import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, snapshotWindows, CATEGORIES, recommend } from './scorecard.mjs';
+import { recipeFor } from './recipes.mjs';
 import { mcpServers } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
@@ -137,7 +138,8 @@ function buildPrompt(t) {
 ${MSW}
 
 Remember to follow the MSW deletion rule for all claims - no exceptions.`;
-  return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}`;
+  const recipe = recipeFor(t.category);
+  return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}`;
 }
 
 export function schedule() {

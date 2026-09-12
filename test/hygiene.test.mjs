@@ -67,3 +67,14 @@ test("feedback bundle redacts home path, user name, e-mails and key-shaped strin
   assert.ok(j.version && j.node && Array.isArray(j.improvements) && typeof j.scores === "string");
   assert.ok(!JSON.stringify(j).includes(HOME), "state dir path redacted");
 });
+
+test('a category recipe is registered for modeling and reaches the worker spec', async () => {
+  const { recipeFor, listRecipes } = await import('../core/recipes.mjs');
+  assert.match(recipeFor('modeling'), /trace the reference|potrace/i);
+  assert.equal(recipeFor('debug'), null);
+  assert.ok(listRecipes().find((r) => r.category === 'modeling')?.present);
+  const tk = await import('../core/tasks.mjs');
+  const t = tk.createTask({ cwd: HOME, title: 'cutter', spec: 'make it', provider: 'ollama', model: 'x', category: 'modeling', difficulty: 4 });
+  assert.equal(tk.getTask(t.id).category, 'modeling');
+  tk.cancelTask(t.id);
+});
