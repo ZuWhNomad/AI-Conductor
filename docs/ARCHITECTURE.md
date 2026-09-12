@@ -184,3 +184,16 @@ as input, delegates fixes, runs `npm test`, and marks entries resolved.
 `share/install.cmd` (Windows) / `share/install.sh`: checks Node, runs `npm install`, creates a
 launcher. Friends log in to their own Claude / ChatGPT accounts once (`claude auth login`,
 `codex login`). See README.
+
+## Usage-managed sweeps (`core/sweep.mjs`)
+
+A benchmark sweep over many model×effort selections must not run everything one after another, nor blow a
+provider's window by running everything at once. `planBatch` sizes the next batch for a provider from three
+numbers: the measured cost of one task in % of the tightest window (`measuredCost`, the largest window delta any
+probe run recorded in the scorecard), the window's current use (`usedNow`, honouring per-model-group windows), and
+a buffer to leave untouched (25% by default). Unknown cost means one task at a time until a probe has measured it;
+no headroom means wait for the reset. The sweep re-plans after every batch, so a provider whose runs turn out
+cheaper than expected speeds up on its own, and one that is draining faster slows down. Local providers are
+unlimited but capped by hardware. The cookiebench-trace runner is the first client: phase 1 probes every model at
+its cheapest effort, phase 2 runs the remaining efforts in planner-sized batches per provider (Antigravity per
+model group), all providers concurrently.
