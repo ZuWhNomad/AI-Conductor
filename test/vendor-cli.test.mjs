@@ -107,3 +107,12 @@ test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09
   assert.equal(sc.providerUsedPct('antigravity'), 100); // no model: busiest window, as before
   delete lim.getLimits().providers.antigravity;
 });
+
+test('the Claude "weekly Fable" window applies to Fable models only', async () => {
+  const lim = await import('../core/limits.mjs'); const sc = await import('../core/scorecard.mjs');
+  lim.getLimits().providers.claude = { provider: 'claude', windows: [{ id: 'claude:5h', label: '5-hour', usedPercent: 20 }, { id: 'claude:w', label: 'weekly', usedPercent: 60 }, { id: 'claude:wf', label: 'weekly Fable', usedPercent: 94 }] };
+  assert.equal(sc.providerUsedPct('claude', { model: 'claude-opus-4-8' }), 60);   // Fable window ignored for Opus
+  assert.equal(sc.providerUsedPct('claude', { model: 'claude-fable-5-1[1m]' }), 94);
+  assert.equal(sc.providerUsedPct('claude'), 94);                                    // no model: busiest, as before
+  delete lim.getLimits().providers.claude;
+});

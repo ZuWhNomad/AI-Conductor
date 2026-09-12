@@ -302,7 +302,9 @@ export function providerUsedPct(provider, { sessionOnly = false, model = null } 
 
 /** A provider's windows that apply to a model: windows carry an optional `models` regex (Antigravity meters Gemini and Claude/GPT separately). */
 export function providerWindows(provider, model = null) {
-  return (getLimits().providers[provider]?.windows || []).filter((w) => !w.models || !model || new RegExp(w.models, 'i').test(model));
+  // A window may name the models it meters (Antigravity groups); Claude's "weekly Fable" window meters Fable only.
+  const scope = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
+  return (getLimits().providers[provider]?.windows || []).filter((w) => !scope(w) || !model || new RegExp(scope(w), 'i').test(model));
 }
 
 /** May the router hand new work to this provider right now? Blocked, or past its class cap, means no. */
