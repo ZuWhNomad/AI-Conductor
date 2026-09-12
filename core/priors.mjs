@@ -22,7 +22,7 @@ export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: '
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
 export const MODELING = {
-  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model and consider higher effort.',
+  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model; raising effort on a weaker model did not help (2026-09-12: Sol/Terra at ultra and Luna at max all failed).',
   best: ['claude:opus-5', 'codex:gpt-6-astra'],
   // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
   // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
@@ -32,6 +32,10 @@ export const MODELING = {
     { re: /^antigravity:gemini-3\.1-pro/, model: 'antigravity:gemini-3.1-pro', verdict: 'fail', effort: 'high' },
     { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
     { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
+    // 2026-09-12: the Codex mid-tier at its highest efforts — all clear the gate, all fail the visual comparison.
+    { re: /^codex:.*5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'fail', effort: 'ultra' },
+    { re: /^codex:.*5\.6-terra/, model: 'codex:gpt-5.6-terra', verdict: 'fail', effort: 'ultra' },
+    { re: /^codex:.*5\.6-luna/, model: 'codex:gpt-5.6-luna', verdict: 'fail', effort: 'max' },
     { re: /^antigravity:gemini-3\.8-flash/, model: 'antigravity:gemini-3.8-flash', verdict: 'fail', effort: 'high' }, // no output — quota, not quality
   ],
 };
