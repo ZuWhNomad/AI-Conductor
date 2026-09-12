@@ -60,3 +60,16 @@ test('planGreedy fills the headroom with the cheapest tasks first and isolates u
   assert.equal(planGreedy([1, 1, 1], { usedPct: 10, maxParallel: 2 }).n, 2);
   assert.equal(planGreedy([1, 1], { usedPct: 80 }).n, 0);
 });
+
+test('nextReset names the earliest reset among the windows holding the provider back', async () => {
+  const { nextReset } = await import('../core/sweep.mjs');
+  const lim = await import('../core/limits.mjs');
+  const t5 = Date.now() + 3600e3, tw = Date.now() + 5 * 86400e3;
+  lim.getLimits().providers.claude = { provider: 'claude', windows: [{ id: 'claude:5h', label: '5-hour', usedPercent: 81, resetsAt: t5 }, { id: 'claude:w', label: 'weekly', usedPercent: 90, resetsAt: tw }] };
+  assert.equal(nextReset('claude', null, { bufferPct: 25 }), t5);                               // both binding: earliest
+  assert.equal(nextReset('claude', null, { bufferPct: 25, sessionOnly: true }), t5);
+  assert.equal(nextReset('claude', null, { bufferPct: 5 }), null);                               // nothing over 95%: not blocked by a window
+  lim.getLimits().providers.grok = { provider: 'grok', windows: [] };
+  assert.equal(nextReset('grok'), null);                                                          // unknown: caller polls
+  delete lim.getLimits().providers.claude; delete lim.getLimits().providers.grok;
+});

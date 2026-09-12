@@ -85,3 +85,15 @@ export function planGreedy(costs, { usedPct, bufferPct = 25, maxParallel = Infin
   }
   return { n, order: idx, reason: n ? `${headroom.toFixed(1)}% headroom, ${n} task(s) summing to ~${sum.toFixed(1)}%` : `cheapest task (~${order[0]?.c.toFixed(1)}%) would cross the ${100 - bufferPct}% line` };
 }
+
+/**
+ * When a provider has no headroom, when does it get some back? The earliest reset among the windows that apply
+ * to the model and are the ones holding it (used above the line). ms timestamp, or null when the provider reports
+ * no reset times (then the caller must poll). Sleep until this instead of polling: the limits registry already knows.
+ */
+export function nextReset(provider, model = null, { bufferPct = 25, sessionOnly = false } = {}) {
+  const ws = providerWindows(provider, model).filter((w) => !sessionOnly || /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600));
+  const binding = ws.filter((w) => (Number(w.usedPercent) || 0) >= 100 - bufferPct && w.resetsAt);
+  if (!binding.length) return null;
+  return Math.min(...binding.map((w) => Number(w.resetsAt)));
+}
