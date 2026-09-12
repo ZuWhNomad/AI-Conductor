@@ -61,6 +61,13 @@ Pulling a tool from GitHub and running it is a supply-chain risk. Rules:
    ultra pass). Deterministic routes (kind: mcp) are the next step.
 3. **Research-on-miss.** Only after 1–2 show value. Includes the sandbox-vetting step above.
 
+## Parked ideas
+- **Modeling step 0: search before modeling.** Before the image→3D pipeline runs, the conductor should ask the user
+  whether to look for an existing 3D model of the object first (Thingiverse, Printables, MakerWorld, Thangs, Cults3D
+  — many have search APIs or scrapeable listings). A found STL costs zero modeling tokens and is usually better than a
+  generated one; the pipeline then becomes the fallback, or a remix step. Add once the pipeline itself is settled
+  (noted 2026-09-12).
+
 ## Principle
 **Bench before automating the registry.** The scorecard is empirical by design; the recipe registry should
 start hand-curated and let measured results decide what gets promoted or automated.
