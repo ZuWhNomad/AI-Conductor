@@ -386,3 +386,13 @@ test('a hand-routed model without an effort gets the higher of the configured de
   assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash-low', difficulty: 4, defaultEffort: 'high', reg }), 'high'); // no effort levels: default passes through
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'nope', difficulty: 4, defaultEffort: null, reg }), null);
 });
+
+test('a run recorded from outside Conductor (unmeasured tokens) counts for quality but is unpriced', async () => {
+  const { appendNdjson, statePath } = await import('../core/paths.mjs');
+  appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'ext1', source: 'live', provider: 'codex', model: 'gpt-6-astra', effort: 'ultra', category: 'modeling', difficulty: 4, status: 'done', tokens: { in: 0, out: 0, cached: 0, v: 2 }, costUsd: 0, durationMs: 0, unmeasured: true, title: 'external' });
+  sc.rateTask('ext1', 'pass', 'recorded from an external run');
+  const a = sc.rootRuns().flatMap((c) => c.attempts).find((x) => x.taskId === 'ext1');
+  assert.equal(a.verdict, 'pass'); assert.equal(a.usd, null);
+  const g = sc.summarize().find((x) => x.category === 'modeling' && x.difficulty === 4 && /astra/.test(x.sel));
+  assert.equal(g.pass, 1); assert.equal(g.avgUsd, null);
+});

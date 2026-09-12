@@ -126,7 +126,7 @@ export function rootRuns({ source = null } = {}) {
     const rated = rates.get(a.taskId) || a.members.map((id) => rates.get(id)).find(Boolean);
     a.verdict = rated?.verdict || (a.status === 'failed' ? 'fail' : null);
     a.notes = rated?.notes || null;
-    a.usd = usdFor(a.tokens, a.price);
+    a.usd = a.unmeasured ? null : usdFor(a.tokens, a.price); // a verdict recorded for a run made outside Conductor counts for quality, never for cost
   }
   const chains = new Map();
   const rootIn = (map, id) => { let cur = map.get(id); const seen = new Set(); while (cur && cur.followUpOf && map.has(cur.followUpOf) && !seen.has(cur.taskId)) { seen.add(cur.taskId); cur = map.get(cur.followUpOf); } return cur ? cur.taskId : null; };
