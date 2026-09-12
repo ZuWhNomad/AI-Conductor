@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig } from './config.mjs';
-import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores } from './scorecard.mjs';
+import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
 import { sessionFlags } from './session-flags.mjs';
@@ -86,6 +86,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
           if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
           if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; }
         }
+        if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
         const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi });
         const fb = pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
         const chosen = pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : category && !a.provider && !a.model ? `\nWorker: configured default ${t.provider}:${t.model || 'default'} (scorecard has no qualified plan for ${category}@${difficulty || 2} yet)` : '';

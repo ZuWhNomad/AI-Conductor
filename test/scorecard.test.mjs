@@ -370,3 +370,19 @@ test("the conductor's plan is capped on its session window only; weekly (Fable w
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] };
   delete lim.getLimits().providers.claude;
 });
+
+test('modeling is a first-class category (journaled and scored as itself, not as other)', () => {
+  assert.ok(sc.CATEGORIES.includes('modeling'));
+  run({ id: 'mod1', category: 'modeling', difficulty: 4 });
+  sc.rateTask('mod1', 'fixable');
+  assert.ok(sc.summarize().some((g) => g.category === 'modeling' && g.difficulty === 4));
+});
+
+test('a hand-routed model without an effort gets the higher of the configured default and the difficulty target', () => {
+  const reg = { models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }, { provider: 'antigravity', id: 'gemini-3.8-flash-low', efforts: [] }] };
+  assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 4, defaultEffort: 'medium', reg }), 'high');   // the bug: medium default, hard task
+  assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 2, defaultEffort: 'high', reg }), 'high');     // never below the configured default
+  assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 5, defaultEffort: 'high', reg }), 'xhigh');
+  assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash-low', difficulty: 4, defaultEffort: 'high', reg }), 'high'); // no effort levels: default passes through
+  assert.equal(sc.effortForTask({ provider: 'codex', model: 'nope', difficulty: 4, defaultEffort: null, reg }), null);
+});

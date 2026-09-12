@@ -11,7 +11,7 @@ import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
-export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'docs', 'review', 'design', 'other'];
+export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'docs', 'review', 'design', 'modeling', 'other'];
 export const VERDICTS = ['pass', 'fixable', 'fail'];
 const SCORE = { pass: 1, fixable: 0.5, fail: 0 };
 const LEVELS = [1, 2, 3, 4, 5];
@@ -344,6 +344,18 @@ export function priorEffort(efforts, difficulty) {
   let pick = ranked[0];
   for (const e of ranked) if (EFFORT_LADDER.indexOf(e) <= wantIdx) pick = e;
   return pick;
+}
+
+/** Effort for a task the conductor routed by hand without an effort: the higher of the configured default and the difficulty target, clamped to what the model offers. */
+export function effortForTask({ provider, model, difficulty, defaultEffort = null, reg = getModels() } = {}) {
+  const m = reg.models.find((x) => x.provider === provider && x.id === model);
+  const efforts = m?.efforts || [];
+  if (!efforts.length) return defaultEffort || null;
+  const want = difficulty ? priorEffort(efforts, difficulty) : null;
+  const base = efforts.includes(defaultEffort) ? defaultEffort : null;
+  const rank = (e) => EFFORT_LADDER.indexOf(e);
+  if (want && base) return rank(want) > rank(base) ? want : base;
+  return want || base || null;
 }
 
 /** Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level). */
