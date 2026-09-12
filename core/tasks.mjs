@@ -170,7 +170,9 @@ async function run(t) {
     const limitsBefore = snapshotWindows(t.provider);
     const concurrent = [...running.keys()].filter((id) => id !== t.id && tasks.get(id)?.provider === t.provider).length;
     const before = gitStatus(t.cwd);
-    const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (loadConfig().worker.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
+    const wcfg = loadConfig().worker;
+    const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory?.[t.category] || wcfg.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
+    if ((r.durationMs || 0) > (wcfg.longRunMinutes || 60) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files };
     const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };

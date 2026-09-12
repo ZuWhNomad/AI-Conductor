@@ -62,6 +62,14 @@ Pulling a tool from GitHub and running it is a supply-chain risk. Rules:
 3. **Research-on-miss.** Only after 1–2 show value. Includes the sandbox-vetting step above.
 
 ## Parked ideas
+- **Conductor-level watchdog / auto-resume (2026-09-12).** Worker tasks already park on a provider limit and resume
+  on the same thread when the window resets (`core/tasks.mjs` park/resume). The *conductor session* does not: when the
+  conductor's own plan hits its limit the chat just stops. Idea: let the conductor (or the user) set a resume timer —
+  "continue in 47 minutes" — and have the server resume the session automatically when it fires, with the same prompt
+  ("you were interrupted by a usage limit; continue"). Fewer typos and forgotten timers than doing it by hand. Needs:
+  a per-session `resumeAt`, a scheduler tick, and the UI showing the countdown.
+- **Method C for image→3D (2026-09-12).** Split the pipeline: a cheap model traces (recipe-c-trace), the strong model
+  builds from the labelled paths (recipe-c). B/C test pending on Sol and Terra at ultra.
 - **Modeling step 0: search before modeling.** Before the image→3D pipeline runs, the conductor should ask the user
   whether to look for an existing model of the object first — any 3D source, not only print-ready STLs: print sites
   (Thingiverse, Printables, MakerWorld, Thangs, Cults3D), CAD libraries (GrabCAD, Onshape public docs, McMaster-Carr,

@@ -26,6 +26,8 @@ export const DEFAULTS = {
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     maxTurns: 500,                    // tool turns per Claude-harness worker task
     timeoutMinutes: 45,               // per worker run
+    timeoutByCategory: { modeling: 240 }, // categories that legitimately run long (image->3D iterates); watch the durations in the scorecard
+    longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
   },
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
@@ -99,6 +101,7 @@ function normalize(cfg) {
   if (!Array.isArray(cfg.scorecard.classOrder) || !cfg.scorecard.classOrder.length) cfg.scorecard.classOrder = [...DEFAULTS.scorecard.classOrder];
   if (!plain(cfg.scorecard.classes)) cfg.scorecard.classes = { ...DEFAULTS.scorecard.classes };
   if (!plain(cfg.scorecard.classCap)) cfg.scorecard.classCap = { ...DEFAULTS.scorecard.classCap };
+  if (!plain(cfg.worker.timeoutByCategory)) cfg.worker.timeoutByCategory = { ...DEFAULTS.worker.timeoutByCategory };
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;

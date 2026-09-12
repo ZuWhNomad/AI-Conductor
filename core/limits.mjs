@@ -11,7 +11,7 @@ let cache = readJson(FILE(), { updatedAt: null, providers: {} });
 let inflight = null;
 let seenMtime = fileMtime();
 
-function fileMtime() { try { return statSync(FILE()).mtimeMs; } catch { return 0; } }
+function fileMtime() { try { const st = statSync(FILE()); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; } } // mtime alone misses two writes in the same tick
 
 /** The registry, re-read when another process (a smoke run, `conductor limits`, a helper script) wrote limits.json since we last did. */
 export function getLimits() {

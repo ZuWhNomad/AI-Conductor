@@ -83,6 +83,19 @@ test('recipe variants: a task variant selects the B recipe; unknown variants fal
   const { recipeFor } = await import('../core/recipes.mjs');
   assert.match(recipeFor('modeling', 'recipe-b'), /Recipe B/);
   assert.match(recipeFor('modeling', 'recipe-a'), /Recipe: image/);
-  assert.match(recipeFor('modeling', 'nope'), /Recipe: image/);
+  assert.match(recipeFor('modeling', 'nope'), /Recipe B/);            // B is the default now
+  assert.match(recipeFor('modeling'), /Recipe B/);
+  assert.match(recipeFor('modeling', 'recipe-c'), /stage 2 \(build\)/);
+  assert.match(recipeFor('modeling', 'recipe-c-trace'), /stage 1 \(trace\)/);
   assert.equal(recipeFor('debug', 'recipe-b'), null);
+});
+
+test('worker timeout can be raised per category; long runs are logged', async () => {
+  const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
+  assert.equal(DEFAULTS.worker.timeoutByCategory.modeling, 240);
+  saveConfig({ worker: { timeoutByCategory: 'x' } });
+  assert.equal(loadConfig().worker.timeoutByCategory.modeling, 240);
+  saveConfig({ worker: { timeoutByCategory: { modeling: 300 } } });
+  assert.equal(loadConfig().worker.timeoutByCategory.modeling, 300);
+  saveConfig({ worker: { timeoutByCategory: { modeling: 240 } } });
 });
