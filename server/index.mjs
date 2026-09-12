@@ -16,6 +16,7 @@ import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
 import { summarize, formatScores } from '../core/scorecard.mjs';
+import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -141,6 +142,8 @@ async function route(req, res, url) {
     const opened = openTerminal(`Conductor — ${seg[2]} ${seg[3]}`, command);
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
+  if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
+  if (p === '/api/update' && m === 'POST') return json(res, 200, applyUpdate());
   if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
   return json(res, 404, { error: `no route ${m} ${p}` });
 }
@@ -237,6 +240,7 @@ export function startServer({ port = null } = {}) {
         startModelPolling(cfg.pollMinutes); startLimitPolling(cfg.pollMinutes);
         refreshModels().then(() => refreshLimits()).catch(() => {});
         startScheduledReview();
+        setTimeout(() => { try { checkForUpdates(); } catch {} }, 3000).unref();
       }
       schedule();
       resolve({ server, url: addr });

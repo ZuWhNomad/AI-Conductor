@@ -12,7 +12,7 @@ const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
   },
 });
 const cmd = positionals[0] || 'start';
@@ -32,6 +32,7 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
                                              models with no battery or a stale one (default 21 days); --run probes then batteries them
   conductor review [--model M]               headless self-review of this workbench from the improvement log
   conductor share                            zip this folder (without node_modules/state) to your Desktop
+  conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
   conductor help`;
@@ -141,6 +142,17 @@ if (cmd === 'start') {
   finally { server?.close(); }
   console.log(`\n[${r.kind}] ${r.text || r.message || ''}`);
   process.exit(r.isError || r.kind === 'error' ? 1 : 0);
+} else if (cmd === 'update') {
+  const { updateStatus, applyUpdate, formatUpdate } = await import('../core/update.mjs');
+  const st = updateStatus();
+  console.log(formatUpdate(st));
+  if (!flags.check && st.git && !st.error && st.behind) {
+    try {
+      const r = applyUpdate();
+      console.log(`Updated ${r.from} → ${r.to} (${r.commits} commit(s))${r.npmInstalled ? ', dependencies installed' : ''}. Restart Conductor to run the new version.`);
+    } catch (e) { console.error(e.message); process.exit(1); }
+  }
+  process.exit(st.error && st.git ? 1 : 0);
 } else if (cmd === 'feedback') {
   const { writeFeedback, issuesUrl } = await import('../core/feedback.mjs');
   const f = writeFeedback();

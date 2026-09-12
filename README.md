@@ -86,6 +86,15 @@ conductor and you can add ideas (`log_improvement` tool, sidebar **Open log**). 
 opens a conductor session on this repository with the log as input; it delegates fixes, runs
 `npm test`, and marks entries resolved. Or run `conductor review` headless.
 
+## Updating (and working from several machines)
+
+The folder is a git checkout of the GitHub repo. `conductor update` (or the **⬇ Update** button that
+appears in the header when GitHub is ahead, or Settings ⚙ → *Check for updates*) fast-forwards to the
+latest commit and runs `npm install` when dependencies changed; restart Conductor afterwards. It refuses
+while you have uncommitted or unpushed local changes, so commit and push from GitHub Desktop first.
+Your state — settings, keys, scorecard, task journal — lives in `~/.conductor2` on each machine and is
+never part of the repo.
+
 ## Feedback
 
 `conductor feedback` writes `Conductor-feedback-<date>.json` to your Desktop — versions, which providers

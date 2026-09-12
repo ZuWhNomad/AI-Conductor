@@ -362,6 +362,7 @@ function connect() {
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
   on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
   on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); }));
+  on('update', (ev) => { const b = $('#btn-update'); if (ev.behind) { b.hidden = false; b.textContent = `⬇ Update (${ev.behind})`; } if (ev.updated) { b.hidden = true; addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); } });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
@@ -434,6 +435,9 @@ function openSettings() {
   field('Local SD URL', 'providers.sd.baseUrl', c.providers.sd.baseUrl);
   body.append(grid);
   body.append(el('div', 'tiny muted', 'Login for subscriptions happens in a terminal:  claude auth login   ·   codex login'));
+  const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
+  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; if (st.behind) { $('#btn-update').hidden = false; $('#btn-update').textContent = `⬇ Update (${st.behind})`; } } catch (e) { updOut.textContent = e.message; } };
+  body.append(upd, updOut);
   const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
   doc.onclick = async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } };
   body.append(doc, docOut);
@@ -500,6 +504,7 @@ async function boot() {
   $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
   $('#btn-settings').onclick = openSettings;
   $('#btn-improvements').onclick = openImprovements;
+  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
   $('#modal-close').onclick = closeModal;
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
