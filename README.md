@@ -59,6 +59,16 @@ rounds go back to the same worker thread (max 3), risky tasks get two independen
 Claude subagents (haiku swarm / sonnet worker / adversarial reviewer) are available through the
 built-in Agent tool, and limits are checked before big batches.
 
+## Benchmarks
+
+Fixed benchmarks (and their heavy assets + recorded runs) live in a separate repo,
+**[conductor-benchmarks](https://github.com/ZuWhNomad/conductor-benchmarks)**, so they evolve on their own
+cadence without churning the core. Conductor keeps only a **distilled copy of the results for model
+selection** — see `MODELING` in `core/priors.mjs` and the `modeling` category. Pull the benchmarks repo when
+you want to run or inspect a full benchmark. Current status: 3D-modeling is **not yet reliable** (best result
+is "close but no cigar"); the conductor warns you before taking such a task. Design notes:
+`docs/ROADMAP-capabilities.md`.
+
 ## Models and limits (never assumed static)
 
 The sidebar polls every provider every 15 minutes (configurable) and on **↻ Refresh**:

@@ -14,7 +14,30 @@ export const TIER_CEILING = { A: 5, B: 3, C: 2, D: 1 };
 //   read   (read, search, summarize, docs)           <- long-context recall (MRCR) + knowledge work (GDPval-AA)
 //   reason (review, design, other)                   <- GDPval-AA, HLE, aggregate indices
 // A rule's `tier` is the default; `tiers.{code,read,reason}` override it where the evidence differs.
-export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', other: 'reason' };
+export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', modeling: 'visual', other: 'reason' };
+
+// 3D-modeling / visual-output tasks (STL, CAD, mesh, parametric geometry). No public benchmark covers these,
+// so the only evidence is our own — the cookie-cutter benchmark. **No model passes yet**: the best result is
+// "close but no cigar", so the conductor should set expectations and prefer the recorded best models. This is
+// Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
+// conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
+export const MODELING = {
+  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model and consider higher effort.',
+  best: ['claude:opus-5', 'codex:gpt-6-astra'],
+  // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
+  // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
+  results: [
+    { re: /^claude:(opus|.*opus-5)/, model: 'claude:opus-5', verdict: 'close', effort: 'medium' },
+    { re: /^codex:.*(astra|gpt-6)/, model: 'codex:gpt-6-astra', verdict: 'close', effort: 'medium' },
+    { re: /^antigravity:gemini-3\.1-pro/, model: 'antigravity:gemini-3.1-pro', verdict: 'fail', effort: 'high' },
+    { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
+    { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
+    { re: /^antigravity:gemini-3\.8-flash/, model: 'antigravity:gemini-3.8-flash', verdict: 'fail', effort: 'high' }, // no output — quota, not quality
+  ],
+};
+// Verdict → prior tier for the visual kind. `fail` and unknown collapse to null so they are not routed on a
+// public-code prior they never earned; `close` stays modest (ceiling 2) so nothing is trusted at high difficulty.
+const VISUAL_TIER = { pass: 'B', close: 'C', fail: null };
 
 // Order matters: first matching rule wins. `re` is tested against `provider:model` lowercased.
 // Sources: Terminal-Bench 2.1 (llm-stats.com), SWE-bench Verified + GDPval-AA (benchlm.ai), MRCR
@@ -58,8 +81,12 @@ const key = (provider, model) => `${provider}:${model || ''}`.toLowerCase();
 export function priorFor(provider, model, category = null) {
   const k = key(provider, model);
   const p = PRIORS.find((r) => r.re.test(k));
-  if (!p) return null;
   const kind = category ? KIND[category] || 'reason' : null;
+  if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
+    const r = MODELING.results.find((x) => x.re.test(k));
+    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: MODELING.caveat };
+  }
+  if (!p) return null;
   const tier = (kind && p.tiers?.[kind]) || p.tier || null;
   return { tier, kind, tb21: p.tb21 ?? null, tb20: p.tb20 ?? null, swev: p.swev ?? null, gdpval: p.gdpval ?? null, mrcr: p.mrcr ?? null, price: p.price || null, note: p.note || null };
 }
