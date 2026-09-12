@@ -160,3 +160,9 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === t.id)), 'the cut-off attempt is not in the ledger');
   saveConfig({ scorecard: { minSamples: 3 } });
 });
+
+test('a task created with noFailover is parked on a limit, never handed to another provider', () => {
+  const t = createTask({ cwd: tmpDir(), title: 'bench', spec: 'x', provider: 'grok', model: 'grok-4.6', category: 'modeling', difficulty: 2, noFailover: true });
+  assert.equal(getTask(t.id).noFailover, true);
+  cancelTask(t.id);
+});

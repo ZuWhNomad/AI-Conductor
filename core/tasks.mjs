@@ -81,6 +81,7 @@ export function createTask(i) {
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain
     variant: typeof i.variant === 'string' && i.variant ? i.variant.slice(0, 40) : null, // A/B label (e.g. a policy file under test); rows keep it
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it
+    noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
   if (t.followUpOf) {
@@ -213,7 +214,7 @@ async function run(t) {
  * (the section that fell silent hands the part to the next one). null when nothing else qualifies.
  */
 function failover(t) {
-  if (!t.category || !t.difficulty || t.followUpOf || t.source === 'smoke') return null; // a battery measures one selection; never hand its tasks to another
+  if (!t.category || !t.difficulty || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
   try {
     const sel = `${t.provider}:${t.model || 'default'}:${t.effort || 'default'}`;
     const alt = recommend({ category: t.category, difficulty: t.difficulty, exclude: [sel, `${t.provider}:${t.model || 'default'}`], overflowApi: !!t.overflowApi });
