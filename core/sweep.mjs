@@ -34,7 +34,8 @@ export function measuredCost(rows, provider, { model = null } = {}) {
     for (const [id, d] of Object.entries(r.pct)) {
       const w = (getLimits().providers[provider]?.windows || []).find((x) => x.id === id);
       if (w?.models && r.model && !new RegExp(w.models, 'i').test(r.model)) continue;
-      if (d > cost) cost = d;
+      const per = d / ((r.concurrent || 0) + 1); // the window moved for every task running at the time, not just this one
+      if (per > cost) cost = per;
     }
   }
   return cost;
@@ -62,4 +63,25 @@ export function effortMultiplier(summary, provider, model, effort, probeEffort =
   const a = tok(probeEffort), b = tok(effort);
   if (a && b) return Math.max(1, b / a);
   return Math.max(1, (FALLBACK_LADDER[effort] || 2) / (FALLBACK_LADDER[probeEffort] || 1));
+}
+
+/**
+ * Greedy batch over heterogeneous costs: sort ascending, take tasks while their summed cost stays under the headroom.
+ * Returns how many of the sorted tasks to run now and the order (indices into the input). Zero when even the
+ * cheapest does not fit. A task with unknown cost (0) runs alone so it gets measured.
+ */
+export function planGreedy(costs, { usedPct, bufferPct = 25, maxParallel = Infinity, unlimited = false }) {
+  const order = costs.map((c, i) => ({ c: c || 0, i })).sort((a, b) => a.c - b.c);
+  const idx = order.map((o) => o.i);
+  if (unlimited) return { n: Math.min(maxParallel, order.length), order: idx, reason: 'no window (local)' };
+  const headroom = 100 - bufferPct - (usedPct || 0);
+  if (headroom <= 0) return { n: 0, order: idx, reason: `window at ${usedPct}%: wait for reset` };
+  let sum = 0, n = 0;
+  for (const o of order) {
+    if (o.c <= 0) { if (!n) n = 1; break; }            // unknown cost: run it alone, measure, re-plan
+    if (sum + o.c > headroom) break;
+    sum += o.c; n++;
+    if (n >= maxParallel) break;
+  }
+  return { n, order: idx, reason: n ? `${headroom.toFixed(1)}% headroom, ${n} task(s) summing to ~${sum.toFixed(1)}%` : `cheapest task (~${order[0]?.c.toFixed(1)}%) would cross the ${100 - bufferPct}% line` };
 }
