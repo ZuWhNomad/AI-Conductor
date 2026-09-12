@@ -63,9 +63,11 @@ Pulling a tool from GitHub and running it is a supply-chain risk. Rules:
 
 ## Parked ideas
 - **Modeling step 0: search before modeling.** Before the image→3D pipeline runs, the conductor should ask the user
-  whether to look for an existing 3D model of the object first (Thingiverse, Printables, MakerWorld, Thangs, Cults3D
-  — many have search APIs or scrapeable listings). A found STL costs zero modeling tokens and is usually better than a
-  generated one; the pipeline then becomes the fallback, or a remix step. Add once the pipeline itself is settled
+  whether to look for an existing model of the object first — any 3D source, not only print-ready STLs: print sites
+  (Thingiverse, Printables, MakerWorld, Thangs, Cults3D), CAD libraries (GrabCAD, Onshape public docs, McMaster-Carr,
+  TraceParts, Sketchfab, Thangs' geometry search), even a manufacturer's STEP/IGES download. Many have search APIs or
+  scrapeable listings. A found model costs zero modeling tokens and is usually better than a generated one; the
+  pipeline then becomes the fallback, or a remix/convert step (STEP → mesh, rescale, add a flange). Add once the pipeline itself is settled
   (noted 2026-09-12).
 
 ## Principle
