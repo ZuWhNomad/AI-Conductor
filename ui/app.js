@@ -247,7 +247,7 @@ function renderHistory(messages) {
 // ---------- tasks strip ----------
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
-  const mine = S.tasks.filter((t) => t.sessionId === S.current?.id).slice(0, 12);
+  const mine = S.tasks.filter((t) => t.sessionId === S.current?.id || t.sessionId == null).slice(0, 12); // sessionless = launched from the CLI/API; shown in every chat
   for (const t of mine) box.append(taskCard(t));
 }
 function taskCard(t) {
@@ -269,7 +269,7 @@ function lastAction(t) {
 function updateTask(t) {
   const i = S.tasks.findIndex((x) => x.id === t.id);
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
-  if (t.sessionId !== S.current?.id) return;
+  if (t.sessionId !== S.current?.id && t.sessionId != null) return;
   const existing = S.taskEls.get(t.id);
   const fresh = taskCard(t);
   if (existing) existing.replaceWith(fresh); else $('#tasks').prepend(fresh);
@@ -425,6 +425,8 @@ function openSettings() {
   body.append(el('h4', null, 'Worker behaviour'));
   selectField('Codex sandbox', 'worker.codexSandbox', c.worker.codexSandbox, ['read-only', 'workspace-write', 'danger-full-access']);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
+  field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API/Ollama conductors; big projects need thousands.');
+  field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
   field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');

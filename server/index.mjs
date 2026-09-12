@@ -117,7 +117,7 @@ async function route(req, res, url) {
 
   if (p === '/api/settings') {
     if (m === 'GET') return json(res, 200, publicConfig());
-    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); if (!process.env.CONDUCTOR_NO_POLL) { startModelPolling(next.pollMinutes); startLimitPolling(next.pollMinutes); } bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
+    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); if (!process.env.CONDUCTOR_NO_POLL) { startModelPolling(next.pollMinutes); startLimitPolling(next.pollMinutes); } schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
   }
 
   if (seg[1] === 'improvements') {

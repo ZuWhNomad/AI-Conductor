@@ -25,7 +25,7 @@ export async function runWorker(t, { signal } = {}) {
       r = await runCodex({ ...base, sandbox: t.sandbox || cfg.worker.codexSandbox, network: cfg.worker.codexNetwork, resumeThreadId: t.threadId || undefined });
       break;
     case 'claude':
-      r = await runClaude({ ...base, permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined });
+      r = await runClaude({ ...base, permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurns || 500 });
       r.threadId = r.sessionId;
       break;
     case 'ollama': {

@@ -168,7 +168,7 @@ function start(s) {
       settingSources: ['user', 'project', 'local'],
       resume: s.sdkSessionId || undefined,
       abortController: abort,
-      maxTurns: 1000,
+      maxTurns: loadConfig().conductor.maxTurns || 9999,
       title: s.title !== 'New chat' ? s.title : undefined,
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'conductor/2.0.0' },
     },
@@ -322,7 +322,7 @@ async function runTurn(s, text) {
       if (p.kind === 'ollama') { await ollama.ensureRunning(); wc = { baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama' }; }
       else wc = p.workerConfig();
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
-      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: s.effort || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })), signal: ac.signal, onEvent, maxIterations: 120, timeoutMs: 2 * 3600_000 });
+      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: s.effort || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })), signal: ac.signal, onEvent, maxIterations: loadConfig().conductor.maxTurns || 9999, timeoutMs: 2 * 3600_000 });
       if (mine()) { s.history = r.messages || s.history; writeJson(HIST(s.id, 'loop'), s.history); }
       if (r.error && /context|too many tokens|maximum.*length|token limit/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
       if (r.ok && r.finalMessage && !s.messages.some((m) => m.role === 'assistant' && m.blocks?.[0]?.text === r.finalMessage)) onEvent('item', { item: { type: 'agent_message', text: r.finalMessage }, phase: 'completed' });

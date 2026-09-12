@@ -11,7 +11,8 @@ export const DEFAULTS = {
     effort: 'high',
     permissionMode: 'acceptEdits',    // 'acceptEdits' (ask for the rest) | 'bypassPermissions'
     overflowApi: false,               // new chats: may the router spend pay-per-token APIs once subscriptions are capped?
-    maxWorkerConcurrency: 3,
+    maxWorkerConcurrency: 8,          // parallel worker tasks; provider limits, not this cap, are the real budget
+    maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
   },
   worker: {                           // default grunt worker
     provider: 'codex',
@@ -23,6 +24,7 @@ export const DEFAULTS = {
     maxRounds: 3,                     // review -> follow_up rounds before escalation
     msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
+    maxTurns: 500,                    // tool turns per Claude-harness worker task
     timeoutMinutes: 45,               // per worker run
   },
   providers: {
@@ -84,7 +86,7 @@ export function loadConfig() {
 }
 
 function normalize(cfg) {
-  for (const [obj, defaults, key] of [[cfg, DEFAULTS, 'pollMinutes'], [cfg.conductor, DEFAULTS.conductor, 'maxWorkerConcurrency'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'maxRounds'], [cfg.scorecard, DEFAULTS.scorecard, 'minSamples'], [cfg.scorecard, DEFAULTS.scorecard, 'quality'], [cfg.scorecard, DEFAULTS.scorecard, 'qualityValueUsd'], [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes']]) {
+  for (const [obj, defaults, key] of [[cfg, DEFAULTS, 'pollMinutes'], [cfg.conductor, DEFAULTS.conductor, 'maxWorkerConcurrency'], [cfg.conductor, DEFAULTS.conductor, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'maxRounds'], [cfg.scorecard, DEFAULTS.scorecard, 'minSamples'], [cfg.scorecard, DEFAULTS.scorecard, 'quality'], [cfg.scorecard, DEFAULTS.scorecard, 'qualityValueUsd'], [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes']]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
