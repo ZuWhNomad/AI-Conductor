@@ -396,3 +396,12 @@ test('a run recorded from outside Conductor (unmeasured tokens) counts for quali
   const g = sc.summarize().find((x) => x.category === 'modeling' && x.difficulty === 4 && /astra/.test(x.sel));
   assert.equal(g.pass, 1); assert.equal(g.avgUsd, null);
 });
+
+test('modeling: only a recorded pass is routable, at the effort that passed', async () => {
+  const p = await import('../core/priors.mjs');
+  assert.equal(p.priorFor('codex', 'gpt-6-astra', 'modeling').tier, 'A');
+  assert.equal(p.priorFor('codex', 'gpt-6-astra', 'modeling').effort, 'ultra');
+  assert.equal(p.priorFor('claude', 'opus-5', 'modeling').tier, null);      // "close" is not routable
+  assert.equal(p.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, null);  // fail
+  assert.equal(p.priorFor('kimi', 'kimi-k3', 'modeling').tier, null);       // never benchmarked: no code prior leaks in
+});

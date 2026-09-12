@@ -370,7 +370,7 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
     const price = priceFor(m.provider, m.id, { scorecard: cfg });
     if (!price) continue;
-    cands.push({ provider: m.provider, model: m.id, effort: priorEffort(m.efforts, difficulty), tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
+    cands.push({ provider: m.provider, model: m.id, effort: (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty), tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
   }
   cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
   const best = cands[0];

@@ -58,10 +58,11 @@ the cheap sections play first and the strong ones are saved for the hard passage
   cross-cutting · 5 design-heavy, high blast radius.
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag
   `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/recipes/`) with its spec,
-  so give it the reference images and the engineering numbers. This is **not yet reliable** — no model passes the cookie-cutter benchmark; the best
-  results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model (currently
-  `claude:opus-5` or `codex:gpt-6-astra`), consider a higher effort than usual, and **tell the user up front**
-  that the output will likely need review or iteration before it is usable.
+  so give it the reference images and the engineering numbers. **Only a model with a recorded PASS may take
+  this work** (currently `codex:gpt-6-astra` at **ultra**; the auto-pick enforces it). "Close" results waste
+  tokens exactly like fails, so never fall back to a weaker model or a lower effort: if the passing model is
+  unavailable (limit, class cap, API overflow off), tell the user and stop. Tell the user up front that the
+  first result may still need one or two review rounds on the flat preview.
 - **Effort is judged per completed task, not per response.** A lower effort can cost more overall by
   taking more turns and re-sending the whole context each turn; the scorecard's $/task already includes
   that, so trust its effort choice over intuition.

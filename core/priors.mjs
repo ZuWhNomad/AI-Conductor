@@ -22,8 +22,8 @@ export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: '
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
 export const MODELING = {
-  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model; raising effort on a weaker model did not help (2026-09-12: Sol/Terra at ultra and Luna at max all failed). Astra at ultra passed, near-final in one pass, by tracing the reference (potrace) rather than drawing from a description, then refining one detail against flat previews: for modeling, trace the reference and show the user a 2-D preview before extruding.',
-  best: ['claude:opus-5', 'codex:gpt-6-astra'],
+  caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
+  best: ['codex:gpt-6-astra'], // models with a recorded pass (with the effort that passed, see results)
   // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
   // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
   results: [
@@ -42,7 +42,8 @@ export const MODELING = {
 };
 // Verdict → prior tier for the visual kind. `fail` and unknown collapse to null so they are not routed on a
 // public-code prior they never earned; `close` stays modest (ceiling 2) so nothing is trusted at high difficulty.
-const VISUAL_TIER = { pass: 'B', close: 'C', fail: null };
+// Until models get better at this, only a recorded PASS is routable: 'close' wastes tokens just like 'fail'.
+const VISUAL_TIER = { pass: 'A', close: null, fail: null };
 
 // Order matters: first matching rule wins. `re` is tested against `provider:model` lowercased.
 // Sources: Terminal-Bench 2.1 (llm-stats.com), SWE-bench Verified + GDPval-AA (benchlm.ai), MRCR
@@ -89,7 +90,7 @@ export function priorFor(provider, model, category = null) {
   const kind = category ? KIND[category] || 'reason' : null;
   if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
     const r = MODELING.results.find((x) => x.re.test(k));
-    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: MODELING.caveat };
+    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: MODELING.caveat };
   }
   if (!p) return null;
   const tier = (kind && p.tiers?.[kind]) || p.tier || null;
