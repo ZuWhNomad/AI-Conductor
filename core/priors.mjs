@@ -22,14 +22,14 @@ export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: '
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
 export const MODELING = {
-  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model; raising effort on a weaker model did not help (2026-09-12: Sol/Terra at ultra and Luna at max all failed). Astra at ultra passed only with a traced outline and four operator-approved 2-D preview rounds: for modeling, plan on tracing the reference and showing the user a flat preview before extruding.',
+  caveat: 'No model reliably passes 3D-modeling/STL tasks yet — the best results are "close but no cigar" and usually need manual finishing. Prefer a recorded best model; raising effort on a weaker model did not help (2026-09-12: Sol/Terra at ultra and Luna at max all failed). Astra at ultra passed, near-final in one pass, by tracing the reference (potrace) rather than drawing from a description, then refining one detail against flat previews: for modeling, trace the reference and show the user a 2-D preview before extruding.',
   best: ['claude:opus-5', 'codex:gpt-6-astra'],
   // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
   // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
   results: [
     { re: /^claude:(opus|.*opus-5)/, model: 'claude:opus-5', verdict: 'close', effort: 'medium' },
-    // 2026-09-12: ultra PASSED (operator verdict) — but assisted: traced outline, user centre sketch, 4 approved revisions, off-SPEC size. One-shot medium was 'close'.
-    { re: /^codex:.*(astra|gpt-6)/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'ultra', assisted: true },
+    // 2026-09-12: ultra PASSED (operator verdict). Near-final in one pass from a traced outline; three follow-up revisions touched only the centre loop (off-SPEC 100 mm brief). One-shot medium was 'close'.
+    { re: /^codex:.*(astra|gpt-6)/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'ultra' },
     { re: /^antigravity:gemini-3\.1-pro/, model: 'antigravity:gemini-3.1-pro', verdict: 'fail', effort: 'high' },
     { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
     { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
