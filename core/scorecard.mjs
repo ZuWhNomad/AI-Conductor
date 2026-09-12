@@ -332,6 +332,20 @@ function pool(cells, floor) {
   return { ...base, cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: used.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
 }
 
+const EFFORT_LADDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+// Desired cold-start effort per difficulty. Hard tasks deserve more thinking; the measured path takes over
+// (and can down-shift on cost via effort dominance) once verdicts exist. Clamped to what the model offers.
+const DIFFICULTY_EFFORT = { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' };
+/** Cold-start effort: the highest effort the model offers that does not exceed the difficulty's target. */
+export function priorEffort(efforts, difficulty) {
+  const ranked = EFFORT_LADDER.filter((e) => (efforts || []).includes(e));
+  if (!ranked.length) return null;
+  const wantIdx = EFFORT_LADDER.indexOf(DIFFICULTY_EFFORT[difficulty] || 'medium');
+  let pick = ranked[0];
+  for (const e of ranked) if (EFFORT_LADDER.indexOf(e) <= wantIdx) pick = e;
+  return pick;
+}
+
 /** Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level). */
 function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false }) {
   if (!cfg.usePriors) return null;
@@ -344,12 +358,12 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
     const price = priceFor(m.provider, m.id, { scorecard: cfg });
     if (!price) continue;
-    cands.push({ provider: m.provider, model: m.id, effort: m.efforts?.includes('medium') ? 'medium' : null, tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
+    cands.push({ provider: m.provider, model: m.id, effort: priorEffort(m.efforts, difficulty), tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
   }
   cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
   const best = cands[0];
   if (!best) return null;
-  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
+  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
 }
 
 /** Conductor/CLI view: the table plus the current plan per category and level. */

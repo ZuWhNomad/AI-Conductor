@@ -227,6 +227,18 @@ test('prior fallback routes by public tier only when enabled', () => {
   saveConfig({ scorecard: { usePriors: false } });
 });
 
+test('cold-start effort scales with difficulty, clamped to the model\'s efforts', () => {
+  const full = ['low', 'medium', 'high', 'xhigh', 'max'];
+  assert.equal(sc.priorEffort(full, 1), 'low');
+  assert.equal(sc.priorEffort(full, 2), 'medium');
+  assert.equal(sc.priorEffort(full, 3), 'medium');
+  assert.equal(sc.priorEffort(full, 4), 'high');   // the bug: a hard cold-start task now gets high, not a hardcoded medium
+  assert.equal(sc.priorEffort(full, 5), 'xhigh');
+  assert.equal(sc.priorEffort(['low', 'medium'], 4), 'medium'); // clamped to what the model actually offers
+  assert.equal(sc.priorEffort(['high', 'max'], 2), 'high');     // nothing at/below the target -> lowest available
+  assert.equal(sc.priorEffort([], 4), null);
+});
+
 test('source filter separates smoke from live runs', () => {
   run({ id: 'sm1', source: 'smoke', category: 'read', difficulty: 1 });
   sc.rateTask('sm1', 'pass');
