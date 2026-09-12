@@ -73,3 +73,19 @@ test('nextReset names the earliest reset among the windows holding the provider 
   assert.equal(nextReset('grok'), null);                                                          // unknown: caller polls
   delete lim.getLimits().providers.claude; delete lim.getLimits().providers.grok;
 });
+
+test('per-window targets: session windows to 95%, weekly and budgets to 100%; the tightest window decides', async () => {
+  const { targetFor, headroomFor, planGreedyWindows, nextResetWindows } = await import('../core/sweep.mjs');
+  const t5 = Date.now() + 3600e3, tw = Date.now() + 5 * 86400e3;
+  const claude = [{ id: 'claude:5h', label: '5-hour', usedPercent: 90, resetsAt: t5 }, { id: 'claude:w', label: 'weekly', usedPercent: 60, resetsAt: tw }];
+  assert.equal(targetFor(claude[0]), 95); assert.equal(targetFor(claude[1]), 100);
+  assert.deepEqual(headroomFor(claude).headroom, 5);                                     // session: 95 - 90
+  assert.equal(planGreedyWindows([2, 2, 2], claude).n, 2);                                // 5% headroom fits two 2% tasks
+  const codex = [{ id: 'codex:primary', label: 'Codex weekly', usedPercent: 92, resetsAt: tw, windowMinutes: 10080 }];
+  assert.equal(headroomFor(codex).headroom, 8);                                           // weekly-only: to 100%
+  assert.equal(planGreedyWindows([5, 5], codex).n, 1);
+  assert.equal(planGreedyWindows([5], [{ id: 'codex:primary', label: 'Codex weekly', usedPercent: 100, resetsAt: tw }]).n, 0);
+  assert.equal(nextResetWindows([{ id: 'x', label: '5-hour', usedPercent: 95, resetsAt: t5 }, { id: 'y', label: 'weekly', usedPercent: 99, resetsAt: tw }]), t5);
+  assert.equal(nextResetWindows(codex), null);                                            // 92% of a 100% target: not full
+  assert.equal(headroomFor([]).headroom, 100);                                            // no windows reported: planner falls back to cost-unknown probing
+});

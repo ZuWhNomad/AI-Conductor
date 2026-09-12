@@ -190,9 +190,12 @@ launcher. Friends log in to their own Claude / ChatGPT accounts once (`claude au
 A benchmark sweep over many model×effort selections must not run everything one after another, nor blow a
 provider's window by running everything at once. `planBatch` sizes the next batch for a provider from three
 numbers: the measured cost of one task in % of the tightest window (`measuredCost`, the largest window delta any
-probe run recorded in the scorecard), the window's current use (`usedNow`, honouring per-model-group windows), and
-a buffer to leave untouched (25% by default). Unknown cost means one task at a time until a probe has measured it;
-no headroom means wait for the reset. The sweep re-plans after every batch, so a provider whose runs turn out
+probe run recorded in the scorecard, divided by how many tasks ran concurrently), the windows' current use, and a
+**target per window**: a session window (5-hour and the like) is planned to 95%, everything else (weekly, monthly, a
+budget) to 100% (`targetFor`, `headroomFor`); the tightest window decides, so Codex with only a weekly window is planned
+against 100% of it. Costs at other effort levels are extrapolated from the tokens per task the scorecard already holds
+(`effortMultiplier`); batches are filled cheapest-first (`planGreedyWindows`). Unknown cost means one task at a time until a probe has measured it;
+no headroom means sleep until the binding window's reset (`nextResetWindows`), not poll. The sweep re-plans after every batch, so a provider whose runs turn out
 cheaper than expected speeds up on its own, and one that is draining faster slows down. Local providers are
 unlimited but capped by hardware. The cookiebench-trace runner is the first client: phase 1 probes every model at
 its cheapest effort, phase 2 runs the remaining efforts in planner-sized batches per provider (Antigravity per

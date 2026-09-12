@@ -97,3 +97,30 @@ export function nextReset(provider, model = null, { bufferPct = 25, sessionOnly 
   if (!binding.length) return null;
   return Math.min(...binding.map((w) => Number(w.resetsAt)));
 }
+
+// --- Per-window targets (2026-09-12): a session window (5-hour and the like) is used up to 95%, everything else
+// (weekly, monthly, a budget) up to 100%. The gate applies to every subscription; a provider with only a weekly
+// window (Codex) is simply planned against 100% of it.
+const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
+export const targetFor = (w) => (isSession(w) ? 95 : 100);
+
+/** Headroom under the per-window targets: the tightest window decides. */
+export function headroomFor(windows) {
+  let headroom = Infinity, binding = null;
+  for (const w of windows || []) { const h = targetFor(w) - (Number(w.usedPercent) || 0); if (h < headroom) { headroom = h; binding = w; } }
+  return { headroom: headroom === Infinity ? 100 : headroom, binding };
+}
+
+/** planGreedy against live windows instead of a flat buffer. */
+export function planGreedyWindows(costs, windows, { maxParallel = Infinity, unlimited = false } = {}) {
+  const { headroom, binding } = headroomFor(windows);
+  const r = planGreedy(costs, { usedPct: 100 - headroom - 0, bufferPct: 0, maxParallel, unlimited });
+  if (binding && !r.n) r.reason = `${binding.label || binding.id} at ${binding.usedPercent}% of a ${targetFor(binding)}% target`;
+  return r;
+}
+
+/** Earliest reset among windows at or over their target. */
+export function nextResetWindows(windows) {
+  const full = (windows || []).filter((w) => (Number(w.usedPercent) || 0) >= targetFor(w) - 0.01 && w.resetsAt);
+  return full.length ? Math.min(...full.map((w) => Number(w.resetsAt))) : null;
+}
