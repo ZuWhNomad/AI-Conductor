@@ -78,3 +78,11 @@ test('a category recipe is registered for modeling and reaches the worker spec',
   assert.equal(tk.getTask(t.id).category, 'modeling');
   tk.cancelTask(t.id);
 });
+
+test('recipe variants: a task variant selects the B recipe; unknown variants fall back to the default', async () => {
+  const { recipeFor } = await import('../core/recipes.mjs');
+  assert.match(recipeFor('modeling', 'recipe-b'), /Recipe B/);
+  assert.match(recipeFor('modeling', 'recipe-a'), /Recipe: image/);
+  assert.match(recipeFor('modeling', 'nope'), /Recipe: image/);
+  assert.equal(recipeFor('debug', 'recipe-b'), null);
+});

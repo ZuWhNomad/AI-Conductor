@@ -109,7 +109,7 @@ async function route(req, res, url) {
     if (m === 'POST' && !seg[2]) { // direct-to-worker (no conductor tokens): the UI's "/worker …" shortcut
       const b = await readBody(req);
       if (typeof b.cwd !== 'string' || typeof b.spec !== 'string' || !b.cwd || !b.spec) return json(res, 400, { error: 'cwd and spec must be nonempty strings' });
-      return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty })));
+      return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty, variant: b.variant })));
     }
     if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
     if (m === 'POST' && seg[3] === 'cancel') return json(res, 200, { ok: !!cancelTask(seg[2]) });

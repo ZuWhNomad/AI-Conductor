@@ -22,8 +22,8 @@ export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: '
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
 export const MODELING = {
-  caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
-  best: ['codex:gpt-6-astra'], // models with a recorded pass (with the effort that passed, see results)
+  caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra, and codex:gpt-5.6-sol at ultra when given the image->3D recipe); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
+  best: ['codex:gpt-6-astra', 'codex:gpt-5.6-sol'], // models with a recorded pass (with the effort that passed, see results)
   // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
   // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
   results: [
@@ -34,7 +34,7 @@ export const MODELING = {
     { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
     { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
     // 2026-09-12: the Codex mid-tier at its highest efforts — all clear the gate, all fail the visual comparison.
-    { re: /^codex:.*5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'fail', effort: 'ultra' },
+    { re: /^codex:.*5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'pass', effort: 'ultra' }, // 2026-09-12 rerun WITH the image->3D recipe: PASS (one-shot fail before it)
     { re: /^codex:.*5\.6-terra/, model: 'codex:gpt-5.6-terra', verdict: 'fail', effort: 'ultra' },
     { re: /^codex:.*5\.6-luna/, model: 'codex:gpt-5.6-luna', verdict: 'fail', effort: 'max' },
     { re: /^antigravity:gemini-3\.8-flash/, model: 'antigravity:gemini-3.8-flash', verdict: 'fail', effort: 'high' }, // no output — quota, not quality

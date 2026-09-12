@@ -138,7 +138,7 @@ function buildPrompt(t) {
 ${MSW}
 
 Remember to follow the MSW deletion rule for all claims - no exceptions.`;
-  const recipe = recipeFor(t.category);
+  const recipe = recipeFor(t.category, t.variant);
   return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}`;
 }
 
