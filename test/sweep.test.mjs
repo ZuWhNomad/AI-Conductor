@@ -33,3 +33,17 @@ test('measuredCost takes the largest window delta a probe consumed, honouring mo
   assert.equal(c.n, 6);                                                                   // 25% headroom / 3.1% = 8, capped at 6
   delete lim.getLimits().providers.antigravity;
 });
+
+test('effortMultiplier scales a probe cost by measured tokens per effort, with a conservative fallback', async () => {
+  const { effortMultiplier } = await import('../core/sweep.mjs');
+  const summary = [
+    { steps: 1, sel: 'codex:gpt-5.6-sol:low', avgTokens: 50000, n: 3 },
+    { steps: 1, sel: 'codex:gpt-5.6-sol:low', avgTokens: 70000, n: 1 },
+    { steps: 1, sel: 'codex:gpt-5.6-sol:ultra', avgTokens: 330000, n: 2 },
+    { steps: 2, sel: 'codex:gpt-5.6-sol:ultra', avgTokens: 999999, n: 9 }, // ladders are ignored
+  ];
+  assert.equal(Number(effortMultiplier(summary, 'codex', 'gpt-5.6-sol', 'ultra').toFixed(2)), 6.0);   // 330k / 55k
+  assert.equal(effortMultiplier(summary, 'codex', 'gpt-5.6-sol', 'low'), 1);
+  assert.equal(effortMultiplier(summary, 'codex', 'gpt-5.6-terra', 'max'), 4);                          // no rows: ladder
+  assert.equal(effortMultiplier(summary, 'codex', 'gpt-5.6-terra', 'high', 'medium'), 2 / 1.5);
+});

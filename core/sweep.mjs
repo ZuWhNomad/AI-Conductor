@@ -49,3 +49,17 @@ export function usedNow(provider, model = null) {
 export function nextBatch({ provider, model = null, rows, remaining, bufferPct, maxParallel, unlimited = false }) {
   return planBatch({ costPct: measuredCost(rows, provider, { model }), usedPct: usedNow(provider, model), bufferPct, maxParallel, remaining, unlimited });
 }
+
+/**
+ * Cost multiplier of an effort level relative to the probe effort for a model, from what the scorecard already
+ * measured: average tokens per task at each effort (any category, smoke or live), because provider windows are
+ * billed by tokens and a probe at `low` tells us nothing about `ultra` on its own. Falls back to a conservative
+ * ladder when the model has no rows at that effort. Deterministic; no model in the loop.
+ */
+const FALLBACK_LADDER = { low: 1, medium: 1.5, high: 2, xhigh: 3, max: 4, ultra: 6 };
+export function effortMultiplier(summary, provider, model, effort, probeEffort = 'low') {
+  const tok = (e) => { const rows = summary.filter((g) => g.steps === 1 && g.sel === `${provider}:${model}:${e || 'default'}` && g.avgTokens > 0); if (!rows.length) return null; return rows.reduce((s, g) => s + g.avgTokens * g.n, 0) / rows.reduce((s, g) => s + g.n, 0); };
+  const a = tok(probeEffort), b = tok(effort);
+  if (a && b) return Math.max(1, b / a);
+  return Math.max(1, (FALLBACK_LADDER[effort] || 2) / (FALLBACK_LADDER[probeEffort] || 1));
+}
