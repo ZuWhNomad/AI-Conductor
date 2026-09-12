@@ -31,15 +31,29 @@ export function refreshLimits({ only = null } = {}) {
   if (inflight) return inflight;
   inflight = (async () => {
     const targets = Object.values(PROVIDERS).filter((p) => p.pollLimits && (!only || only.includes(p.id)));
-    await Promise.allSettled(targets.map(async (p) => {
-      const prev = cache.providers[p.id] || {};
+    const outcomes = await Promise.allSettled(targets.map(async (p) => {
       try {
         const r = await p.pollLimits();
-        cache.providers[p.id] = { ...mergePoll(cache.providers[p.id] || prev, r), source: 'poll', error: null, updatedAt: nowIso() };
+        return { id: p.id, ok: true, r };
       } catch (e) {
-        cache.providers[p.id] = { ...prev, provider: p.id, source: prev.source || 'poll', error: String(e?.message || e), updatedAt: nowIso() };
+        return { id: p.id, ok: false, error: String(e?.message || e) };
       }
     }));
+    getLimits();
+    for (const outcome of outcomes) {
+      if (outcome.status !== 'fulfilled') continue;
+      const { id, ok, r, error } = outcome.value;
+      const prev = cache.providers[id] || {};
+      if (ok) {
+        try {
+          cache.providers[id] = { ...mergePoll(prev, r), source: 'poll', error: null, updatedAt: nowIso() };
+        } catch (e) {
+          cache.providers[id] = { ...prev, provider: id, source: prev.source || 'poll', error: String(e?.message || e), updatedAt: nowIso() };
+        }
+      } else {
+        cache.providers[id] = { ...prev, provider: id, source: prev.source || 'poll', error, updatedAt: nowIso() };
+      }
+    }
     save();
     return cache;
   })().finally(() => { inflight = null; });
@@ -61,6 +75,7 @@ export function mergePoll(prev, r) {
 
 /** Live update from an SDK rate_limit_event (claude) — cheaper and fresher than polling. */
 export function noteRateLimitEvent(providerId, info) {
+  getLimits();
   const w = windowFromEvent(info);
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   if (w) {
@@ -75,6 +90,7 @@ export function noteRateLimitEvent(providerId, info) {
 
 /** Learn from HTTP responses of API-key providers (429 + retry-after, x-ratelimit-* headers). */
 export function noteHttp(providerId, status, headers = {}) {
+  getLimits();
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   const h = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
   if (status === 429) {
@@ -95,6 +111,7 @@ export function noteHttp(providerId, status, headers = {}) {
 
 /** ms timestamp until which the provider should not be used, or null when usable. */
 export function blockedUntil(providerId) {
+  getLimits();
   const p = cache.providers[providerId];
   if (!p?.blocked) return null;
   if (p.blockedUntil && p.blockedUntil < Date.now()) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; save(false); return null; }

@@ -503,7 +503,7 @@ async function boot() {
   $('#btn-stop').onclick = () => S.current && api.post(`/api/sessions/${S.current.id}/interrupt`);
   $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
   $('#btn-settings').onclick = openSettings;
-  $('#btn-improvements').onclick = openImprovements;
+  $('#btn-improvements').onclick = () => openImprovements();
   $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
   $('#modal-close').onclick = closeModal;

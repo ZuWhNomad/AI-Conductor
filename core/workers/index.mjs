@@ -8,6 +8,7 @@ import { runOpenAICompat } from './openai-compat.mjs';
 import { runImage } from './image.mjs';
 import { runVendorCli } from './vendor-cli.mjs';
 import { mcpServers, forClaudeSdk } from '../mcp.mjs';
+import { readJson, writeJson, statePath } from '../paths.mjs';
 
 /**
  * @param {object} t { id, cwd, prompt, provider, model, effort, threadId, timeoutMs, system, imageOptions }

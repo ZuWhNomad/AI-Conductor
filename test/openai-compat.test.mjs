@@ -84,3 +84,54 @@ test('DeepSeek off-peak: half price outside Mon-Fri 01-04 / 06-10 UTC', async ()
   const off = priceFor('deepseek', 'deepseek-flash', undefined, new Date('2026-09-09T12:00:00Z'));
   assert.equal(off.in, peak.in / 2); assert.equal(off.out, peak.out / 2); assert.equal(off.cached, peak.cached / 2);
 });
+
+test('runWorker persists and replays conversation history for API worker follow-ups', async (ctx) => {
+  const { runWorker } = await import('../core/workers/index.mjs');
+  const { existsSync } = await import('node:fs');
+  const { statePath, readJson } = await import('../core/paths.mjs');
+
+  const requests = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    requests.push(body);
+    return Response.json({ choices: [{ message: { role: 'assistant', content: `response to ${body.messages.at(-1).content}` } }] });
+  });
+
+  const task1 = { id: 'task-100', cwd: tmpDir('history1'), prompt: 'Hello first', provider: 'deepseek' };
+  const r1 = await runWorker(task1);
+
+  assert.equal(r1.ok, true);
+  assert.equal(r1.threadId, 'task-100');
+
+  const historyFile = statePath('history', 'task-100.worker.json');
+  assert.equal(existsSync(historyFile), true);
+  const savedHistory1 = readJson(historyFile);
+  assert.equal(savedHistory1[0].role, 'system');
+  assert.deepEqual(savedHistory1.slice(1), [
+    { role: 'user', content: 'Hello first' },
+    { role: 'assistant', content: 'response to Hello first' }
+  ]);
+
+  const task2 = { id: 'task-101', threadId: 'task-100', cwd: tmpDir('history2'), prompt: 'Follow up second', provider: 'deepseek' };
+  const r2 = await runWorker(task2);
+
+  assert.equal(r2.ok, true);
+  assert.equal(r2.threadId, 'task-100');
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].messages[0].role, 'system');
+  assert.deepEqual(requests[1].messages.slice(1), [
+    { role: 'user', content: 'Hello first' },
+    { role: 'assistant', content: 'response to Hello first' },
+    { role: 'user', content: 'Follow up second' }
+  ]);
+
+  const savedHistory2 = readJson(historyFile);
+  assert.equal(savedHistory2[0].role, 'system');
+  assert.deepEqual(savedHistory2.slice(1), [
+    { role: 'user', content: 'Hello first' },
+    { role: 'assistant', content: 'response to Hello first' },
+    { role: 'user', content: 'Follow up second' },
+    { role: 'assistant', content: 'response to Follow up second' }
+  ]);
+});
