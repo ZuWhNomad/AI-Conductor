@@ -131,7 +131,7 @@ export function killTree(child) {
 }
 
 /** Feed newline-delimited data from a stream to a callback, line by line. */
-export function onLines(stream, cb) {
+export function onLines(stream, cb, { maxLine = 4 * 1024 * 1024 } = {}) {
   let buf = '';
   stream.setEncoding('utf8');
   stream.on('data', (chunk) => {
@@ -142,6 +142,7 @@ export function onLines(stream, cb) {
       buf = buf.slice(i + 1);
       if (line.trim()) cb(line);
     }
+    if (buf.length > maxLine) { cb(buf); buf = ''; } // a stream with no newline must not grow the buffer without bound
   });
   stream.on('end', () => { if (buf.trim()) cb(buf); buf = ''; });
 }

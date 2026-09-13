@@ -204,7 +204,15 @@ async function run(t) {
     t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null;
     persist(t);
     const limitsBefore = snapshotWindows(t.provider);
-    const concurrent = [...running.keys()].filter((id) => id !== t.id && tasks.get(id)?.provider === t.provider).length;
+    // Concurrency for the cost divisor: co-running tasks that actually share one of THIS task's windows. For a
+    // model-group provider (Antigravity: Gemini vs Claude+GPT) a run in the other group doesn't move this window,
+    // so it must not divide this window's delta — counting all same-provider tasks understated grouped costs.
+    const myWins = new Set(providerWindows(t.provider, t.model).map((w) => w.id));
+    const concurrent = [...running.keys()].filter((id) => {
+      if (id === t.id) return false; const rt = tasks.get(id); if (rt?.provider !== t.provider) return false;
+      const rw = providerWindows(rt.provider, rt.model).map((w) => w.id);
+      return rw.length === 0 || rw.some((wid) => myWins.has(wid));
+    }).length;
     const before = gitStatus(t.cwd);
     const wcfg = loadConfig().worker;
     const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory?.[t.category] || wcfg.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
@@ -233,7 +241,7 @@ async function run(t) {
     } else { t.status = 'done'; }
     t.finishedAt = nowIso();
     persist(t);
-    if (TERMINAL.has(t.status) && !t.limitHit) score(t, limitsBefore, concurrent);
+    if (TERMINAL.has(t.status) && !t.limitHit && t.status !== 'canceled') score(t, limitsBefore, concurrent); // a canceled/aborted run's ~0 tokens must not drag the model's cost means down (like limitHit, it isn't representative)
   } catch (e) {
     t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso();
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().

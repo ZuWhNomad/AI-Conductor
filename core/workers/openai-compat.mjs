@@ -4,6 +4,8 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import dns from 'node:dns';
+import net from 'node:net';
 import { bus } from '../bus.mjs';
 import { isInside } from '../context.mjs';
 import { killTree } from '../proc.mjs';
@@ -39,10 +41,41 @@ const TOOLS = [
   { name: 'fetch_url', description: 'HTTP GET a public http(s) URL and return its text (HTML tags stripped, max 60k characters, 30s timeout). No search engine: you need the URL. If a site blocks you (403), report that instead of retrying.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
 ];
 
+/** True for loopback / private / link-local / metadata / reserved IPs — the SSRF blocklist. */
+function isPrivateIp(ip) {
+  if (net.isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const s = ip.toLowerCase();
+  if (s.startsWith('::ffff:') && net.isIP(s.slice(7)) === 4) return isPrivateIp(s.slice(7)); // IPv4-mapped IPv6
+  return s === '::1' || s === '::' || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('fe80') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb');
+}
+
+/** SSRF guard: reject a host that is, or resolves to, a private/reserved address (metadata, loopback, LAN). */
+async function assertPublicHost(hostname) {
+  if (net.isIP(hostname)) { if (isPrivateIp(hostname)) throw new Error(`blocked: ${hostname} is a private/reserved address`); return; }
+  let addrs; try { addrs = await dns.promises.lookup(hostname, { all: true }); } catch { throw new Error(`cannot resolve ${hostname}`); }
+  for (const a of addrs) if (isPrivateIp(a.address)) throw new Error(`blocked: ${hostname} resolves to a private/reserved address (${a.address})`);
+}
+
 /** Fetch a page as readable text: scripts/styles dropped, tags stripped, whitespace collapsed. */
-export async function fetchUrlText(url, { signal, maxChars = 60000, timeoutMs = 30_000 } = {}) {
-  if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs');
-  const r = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)].filter(Boolean)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; Conductor/2.0)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5' }, redirect: 'follow' });
+export async function fetchUrlText(url, { signal, maxChars = 60000, timeoutMs = 30_000, allowPrivate = loadConfig().worker?.fetchAllowPrivate } = {}) {
+  // Validate the host (and every redirect hop) against the SSRF blocklist before each request, and follow redirects
+  // manually so a public URL can't 3xx-hop to 169.254.169.254 / localhost / a LAN host. (DNS is re-checked per hop;
+  // a determined TOCTOU rebind between lookup and connect is out of scope for this local tool.) `allowPrivate`
+  // (config worker.fetchAllowPrivate) opts out for a trusted internal docs server.
+  const sig = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)].filter(Boolean));
+  let current = url, r;
+  for (let hop = 0; ; hop++) {
+    if (!/^https?:\/\//i.test(current)) throw new Error('only http(s) URLs');
+    if (!allowPrivate) await assertPublicHost(new URL(current).hostname);
+    r = await fetch(current, { signal: sig, headers: { 'user-agent': 'Mozilla/5.0 (compatible; Conductor/2.0)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5' }, redirect: 'manual' });
+    if (![301, 302, 303, 307, 308].includes(r.status)) break;
+    const loc = r.headers.get('location');
+    if (!loc || hop >= 5) break;
+    current = new URL(loc, current).toString();
+  }
   const body = await r.text();
   const text = /html/i.test(r.headers.get('content-type') || '') || /^\s*</.test(body)
     ? body.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<!--[\s\S]*?-->/gi, ' ').replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6])>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim()

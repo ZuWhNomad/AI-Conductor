@@ -101,7 +101,7 @@ export function noteHttp(providerId, status, headers = {}) {
   if (status === 429) {
     const raw = h['retry-after']; const seconds = Number(raw); const now = Date.now();
     const dateMs = Date.parse(raw) - now;
-    const retry = raw != null && String(raw).trim() && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : dateMs > 0 ? dateMs : 60_000;
+    const retry = raw != null && String(raw).trim() && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : dateMs > 0 ? dateMs : 60_000;  // a 429 with no retry-after backs off briefly (60s), deliberately shorter than the 30-min hard-block default
     p.blocked = true; p.blockedUntil = now + retry; p.blockedReason = '429'; p.last429At = nowIso();
   } else if (status && status < 400 && p.blockedReason === '429') { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
   const rem = h['x-ratelimit-remaining-requests'] ?? h['x-ratelimit-remaining'];

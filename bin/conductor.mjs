@@ -132,6 +132,11 @@ if (cmd === 'start') {
 } else if (cmd === 'review') {
   const { runOnce, parseSelection } = await import('../core/conductor.mjs');
   const { buildReviewPrompt } = await import('../core/improve.mjs');
+  const { listTasks } = await import('../core/tasks.mjs');
+  // This process runs its own scheduler over the shared journal; a live server's open tasks would be run twice
+  // (module load requeues parked/running -> queued). Refuse, like `smoke` and `bench --run` do.
+  const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+  if (open.length) { console.error(`refusing to run: ${open.length} open task(s) in ${stateDir()} (a running server owns them). Wait for them or stop the server first.`); process.exit(2); }
   let server, r;
   if (parseSelection(flags.model, loadConfig().conductor).provider !== 'claude') {
     process.env.CONDUCTOR_NO_POLL ??= '1';

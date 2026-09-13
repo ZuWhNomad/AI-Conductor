@@ -2,6 +2,7 @@
 import { spawnCodex, killTree, onLines, codexCommand } from '../proc.mjs';
 
 export const id = 'codex';
+export const kind = 'codex'; // the module shape (CLAUDE.md) requires `kind`; was patched in by providers/index.mjs
 export const label = 'ChatGPT / Codex (GPT-6 Astra, GPT-5.x)';
 export const auth = { type: 'subscription', setup: 'Run `codex login` in a terminal, or sign in from the Codex app.' };
 export const loginCommand = () => 'codex login';

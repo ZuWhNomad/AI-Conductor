@@ -62,8 +62,17 @@ core/
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
   scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
+  sweep.mjs              usage-managed batching + the admit() budget gate (per-window targets)
+  usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
+  recipes.mjs, recipes/  category → instruction set handed to a worker (e.g. image-to-3d-model)
+  feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
+  bench.mjs              re-benchmark scheduler + new-model detection
+  session-flags.mjs      per-session toggles (e.g. API overflow)
+  update.mjs             self-update via git
+  proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs)
 server/index.mjs         HTTP + SSE + static UI
+scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
 share/                   install.cmd, install.sh (for friends)
 test/                    node --test
@@ -201,8 +210,18 @@ unlimited but capped by hardware. The cookiebench-trace runner is the first clie
 its cheapest effort, phase 2 runs the remaining efforts in planner-sized batches per provider (Antigravity per
 model group), all providers concurrently.
 
-**The gate is framework-level, not sweep-only.** `core/tasks.mjs schedule()` calls `admit(windows, pending, {runningCost})`
-before dispatching ANY queued task: it sizes how many tasks of a provider may start now under the per-window targets
-(session 95% / weekly 100%, `targetFor`), counting what in-flight tasks already consume, and parks the rest until the
-binding window resets (`nextResetWindows`). So a delegated task, a benchmark run, or a hand-pinned model all obey the
-same budget. Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
+**The gate is framework-level, not sweep-only.** `core/tasks.mjs schedule()` calls `admit(windows, [{costs}], {runningByWindow})`
+before dispatching ANY queued task. `admit` charges each task its own cost in EACH window (`measuredCostByWindow`) and
+admits it only if it fits EVERY window under that window's target (session 95% / weekly 100%, `targetFor`), counting
+what in-flight and this-pass tasks already consume per window. So a delegated task, a benchmark run, or a hand-pinned
+model all obey the same budget. Two rules matter:
+
+- **Over a per-window target we do NOT park — we degrade to sequential.** The scheduler keeps issuing, one task at a
+  time per provider; a task that runs into the *real* provider limit then hands off via failover so another agent
+  takes over. This replaced an earlier park-until-reset that could leave a lone task queued forever. A provider is
+  only hard-parked on its real reported block (`blockedUntil`), not on a budget target.
+- **A fresh window with no measured cost is a probe:** exactly one task of that provider runs at a time until its
+  cost is measured, so a batch can't flood an unmetered window.
+
+Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
+`planBatch`/`nextBatch`/`nextReset` and `admit.until`/`nextResetWindows` are legacy/test-only helpers, not the live path.

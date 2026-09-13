@@ -26,6 +26,7 @@ export const DEFAULTS = {
     // `false` = the run tool is disabled; an array = an allow-list of permitted command prefixes, e.g.
     // ['py', 'python', 'node', 'npm', 'git', 'openscad', 'potrace']. File tools stay sandboxed to the workspace regardless.
     shell: true,
+    fetchAllowPrivate: false,         // the worker fetch_url tool blocks private/loopback/metadata IPs (SSRF); set true only if your workers must reach an internal docs server on the LAN
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds before escalation
     msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
@@ -143,7 +144,21 @@ export function publicConfig(cfg = loadConfig()) {
   for (const p of Object.values(c.providers)) {
     if (p && typeof p === 'object' && 'apiKey' in p) p.apiKey = p.apiKey ? SECRET_MASK : null;
   }
-  // MCP server env often carries tokens/keys; mask every value so it never round-trips through /api/state or /api/settings.
-  for (const s of Object.values(c.mcpServers || {})) if (s && typeof s === 'object' && s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k]) s.env[k] = SECRET_MASK;
+  // MCP server env AND url often carry tokens/keys; mask both so they never round-trip through /api/state or /api/settings.
+  for (const s of Object.values(c.mcpServers || {})) {
+    if (!s || typeof s !== 'object') continue;
+    if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k]) s.env[k] = SECRET_MASK;
+    if (typeof s.url === 'string') s.url = maskUrlSecrets(s.url);
+  }
   return c;
+}
+
+/** Strip a URL's userinfo and mask its query values (a token in an MCP url's query/userinfo must not leak via /api/state). */
+function maskUrlSecrets(u) {
+  try {
+    const url = new URL(u);
+    if (url.username || url.password) { url.username = SECRET_MASK; url.password = ''; }
+    for (const k of [...url.searchParams.keys()]) url.searchParams.set(k, SECRET_MASK);
+    return url.toString();
+  } catch { return u.includes('?') ? `${u.split('?')[0]}?${SECRET_MASK}` : u; }
 }

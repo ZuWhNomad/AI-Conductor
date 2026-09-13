@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { findCli, quoteArg } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
+import { loadConfig } from '../config.mjs';
 
 const WIN = process.platform === 'win32';
 const home = homedir();
@@ -233,8 +234,12 @@ export function providerFor(spec) {
     },
     listModels: async () => {
       const bin = spec.bin(); if (!bin) return [];
-      let list = [];
-      if (spec.probe?.args?.[0] === 'models' && !spec.probe.needsAuthFile) { const r = await capture(bin, spec.probe.args, { timeoutMs: 40_000 }); list = spec.parseModels(r.out); }
+      // A CLI that can't self-list its models (qwen-code, kimi) ships a hard-coded default; `providers.<id>.models`
+      // in config overrides it so a newly-released vendor model needs no code edit. Array of ids or {id,label}.
+      const override = loadConfig().providers?.[spec.id]?.models;
+      let list;
+      if (Array.isArray(override) && override.length) list = override.map((m) => (typeof m === 'string' ? { id: m } : m));
+      else if (spec.probe?.args?.[0] === 'models' && !spec.probe.needsAuthFile) { const r = await capture(bin, spec.probe.args, { timeoutMs: 40_000 }); list = spec.parseModels(r.out); }
       else list = spec.parseModels('');
       return list.map((m) => ({ provider: spec.id, id: m.id, label: m.label || m.id, description: spec.budgetLabel, efforts: spec.efforts || [], kind: 'agent', cost: 'subscription', isDefault: !!m.isDefault }));
     },

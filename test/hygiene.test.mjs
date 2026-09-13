@@ -35,10 +35,12 @@ test('fetch_url returns page text with tags stripped and refuses non-http URLs',
   const srv = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<html><head><style>x{}</style><script>bad()</script></head><body><h1>Title</h1><p>Hello &amp; bye</p></body></html>'); });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   try {
-    const out = await fetchUrlText(`http://127.0.0.1:${srv.address().port}/`);
+    const out = await fetchUrlText(`http://127.0.0.1:${srv.address().port}/`, { allowPrivate: true });
     assert.match(out, /^HTTP 200\n/);
     assert.match(out, /Title\s*\n?\s*Hello & bye/);
     assert.ok(!/bad\(\)|x\{\}/.test(out));
+    // SSRF guard on by default: a private/loopback host is refused.
+    await assert.rejects(fetchUrlText(`http://127.0.0.1:${srv.address().port}/`), /private\/reserved/);
   } finally { srv.close(); }
   await assert.rejects(fetchUrlText('file:///etc/passwd'), /only http/);
 });

@@ -5,7 +5,7 @@ import { bus } from './bus.mjs';
 
 const FILE = () => statePath('models.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {}, models: [] });
-let inflight = null;
+const inflightByScope = new Map(); // coalesce concurrent refreshes per scope so an ollama-only refresh isn't returned to a full one
 
 export function getModels() { return cache; }
 
@@ -14,8 +14,9 @@ const sortModels = (ms) => ms.sort((a, b) => (ORDER.indexOf(a.provider) + 1 || 9
 
 /** Re-detect providers and re-list their models. Concurrent calls share one run. */
 export function refreshModels({ only = null } = {}) {
-  if (inflight) return inflight;
-  inflight = (async () => {
+  const key = only ? [...only].sort().join(',') : '*';
+  if (inflightByScope.has(key)) return inflightByScope.get(key);
+  const inflight = (async () => {
     const providers = { ...cache.providers };
     let models = [...cache.models];
     const targets = Object.values(PROVIDERS).filter((p) => !only || only.includes(p.id));
@@ -39,7 +40,8 @@ export function refreshModels({ only = null } = {}) {
     try { const { noteNewModels } = await import('./bench.mjs'); noteNewModels(before, cache); } catch {}
     bus.publish('models', { updatedAt: cache.updatedAt, count: cache.models.length });
     return cache;
-  })().finally(() => { inflight = null; });
+  })().finally(() => { inflightByScope.delete(key); });
+  inflightByScope.set(key, inflight);
   return inflight;
 }
 
