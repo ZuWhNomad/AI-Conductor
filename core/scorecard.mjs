@@ -2,6 +2,7 @@
 // its provider window) and how well it did (the conductor's verdict) per task category and
 // difficulty. Append-only ndjson. `recommend` turns the data into a *plan*: one model, or a ladder
 // (cheap model first, stronger model on fail), chosen by utility = value-of-quality - expected cost.
+import { statSync } from 'node:fs';
 import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
 import { getLimits, blockedUntil } from './limits.mjs';
 import { findModel, getModels } from './models.mjs';
@@ -98,7 +99,18 @@ const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] 
  * source, attempts[], path[], verdict (last attempt), tokens, usd, durationMs, rounds }.
  */
 /** Raw run rows from the ledger (for the budget planner: measuredCost needs pct + concurrent per run). */
-export function runRows() { return readNdjson(FILE()).filter((r) => r.op === 'run'); }
+// runRows() is hit on every schedule() pass (and by the estimator); the scorecard ndjson grows unbounded, so cache
+// the parse and reuse it until the file's size/mtime changes (any appendNdjson bumps both, invalidating the cache).
+let _runRowsCache = null;
+export function runRows() {
+  try {
+    const st = statSync(FILE());
+    if (_runRowsCache && _runRowsCache.mtimeMs === st.mtimeMs && _runRowsCache.size === st.size) return _runRowsCache.rows;
+    const rows = readNdjson(FILE()).filter((r) => r.op === 'run');
+    _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, rows };
+    return rows;
+  } catch { return readNdjson(FILE()).filter((r) => r.op === 'run'); }
+}
 
 export function rootRuns({ source = null } = {}) {
   const runs = new Map(); const rates = new Map(); const voided = new Set();
