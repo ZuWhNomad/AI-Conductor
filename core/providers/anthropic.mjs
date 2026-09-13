@@ -144,7 +144,9 @@ export function normalizeUsage(u) {
   }
   return {
     provider: id, plan: u?.subscription_type || null, available: !!u?.rate_limits_available,
-    blocked: windows.some((w) => (w.usedPercent ?? 0) >= 100), windows,
+    // Whole-provider block ONLY from an unscoped (global) window at 100%. A maxed model-scoped window (e.g. weekly
+    // Opus) blocks just that model — via admit/providerWindows, which see the scoped window — not Fable/Sonnet.
+    blocked: windows.some((w) => !w.models && (w.usedPercent ?? 0) >= 100), windows,
     extraUsage: rl.extra_usage || null,
     session: u?.session ? { costUsd: u.session.total_cost_usd, modelUsage: u.session.model_usage } : null,
   };

@@ -214,3 +214,12 @@ test('deferred stub poll success and failure do not discard external updates whi
     if (origErr) PROVIDERS['fake-err'] = origErr; else delete PROVIDERS['fake-err'];
   }
 });
+
+test('a maxed model-scoped Claude window blocks only that model, not the whole provider', () => {
+  // weekly Opus at 100% but five_hour/weekly/Fable have room: the provider is NOT blocked (Fable/Sonnet keep working).
+  const scoped = normalizeUsage({ rate_limits: { five_hour: { utilization: 40 }, seven_day: { utilization: 55 }, seven_day_opus: { utilization: 100 }, seven_day_fable: { utilization: 30 } }, rate_limits_available: true });
+  assert.equal(scoped.blocked, false);
+  assert.equal(scoped.windows.find((w) => w.id === 'seven_day_opus').models, 'opus'); // the scoped window carries its model regex
+  // a global (unscoped) weekly at 100% DOES block the provider.
+  assert.equal(normalizeUsage({ rate_limits: { seven_day: { utilization: 100 } }, rate_limits_available: true }).blocked, true);
+});
