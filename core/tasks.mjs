@@ -12,6 +12,7 @@ import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { mcpServers } from './mcp.mjs';
@@ -91,7 +92,18 @@ export function createTask(i) {
     if (!parent.threadId) throw Object.assign(new Error(`task ${parent.id} has no resumable thread (provider ${parent.provider})`), { status: 400 });
     if (!TERMINAL.has(parent.status)) throw Object.assign(new Error(`task ${parent.id} is still ${parent.status}; wait for it before following up`), { status: 400 });
     Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
-    if (t.rounds > (cfg.worker.maxRounds || 3)) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}; consider finishing this yourself`;
+    if (t.rounds > (cfg.worker.maxRounds || 3)) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: stop following up on this worker. Escalate instead — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds ?? 2} attempt(s)); finish it yourself only if that also fails.`;
+  }
+  // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
+  // (agy passthrough, kimi / qwen-code / codex-spark) must carry none. An effort-in-id family (agy: it has an
+  // effortIds map) given a level it doesn't offer (a hand-routed xhigh/max/ultra on a flash family) is clamped to
+  // its top real level, so neither a nonsensical sel like `…-flash-low:high` nor a bare-family dispatch can land.
+  if (t.effort && t.model) {
+    const m = findModel(t.provider, t.model);
+    if (m && Array.isArray(m.efforts)) {
+      if (!m.efforts.length) { t.warning = [t.warning, `dropped effort "${t.effort}": ${t.provider}:${t.model} has no effort levels`].filter(Boolean).join(' '); t.effort = null; }
+      else if (m.effortIds && !m.efforts.includes(t.effort)) { const c = m.efforts[m.efforts.length - 1]; t.warning = [t.warning, `clamped effort "${t.effort}" to "${c}": ${t.provider}:${t.model} offers only ${m.efforts.join('/')}`].filter(Boolean).join(' '); t.effort = c; }
+    }
   }
   tasks.set(t.id, t);
   persist(t);

@@ -166,3 +166,23 @@ test('a task created with noFailover is parked on a limit, never handed to anoth
   assert.equal(getTask(t.id).noFailover, true);
   cancelTask(t.id);
 });
+
+test('createTask strips an effort a model cannot honor (Method C guard D)', async () => {
+  const cwd = tmpDir('guard-d');
+  const { getModels } = await import('../core/models.mjs');
+  getModels().models.push(
+    { provider: 'antigravity', id: 'claude-sonnet-4-6', kind: 'agent', efforts: [] },                        // no effort dimension
+    { provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent', efforts: ['low', 'medium', 'high'], effortIds: { low: 'gemini-3.8-flash-low', medium: 'gemini-3.8-flash-medium', high: 'gemini-3.8-flash-high' } }, // collapsed family
+  );
+  const stripped = createTask({ cwd, provider: 'antigravity', model: 'claude-sonnet-4-6', effort: 'high' });
+  assert.equal(stripped.effort, null);
+  assert.match(stripped.warning || '', /dropped effort/);
+  const kept = createTask({ cwd, provider: 'antigravity', model: 'gemini-3.8-flash', effort: 'high' });
+  assert.equal(kept.effort, 'high');                                                    // a family that offers the effort keeps it
+  const clamped = createTask({ cwd, provider: 'antigravity', model: 'gemini-3.8-flash', effort: 'ultra' });
+  assert.equal(clamped.effort, 'high');                                                 // out-of-range effort on an effort-in-id family clamps to its top level
+  assert.match(clamped.warning || '', /clamped effort/);
+  const unknown = createTask({ cwd, provider: 'antigravity', model: 'not-in-registry', effort: 'high' });
+  assert.equal(unknown.effort, 'high');                                                 // unknown model: the guard can't judge, leaves it
+  for (const t of [stripped, kept, clamped, unknown]) cancelTask(t.id);
+});

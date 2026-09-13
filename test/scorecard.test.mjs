@@ -393,11 +393,12 @@ test('modeling is a first-class category (journaled and scored as itself, not as
 });
 
 test('a hand-routed model without an effort gets the higher of the configured default and the difficulty target', () => {
-  const reg = { models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }, { provider: 'antigravity', id: 'gemini-3.8-flash-low', efforts: [] }] };
+  const reg = { models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }, { provider: 'antigravity', id: 'gemini-3.8-flash-low', efforts: [] }, { provider: 'antigravity', id: 'gemini-3.8-flash', efforts: ['low', 'medium', 'high'] }] };
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 4, defaultEffort: 'medium', reg }), 'high');   // the bug: medium default, hard task
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 2, defaultEffort: 'high', reg }), 'high');     // never below the configured default
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 5, defaultEffort: 'high', reg }), 'xhigh');
-  assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash-low', difficulty: 4, defaultEffort: 'high', reg }), 'high'); // no effort levels: default passes through
+  assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash-low', difficulty: 4, defaultEffort: 'high', reg }), null); // no effort dimension: never carries an effort (agy bakes it into the id)
+  assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash', difficulty: 4, defaultEffort: 'medium', reg }), 'high'); // collapsed family: effort scales with difficulty, clamped to low/medium/high
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'nope', difficulty: 4, defaultEffort: null, reg }), null);
 });
 
@@ -446,4 +447,16 @@ test('nextScheduledReset + wasteDiscount apply to a windowless provider on a con
   assert.equal(new Date(nr).getHours(), 18, 'reset is at the configured local wall-clock hour (system timezone)');
   assert.ok(wasteDiscount('grok', cfg, null, now) < 0.5, 'a windowless provider near its scheduled reset is discounted (plow through it)');
   assert.equal(nextScheduledReset('codex', cfg, now), null, 'no schedule configured -> null');
+});
+
+test('method-c migration voids antigravity rows whose sel carried a spurious effort, idempotently', async () => {
+  const { appendNdjson, statePath } = await import('../core/paths.mjs');
+  const row = (taskId, model, effort) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId, source: 'live', provider: 'antigravity', model, effort, category: 'edit', difficulty: 2, status: 'done', tokens: { in: 100, out: 10, cached: 0, v: 2 }, durationMs: 100, title: 'x' });
+  row('agy-bad', 'gemini-3.6-flash-low', 'high'); // raw effort-in-id model + spurious effort (the old bug)
+  row('agy-good', 'gemini-3.8-flash', 'high');    // Method-C shape: family id + real effort
+  sc.rateTask('agy-bad', 'pass'); sc.rateTask('agy-good', 'pass');
+  assert.equal(sc.migrateScorecard(), 1);                                        // exactly the polluted row is voided
+  assert.equal(sc.migrateScorecard(), 0);                                        // idempotent: nothing left to void
+  assert.equal(sc.rootRuns().find((c) => c.taskId === 'agy-bad'), undefined);    // dropped from the aggregates
+  assert.ok(sc.rootRuns().find((c) => c.taskId === 'agy-good'));                  // the clean family row survives
 });

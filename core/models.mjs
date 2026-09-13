@@ -1,5 +1,6 @@
 // Model registry: what every provider currently offers. Auto-polled, force-refreshable, cached on disk.
-import { PROVIDERS } from './providers/index.mjs';
+// PROVIDERS is imported lazily inside refreshModels() so that vendors.mjs (which needs findModel from here) can import
+// this module without the providers/index -> vendors -> models -> providers/index cycle tripping over a TDZ at load.
 import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 import { bus } from './bus.mjs';
 
@@ -17,6 +18,7 @@ export function refreshModels({ only = null } = {}) {
   const key = only ? [...only].sort().join(',') : '*';
   if (inflightByScope.has(key)) return inflightByScope.get(key);
   const inflight = (async () => {
+    const { PROVIDERS } = await import('./providers/index.mjs');
     const providers = { ...cache.providers };
     let models = [...cache.models];
     const targets = Object.values(PROVIDERS).filter((p) => !only || only.includes(p.id));

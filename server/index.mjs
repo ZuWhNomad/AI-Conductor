@@ -16,7 +16,7 @@ import { listTasks, cancelTask, getTask, publicTask, schedule, createTask, abort
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { summarize, formatScores, nextScheduledReset } from '../core/scorecard.mjs';
+import { summarize, formatScores, nextScheduledReset, migrateScorecard } from '../core/scorecard.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
@@ -280,6 +280,7 @@ function serveStatic(req, res, url) {
 
 export function startServer({ port = null } = {}) {
   installGlobalErrorCapture();
+  try { const n = migrateScorecard(); if (n) logImprovement('idea', 'scorecard', `method-c migration: voided ${n} polluted antigravity row(s) (effort tagged on an effort-in-id model)`); } catch {}
   const cfg = loadConfig();
   const server = createServer(async (req, res) => {
     const port = server.address().port;

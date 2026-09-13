@@ -117,6 +117,37 @@ test('the Claude "weekly Fable" window applies to Fable models only', async () =
   delete lim.getLimits().providers.claude;
 });
 
+test('Method C: collapseEffortFamilies folds -low/-medium/-high into one family model with real efforts + concrete-id map', async () => {
+  const { collapseEffortFamilies } = await import('../core/providers/vendors.mjs');
+  const out = collapseEffortFamilies([
+    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  ]);
+  assert.equal(out.length, 2, 'three variants collapse to one family + the passthrough');
+  const fam = out.find((m) => m.id === 'gemini-3.8-flash');
+  assert.deepEqual(fam.efforts, ['low', 'medium', 'high']);
+  assert.deepEqual(fam.effortIds, { low: 'gemini-3.8-flash-low', medium: 'gemini-3.8-flash-medium', high: 'gemini-3.8-flash-high' });
+  assert.equal(fam.label, 'Gemini 3.8 Flash'); // the (Low/Medium/High) parenthetical is stripped for the family label
+  const pass = out.find((m) => m.id === 'claude-sonnet-4-6');
+  assert.ok(pass && !pass.efforts, 'a model with no effort suffix passes through untouched');
+});
+
+test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id and never passes --effort', async () => {
+  const { getModels } = await import('../core/models.mjs');
+  getModels().models.push({ provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent', efforts: ['low', 'medium', 'high'], effortIds: { low: 'gemini-3.8-flash-low', medium: 'gemini-3.8-flash-medium', high: 'gemini-3.8-flash-high' } });
+  const a = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: 'high', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
+  assert.equal(a.args[a.args.indexOf('--model') + 1], 'gemini-3.8-flash-high');
+  assert.ok(!a.args.includes('--effort'), 'agy rejects --effort; the level lives in the id');
+  // a legacy raw id (+ spurious effort) dispatches as-is — never a bogus "gemini-3.6-flash-low-high"
+  const b = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.6-flash-low', effort: 'high', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
+  assert.equal(b.args[b.args.indexOf('--model') + 1], 'gemini-3.6-flash-low');
+  // an out-of-range effort on a known family clamps to the top variant, never a bare (unroutable) family id
+  const c = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: 'ultra', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
+  assert.equal(c.args[c.args.indexOf('--model') + 1], 'gemini-3.8-flash-high');
+});
+
 test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a small one stays inline (Windows arg-length safety)', async () => {
   const { VENDORS } = await import('../core/providers/vendors.mjs');
   const small = VENDORS.grok.headlessArgs({ prompt: 'hi', cwd: 'F:/ws', model: 'grok-4.6', effort: 'high' });

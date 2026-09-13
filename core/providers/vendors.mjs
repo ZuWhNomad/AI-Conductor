@@ -10,6 +10,37 @@ import { execFile } from 'node:child_process';
 import { findCli, quoteArg } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 import { loadConfig } from '../config.mjs';
+import { findModel } from '../models.mjs';
+
+// Antigravity (Method C): effort is baked into the model id (…-low / -medium / -high) and the CLI has no --effort
+// flag. Collapse each such family into ONE logical model exposing efforts:[…] with the concrete id per effort, so
+// the scorecard reasons about effort uniformly; the executor maps (family, effort) → concrete id at dispatch.
+const EFFORT_IN_ID = /-(low|medium|high)$/;
+const EFFORT_ORDER = ['low', 'medium', 'high'];
+export function collapseEffortFamilies(models) {
+  const fam = new Map(); const out = [];
+  for (const m of models) {
+    const mm = EFFORT_IN_ID.exec(m.id);
+    if (!mm) { out.push(m); continue; } // no effort suffix (claude-*, gpt-oss without a level): pass through untouched
+    const family = m.id.slice(0, mm.index);
+    let g = fam.get(family);
+    if (!g) { g = { id: family, label: String(m.label || family).replace(/\s*\((?:low|medium|high)\)\s*$/i, '').trim() || family, efforts: new Set(), effortIds: {}, isDefault: false }; fam.set(family, g); out.push(g); }
+    g.efforts.add(mm[1]); g.effortIds[mm[1]] = m.id; if (m.isDefault) g.isDefault = true;
+  }
+  for (const g of fam.values()) g.efforts = EFFORT_ORDER.filter((e) => g.efforts.has(e));
+  return out;
+}
+
+/** Map an Antigravity (family, effort) selection to the concrete model id agy expects (gemini-3.8-flash + high → gemini-3.8-flash-high). */
+function agyModelArg(model, effort) {
+  if (!model || !effort) return model || null;
+  if (EFFORT_IN_ID.test(model)) return model;                   // already a concrete/legacy raw id: dispatch as-is, ignore the tag
+  const m = findModel('antigravity', model);
+  if (m?.effortIds?.[effort]) return m.effortIds[effort];       // exact map from the registry
+  if (EFFORT_ORDER.includes(effort)) return `${model}-${effort}`; // family + a valid agy level: agy families are family-effort (also covers a not-yet-refreshed registry)
+  if (m?.efforts?.length) return m.effortIds?.[m.efforts[m.efforts.length - 1]] || model; // out-of-range effort on a known family: dispatch its top variant, never a bare family id agy would reject
+  return model; // unknown model: dispatch the id as-is rather than a bogus one
+}
 
 const WIN = process.platform === 'win32';
 const home = homedir();
@@ -93,13 +124,14 @@ export const VENDORS = {
       if (!u) throw new Error(`agy /usage gave no quota (${r.out.trim().split('\n')[0]?.slice(0, 100) || 'no output'})`);
       return { provider: spec.id, plan: 'subscription', blocked: false, windows: u.windows };
     },
-    efforts: [], // effort lives in the model id (gemini-*-low/medium/high); the CLI has no --effort for the rest
+    efforts: [], // effort lives in the model id (gemini-*-low/medium/high); listModels collapses those into families with real efforts
+    collapseEfforts: true, // Method C: listModels folds …-low/-medium/-high into one family model exposing efforts:[low,medium,high]
     headlessArgs: (t) => {
       const args = ['-p', t.prompt, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`];
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
-      if (t.model) args.push('--model', t.model);
-      // agy encodes effort in most model ids (gemini-3.8-flash-low) and rejects a conflicting --effort; only pass it for plain ids.
-      // Effort is encoded in the model id where agy supports it (gemini-*-low/medium/high); `--effort` is rejected for the other models (verified 2026-09-10).
+      // Effort is encoded in the id (Method C): translate (family, effort) → concrete id here. Never pass --effort:
+      // agy rejects it, and the id already carries the level. A model with no effort dimension dispatches its id as-is.
+      if (t.model) args.push('--model', agyModelArg(t.model, t.effort));
       return { args };
     },
     parse: (obj, st, emit) => {
@@ -241,7 +273,8 @@ export function providerFor(spec) {
       if (Array.isArray(override) && override.length) list = override.map((m) => (typeof m === 'string' ? { id: m } : m));
       else if (spec.probe?.args?.[0] === 'models' && !spec.probe.needsAuthFile) { const r = await capture(bin, spec.probe.args, { timeoutMs: 40_000 }); list = spec.parseModels(r.out); }
       else list = spec.parseModels('');
-      return list.map((m) => ({ provider: spec.id, id: m.id, label: m.label || m.id, description: spec.budgetLabel, efforts: spec.efforts || [], kind: 'agent', cost: 'subscription', isDefault: !!m.isDefault }));
+      if (spec.collapseEfforts) list = collapseEffortFamilies(list); // fold effort-in-id variants into family models (Antigravity)
+      return list.map((m) => ({ provider: spec.id, id: m.id, label: m.label || m.id, description: spec.budgetLabel, efforts: m.efforts || spec.efforts || [], effortIds: m.effortIds || null, kind: 'agent', cost: 'subscription', isDefault: !!m.isDefault }));
     },
     pollLimits: spec.pollLimits ? () => spec.pollLimits(spec) : async () => ({ provider: spec.id, plan: 'subscription', blocked: false, windows: [] }),
     workerConfig: () => ({}),

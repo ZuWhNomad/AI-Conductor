@@ -89,6 +89,26 @@ export function voidTask(taskId, reason = '') {
   return row;
 }
 
+/**
+ * Data hygiene for the Antigravity Method-C change. Old rows were keyed with a raw effort-in-id model *and* a spurious
+ * effort tag (e.g. `antigravity:gemini-3.6-flash-low:high`) because effort-less models used to inherit the default
+ * effort — a `sel` the model never had. Void those runs (append-only; the ledger is never rewritten) so they stop
+ * being recommended. Idempotent: a row already voided is skipped, so repeated boots append nothing. Returns the count.
+ */
+export function migrateScorecard() {
+  let all; try { all = readNdjson(FILE()); } catch { return 0; }
+  const voided = new Set(); for (const r of all) if (r.op === 'void') voided.add(r.taskId);
+  let n = 0;
+  for (const r of all) {
+    if (r.op !== 'run' || r.provider !== 'antigravity' || !r.effort) continue;
+    if (!/-(low|medium|high)$/.test(r.model || '') || voided.has(r.taskId)) continue; // only raw effort-in-id ids carrying a separate effort
+    voidTask(r.taskId, `method-c migration: effort "${r.effort}" tagged on effort-in-id model ${r.model}`);
+    voided.add(r.taskId); n++;
+  }
+  if (n) bus.publish('score', { migrated: n });
+  return n;
+}
+
 const maxPct = (pct) => (pct ? Math.max(...Object.values(pct)) : null);
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] += b[k] || 0; };
@@ -428,7 +448,7 @@ export function priorEffort(efforts, difficulty) {
 export function effortForTask({ provider, model, difficulty, defaultEffort = null, reg = getModels() } = {}) {
   const m = reg.models.find((x) => x.provider === provider && x.id === model);
   const efforts = m?.efforts || [];
-  if (!efforts.length) return defaultEffort || null;
+  if (!efforts.length) return null; // a model with no effort dimension must never carry an effort (e.g. agy bakes it into the id)
   const want = difficulty ? priorEffort(efforts, difficulty) : null;
   const base = efforts.includes(defaultEffort) ? defaultEffort : null;
   const rank = (e) => EFFORTS.indexOf(e);

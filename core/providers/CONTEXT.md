@@ -20,6 +20,11 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
 - Windows-first: never spawn a CLI through a shell (`core/proc.mjs` `spawnCli` unwraps npm `.cmd` shims); long
   prompts go via stdin / `--prompt-file`, not argv.
 - Model-list overrides: a CLI that can't self-list reads `providers.<id>.models` from config.
+- Effort-in-id (Antigravity, "Method C"): agy bakes effort into the model id (`gemini-*-low/-medium/-high`) and rejects
+  a `--effort` flag. A spec with `collapseEfforts: true` has `collapseEffortFamilies()` fold those variants into ONE
+  family model exposing `efforts:[low,medium,high]` + an `effortIds` map; the executor's `headlessArgs` maps
+  `(family, effort) → concrete id` via `agyModelArg` (never a `--effort` flag). A model with an empty `efforts` list
+  must never carry an effort — the scorecard's `effortForTask` returns null for it, and `createTask` strips a stray one.
 
 **How to test.** `test/vendor-cli.test.mjs` (record each CLI's event shapes), `test/limits.test.mjs`
 (window normalization / block semantics), `test/selection.test.mjs`. Tests isolate state via `CONDUCTOR_HOME`.
