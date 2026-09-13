@@ -394,7 +394,7 @@ function onSessionEvent(ev) {
     case 'permission_resolved': resolvePermission(ev.id, ev.allow); break;
     case 'subagent': addSys(`subagent ${ev.subtype.replace('task_', '')}: ${ev.description || ''}`); break;
     case 'compact': addSys(`context compacted (${ev.pre} → ${ev.post ?? '?'} tokens)`); break;
-    case 'rate_limit': addSys(`rate limit ${ev.info?.status}: ${ev.info?.rateLimitType || ''} ${ev.info?.utilization != null ? Math.round(ev.info.utilization * 100) + '%' : ''}`, 'warn'); break;
+    case 'rate_limit': addSys(`rate limit ${ev.info?.status}: ${ev.info?.rateLimitType || ''} ${ev.info?.utilization != null ? Math.round(ev.info.utilization <= 1 ? ev.info.utilization * 100 : ev.info.utilization) + '%' : ''}`, 'warn'); break;
     case 'error': addSys(ev.message, 'err'); break;
   }
 }

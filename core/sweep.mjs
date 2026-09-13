@@ -3,6 +3,7 @@
 // records the delta), then size each batch from the headroom that remains under a buffer. Re-plan after every batch.
 import { getLimits } from './limits.mjs';
 import { providerWindows } from './scorecard.mjs';
+import { loadConfig } from './config.mjs';
 
 /**
  * Parallelism for one provider (and, where windows are per model group, one model).
@@ -74,7 +75,8 @@ export function effortMultiplier(summary, provider, model, effort, probeEffort =
   const tok = (e) => { const rows = summary.filter((g) => g.steps === 1 && g.sel === `${provider}:${model}:${e || 'default'}` && g.avgTokens > 0); if (!rows.length) return null; return rows.reduce((s, g) => s + g.avgTokens * g.n, 0) / rows.reduce((s, g) => s + g.n, 0); };
   const a = tok(probeEffort), b = tok(effort);
   if (a && b) return Math.max(1, b / a);
-  return Math.max(1, (FALLBACK_LADDER[effort] || 2) / (FALLBACK_LADDER[probeEffort] || 1));
+  const ladder = { ...FALLBACK_LADDER, ...(loadConfig().scorecard?.fallbackLadder || {}) };
+  return Math.max(1, (ladder[effort] || 2) / (ladder[probeEffort] || 1));
 }
 
 /**
@@ -113,8 +115,8 @@ export function nextReset(provider, model = null, { bufferPct = 25, sessionOnly 
 // --- Per-window targets (2026-09-12): a session window (5-hour and the like) is used up to 95%, everything else
 // (weekly, monthly, a budget) up to 100%. The gate applies to every subscription; a provider with only a weekly
 // window (Codex) is simply planned against 100% of it.
-const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
-export const targetFor = (w) => (isSession(w) ? 95 : 100);
+export const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
+export const targetFor = (w) => { const t = loadConfig().scorecard?.windowTargets || {}; return isSession(w) ? (t.session ?? 95) : (t.other ?? 100); };
 
 /** Headroom under the per-window targets: the tightest window decides. */
 export function headroomFor(windows) {

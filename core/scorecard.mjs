@@ -346,7 +346,8 @@ const DIFFICULTY_EFFORT = { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'x
 export function priorEffort(efforts, difficulty) {
   const ranked = EFFORTS.filter((e) => (efforts || []).includes(e));
   if (!ranked.length) return null;
-  const wantIdx = EFFORTS.indexOf(DIFFICULTY_EFFORT[difficulty] || 'medium');
+  const map = { ...DIFFICULTY_EFFORT, ...(loadConfig().scorecard?.difficultyEffort || {}) };
+  const wantIdx = EFFORTS.indexOf(map[difficulty] || 'medium');
   let pick = ranked[0];
   for (const e of ranked) if (EFFORTS.indexOf(e) <= wantIdx) pick = e;
   return pick;

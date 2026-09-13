@@ -217,7 +217,7 @@ async function run(t) {
       const next = failover(t);
       if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
       else {
-        const until = blockedUntil(t.provider) || Date.now() + (r.retryAfterMs || 30 * 60_000);
+        const until = blockedUntil(t.provider) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000);
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, `usage limit hit; task parked until ${new Date(until).toISOString()}`, { taskId: t.id, model: t.model });
       }

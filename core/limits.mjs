@@ -5,10 +5,13 @@ import { windowFromEvent } from './providers/anthropic.mjs';
 import { statSync } from 'node:fs';
 import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 import { bus } from './bus.mjs';
+import { loadConfig } from './config.mjs';
+
+const blockedMs = () => (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after
 
 const FILE = () => statePath('limits.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {} });
-let inflight = null;
+const inflightByScope = new Map(); // coalesce concurrent polls, keyed by scope so a codex-only poll is never returned to a full refresh
 let seenMtime = fileMtime();
 
 function fileMtime() { try { const st = statSync(FILE()); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; } } // mtime alone misses two writes in the same tick
@@ -28,8 +31,9 @@ function save(publish = true) {
 }
 
 export function refreshLimits({ only = null } = {}) {
-  if (inflight) return inflight;
-  inflight = (async () => {
+  const key = only ? [...only].sort().join(',') : '*';
+  if (inflightByScope.has(key)) return inflightByScope.get(key);
+  const inflight = (async () => {
     const targets = Object.values(PROVIDERS).filter((p) => p.pollLimits && (!only || only.includes(p.id)));
     const outcomes = await Promise.allSettled(targets.map(async (p) => {
       try {
@@ -56,7 +60,8 @@ export function refreshLimits({ only = null } = {}) {
     }
     save();
     return cache;
-  })().finally(() => { inflight = null; });
+  })().finally(() => { inflightByScope.delete(key); });
+  inflightByScope.set(key, inflight);
   return inflight;
 }
 
@@ -81,7 +86,7 @@ export function noteRateLimitEvent(providerId, info) {
   if (w) {
     p.windows = [...(p.windows || []).filter((x) => x.id !== w.id), w];
   }
-  if (info?.status === 'rejected') { p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + 30 * 60_000; p.blockedReason = info.rateLimitType || 'rate_limit'; }
+  if (info?.status === 'rejected') { p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + blockedMs(); p.blockedReason = info.rateLimitType || 'rate_limit'; }
   else if (info?.status === 'allowed' && p.blockedReason === info.rateLimitType) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
   p.source = 'event'; p.updatedAt = nowIso();
   cache.providers[providerId] = p;
@@ -115,7 +120,7 @@ export function blockedUntil(providerId) {
   const p = cache.providers[providerId];
   if (!p?.blocked) return null;
   if (p.blockedUntil && p.blockedUntil < Date.now()) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; save(false); return null; }
-  return p.blockedUntil || Date.now() + 30 * 60_000;
+  return p.blockedUntil || Date.now() + blockedMs();
 }
 
 bus.on('event', (e) => {

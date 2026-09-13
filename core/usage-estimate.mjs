@@ -4,9 +4,12 @@
 // the window boundary is inferred from a long gap in the provider's own activity, and re-anchored on each reset.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
 import { runRows } from './scorecard.mjs';
+import { loadConfig } from './config.mjs';
 
 const FILE = () => statePath('usage-observations.ndjson');
-const GAP_MS = 6 * 3600_000; // a gap this long between a provider's runs starts a fresh usage window
+// A gap this long in a provider's own activity starts a fresh usage window. Per-provider via config
+// (scorecard.usageGapHours), so a daily-reset provider like Grok can use 24h instead of the 6h default.
+const gapMs = (provider) => { const g = loadConfig().scorecard?.usageGapHours || {}; return (g[provider] ?? g.default ?? 6) * 3600_000; };
 
 /** Provider run rows (in+out tokens) sorted oldest-first. Cached tokens are excluded — they barely move a plan window. */
 function tokenRuns(provider) {
@@ -17,7 +20,7 @@ function tokenRuns(provider) {
 export function windowTokens(provider, now = Date.now()) {
   const runs = tokenRuns(provider);
   let startIdx = 0;
-  for (let i = 1; i < runs.length; i++) if (runs[i].ts - runs[i - 1].ts > GAP_MS) startIdx = i;
+  for (let i = 1; i < runs.length; i++) if (runs[i].ts - runs[i - 1].ts > gapMs(provider)) startIdx = i;
   const startTs = runs.length ? runs[startIdx].ts : now;
   const spent = runs.slice(startIdx).reduce((s, r) => s + r.tokens, 0);
   return { spent, startTs, runs: runs.length - startIdx };
@@ -34,7 +37,7 @@ export function recordUsage(provider, pct, { at = Date.now() } = {}) {
 /** Observations for the provider that belong to the current window (same window start as now). */
 function windowObservations(provider, now = Date.now()) {
   const { startTs } = windowTokens(provider, now);
-  return readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && Date.parse(o.windowStart) >= startTs - GAP_MS && Date.parse(o.at) >= startTs - GAP_MS);
+  return readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && Date.parse(o.windowStart) >= startTs - gapMs(provider) && Date.parse(o.at) >= startTs - gapMs(provider));
 }
 
 /**
@@ -49,7 +52,7 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   const obs = windowObservations(provider, now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory
     const pct = Math.max(0, Math.min(100, (spent / budgetTokens) * 100));
-    return { pct: Math.round(pct * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: true, advisory: true, resetsAt };
+    return { pct: Math.round(pct * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt };
   }
   // Least-squares fit of pct = rate·tokens through the origin (0% at the window start): robust to whole-percent
   // rounding and uneven check-in spacing, and uses every reading. Falls back to a config seed before any check-in.

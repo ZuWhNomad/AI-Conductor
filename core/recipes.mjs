@@ -4,6 +4,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT } from './paths.mjs';
+import { loadConfig } from './config.mjs';
 
 const DIR = join(REPO_ROOT, 'core', 'recipes');
 // Default per category. modeling: recipe B (A/B on 2026-09-12: visually substantially better than A on Sol and Terra).
@@ -13,9 +14,12 @@ export const RECIPES = { modeling: 'image-to-3d-model.b.md' };
 export const RECIPE_VARIANTS = { modeling: { 'recipe-a': 'image-to-3d-model.md', 'recipe-b': 'image-to-3d-model.b.md', 'recipe-c': 'image-to-3d-model.c-build.md', 'recipe-c-trace': 'image-to-3d-model.c-trace.md' } };
 
 const cache = new Map();
+// Config can add/override routing without a code edit: recipes.defaults[category] and recipes.variants[category][variant].
+const defaults = () => ({ ...RECIPES, ...(loadConfig().recipes?.defaults || {}) });
+const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
 /** Recipe text for a category (null when none is registered). */
 export function recipeFor(category, variant = null) {
-  const file = (variant && RECIPE_VARIANTS[category]?.[variant]) || RECIPES[category]; if (!file) return null;
+  const file = (variant && variantsOf(category)[variant]) || defaults()[category]; if (!file) return null;
   if (!cache.has(file)) { const p = join(DIR, file); cache.set(file, existsSync(p) ? readFileSync(p, 'utf8').trim() : null); }
   return cache.get(file);
 }

@@ -69,6 +69,11 @@ export const DEFAULTS = {
     classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 },
     providerWeight: { ollama: 0, antigravity: 0.1, grok: 0.1, kimi: 0.1, 'qwen-code': 0.1, deepseek: 0.3, moonshot: 0.3, xai: 0.3, qwen: 0.3, gemini: 0.3, openai: 0.3, codex: 0.6, claude: 1 }, // within-class value scaling
     usageBudgets: { grok: 10000000 }, // flat token budget for providers whose CLI reports no window (Grok): 100% at N in+out tokens. Advisory only — never gates dispatch.
+    usageGapHours: { default: 6 },    // a gap this long in a provider's own activity starts a fresh usage window; per-provider override, e.g. { grok: 24 } for a daily reset
+    windowTargets: { session: 95, other: 100 }, // dispatch gate: a rolling session/5-hour window is used to 95%, weekly/monthly/budget windows to 100%
+    difficultyEffort: { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' }, // cold-start effort per difficulty (clamped to what the model offers)
+    fallbackLadder: { low: 1, medium: 1.5, high: 2, xhigh: 3, max: 4, ultra: 6 }, // relative token cost per effort before a model has measured rows at that effort
+    blockedMinutes: 30,               // how long a provider is assumed blocked after a limit hit when it gives no retry-after
     quotaPressurePct: 80,             // a provider whose busiest window is past this % is charged at full list price
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured

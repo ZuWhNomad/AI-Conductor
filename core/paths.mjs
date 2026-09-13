@@ -1,5 +1,5 @@
 // State directory + tiny persistence helpers. Everything on disk is written atomically.
-import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,16 @@ export function writeJson(file, obj) {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(obj, null, 2));
-  renameSync(tmp, file);
+  // On Windows renameSync throws EPERM/EACCES/EBUSY if another handle briefly holds the destination (a concurrent
+  // reader, an AV scan). Retry the atomic rename a few times, then fall back to a direct overwrite so the write
+  // is never lost (config/limits/journal writers all go through here).
+  for (let i = 0; ; i++) {
+    try { renameSync(tmp, file); return; }
+    catch (e) {
+      if (i >= 4 && ['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { writeFileSync(file, JSON.stringify(obj, null, 2)); } finally { try { unlinkSync(tmp); } catch {} } return; }
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { unlinkSync(tmp); } catch {} throw e; }
+    }
+  }
 }
 
 export function appendNdjson(file, obj) {
