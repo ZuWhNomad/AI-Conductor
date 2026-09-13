@@ -1,6 +1,6 @@
 // Process helpers: locate CLIs on PATH, spawn the Codex CLI without a shell, kill process trees.
 import { spawn, execFileSync, execSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 
 const WIN = process.platform === 'win32';
@@ -68,12 +68,44 @@ export function quoteArg(a) {
 }
 
 /**
- * Spawn any CLI. A Windows `.cmd`/`.bat` (npm global shims like `qwen.cmd`, pip's `kimi.cmd`) cannot be spawned
- * directly on modern Node — it throws `EINVAL` — so route those through the shell with quoted args. Everything
- * else (real `.exe`/binaries) spawns without a shell as before.
+ * A Windows npm/pnpm global .cmd shim ultimately runs `node "<pkg>/…/entry.js" %*`. Resolve it to that JS entry so
+ * we can spawn `node <entry>` directly — no shell, no cmd re-parse of `%*` (which is where a prompt containing `&`,
+ * `|`, `>` would inject a command). Returns { command: node, args:[entry] } or null when it isn't a resolvable shim.
+ */
+export function resolveNpmShim(cmdPath) {
+  if (!WIN || !/\.cmd$/i.test(cmdPath)) return null;
+  let txt; try { txt = readFileSync(cmdPath, 'utf8'); } catch { return null; }
+  // The shim's real invocation is `"<…>\entry.js" %*`. Take the last quoted .js path it references (node.exe comes first, isn't .js).
+  const quoted = [...txt.matchAll(/"([^"\r\n]*?\.js)"/gi)].map((m) => m[1]);
+  const raw = quoted[quoted.length - 1] || (txt.match(/([^\s"']+\.js)\b/i) || [])[1];
+  if (!raw) return null;
+  const rel = raw.replace(/%~dp0\\?/gi, '').replace(/%[^%]*%/g, '').replace(/^["\\/]+/, ''); // %~dp0 = the shim's own dir
+  const js = join(dirname(cmdPath), rel);
+  return existsSync(js) ? { command: process.execPath, args: [js] } : null;
+}
+
+/**
+ * Escape one argument for a Windows cmd.exe command line so its VALUE can never inject a command (used only for a
+ * .cmd we could not unwrap). Two layers: MSVCRT quoting, then caret-escape every cmd metacharacter including the
+ * quotes. `%` cannot be escaped on a cmd command line — literal %VAR% env expansion is the standard benign residue.
+ */
+export function winArgEscape(s) {
+  const crt = '"' + String(s).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1') + '"';
+  return crt.replace(/[()!^"<>&|]/g, '^$&');
+}
+
+/**
+ * Spawn any CLI. A real `.exe`/binary spawns without a shell, args as separate argv (no shell parsing at all). A
+ * Windows `.cmd`/`.bat` can't be spawned directly on modern Node (EINVAL); when it's an npm shim we unwrap it to
+ * `node <entry>` and still avoid the shell entirely. Only a `.cmd` we cannot unwrap falls back to the shell, with
+ * cmd-escaped args (imperfect against a shim's own `%*` re-parse, so unwrapping is strongly preferred).
  */
 export function spawnCli(bin, args, opts = {}) {
-  if (WIN && /\.(cmd|bat)$/i.test(bin)) return spawn([bin, ...args].map(quoteArg).join(' '), { ...opts, shell: true });
+  if (WIN && /\.(cmd|bat)$/i.test(bin)) {
+    const shim = resolveNpmShim(bin);
+    if (shim) return spawn(shim.command, [...shim.args, ...args], opts); // no shell: argv passed verbatim, no re-parse
+    return spawn(`${quoteArg(bin)} ${args.map(winArgEscape).join(' ')}`, { ...opts, shell: true });
+  }
   return spawn(bin, args, opts);
 }
 

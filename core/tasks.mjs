@@ -156,8 +156,12 @@ export function schedule() {
   // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
   // overrun any one window (a Claude task's % is charged only to Claude's windows, not to a grouped provider's others).
   const addCost = (acc, prov, costs) => { acc[prov] = acc[prov] || {}; for (const [id, c] of Object.entries(costs)) acc[prov][id] = (acc[prov][id] || 0) + c; };
+  // A task's cost is UNMEASURED (probe-gated) if the provider reports windows but the task lacks a measured cost
+  // for ANY of them — a newly-appeared window with no history counts as unknown, not free.
+  const isUnmeasured = (t) => { const ws = providerWindows(t.provider, t.model); return ws.length > 0 && ws.some((w) => !(w.id in costByWindow(t))); };
   const runningByWindow = {};
-  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) addCost(runningByWindow, rt.provider, costByWindow(rt)); }
+  const probing = {}; // provider -> a probe (unmeasured task) is in flight / dispatched this pass; hold everything else on it
+  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
   const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
   const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys()].some((id) => tasks.get(id)?.provider === prov);
   for (const t of queued) {
@@ -166,12 +170,13 @@ export function schedule() {
     const until = blockedUntil(t.provider);
     if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
     if (budget) {
+      if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
       const windows = providerWindows(t.provider, t.model);
       const costs = costByWindow(t);
+      const unmeasured = isUnmeasured(t); // windowed provider missing a cost for some window -> one probe at a time (windowless API/local providers have no window to protect)
       const committed = { ...(runningByWindow[t.provider] || {}) };
       for (const [id, c] of Object.entries(dispatchedByWindow[t.provider] || {})) committed[id] = (committed[id] || 0) + c;
       const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1 });
-      const unmeasured = windows.length > 0 && Object.keys(costs).length === 0; // windowed provider never measured: run ONE probe at a time (don't flood a fresh window). Windowless providers (API/local) have no window to protect.
       if (!a.n || unmeasured) {
         // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
         // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
@@ -179,7 +184,8 @@ export function schedule() {
         // provider already has one in flight; it resumes the moment that finishes. Never a queued-forever park.
         if (providerBusy(t.provider)) continue;
       }
-      addCost(dispatchedByWindow, t.provider, unmeasured ? { __probe: 100 } : costs); // __probe marks the provider busy so further unmeasured tasks wait
+      if (unmeasured) probing[t.provider] = true; // this dispatch IS the probe; nothing else on this provider runs alongside it
+      addCost(dispatchedByWindow, t.provider, unmeasured ? { __probe: 100 } : costs);
     }
     void run(t);
   }

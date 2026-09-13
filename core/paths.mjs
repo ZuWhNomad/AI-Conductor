@@ -23,13 +23,15 @@ export function writeJson(file, obj) {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(obj, null, 2));
   // On Windows renameSync throws EPERM/EACCES/EBUSY if another handle briefly holds the destination (a concurrent
-  // reader, an AV scan). Retry the atomic rename a few times, then fall back to a direct overwrite so the write
-  // is never lost (config/limits/journal writers all go through here).
+  // reader, an AV scan). The rename is atomic, so retry it; never fall back to a direct overwrite of the destination
+  // — a mid-write failure there (ENOSPC) would truncate the good file. On persistent failure leave the destination
+  // untouched (old data still valid) and the tmp in place for recovery, then surface the error.
   for (let i = 0; ; i++) {
     try { renameSync(tmp, file); return; }
     catch (e) {
-      if (i >= 4 && ['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { writeFileSync(file, JSON.stringify(obj, null, 2)); } finally { try { unlinkSync(tmp); } catch {} } return; }
-      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { unlinkSync(tmp); } catch {} throw e; }
+      if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code) && i < 8) continue; // transient holder; retry the atomic rename
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { unlinkSync(tmp); } catch {} } // real error: don't leave a stray tmp
+      throw Object.assign(e, { message: `writeJson: could not atomically replace ${file} (${e.code}); original left intact${['EPERM', 'EACCES', 'EBUSY'].includes(e.code) ? `, new content in ${tmp}` : ''}` });
     }
   }
 }
