@@ -16,7 +16,7 @@ export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
   for (const p of paths) {
     let d = resolve(root, p);
     try { if (statSync(d).isFile()) d = dirname(d); } catch { d = dirname(d); }
-    while (d.startsWith(root)) { dirs.add(d); if (d === root) break; d = dirname(d); }
+    while (d === root || d.startsWith(root + sep)) { dirs.add(d); if (d === root) break; d = dirname(d); } // `+ sep`: F:\proj-backup must not count as inside F:\proj
   }
   const ordered = [...dirs].sort((a, b) => a.length - b.length);
   let total = 0;

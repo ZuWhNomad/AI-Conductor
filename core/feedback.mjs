@@ -21,7 +21,7 @@ export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   for (const h of new Set([home, home.replace(/\\/g, '/'), home.replace(/\\/g, '\\\\')])) if (h) s = s.split(h).join('~');
   s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>'); // before the user name, which is often the local part
   if (user) s = s.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRe(user)}(?![A-Za-z0-9])`, 'g'), '<user>');
-  s = s.replace(/\b(?:sk|xai|ghp|gho|github_pat|AIza|key|token)[-_][A-Za-z0-9_-]{16,}/gi, '<secret>');
+  s = s.replace(/\b(?:sk|sk-ant|xai|ghp|gho|ghu|ghs|ghr|github_pat|AIza|key|token)[-_][A-Za-z0-9_-]{16,}/gi, '<secret>'); // GitHub server/user/refresh tokens (ghs_/ghu_/ghr_) too
   s = s.replace(/(authorization|api[_-]?key|token|secret|password)(["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s"',}]{8,}/gi, '$1$2<secret>');
   return s;
 }

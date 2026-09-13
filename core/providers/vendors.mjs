@@ -2,23 +2,30 @@
 // install and sign in, how to probe auth and list models, how to run headless, how to parse output.
 // Verified flag sets: agy 1.2.1 (2026-09-11; `-p /usage --output-format json` answers quota without a turn), grok 1.0.0 (2026-09, event schema provisional until a
 // signed-in run), Qwen Code 0.23 and Kimi CLI 1.50 (see notes per spec).
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli } from '../proc.mjs';
+import { findCli, quoteArg } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 
 const WIN = process.platform === 'win32';
 const home = homedir();
 const first = (paths) => paths.find((p) => p && existsSync(p)) || null;
-const pyScripts = WIN ? [join(process.env.APPDATA || '', 'Python', 'Python312', 'Scripts'), join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'Scripts')] : [join(home, '.local', 'bin')];
+// Any installed Python 3.x user-scripts dir (was pinned to Python312, which hid a kimi installed under 3.11/3.13/3.14).
+const pyScripts = WIN
+  ? [join(process.env.APPDATA || '', 'Python'), join(process.env.LOCALAPPDATA || '', 'Programs', 'Python')].flatMap((base) => {
+      try { return readdirSync(base).filter((d) => /^Python3/i.test(d)).map((d) => join(base, d, 'Scripts')); } catch { return []; }
+    })
+  : [join(home, '.local', 'bin')];
 
-/** Run a CLI with stdin closed and capture output (auth probes, model lists). */
+/** Run a CLI with stdin closed and capture output (auth probes, model lists). A Windows .cmd/.bat needs the shell (direct execFile throws EINVAL). */
 export function capture(bin, args, { timeoutMs = 30_000, cwd } = {}) {
+  const useShell = WIN && /\.(cmd|bat)$/i.test(bin);
+  const target = useShell ? [bin, ...args].map(quoteArg).join(' ') : bin;
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8' }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    execFile(target, useShell ? [] : args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
   });
 }
 
@@ -135,14 +142,15 @@ export const VENDORS = {
       // an empty result. `--prompt-file` reads the prompt from disk instead; use it past a safe threshold. The temp
       // file lives outside the workspace so a benchmark run never sees it.
       const args = ['--output-format', 'streaming-messages-json', '--always-approve', '--no-auto-update', '--cwd', t.cwd];
-      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt); args.push('--prompt-file', pf); }
+      let cleanup = null;
+      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt); args.push('--prompt-file', pf); cleanup = () => { try { unlinkSync(pf); } catch {} }; } // removed after the run so the full prompt doesn't linger in %TEMP%
       else args.push('-p', t.prompt);
       let threadId = null;
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
       else { threadId = randomUUID(); args.push('--session-id', threadId); }
       if (t.model) args.push('-m', t.model);
       if (t.effort && ['low', 'medium', 'high'].includes(t.effort)) args.push('--reasoning-effort', t.effort);
-      return { args, threadId };
+      return { args, threadId, cleanup };
     },
     // Verified 2026-09-10 against grok 4.6 CLI: `--output-format streaming-messages-json` (Anthropic Messages wire format).
     parse: (obj, st, emit) => parseMessagesStream(obj, st, emit, 'grok'),

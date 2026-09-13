@@ -21,6 +21,11 @@ export const DEFAULTS = {
     effort: 'medium',
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
+    // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
+    // tool spawns a host shell in the workspace. `shell: true` = allowed (default; needed to run tests/verifiers);
+    // `false` = the run tool is disabled; an array = an allow-list of permitted command prefixes, e.g.
+    // ['py', 'python', 'node', 'npm', 'git', 'openscad', 'potrace']. File tools stay sandboxed to the workspace regardless.
+    shell: true,
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds before escalation
     msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
@@ -114,9 +119,15 @@ function normalize(cfg) {
   return cfg;
 }
 
+const SECRET_MASK = '••••';
+
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
-  const next = normalize(deepMerge(loadConfig(), patch));
+  const clean = structuredClone(patch);
+  // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
+  for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;
+  for (const s of Object.values(clean.mcpServers || {})) if (s?.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
+  const next = normalize(deepMerge(loadConfig(), clean));
   writeJson(FILE(), next);
   return next;
 }
@@ -125,7 +136,9 @@ export function saveConfig(patch) {
 export function publicConfig(cfg = loadConfig()) {
   const c = structuredClone(cfg);
   for (const p of Object.values(c.providers)) {
-    if (p && typeof p === 'object' && 'apiKey' in p) p.apiKey = p.apiKey ? '••••' : null;
+    if (p && typeof p === 'object' && 'apiKey' in p) p.apiKey = p.apiKey ? SECRET_MASK : null;
   }
+  // MCP server env often carries tokens/keys; mask every value so it never round-trips through /api/state or /api/settings.
+  for (const s of Object.values(c.mcpServers || {})) if (s && typeof s === 'object' && s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k]) s.env[k] = SECRET_MASK;
   return c;
 }

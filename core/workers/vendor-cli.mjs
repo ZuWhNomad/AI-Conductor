@@ -1,8 +1,7 @@
 // Generic runner for vendor agent CLIs that run on a consumer subscription (Antigravity `agy`,
 // xAI `grok`, Qwen Code, Kimi CLI, ...). Each vendor is a spec in core/providers/vendors.mjs that
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
-import { spawn } from 'node:child_process';
-import { killTree, onLines } from '../proc.mjs';
+import { killTree, onLines, spawnCli } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
@@ -32,11 +31,11 @@ function runVendorCliOnce(spec, t) {
   return new Promise((resolve) => {
     const bin = spec.bin();
     if (!bin) { res.error = `${spec.label || spec.id} CLI not found${spec.install ? ` (install: ${spec.install.win || spec.install.posix})` : ''}`; return resolve(res); }
-    const { args, threadId } = spec.headlessArgs(t);
+    const { args, threadId, cleanup } = spec.headlessArgs(t);
     if (threadId) st.threadId = threadId; // some CLIs let us mint the session id up front
     let child;
-    try { child = spawn(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [spec.stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } }); }
-    catch (e) { res.error = e.message; return resolve(res); }
+    try { child = spawnCli(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [spec.stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } }); }
+    catch (e) { try { cleanup?.(); } catch {} res.error = e.message; return resolve(res); }
     emit('thread', { threadId: st.threadId });
     onLines(child.stdout, (line) => {
       let obj = null; try { obj = JSON.parse(line); } catch {}
@@ -51,6 +50,7 @@ function runVendorCliOnce(spec, t) {
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
       t.signal?.removeEventListener('abort', onAbort);
+      try { cleanup?.(); } catch {} // e.g. remove a temp prompt-file written for a long prompt
       try { spec.onClose?.(st, emit); } catch {}
       res.exitCode = code;
       res.threadId = st.threadId || res.threadId;

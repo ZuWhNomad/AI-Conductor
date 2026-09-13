@@ -63,8 +63,18 @@ export function codexCommand() {
   return { command: found, args: [] };
 }
 
-function quoteArg(a) {
+export function quoteArg(a) {
   return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
+}
+
+/**
+ * Spawn any CLI. A Windows `.cmd`/`.bat` (npm global shims like `qwen.cmd`, pip's `kimi.cmd`) cannot be spawned
+ * directly on modern Node — it throws `EINVAL` — so route those through the shell with quoted args. Everything
+ * else (real `.exe`/binaries) spawns without a shell as before.
+ */
+export function spawnCli(bin, args, opts = {}) {
+  if (WIN && /\.(cmd|bat)$/i.test(bin)) return spawn([bin, ...args].map(quoteArg).join(' '), { ...opts, shell: true });
+  return spawn(bin, args, opts);
 }
 
 export function assertShellSafe(args) {

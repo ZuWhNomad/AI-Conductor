@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { bus } from '../bus.mjs';
 import { isInside } from '../context.mjs';
 import { killTree } from '../proc.mjs';
+import { loadConfig } from '../config.mjs';
 
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__']);
 
@@ -72,6 +73,11 @@ function makeTools(cwd, signal) {
     // Shell command with a hard deadline and cancellation. The whole process tree is killed (on Windows
     // `exec`'s timeout only kills cmd.exe and leaves the real command running).
     run: ({ command, timeout_s }) => new Promise((res) => {
+      // API/Ollama workers have no OS sandbox; `worker.shell` is the boundary. false = disabled; an array = allow-list
+      // of command prefixes (the first token of the command). File tools remain workspace-sandboxed via safe().
+      const shell = loadConfig().worker?.shell;
+      if (shell === false || shell === 'off') return res('run disabled: worker.shell is off in this conductor config');
+      if (Array.isArray(shell)) { const bin = String(command || '').trim().split(/\s+/)[0].replace(/^["']|["']$/g, ''); const base = bin.split(/[\\/]/).pop(); if (!shell.some((a) => a === bin || a === base || base.startsWith(a))) return res(`run blocked: "${base}" is not in worker.shell allow-list (${shell.join(', ')})`); }
       const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; let err = ''; let why = '';
       const cap = (s) => (s.length > 40000 ? s.slice(-40000) : s);
