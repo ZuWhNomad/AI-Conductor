@@ -22,6 +22,16 @@ test('static UI and state endpoint', async () => {
   assert.equal(st.config.providers.deepseek.apiKey, null);
 });
 
+test('Grok shows an estimated usage bar even before any check-in (uncalibrated)', async () => {
+  const lim = await get('/api/limits');
+  const w = (lim.providers.grok?.windows || []).find((x) => x.id === 'grok:estimated');
+  assert.ok(w, 'grok has a synthetic estimated window');
+  assert.equal(w.estimated, true);
+  assert.equal(w.calibrated, false);
+  assert.equal(typeof w.usedPercent, 'number'); // a number (not blank), so the UI renders a bar
+  assert.match(w.note, /uncalibrated/);
+});
+
 test('sessions, tasks, browse and SSE replay', async () => {
   const cwd = tmpDir('srv');
   const s = await post('/api/sessions', { cwd, model: 'sonnet', effort: 'low' });

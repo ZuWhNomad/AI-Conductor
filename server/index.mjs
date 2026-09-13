@@ -178,11 +178,18 @@ function limitsWithEstimates() {
     const budgetTokens = loadConfig().scorecard?.usageBudgets?.[id] || null;
     const resetsAt = nextScheduledReset(id) || null; // from the configured reset schedule (usageResets), so the estimate shows a reset + drives the waste discount
     const est = estimateUsage(id, { budgetTokens, resetsAt });
-    if (!est || !est.calibrated) continue;
+    // Show the bar whenever we can produce ANY estimate — even before a real check-in (a flat token budget is a
+    // sensible uncalibrated fallback) — so a subscription CLI like Grok never sits blank. It is clearly marked as an
+    // estimate; a check-in refines it. Providers with neither a budget nor a check-in still produce no estimate.
+    if (!est) continue;
     const note = est.needsCheck
       ? `past projected limit (~${est.rawPct}%) but still running — did it reset early, or is the budget too low? Re-check the real usage and calibrate.`
-      : `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)`;
-    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, needsCheck: !!est.needsCheck, note }] };
+      : est.calibrated
+        ? `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)`
+        : budgetTokens
+          ? `uncalibrated estimate against a ${(budgetTokens / 1e6).toLocaleString()}M-token budget — record a real usage % to calibrate`
+          : 'uncalibrated estimate — record a real usage % to calibrate';
+    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, calibrated: !!est.calibrated, needsCheck: !!est.needsCheck, note }] };
   }
   return out;
 }
