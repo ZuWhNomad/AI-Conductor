@@ -50,9 +50,15 @@ function windowObservations(provider, now = Date.now()) {
 export function estimateUsage(provider, { now = Date.now(), budgetTokens = null, seedPctPerMToken = null, resetsAt = null } = {}) {
   const { spent } = windowTokens(provider, now);
   const obs = windowObservations(provider, now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  // Overshoot: how far PAST the projected 100% we have run without the provider actually failing. Because dispatch
+  // runs till the real limit (the estimate never gates it), sailing past ~100% means the projection is stale — the
+  // budget is too low, or (commonly) the window reset earlier than expected (a mid-week reset). `needsCheck` asks
+  // the user to re-verify the real limits / reset. Threshold configurable (usageOvershootPct, default 110%).
+  const overshootAt = loadConfig().scorecard?.usageOvershootPct ?? 110;
+  const flag = (rawPct) => ({ rawPct: Math.round(rawPct * 10) / 10, needsCheck: rawPct >= overshootAt });
   if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory
-    const pct = Math.max(0, Math.min(100, (spent / budgetTokens) * 100));
-    return { pct: Math.round(pct * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt };
+    const raw = (spent / budgetTokens) * 100;
+    return { pct: Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt, ...flag(raw) };
   }
   // Least-squares fit of pct = rate·tokens through the origin (0% at the window start): robust to whole-percent
   // rounding and uneven check-in spacing, and uses every reading. Falls back to a config seed before any check-in.
@@ -61,6 +67,6 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   else if (seedPctPerMToken) rate = seedPctPerMToken / 1e6;
   else return null;
   const latest = obs[obs.length - 1] || { tokens: 0, pct: 0 };
-  const pct = Math.max(0, Math.min(100, spent * rate)); // through-origin: % scales with tokens spent this window
-  return { pct: Math.round(pct * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt };
+  const raw = spent * rate; // through-origin: % scales with tokens spent this window
+  return { pct: Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt, ...flag(raw) };
 }

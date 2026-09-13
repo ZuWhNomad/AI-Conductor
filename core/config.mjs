@@ -14,6 +14,8 @@ export const DEFAULTS = {
     maxWorkerConcurrency: 8,          // parallel worker tasks; provider limits, not this cap, are the real budget
     budgetGate: true,                 // gate ALL task dispatch on per-window budget targets (session 95% / weekly 100%); park until reset when a provider is tapped out
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
+    autoUpdate: 'ask',                // GitHub update policy: 'auto' (pull + npm install automatically, restart on next start) | 'ask' (notify in the UI, apply on click) | 'off' (never check)
+    updateCheckHours: 6,              // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
   },
   worker: {                           // default grunt worker
     provider: 'codex',
@@ -73,6 +75,7 @@ export const DEFAULTS = {
     classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 },
     providerWeight: { ollama: 0, antigravity: 0.1, grok: 0.1, kimi: 0.1, 'qwen-code': 0.1, deepseek: 0.3, moonshot: 0.3, xai: 0.3, qwen: 0.3, gemini: 0.3, openai: 0.3, codex: 0.6, claude: 1 }, // within-class value scaling
     usageBudgets: { grok: 10000000 }, // flat token budget for providers whose CLI reports no window (Grok): 100% at N in+out tokens. Advisory only — never gates dispatch.
+    usageOvershootPct: 110,           // when an estimate runs this far past its projected 100% without the provider failing, prompt the user to re-verify the limit/reset (it likely reset early, or the budget is low)
     usageGapHours: { default: 6 },    // a gap this long in a provider's own activity starts a fresh usage window; per-provider override, e.g. { grok: 24 } for a daily reset
     windowTargets: { session: 95, other: 100 }, // dispatch gate: a rolling session/5-hour window is used to 95%, weekly/monthly/budget windows to 100%
     difficultyEffort: { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' }, // cold-start effort per difficulty (clamped to what the model offers)

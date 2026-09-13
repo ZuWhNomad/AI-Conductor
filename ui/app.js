@@ -433,6 +433,7 @@ function openSettings() {
   pickerRow('Worker', 'wk-', { provider: c.worker.provider, model: c.worker.model, effort: c.worker.effort }, { conductOnly: false, all: true });
   body.append(el('h4', null, 'Conductor default — provider : model : effort'));
   pickerRow('Conductor', 'cd-', { provider: c.conductor.provider || 'claude', model: c.conductor.model || '', effort: c.conductor.effort }, { conductOnly: true, all: true });
+  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate || 'ask', ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
   body.append(el('h4', null, 'Worker behaviour'));

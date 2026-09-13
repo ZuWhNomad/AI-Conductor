@@ -16,7 +16,7 @@ import { listTasks, cancelTask, getTask, publicTask, schedule, createTask, abort
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { summarize, formatScores } from '../core/scorecard.mjs';
+import { summarize, formatScores, nextScheduledReset } from '../core/scorecard.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
@@ -176,9 +176,13 @@ function limitsWithEstimates() {
     const p = out.providers[id] || {};
     if ((p.windows || []).length) continue; // real windows win
     const budgetTokens = loadConfig().scorecard?.usageBudgets?.[id] || null;
-    const est = estimateUsage(id, { budgetTokens });
+    const resetsAt = nextScheduledReset(id) || null; // from the configured reset schedule (usageResets), so the estimate shows a reset + drives the waste discount
+    const est = estimateUsage(id, { budgetTokens, resetsAt });
     if (!est || !est.calibrated) continue;
-    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, note: `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)` }] };
+    const note = est.needsCheck
+      ? `past projected limit (~${est.rawPct}%) but still running — did it reset early, or is the budget too low? Re-check the real usage and calibrate.`
+      : `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)`;
+    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, needsCheck: !!est.needsCheck, note }] };
   }
   return out;
 }
@@ -239,6 +243,26 @@ function startScheduledReview() {
   setInterval(() => check().catch(() => {}), 6 * 3_600_000).unref();
 }
 
+/** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). */
+function startUpdateChecks() {
+  const run = () => {
+    try {
+      const cfg = loadConfig();
+      const policy = cfg.conductor?.autoUpdate ?? 'ask';
+      if (policy === 'off') return;
+      const st = checkForUpdates(); // publishes an 'update' event when behind — that's the 'ask' prompt for the UI
+      if (policy === 'auto' && st?.git && !st.error && st.behind && !st.dirty) {
+        const r = applyUpdate(); // git pull + npm install; takes effect on the next restart
+        bus.publish('update', { ...r }); // {updated, from, to, commits, npmInstalled, restartNeeded} — the UI shows "Updated … restart to apply"
+        logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to || '').slice(0, 8)} — restart to apply`, {});
+      }
+    } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
+  };
+  setTimeout(run, 3000).unref();
+  const hours = Number(loadConfig().conductor?.updateCheckHours ?? 6);
+  if (hours > 0) setInterval(run, hours * 3_600_000).unref();
+}
+
 function serveStatic(req, res, url) {
   const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
   const file = resolve(UI, rel);
@@ -275,7 +299,7 @@ export function startServer({ port = null } = {}) {
         startModelPolling(cfg.pollMinutes); startLimitPolling(cfg.pollMinutes);
         refreshModels().then(() => refreshLimits()).catch(() => {});
         startScheduledReview();
-        setTimeout(() => { try { checkForUpdates(); } catch {} }, 3000).unref();
+        startUpdateChecks();
       }
       schedule();
       resolve({ server, url: addr, port: server.address().port });
