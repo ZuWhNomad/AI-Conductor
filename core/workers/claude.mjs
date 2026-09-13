@@ -30,7 +30,7 @@ export async function runClaude(t) {
         allowDangerouslySkipPermissions: bypass || undefined,
         permissionPrompts: 'none',
         resume: t.resumeSessionId || undefined,
-        maxTurns: t.maxTurns || 150,
+        maxTurns: t.maxTurns || 500,
         settingSources: ['project'],
         mcpServers: t.mcpServers && Object.keys(t.mcpServers).length ? t.mcpServers : undefined,
         systemPrompt: { type: 'preset', preset: 'claude_code' },

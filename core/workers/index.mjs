@@ -32,7 +32,7 @@ export async function runWorker(t, { signal } = {}) {
       await ollama.ensureRunning();
       if (cfg.providers.ollama?.harness === 'claude') {
         // Opt-in: run the local model through the Claude Code harness (needs Ollama's Anthropic API compat).
-        r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: 60 });
+        r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurnsLocal || 60 });
         r.threadId = r.sessionId;
       } else {
         r = await withLoopHistory(t, (history) => runOpenAICompat({ ...base, baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama', system: t.system, history }));

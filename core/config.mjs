@@ -14,6 +14,7 @@ export const DEFAULTS = {
     maxWorkerConcurrency: 8,          // parallel worker tasks; provider limits, not this cap, are the real budget
     budgetGate: true,                 // gate ALL task dispatch on per-window budget targets (session 95% / weekly 100%); park until reset when a provider is tapped out
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
+    turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
     autoUpdate: 'ask',                // GitHub update policy: 'auto' (pull + npm install automatically, restart on next start) | 'ask' (notify in the UI, apply on click) | 'off' (never check)
     updateCheckHours: 6,              // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
   },
@@ -37,6 +38,7 @@ export const DEFAULTS = {
     msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     maxTurns: 500,                    // tool turns per Claude-harness worker task
+    maxTurnsLocal: 60,                // tool turns for a local (Ollama-via-Claude-harness) worker task — smaller models loop more, so cap lower
     timeoutMinutes: 45,               // per worker run
     timeoutByCategory: { modeling: 240 }, // categories that legitimately run long (image->3D iterates); watch the durations in the scorecard
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
@@ -152,9 +154,23 @@ export function saveConfig(patch) {
   // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
   for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;
   for (const s of Object.values(clean.mcpServers || {})) if (s?.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
-  const next = normalize(deepMerge(loadConfig(), clean));
-  writeJson(FILE(), next);
-  return next;
+  // Merge the patch onto the RAW file (the user's overrides), not onto loadConfig() (which already has DEFAULTS
+  // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
+  // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
+  const effective = normalize(deepMerge(DEFAULTS, deepMerge(readJson(FILE(), {}), clean)));
+  writeJson(FILE(), pruneToDefaults(effective, DEFAULTS));
+  return effective;
+}
+
+/** Keep only the keys of `cfg` that differ from `def` (deep), so config.json holds overrides, not a frozen copy of DEFAULTS. */
+function pruneToDefaults(cfg, def) {
+  if (!plain(cfg)) return cfg;
+  const out = {};
+  for (const [k, v] of Object.entries(cfg)) {
+    if (plain(v) && plain(def?.[k])) { const sub = pruneToDefaults(v, def[k]); if (Object.keys(sub).length) out[k] = sub; }
+    else if (JSON.stringify(v) !== JSON.stringify(def?.[k])) out[k] = v;
+  }
+  return out;
 }
 
 /** Redact secrets for the UI. */
