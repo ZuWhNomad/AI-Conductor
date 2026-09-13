@@ -28,6 +28,18 @@ export function planBatch({ costPct, usedPct, bufferPct = 25, maxParallel = 4, r
 /** Per-task cost on a provider from recorded scorecard rows: the largest window delta any probe run consumed (conservative). */
 export function measuredCost(rows, provider, { model = null } = {}) {
   let cost = 0;
+  for (const [, per] of Object.entries(measuredCostByWindow(rows, provider, { model }))) if (per > cost) cost = per;
+  return cost;
+}
+
+/**
+ * Per-task cost measured SEPARATELY for each window id: `{ windowId: %-per-task }`. A build that moves a 5-hour
+ * window 13% but the weekly only 3% must be charged 13% against the 5-hour and 3% against the weekly — not 13%
+ * against both (that wrongly parks a task the weekly has ample room for). The scheduler compares each window's own
+ * cost to its own headroom.
+ */
+export function measuredCostByWindow(rows, provider, { model = null } = {}) {
+  const cost = {};
   for (const r of rows) {
     if (r.provider !== provider || !r.pct) continue;
     if (model && r.model !== model) continue;
@@ -35,7 +47,7 @@ export function measuredCost(rows, provider, { model = null } = {}) {
       const w = (getLimits().providers[provider]?.windows || []).find((x) => x.id === id);
       if (w?.models && r.model && !new RegExp(w.models, 'i').test(r.model)) continue;
       const per = d / ((r.concurrent || 0) + 1); // the window moved for every task running at the time, not just this one
-      if (per > cost) cost = per;
+      if (per > (cost[id] || 0)) cost[id] = per;
     }
   }
   return cost;
@@ -131,10 +143,36 @@ export function nextResetWindows(windows) {
  * returns `until` (reset ms) when nothing fits, so the scheduler can park rather than spin. Deterministic; used for
  * ALL tasks, not just sweeps — this is the framework budget gate.
  */
-export function admit(windows, pending, { runningCost = 0, maxParallel = Infinity } = {}) {
+export function admit(windows, pending, { runningCost = 0, runningByWindow = null, maxParallel = Infinity } = {}) {
+  // Per-window mode: any pending task carries `costs` ({windowId: %}). A task must fit in EVERY window it touches,
+  // each charged its own cost against its own headroom (fixes the "one window's % applied to all windows" over-block).
+  if ((pending || []).some((p) => p && p.costs)) return admitPerWindow(windows, pending, { runningByWindow, runningCost, maxParallel });
   const { headroom } = headroomFor(windows);
   const free = headroom - runningCost;
   if (free <= 0) return { n: 0, until: nextResetWindows(windows), reason: `no headroom (${headroom.toFixed(1)}% window, ${runningCost.toFixed(1)}% already running)` };
   const g = planGreedy(pending.map((p) => p.cost || 0), { usedPct: 100 - free, bufferPct: 0, maxParallel });
   return { n: g.n, order: g.order, until: g.n ? null : nextResetWindows(windows), reason: g.reason };
+}
+
+/** admit() with per-window costs: greedy-fill tasks (cheapest first) while every window still has room. */
+function admitPerWindow(windows, pending, { runningByWindow = null, runningCost = 0, maxParallel = Infinity } = {}) {
+  const wins = windows || [];
+  const head = new Map(wins.map((w) => [w.id, targetFor(w) - (Number(w.usedPercent) || 0) - (runningByWindow?.[w.id] ?? runningCost)]));
+  if (wins.length && [...head.values()].some((h) => h <= 0)) {
+    const b = [...wins].sort((a, c) => (targetFor(a) - (a.usedPercent || 0)) - (targetFor(c) - (c.usedPercent || 0)))[0];
+    return { n: 0, order: pending.map((_, i) => i), until: nextResetWindows(wins), reason: `no headroom (${b?.label || b?.id} at ${b?.usedPercent}% of ${targetFor(b)}%)` };
+  }
+  const maxOf = (p) => Math.max(0, ...Object.values(p.costs || {}));
+  const order = pending.map((p, i) => ({ p, i })).sort((a, c) => maxOf(a.p) - maxOf(c.p));
+  const sum = new Map(wins.map((w) => [w.id, 0]));
+  let n = 0;
+  for (const { p } of order) {
+    const costs = p.costs || {};
+    if (!Object.keys(costs).length || Object.values(costs).every((c) => c <= 0)) { if (!n) n = 1; break; } // unknown cost: one probe alone, then measure
+    if (wins.some((w) => sum.get(w.id) + (costs[w.id] || 0) > head.get(w.id))) break;
+    for (const w of wins) sum.set(w.id, sum.get(w.id) + (costs[w.id] || 0));
+    n++;
+    if (n >= maxParallel) break;
+  }
+  return { n, order: order.map((o) => o.i), until: n ? null : nextResetWindows(wins), reason: n ? `fits in all ${wins.length} window(s)` : 'does not fit a window under its target' };
 }

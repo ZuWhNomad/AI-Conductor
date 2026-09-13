@@ -103,3 +103,19 @@ test('admit: gates dispatch on per-window headroom under targets, and parks (unt
   const sess = [{ id: 'c:5h', label: '5-hour', usedPercent: 94, resetsAt: Date.now() + 3600e3 }]; // session target 95 -> 1% headroom
   assert.equal(admit(sess, [{ cost: 2 }]).n, 0);                                                 // 2% > 1% -> park (session capped at 95%, not 100%)
 });
+
+test('admit: per-window costs charge each window its own cost, not one window\'s % against all', async () => {
+  const { admit } = await import('../core/sweep.mjs');
+  const tw = Date.now() + 5 * 86400e3;
+  // Codex at 91% weekly (9% headroom) plus a fresh 5-hour window (0% used, 95% headroom).
+  const windows = [
+    { id: 'w', label: 'Codex weekly', usedPercent: 91, resetsAt: tw, windowMinutes: 10080 },
+    { id: 's', label: '5-hour', usedPercent: 0, resetsAt: Date.now() + 3600e3 },
+  ];
+  // A build costs 13% of the 5-hour window but only 3% of the weekly. It fits BOTH (weekly 3<9, 5h 13<95).
+  assert.equal(admit(windows, [{ costs: { w: 3, s: 13 } }], { maxParallel: 1 }).n, 1);   // regression: was wrongly blocked when 13% was charged to the weekly too
+  // If it really cost 10% of the weekly, it would not fit the weekly's 9% headroom.
+  assert.equal(admit(windows, [{ costs: { w: 10, s: 13 } }], { maxParallel: 1 }).n, 0);
+  // Unknown per-window cost -> exactly one probe admitted (never floods a fresh window).
+  assert.equal(admit(windows, [{ costs: {} }, { costs: {} }, { costs: {} }]).n, 1);
+});

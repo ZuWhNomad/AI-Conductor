@@ -242,13 +242,12 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   for (const p of plans) p.utility = p.usd == null ? -Infinity : lambda * p.quality - p.usd;
   // Effort dominance: a higher effort of the same model that costs within effortSlackUsd and is at least as good
   // makes the lower effort pointless (Luna's efforts differ by fractions of a cent; the higher one held up on real work).
-  const EFFORT = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   const slackOf = (usd) => Math.max(cfg.effortSlackUsd ?? 0.01, usd * ((cfg.effortSlackPct ?? 10) / 100)); // absolute floor for cheap models, relative for dear ones
   const dominated = new Set();
   for (const a of plans) for (const b of plans) {
     if (a === b || a.steps.length !== 1 || b.steps.length !== 1 || a.usd == null || b.usd == null) continue;
     const [pa, ma, ea] = a.steps[0].split(':'), [pb, mb, eb] = b.steps[0].split(':');
-    if (pa !== pb || ma !== mb || EFFORT.indexOf(eb) <= EFFORT.indexOf(ea)) continue;
+    if (pa !== pb || ma !== mb || EFFORTS.indexOf(eb) <= EFFORTS.indexOf(ea)) continue;
     if (b.usd <= a.usd + slackOf(a.usd) && b.quality >= a.quality) dominated.add(a);
   }
   for (const p of plans) if (dominated.has(p) || p.steps.some((st) => dominated.has(plans.find((x) => x.steps.length === 1 && x.steps[0] === st)))) p.utility = -Infinity;
@@ -337,17 +336,19 @@ function pool(cells, floor) {
   return { ...base, cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: used.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
 }
 
-const EFFORT_LADDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+// Single source of truth for effort ordering (low -> ultra). Everything that ranks effort imports this;
+// omitting `ultra` here (as an older copy did) made ultra rank -1, so a model's top effort could never cold-start.
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 // Desired cold-start effort per difficulty. Hard tasks deserve more thinking; the measured path takes over
 // (and can down-shift on cost via effort dominance) once verdicts exist. Clamped to what the model offers.
 const DIFFICULTY_EFFORT = { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' };
 /** Cold-start effort: the highest effort the model offers that does not exceed the difficulty's target. */
 export function priorEffort(efforts, difficulty) {
-  const ranked = EFFORT_LADDER.filter((e) => (efforts || []).includes(e));
+  const ranked = EFFORTS.filter((e) => (efforts || []).includes(e));
   if (!ranked.length) return null;
-  const wantIdx = EFFORT_LADDER.indexOf(DIFFICULTY_EFFORT[difficulty] || 'medium');
+  const wantIdx = EFFORTS.indexOf(DIFFICULTY_EFFORT[difficulty] || 'medium');
   let pick = ranked[0];
-  for (const e of ranked) if (EFFORT_LADDER.indexOf(e) <= wantIdx) pick = e;
+  for (const e of ranked) if (EFFORTS.indexOf(e) <= wantIdx) pick = e;
   return pick;
 }
 
@@ -358,7 +359,7 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
   if (!efforts.length) return defaultEffort || null;
   const want = difficulty ? priorEffort(efforts, difficulty) : null;
   const base = efforts.includes(defaultEffort) ? defaultEffort : null;
-  const rank = (e) => EFFORT_LADDER.indexOf(e);
+  const rank = (e) => EFFORTS.indexOf(e);
   if (want && base) return rank(want) > rank(base) ? want : base;
   return want || base || null;
 }

@@ -12,7 +12,7 @@ import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
-import { admit, measuredCost } from './sweep.mjs';
+import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { mcpServers } from './mcp.mjs';
 
@@ -152,11 +152,14 @@ export function schedule() {
   const queued = [...tasks.values()].filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   if (!queued.length || running.size >= max) return;
   const rows = budget ? runRows() : null;
-  const perTaskCost = (t) => measuredCost(rows, t.provider, { model: t.model }); // % of the tightest window one task of this provider/model consumes
-  // Cost already committed by in-flight tasks, per provider — so a batch does not collectively overrun the window.
-  const runningCost = {};
-  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) runningCost[rt.provider] = (runningCost[rt.provider] || 0) + perTaskCost(rt); }
-  const dispatched = {}; // provider -> % of window this pass has committed
+  const costByWindow = (t) => measuredCostByWindow(rows, t.provider, { model: t.model }); // {windowId: %-per-task} for this provider/model
+  // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
+  // overrun any one window (a Claude task's % is charged only to Claude's windows, not to a grouped provider's others).
+  const addCost = (acc, prov, costs) => { acc[prov] = acc[prov] || {}; for (const [id, c] of Object.entries(costs)) acc[prov][id] = (acc[prov][id] || 0) + c; };
+  const runningByWindow = {};
+  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) addCost(runningByWindow, rt.provider, costByWindow(rt)); }
+  const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
+  const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys()].some((id) => tasks.get(id)?.provider === prov);
   for (const t of queued) {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (running.size >= max) break;
@@ -164,18 +167,19 @@ export function schedule() {
     if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
     if (budget) {
       const windows = providerWindows(t.provider, t.model);
-      const committed = (runningCost[t.provider] || 0) + (dispatched[t.provider] || 0);
-      const a = admit(windows, [{ cost: perTaskCost(t) }], { runningCost: committed, maxParallel: 1 });
-      if (!a.n) {
-        // Over the per-window target we DON'T pause. Policy: degrade to SEQUENTIAL per provider and keep
-        // issuing — a task that runs into the real provider limit then hands off via failover (below), so
-        // another agent takes over instead of the queue stalling. Hold this task only while its provider
-        // already has one in flight (it resumes the moment that one finishes); a free provider dispatches one
-        // now. This never leaves a task queued-forever the way a park-on-budget with no reset timer could.
-        const busy = (dispatched[t.provider] || 0) > 0 || [...running.keys()].some((id) => tasks.get(id)?.provider === t.provider);
-        if (busy) continue;
+      const costs = costByWindow(t);
+      const committed = { ...(runningByWindow[t.provider] || {}) };
+      for (const [id, c] of Object.entries(dispatchedByWindow[t.provider] || {})) committed[id] = (committed[id] || 0) + c;
+      const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1 });
+      const unmeasured = windows.length > 0 && Object.keys(costs).length === 0; // windowed provider never measured: run ONE probe at a time (don't flood a fresh window). Windowless providers (API/local) have no window to protect.
+      if (!a.n || unmeasured) {
+        // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
+        // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
+        // (below), so another agent takes over instead of the queue stalling. Hold this task only while its
+        // provider already has one in flight; it resumes the moment that finishes. Never a queued-forever park.
+        if (providerBusy(t.provider)) continue;
       }
-      dispatched[t.provider] = (dispatched[t.provider] || 0) + perTaskCost(t);
+      addCost(dispatchedByWindow, t.provider, unmeasured ? { __probe: 100 } : costs); // __probe marks the provider busy so further unmeasured tasks wait
     }
     void run(t);
   }
