@@ -9,6 +9,7 @@ import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 import { getModels, refreshModels, startModelPolling } from '../core/models.mjs';
 import { getLimits, refreshLimits, startLimitPolling } from '../core/limits.mjs';
+import { estimateUsage, recordUsage } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import * as ollama from '../core/providers/ollama.mjs';
 import { listTasks, cancelTask, getTask, publicTask, schedule, createTask } from '../core/tasks.mjs';
@@ -65,7 +66,7 @@ async function route(req, res, url) {
   if (seg[0] === 'mcp' && seg[1]) return mcpRoute(req, res, seg);
   if (seg[0] !== 'api') return false;
 
-  if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: getLimits(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), home: homedir(), repoRoot: REPO_ROOT });
+  if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), home: homedir(), repoRoot: REPO_ROOT });
 
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -99,7 +100,13 @@ async function route(req, res, url) {
 
   if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
   if (p === '/api/models/refresh' && m === 'POST') return json(res, 200, await refreshModels());
-  if (p === '/api/limits' && m === 'GET') return json(res, 200, getLimits());
+  if (p === '/api/limits' && m === 'GET') return json(res, 200, limitsWithEstimates());
+  if (seg[1] === 'providers' && seg[2] && seg[3] === 'usage' && m === 'POST') {
+    const b = await readBody(req); const pct = Number(b.pct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return json(res, 400, { error: 'pct must be 0-100' });
+    const row = recordUsage(seg[2], pct); bus.publish('limits', { updatedAt: getLimits().updatedAt });
+    return json(res, 200, { ok: true, recorded: row, estimate: estimateUsage(seg[2]) });
+  }
   if (p === '/api/bench' && m === 'GET') { const { dueForBench, formatBench } = await import('../core/bench.mjs'); const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
   if (p === '/api/scores' && m === 'GET') { const source = url.searchParams.get('source') || null; return json(res, 200, { summary: summarize({ source }), text: formatScores({ source, category: url.searchParams.get('category') || null }) }); }
   if (p === '/api/limits/refresh' && m === 'POST') return json(res, 200, await refreshLimits());
@@ -153,6 +160,21 @@ async function route(req, res, url) {
   if (p === '/api/update' && m === 'POST') return json(res, 200, applyUpdate());
   if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
   return json(res, 404, { error: `no route ${m} ${p}` });
+}
+
+/** Serve limits with a synthetic "estimated" window for subscription providers whose CLI reports no window (Grok):
+ *  usage is estimated from token spend, calibrated by the user's check-ins (POST /api/providers/:id/usage). */
+function limitsWithEstimates() {
+  const lim = getLimits();
+  const out = { ...lim, providers: { ...lim.providers } };
+  for (const id of Object.keys(PROVIDERS)) {
+    const p = out.providers[id] || {};
+    if ((p.windows || []).length) continue; // real windows win
+    const est = estimateUsage(id);
+    if (!est || !est.calibrated) continue;
+    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, note: `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)` }] };
+  }
+  return out;
 }
 
 /** Open a visible terminal running `command` (sign-in flows need a real console + browser). */

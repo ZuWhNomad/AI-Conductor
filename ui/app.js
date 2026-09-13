@@ -82,8 +82,14 @@ function renderProviders() {
     for (const w of lim.windows || []) {
       const pct = Math.max(0, Math.min(100, Number(w.usedPercent) || 0));
       const m = el('div', 'meter'); const i = el('i', meterClass(pct)); i.style.width = pct + '%'; m.append(i);
-      const wl = el('div', 'wl'); wl.append(el('span', null, w.label), el('span', null, `${w.usedPercent ?? '?'}%${w.remaining ? ' · ' + w.remaining : ''}${w.resetsAt ? ' · resets ' + new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`));
+      const wl = el('div', 'wl'); wl.append(el('span', null, w.label + (w.estimated ? ' ~est' : '')), el('span', null, `${w.usedPercent ?? '?'}%${w.remaining ? ' · ' + w.remaining : ''}${w.resetsAt ? ' · resets ' + new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`));
       d.append(m, wl);
+      if (w.estimated) { // let the user record an actual reading to re-calibrate the estimate
+        const row = el('div', 'wl tiny'); const inp = el('input'); inp.type = 'number'; inp.min = 0; inp.max = 100; inp.placeholder = 'actual %'; inp.style.width = '5em';
+        const set = el('button', 'sm', 'Calibrate'); set.title = w.note || 'record the real % from the provider site to refine the estimate';
+        set.onclick = async () => { const v = Number(inp.value); if (!(v >= 0 && v <= 100)) return; set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; renderProviders(); } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
+        row.append(inp, set); d.append(row);
+      }
     }
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
     box.append(d);
