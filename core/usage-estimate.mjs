@@ -40,11 +40,17 @@ function windowObservations(provider, now = Date.now()) {
 /**
  * Estimate the provider's current plan % from token spend. Rate = observed % / tokens at the latest check-in
  * (or the slope between the two most recent). Returns null when there is nothing to calibrate from.
- * @param {object} [o] optional `seedPctPerMToken` (a config default used before any check-in exists)
+ * @param {object} [o] `budgetTokens` (a flat, slightly-conservative "100% at N tokens" reference that overrides the
+ *   fitted rate), or `seedPctPerMToken` (a rate used before any check-in exists). The estimate is advisory only —
+ *   it is never fed to the scheduler's budget gate, so the conductor keeps dispatching until the real limit hits.
  */
-export function estimateUsage(provider, { now = Date.now(), seedPctPerMToken = null, resetsAt = null } = {}) {
+export function estimateUsage(provider, { now = Date.now(), budgetTokens = null, seedPctPerMToken = null, resetsAt = null } = {}) {
   const { spent } = windowTokens(provider, now);
   const obs = windowObservations(provider, now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory
+    const pct = Math.max(0, Math.min(100, (spent / budgetTokens) * 100));
+    return { pct: Math.round(pct * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: true, advisory: true, resetsAt };
+  }
   // Least-squares fit of pct = rate·tokens through the origin (0% at the window start): robust to whole-percent
   // rounding and uneven check-in spacing, and uses every reading. Falls back to a config seed before any check-in.
   let rate; // % per token
@@ -53,5 +59,5 @@ export function estimateUsage(provider, { now = Date.now(), seedPctPerMToken = n
   else return null;
   const latest = obs[obs.length - 1] || { tokens: 0, pct: 0 };
   const pct = Math.max(0, Math.min(100, spent * rate)); // through-origin: % scales with tokens spent this window
-  return { pct: Math.round(pct * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, resetsAt };
+  return { pct: Math.round(pct * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt };
 }

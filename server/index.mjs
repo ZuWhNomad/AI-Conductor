@@ -105,7 +105,7 @@ async function route(req, res, url) {
     const b = await readBody(req); const pct = Number(b.pct);
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) return json(res, 400, { error: 'pct must be 0-100' });
     const row = recordUsage(seg[2], pct); bus.publish('limits', { updatedAt: getLimits().updatedAt });
-    return json(res, 200, { ok: true, recorded: row, estimate: estimateUsage(seg[2]) });
+    return json(res, 200, { ok: true, recorded: row, estimate: estimateUsage(seg[2], { budgetTokens: loadConfig().scorecard?.usageBudgets?.[seg[2]] || null }) });
   }
   if (p === '/api/bench' && m === 'GET') { const { dueForBench, formatBench } = await import('../core/bench.mjs'); const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
   if (p === '/api/scores' && m === 'GET') { const source = url.searchParams.get('source') || null; return json(res, 200, { summary: summarize({ source }), text: formatScores({ source, category: url.searchParams.get('category') || null }) }); }
@@ -170,7 +170,8 @@ function limitsWithEstimates() {
   for (const id of Object.keys(PROVIDERS)) {
     const p = out.providers[id] || {};
     if ((p.windows || []).length) continue; // real windows win
-    const est = estimateUsage(id);
+    const budgetTokens = loadConfig().scorecard?.usageBudgets?.[id] || null;
+    const est = estimateUsage(id, { budgetTokens });
     if (!est || !est.calibrated) continue;
     out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, note: `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)` }] };
   }

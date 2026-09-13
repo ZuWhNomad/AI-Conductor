@@ -63,6 +63,7 @@ export const DEFAULTS = {
     // *session* window (5-hour); its weekly windows (Fable weekly included) may go to 100%.
     classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 },
     providerWeight: { ollama: 0, antigravity: 0.1, grok: 0.1, kimi: 0.1, 'qwen-code': 0.1, deepseek: 0.3, moonshot: 0.3, xai: 0.3, qwen: 0.3, gemini: 0.3, openai: 0.3, codex: 0.6, claude: 1 }, // within-class value scaling
+    usageBudgets: { grok: 10000000 }, // flat token budget for providers whose CLI reports no window (Grok): 100% at N in+out tokens. Advisory only — never gates dispatch.
     quotaPressurePct: 80,             // a provider whose busiest window is past this % is charged at full list price
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured
