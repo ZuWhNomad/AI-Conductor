@@ -166,9 +166,14 @@ export function schedule() {
       const windows = providerWindows(t.provider, t.model);
       const committed = (runningCost[t.provider] || 0) + (dispatched[t.provider] || 0);
       const a = admit(windows, [{ cost: perTaskCost(t) }], { runningCost: committed, maxParallel: 1 });
-      if (!a.n) { // no headroom under the per-window targets (session 95% / weekly 100%): park until the window resets
-        if (a.until) park(t, a.until, `provider ${t.provider} within its usage buffer (${a.reason}); waiting for reset`);
-        continue;
+      if (!a.n) {
+        // Over the per-window target we DON'T pause. Policy: degrade to SEQUENTIAL per provider and keep
+        // issuing — a task that runs into the real provider limit then hands off via failover (below), so
+        // another agent takes over instead of the queue stalling. Hold this task only while its provider
+        // already has one in flight (it resumes the moment that one finishes); a free provider dispatches one
+        // now. This never leaves a task queued-forever the way a park-on-budget with no reset timer could.
+        const busy = (dispatched[t.provider] || 0) > 0 || [...running.keys()].some((id) => tasks.get(id)?.provider === t.provider);
+        if (busy) continue;
       }
       dispatched[t.provider] = (dispatched[t.provider] || 0) + perTaskCost(t);
     }
