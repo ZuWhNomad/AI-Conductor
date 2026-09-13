@@ -1,7 +1,7 @@
 // Local HTTP server: static UI, JSON API, SSE event stream. Binds to 127.0.0.1 only.
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname, resolve, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { REPO_ROOT, readJson, writeJson, statePath } from '../core/paths.mjs';
@@ -12,7 +12,7 @@ import { getLimits, refreshLimits, startLimitPolling } from '../core/limits.mjs'
 import { estimateUsage, recordUsage } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import * as ollama from '../core/providers/ollama.mjs';
-import { listTasks, cancelTask, getTask, publicTask, schedule, createTask } from '../core/tasks.mjs';
+import { listTasks, cancelTask, getTask, publicTask, schedule, createTask, abortRunning } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
@@ -67,6 +67,11 @@ async function route(req, res, url) {
   if (seg[0] !== 'api') return false;
 
   if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), home: homedir(), repoRoot: REPO_ROOT });
+  if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
+    json(res, 200, { ok: true, stopping: true });
+    setTimeout(() => { try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
+    return true;
+  }
 
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -273,7 +278,7 @@ export function startServer({ port = null } = {}) {
         setTimeout(() => { try { checkForUpdates(); } catch {} }, 3000).unref();
       }
       schedule();
-      resolve({ server, url: addr });
+      resolve({ server, url: addr, port: server.address().port });
     });
   });
 }

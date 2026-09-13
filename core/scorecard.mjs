@@ -336,17 +336,27 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   if (cls !== 'subscription' && cls !== 'included') return 1;
   const horizon = Math.max(1, cfg.wasteHorizonHours ?? 48) * 3600e3;
   const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? 0.9));
+  const discount = (ms, headroom) => (ms > 0 && ms <= horizon ? 1 - (1 - ms / horizon) * headroom * strength : 1); // proximity × unused headroom × strength
   let factor = 1;
   for (const w of providerWindows(provider, model)) {
     if (!w.resetsAt) continue;
     if (/hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)) continue; // ignore the 5-hour churn
-    const ms = w.resetsAt - now;
-    if (ms <= 0 || ms > horizon) continue;
-    const headroom = Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100; // unused fraction of the window
-    const proximity = 1 - ms / horizon; // 0 at the horizon edge -> 1 at reset
-    factor = Math.min(factor, 1 - proximity * headroom * strength);
+    factor = Math.min(factor, discount(w.resetsAt - now, Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100));
   }
+  // Windowless provider (Grok, …): no real weekly window drove a discount, so fall back to a configured reset schedule.
+  // "Use till it fails" means we assume the quota is worth spending (full headroom) as its reset nears.
+  if (factor === 1) { const sched = nextScheduledReset(provider, cfg, now); if (sched) factor = discount(sched - now, 1); }
   return factor;
+}
+
+/** Next reset for a provider whose CLI reports no window, from config `usageResets` (periodHours + anchorAt). Null when none. */
+export function nextScheduledReset(provider, cfg = loadConfig().scorecard, now = Date.now()) {
+  const s = cfg.usageResets?.[provider]; if (!s) return null;
+  const period = (Number(s.periodHours) || 0) * 3600e3; if (period <= 0) return null;
+  const anchor = s.anchorAt ? Date.parse(s.anchorAt) : NaN;
+  if (!Number.isFinite(anchor)) return null;
+  const next = anchor + Math.ceil((now - anchor) / period) * period;
+  return next <= now ? next + period : next;
 }
 
 const parseSel = (s) => { const [provider, model, effort] = s.split(':'); return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort }; };

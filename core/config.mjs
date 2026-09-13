@@ -85,6 +85,11 @@ export const DEFAULTS = {
     // dominates selection (utility = value×quality − cost), so this only tips the balance among comparable choices.
     wasteHorizonHours: 48,            // start favouring a soon-resetting subscription this many hours before its reset
     wasteStrength: 0.9,               // 0 = off; 1 = a fully-unused window at its reset is treated as free
+    // Reset schedule for providers whose CLI reports NO window (Grok, …), so the use-it-or-lose-it discount still
+    // applies. Per provider: periodHours + anchorAt (any one reset instant; the next reset is stepped from it), or
+    // fromFirstUse:true for a rolling session window (Nh from the window's first activity). Set once; "use till it
+    // fails" refines the real boundary over time. Grok's daily ~6pm reset is seeded here — adjust to your timezone.
+    usageResets: { grok: { periodHours: 24, anchorAt: '2026-09-14T18:00:00' } },
 
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured

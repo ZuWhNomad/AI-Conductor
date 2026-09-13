@@ -2,11 +2,15 @@
 // Conductor 2.0 CLI. `conductor` starts the workbench; see `conductor help`.
 import { parseArgs } from 'node:util';
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { REPO_ROOT, stateDir } from '../core/paths.mjs';
+import { REPO_ROOT, stateDir, statePath } from '../core/paths.mjs';
 import { loadConfig } from '../core/config.mjs';
+
+const PID_FILE = () => statePath('server.pid');
+const writePidFile = (info) => { try { writeFileSync(PID_FILE(), JSON.stringify({ pid: process.pid, ...info }, null, 2)); } catch {} };
+const clearPidFile = () => { try { unlinkSync(PID_FILE()); } catch {} };
 
 const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
@@ -48,12 +52,26 @@ if (cmd === 'start') {
   const { startServer } = await import('../server/index.mjs');
   const { abortRunning } = await import('../core/tasks.mjs');
   const cfg = loadConfig();
-  const { url } = await startServer({ port: flags.port ? Number(flags.port) : undefined });
+  const { url, port } = await startServer({ port: flags.port ? Number(flags.port) : undefined });
+  writePidFile({ port, url, startedAt: new Date().toISOString() }); // so `conductor stop` (and the UI Quit button) can find this process
   console.log(`Conductor 2.0 running at ${url}   (state: ${stateDir()})`);
+  console.log('Stop it with:  conductor stop   (or the Quit button in the UI, or Ctrl+C here)');
   if (!flags['no-open'] && cfg.openBrowser) openBrowser(url);
-  const stop = () => { abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
+  const stop = () => { clearPidFile(); abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+} else if (cmd === 'stop') {
+  // Kill a running conductor server started with `conductor start` (its pid is in the state dir).
+  let info = null;
+  try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
+  if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port 47474.`); process.exit(1); }
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(info.pid), '/T', '/F'], { stdio: 'ignore' });
+    else process.kill(info.pid, 'SIGTERM');
+    clearPidFile();
+    console.log(`Stopped conductor (pid ${info.pid}${info.port ? `, port ${info.port}` : ''}).`);
+  } catch (e) { console.error(`could not stop pid ${info.pid}: ${e.message} (already gone?)`); clearPidFile(); process.exit(1); }
+  process.exit(0);
 } else if (cmd === 'doctor') {
   const { doctorReport } = await import('../server/index.mjs');
   const r = await doctorReport();

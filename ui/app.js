@@ -474,6 +474,17 @@ function openSettings() {
     S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
   };
   body.append(save);
+  // Quit: stop the server process from the browser (closing the tab leaves it running).
+  const quit = el('button', 'sm danger', 'Quit conductor (stop the server)');
+  quit.style.marginLeft = '8px';
+  quit.onclick = async () => {
+    if (!confirm('Stop the conductor server? In-flight tasks will resume next time you start it. This tab will stop working until you restart it.')) return;
+    quit.disabled = true;
+    try { await api.post('/api/shutdown', {}); } catch {}
+    closeModal();
+    document.body.innerHTML = '<div style="padding:2rem;font:14px system-ui">Conductor stopped. Restart it with <code>conductor start</code>, then reload this page.</div>';
+  };
+  body.append(quit);
   openModal('Settings', body);
 }
 async function openImprovements(showResolved = false) {
