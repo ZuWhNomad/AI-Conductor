@@ -51,5 +51,5 @@ export function getProvider(id) {
 
 export const PROVIDER_URLS = { claude: 'https://claude.ai', codex: 'https://chatgpt.com/codex', ollama: 'https://ollama.com', antigravity: 'https://antigravity.google', grok: 'https://grok.com', kimi: 'https://www.kimi.com', 'qwen-code': 'https://qwen.ai', 'openai-images': 'https://platform.openai.com', stability: 'https://platform.stability.ai', sd: 'http://127.0.0.1:7860' };
 export function providerSummaries() {
-  return Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, kind: p.kind, auth: p.auth, url: p.url || PROVIDER_URLS[p.id] || null, canInstall: !!p.installCommand?.(), canLogin: !!p.loginCommand?.() }));
+  return Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, kind: p.kind, auth: p.auth, url: p.url || PROVIDER_URLS[p.id] || null, canInstall: !!p.installCommand?.(), canLogin: !!p.loginCommand?.(), canRelogin: !!p.loginCommand?.() }));
 }

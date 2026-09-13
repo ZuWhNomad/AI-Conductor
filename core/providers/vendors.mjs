@@ -238,5 +238,8 @@ export function providerFor(spec) {
       const q = (s) => (/\s/.test(s) ? `"${s}"` : s);
       return `${q(bin)}${spec.login?.args?.length ? ' ' + spec.login.args.join(' ') : ''}`;
     },
+    // Sub-command CLIs (grok/kimi: `<bin> login`) have a matching `<bin> logout`; re-auth runs it first so a stale
+    // token (e.g. a free-tier grant that a new subscription must replace) is cleared before the fresh sign-in.
+    logoutCommand: spec.login?.args?.[0] === 'login' ? () => { const bin = spec.bin() || spec.id; return `${/\s/.test(bin) ? `"${bin}"` : bin} logout`; } : undefined,
   };
 }

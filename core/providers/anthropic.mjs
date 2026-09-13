@@ -37,6 +37,7 @@ function claudeCmd(sub) {
 
 export const auth = { type: 'subscription', setup: 'Click “Sign in” (or run `claude auth login` in a terminal).' };
 export const loginCommand = () => claudeCmd('auth login');
+export const logoutCommand = () => claudeCmd('auth logout');
 export const installCommand = () => 'npm i -g @anthropic-ai/claude-code';
 
 /** Open an idle SDK session, run control requests, close it. */

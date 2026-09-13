@@ -65,12 +65,19 @@ function renderProviders() {
     right.title = st.error || p.auth?.setup || '';
     // One-click install / sign-in: opens a real terminal (browser logins need one), then Refresh.
     const action = st.installed === false && p.canInstall ? 'install' : st.installed !== false && st.loggedIn === false && p.canLogin ? 'login' : null;
-    let control = right;
+    const controls = el('span', 'row');
+    const runAction = (act) => async (e) => { e.stopPropagation(); const b = e.target; b.disabled = true; try { const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command; } catch (err) { $('#stt-hint').textContent = err.message; } finally { b.disabled = false; } };
     if (action) {
-      control = el('button', 'sm', action === 'install' ? 'Install' : 'Sign in'); control.title = `${p.auth?.setup || ''}`.trim();
-      control.onclick = async (e) => { e.stopPropagation(); control.disabled = true; try { const r = await api.post(`/api/providers/${p.id}/${action}`); $('#stt-hint').textContent = r.note || r.command; } catch (err) { $('#stt-hint').textContent = err.message; } finally { control.disabled = false; } };
+      const btn = el('button', 'sm', action === 'install' ? 'Install' : 'Sign in'); btn.title = `${p.auth?.setup || ''}`.trim();
+      btn.onclick = runAction(action); controls.append(btn);
+    } else controls.append(right);
+    // Re-auth is available for any provider that can log in, even when already signed in (e.g. to pick up a new
+    // subscription tier). It logs out then signs in where the CLI supports logout.
+    if (p.canRelogin && st.installed !== false) {
+      const re = el('button', 'sm ghost', '↻ Re-auth'); re.title = 'Log out and sign in again (refresh the token / subscription)';
+      re.onclick = runAction('relogin'); controls.append(re);
     }
-    name.append(left, control); d.append(name);
+    name.append(left, controls); d.append(name);
     if (lim.balance) d.append(el('div', 'wl tiny', `balance ${lim.balance.amount} ${lim.balance.currency}${lim.balance.granted > 0 ? ` · ${lim.balance.granted} granted (free)` : ''}${lim.balance.available ? '' : ' · exhausted'}`));
     for (const w of lim.windows || []) {
       const pct = Math.max(0, Math.min(100, Number(w.usedPercent) || 0));

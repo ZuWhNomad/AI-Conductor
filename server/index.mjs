@@ -133,12 +133,19 @@ async function route(req, res, url) {
   }
   if (p === '/api/ollama/pull' && m === 'POST') { const b = await readBody(req); ollama.pullModel(String(b.model || '')).then(() => refreshModels({ only: ['ollama'] })).catch((e) => logImprovement('error', 'ollama', e.message)); return json(res, 200, { ok: true }); }
   if (p === '/api/browse' && m === 'GET') return json(res, 200, listDirs(url.searchParams.get('path')));
-  if (seg[1] === 'providers' && seg[2] && (seg[3] === 'login' || seg[3] === 'install') && m === 'POST') {
+  if (seg[1] === 'providers' && seg[2] && ['login', 'relogin', 'install'].includes(seg[3]) && m === 'POST') {
     const prov = PROVIDERS[seg[2]];
     if (!prov) return json(res, 404, { error: 'unknown provider' });
-    const command = seg[3] === 'login' ? prov.loginCommand?.() : prov.installCommand?.();
+    let command;
+    if (seg[3] === 'install') command = prov.installCommand?.();
+    else { // login / relogin: re-auth clears a stale token first (logout) where the CLI supports it, then signs in
+      const login = prov.loginCommand?.();
+      const logout = seg[3] === 'relogin' ? prov.logoutCommand?.() : null;
+      command = login && logout ? `${logout} & ${login}` : login; // `&` = run login even if logout errored
+    }
     if (!command) return json(res, 400, { error: `${seg[2]} has no ${seg[3]} command` });
-    const note = seg[3] === 'login' ? (prov.spec?.login?.note || 'Finish the sign-in in the window that opened, then press Refresh.') : 'Wait for the installer to finish in the window that opened, then press Refresh.';
+    const note = seg[3] === 'install' ? 'Wait for the installer to finish in the window that opened, then press Refresh.'
+      : (prov.spec?.login?.note || `Finish the ${seg[3] === 'relogin' ? 're-auth (log out, then sign in)' : 'sign-in'} in the window that opened, then press Refresh.`);
     const opened = openTerminal(`Conductor — ${seg[2]} ${seg[3]}`, command);
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
