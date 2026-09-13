@@ -93,7 +93,7 @@ export const DEFAULTS = {
     // { periodHours, resetHour } for a daily wall-clock reset (add resetDay 0-6 + periodHours 168 for weekly), or
     // { periodHours, anchorAt } to step from an explicit instant. Set once; "use till it fails" refines the boundary
     // over time. Grok is seeded with a daily 18:00 local reset — change resetHour if yours differs.
-    usageResets: { grok: { periodHours: 24, resetHour: 18 } },
+    usageResets: { grok: { periodHours: 168, resetDay: 1, resetHour: 18 } }, // Grok = WEEKLY, Monday 18:00 local (the observed reset was Mon 14 Sep 6pm); change resetDay/resetHour if yours differs
 
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured
