@@ -45,12 +45,13 @@ function windowObservations(provider, now = Date.now()) {
 export function estimateUsage(provider, { now = Date.now(), seedPctPerMToken = null, resetsAt = null } = {}) {
   const { spent } = windowTokens(provider, now);
   const obs = windowObservations(provider, now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  // Least-squares fit of pct = rate·tokens through the origin (0% at the window start): robust to whole-percent
+  // rounding and uneven check-in spacing, and uses every reading. Falls back to a config seed before any check-in.
   let rate; // % per token
-  if (obs.length >= 2) { const a = obs[obs.length - 2], b = obs[obs.length - 1]; rate = b.tokens > a.tokens ? (b.pct - a.pct) / (b.tokens - a.tokens) : b.pct / Math.max(1, b.tokens); }
-  else if (obs.length === 1) rate = obs[0].pct / Math.max(1, obs[0].tokens);
+  if (obs.length) { let num = 0, den = 0; for (const o of obs) { num += o.pct * o.tokens; den += o.tokens * o.tokens; } rate = den ? num / den : obs[obs.length - 1].pct / Math.max(1, obs[obs.length - 1].tokens); }
   else if (seedPctPerMToken) rate = seedPctPerMToken / 1e6;
   else return null;
-  const anchor = obs[obs.length - 1] || { tokens: 0, pct: 0 };
-  const pct = Math.max(0, Math.min(100, anchor.pct + (spent - anchor.tokens) * rate));
-  return { pct: Math.round(pct * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, anchorPct: anchor.pct, anchorAt: anchor.at || null, points: obs.length, calibrated: obs.length > 0, resetsAt };
+  const latest = obs[obs.length - 1] || { tokens: 0, pct: 0 };
+  const pct = Math.max(0, Math.min(100, spent * rate)); // through-origin: % scales with tokens spent this window
+  return { pct: Math.round(pct * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, resetsAt };
 }

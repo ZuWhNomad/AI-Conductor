@@ -15,12 +15,12 @@ test('windowTokens sums in+out since the last long gap (a new usage window), ign
 });
 
 test('estimateUsage calibrates a %-per-token rate from a check-in and extrapolates', () => {
-  recordUsage('xai', 12);          // 12% observed at 600k tokens -> 20%/M
+  recordUsage('xai', 12);          // 12% observed at 600k tokens -> through-origin rate 20%/M
   let est = estimateUsage('xai');
   assert.equal(est.pct, 12); assert.equal(est.ratePctPerMToken, 20); assert.equal(est.calibrated, true);
-  runAt('xai', '2026-01-03T13:00:00Z', 300000, 0); // +300k tokens since the check-in
+  runAt('xai', '2026-01-03T13:00:00Z', 300000, 0); // now 900k tokens this window
   est = estimateUsage('xai');
-  assert.equal(est.pct, 18);       // 12% + 300k * 20%/M
+  assert.equal(est.pct, 18);       // 900k * 20%/M (through origin)
 });
 
 test('estimateUsage is null with no check-in and no seed, but honours a seed rate', () => {
