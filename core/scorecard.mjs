@@ -268,8 +268,18 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // Class walk: the first budget class (in configured order) that holds a viable plan wins; value already ordered the plans.
   const classOf = (p) => providerClass(p.steps[0].split(':')[0], cfg);
   let best = null, bestClass = null;
-  for (const cls of cfg.classOrder || []) { best = plans.find((p) => p.utility > -Infinity && classOf(p) === cls); if (best) { bestClass = cls; break; } }
-  if (!best) best = plans.find((p) => p.utility > -Infinity) || null;
+  if (escalate) {
+    // Escalation is the last rung before the conductor does it itself: take the highest-quality SINGLE model that is
+    // still AVAILABLE (limits + budget windows already filtered into `rows`), regardless of budget class — the
+    // strongest model we can still reach, not the cheapest class and not a cheap-first ladder (which would re-dispatch
+    // the rung that has been failing). This is the best-*available* pick, distinct from best-value. Fall back to a
+    // ladder only if no single model clears the bar.
+    best = plans.find((p) => p.utility > -Infinity && p.steps.length === 1) || plans.find((p) => p.utility > -Infinity) || null;
+    bestClass = best ? classOf(best) : null;
+  } else {
+    for (const cls of cfg.classOrder || []) { best = plans.find((p) => p.utility > -Infinity && classOf(p) === cls); if (best) { bestClass = cls; break; } }
+    if (!best) best = plans.find((p) => p.utility > -Infinity) || null;
+  }
   if (!best) {
     // A provider proven at this level exists but is capped/blocked/excluded: hand the task back (the conductor does it or
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
@@ -292,7 +302,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
     class: bestClass,
-    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation (two failed attempts): highest measured quality' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}`,
+    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: best available model by measured quality (any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}`,
     alternatives: alt,
   };
 }

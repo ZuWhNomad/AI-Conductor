@@ -34,7 +34,8 @@ export const DEFAULTS = {
     shell: ['py', 'python', 'python3', 'node', 'npm', 'npx', 'git', 'openscad', 'potrace', 'pip', 'pytest'],
     fetchAllowPrivate: false,         // the worker fetch_url tool blocks private/loopback/metadata IPs (SSRF); set true only if your workers must reach an internal docs server on the LAN
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
-    maxRounds: 3,                     // review -> follow_up rounds before escalation
+    maxRounds: 3,                     // review -> follow_up rounds on the SAME worker before escalating to a stronger model
+    escalationRounds: 2,              // after maxRounds fail: attempts on the best AVAILABLE model (scorecard top-quality, filtered by limits) before the conductor does the task itself. 0 = skip escalation (straight to the conductor)
     msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     maxTurns: 500,                    // tool turns per Claude-harness worker task
@@ -125,6 +126,7 @@ function normalize(cfg) {
   for (const [obj, defaults, key] of [[cfg, DEFAULTS, 'pollMinutes'], [cfg.conductor, DEFAULTS.conductor, 'maxWorkerConcurrency'], [cfg.conductor, DEFAULTS.conductor, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'maxRounds'], [cfg.scorecard, DEFAULTS.scorecard, 'minSamples'], [cfg.scorecard, DEFAULTS.scorecard, 'quality'], [cfg.scorecard, DEFAULTS.scorecard, 'qualityValueUsd'], [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes']]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
+  if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
   cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;

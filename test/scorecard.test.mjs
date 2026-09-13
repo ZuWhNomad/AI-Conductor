@@ -184,6 +184,20 @@ test('escalate picks the highest measured quality, not the next cheap rung', () 
   assert.match(r.reason, /escalation/);
 });
 
+test('escalation returns the best AVAILABLE model by quality across classes — distinct from best value', () => {
+  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, providerWeight: { ollama: 0, codex: 0.6, claude: 1 }, classes: { codex: 'subscription' }, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
+  // A free model that clears the bar (0.8) and a subscription model that is strictly better (1.0).
+  seed('ollama', 'qwen', null, 'test', 2, ['pass', 'pass', 'pass', 'pass', 'fail']);
+  seed('codex', 'gpt-6-astra', 'medium', 'test', 2, ['pass', 'pass', 'pass']);
+  const value = sc.recommend({ category: 'test', difficulty: 2 });
+  assert.equal(value.provider, 'ollama'); assert.equal(value.class, 'free');       // best value: free class wins the class walk
+  const esc = sc.recommend({ category: 'test', difficulty: 2, escalate: true });
+  assert.equal(esc.provider, 'codex'); assert.equal(esc.model, 'gpt-6-astra');       // escalation: highest-quality single model, any class
+  assert.equal(esc.plan.steps.length, 1);                                            // a strong single model, never a cheap-first ladder
+  assert.match(esc.reason, /escalation: best available/);
+  assert.notEqual(esc.provider, value.provider);                                     // the two picks are genuinely distinct
+});
+
 test('a higher effort within the cost slack dominates the lower effort of the same model', () => {
   // docs@2: Luna low and Luna max both 3/3 pass at ~$0.023 -> max wins despite equal utility; with slack 0 the cheaper (low) wins again.
   seed('codex', 'gpt-5.6-luna', 'low', 'docs', 2, ['pass', 'pass', 'pass']);

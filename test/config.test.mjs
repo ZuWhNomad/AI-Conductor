@@ -45,3 +45,13 @@ test('turn budgets default high and reject non-positive values', () => {
   assert.equal(loadConfig().conductor.maxTurns, 20000);
   saveConfig({ conductor: { maxTurns: 9999 } });
 });
+
+test('worker.escalationRounds defaults to 2, allows 0 (disable), rejects negatives and non-integers', () => {
+  assert.equal(DEFAULTS.worker.escalationRounds, 2);
+  saveConfig({ worker: { escalationRounds: 0 } });
+  assert.equal(loadConfig().worker.escalationRounds, 0, '0 is a valid choice: skip escalation, go straight to the conductor');
+  for (const bad of [-1, 1.5, 'x', null, NaN]) {
+    saveConfig({ worker: { escalationRounds: bad } });
+    assert.equal(loadConfig().worker.escalationRounds, 2);
+  }
+});

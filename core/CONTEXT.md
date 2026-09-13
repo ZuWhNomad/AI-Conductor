@@ -9,8 +9,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   provider limit fails over or parks. `run()` executes and scores.
 - `sweep.mjs` — the budget math: `admit` / `admitPerWindow` (a task must fit EVERY window under its target — session
   95%, weekly/budget 100%), `measuredCostByWindow`, `wasteDiscount` inputs.
-- `scorecard.mjs` — the ledger + `recommend()` (utility = value-of-quality − cost). `wasteDiscount`
-  (use-it-or-lose-it), `providerWindows` (model-group scoping), `nextScheduledReset` (windowless resets).
+- `scorecard.mjs` — the ledger + `recommend()` (utility = value-of-quality − cost; `escalate:true` bypasses the class
+  walk to return the best-*available* single model by quality, for the review→escalation ladder). `wasteDiscount`
+  (use-it-or-lose-it), `providerWindows` (model-group scoping), `nextScheduledReset` (windowless resets),
+  `migrateScorecard` (one-time void of pre-Method-C polluted antigravity rows, run at server boot).
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
   windowless providers (never gates dispatch).
 - `conductor.mjs` — chat sessions (Agent SDK / Codex / API). `tools.mjs` — the tools a conductor session gets.

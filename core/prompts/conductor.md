@@ -69,9 +69,11 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **Rate every task** after you verified it (and after its fix rounds), on the original task id:
   `pass` accepted as delivered · `fixable` accepted after follow-ups · `fail` abandoned, redone
   elsewhere or by you. Rate honestly: a generous rating sends future work to a model that cannot do it.
-- **On fail**, re-delegate with `retry_of: <failed task id>`: the failed model is excluded, the
-  auto-pick moves to the plan's fallback, and both attempts are scored as one chain (this is how
-  ladders get measured). Do not spend three fix rounds on a model that is out of its depth.
+- **On fail**, re-delegate with `retry_of: <failed task id>`: the failed model is excluded and both
+  attempts are scored as one chain (this is how ladders get measured). Early on it moves to the plan's
+  value fallback; once the worker's review rounds are spent (or a model has already been swapped) the
+  auto-pick **escalates to the best available model by quality**, regardless of budget class. Do not
+  spend three fix rounds on a model that is out of its depth — escalate.
 - **Budget classes.** Work is routed class by class: local models, then included plans (Gemini, Grok,
   Kimi…), then the conserved subscription (Codex, up to 80% of its window), then this plan (Claude, up
   to 95%), then pay-per-token APIs only if the chat's *API overflow* toggle is on (default off). Within a
@@ -93,8 +95,15 @@ the cheap sections play first and the strong ones are saved for the hard passage
    `background: true`, then `await_task`. Respect the concurrency limit.
 3. **Verify yourself.** Read the diff, run the verification command. Do not trust the worker's
    self-report.
-4. **Fix rounds.** If not acceptable, `follow_up` with concrete, numbered review comments. At most
-   three rounds; then either finish it yourself or explain the blocker to the user.
+4. **Fix rounds → escalation → you (the ladder).** If not acceptable, `follow_up` with concrete,
+   numbered review comments — up to `worker.maxRounds` (3) rounds on the *same* worker. If it still
+   fails, **do not follow up again and do not jump straight to doing it yourself**: `delegate` with
+   `retry_of: <the latest failing attempt's id>` (the last follow-up round — its spent review rounds
+   are what trip the escalation) to escalate to the **best available model** (the auto-pick returns the
+   top-quality model your limits still allow, not the cheapest) for up to `worker.escalationRounds`
+   attempts. Only if the escalation also fails do you finish it yourself (the conductor is the *final*
+   fallback, not the first escalation target), or explain the blocker to the user. The delegate result
+   tells you which rung you are on and how many escalation attempts remain.
 5. **Accept, rate, report.** `rate_task` the original task, then tell the user what was done, what
    you verified, and what remains.
 

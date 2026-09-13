@@ -18,6 +18,22 @@ import { sessionFlags } from './session-flags.mjs';
 
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '?');
 
+/**
+ * Where a retry_of sits on the review→escalation ladder (pure, so it is unit-tested). `depth` is the number of
+ * attempts already in the retry chain (the chain root — the original worker — is #1, not a retry). Escalation begins
+ * once the reviewed worker's rounds are spent, or after a prior model switch (depth ≥ 2). `escalationsUsed` counts
+ * only prior BEST-AVAILABLE attempts: when the root was not reviewed to exhaustion the first retry was a value
+ * fallback and is not counted, so `escalationRounds` grants that many genuine escalations (not one fewer).
+ */
+export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, failedRounds = 0, maxRounds = 3, escRounds = 2 } = {}) {
+  const reviewExhausted = hasFailed && failedRounds >= maxRounds;
+  const escalate = hasFailed && (reviewExhausted || depth >= 2);
+  const rootReviewed = rootRounds >= maxRounds;
+  const retries = hasFailed ? Math.max(0, depth - 1) : 0;
+  const escalationsUsed = rootReviewed ? retries : Math.max(0, retries - 1);
+  return { escalate, escalationsUsed, blocked: escalate && escalationsUsed >= escRounds, remaining: escRounds - (escalationsUsed + 1) };
+}
+
 export function formatModels(reg = getModels()) {
   const byProv = new Map();
   for (const m of reg.models) { if (!byProv.has(m.provider)) byProv.set(m.provider, []); byProv.get(m.provider).push(m); }
@@ -75,20 +91,28 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const failed = a.retry_of ? getTask(a.retry_of) : null;
         if (a.retry_of && !failed) return `unknown task ${a.retry_of} (retry_of)`;
         const exclude = [...(a.exclude || [])];
-        let depth = 0;
+        let depth = 0, root = failed;
         if (failed) {
-          // exclude every model already tried in this chain; two failed attempts => escalate on quality
-          for (let f = failed; f; f = f.retryOf ? getTask(f.retryOf) : null) { exclude.push(`${f.provider}:${f.model || 'default'}:${f.effort || 'default'}`); depth++; }
+          // exclude every model already tried in this chain; remember the chain root (the original worker)
+          for (let f = failed; f; f = f.retryOf ? getTask(f.retryOf) : null) { exclude.push(`${f.provider}:${f.model || 'default'}:${f.effort || 'default'}`); depth++; root = f; }
           category = category || failed.category || undefined; difficulty = difficulty || failed.difficulty || undefined;
         }
+        // Review → escalation ladder (see escalationState). First delegate: best VALUE. Once the worker's review
+        // rounds are spent — or after a prior model switch — a retry_of escalates to the best AVAILABLE model by
+        // quality (`escalate` flips recommend() from value to best-available), bounded to worker.escalationRounds.
+        const escRounds = cfg.worker.escalationRounds ?? 2;
+        const { escalate, escalationsUsed, blocked, remaining } = escalationState({ hasFailed: !!failed, depth, rootRounds: root?.rounds || 0, failedRounds: failed?.rounds || 0, maxRounds: cfg.worker.maxRounds || 3, escRounds });
         if (!provider && !model && category) {
-          pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate: depth >= 2, overflowApi: !!sessionFlags(sessionId).overflowApi });
+          if (blocked) return `Escalation budget spent: the best-available model was already tried ${escalationsUsed} time(s) (worker.escalationRounds=${escRounds}) after the review rounds, and the task still failed. Per the ladder, the conductor is the final fallback — finish this one yourself now (or name a provider/model explicitly to override).`;
+          pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi });
           if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
           if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; }
         }
         if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
         const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi });
-        const fb = pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
+        const fb = escalate
+          ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
+          : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
         const chosen = pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : category && !a.provider && !a.model ? `\nWorker: configured default ${t.provider}:${t.model || 'default'} (scorecard has no qualified plan for ${category}@${difficulty || 2} yet)` : '';
         if (a.background) return `Task ${t.id} queued (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
         return (await finish(t, a.timeout_minutes)) + chosen;
