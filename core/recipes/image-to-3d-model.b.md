@@ -53,10 +53,15 @@ then the task's own verifier.
 STL, `build.py` (trace → paths.json → edits.json → geometry → STL, reproducible), `paths.json`, `edits.json`,
 top-view preview, NOTES.md with Hausdorff/SSIM per iteration, verifier output, tool versions, doubts.
 
-## Tools (all installed for `py` on this machine)
+## Tools (all pre-installed; run Python via the workspace shim)
 vtracer, svgpathtools, shapely, manifold3d, trimesh (+rtree), pymeshfix, scipy, scikit-image, opencv-python-headless,
 Pillow, numpy, matplotlib. potrace and OpenSCAD 2021 are in `tools/` if you prefer them; OpenSCAD's console
 binary only, under a timeout.
+
+**Windows Python — do this exactly.** Your workspace root has a `py.cmd` shim → a working Python 3.12 with every
+library above. Invoke it as **`.\py.cmd`** (`.\py.cmd build.py`, `.\py.cmd verify.py out\cutter.stl`). Do NOT use the
+bare `py` launcher (it finds no Python in the sandbox), and **never `pip install`** — network is blocked (`WinError 10013`)
+and everything is already installed.
 
 ## Anti-patterns (unchanged)
 Drawing from the text while the image sits unused; stopping at "the gate passes"; widening walls or filling

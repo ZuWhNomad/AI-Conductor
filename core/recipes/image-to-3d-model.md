@@ -100,8 +100,12 @@ guessed, which reference view was ambiguous). If you installed a tool, give the 
 | Image cleanup | numpy, Pillow, scipy, scikit-image | `py -m pip install --user numpy pillow scipy scikit-image` |
 | Mesh checks | trimesh (+rtree), shapely, manifold3d | `py -m pip install --user trimesh rtree shapely manifold3d` |
 
-Windows: run Python as `py`; if the launcher reports no Pythons inside a sandbox, call the interpreter under
-`%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe` directly and say so in the notes.
+**Windows Python — do this exactly.** Your workspace root has a `py.cmd` shim pointing at a working Python 3.12
+with every library above already installed. Invoke it as **`.\py.cmd`** (e.g. `.\py.cmd verify.py out\cutter.stl`,
+`.\py.cmd generate.py`). Do NOT use the bare `py` launcher — inside the sandbox it cannot find Python and reports
+"No installed Python found". **Never `pip install` anything** — the sandbox blocks network and the libraries are
+already present; an install attempt fails with `WinError 10013` and wastes the run. If `.\py.cmd` ever fails, call
+the interpreter directly at the path the shim contains (`type py.cmd` to read it).
 
 ## Anti-patterns seen in the failed runs
 - Drawing Béziers from the verbal description while the reference image sat unused.
