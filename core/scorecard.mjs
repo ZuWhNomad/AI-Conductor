@@ -97,6 +97,9 @@ const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] 
  * attempts linked by retryOf (a new model after a fail). Each chain: { taskId, category, difficulty,
  * source, attempts[], path[], verdict (last attempt), tokens, usd, durationMs, rounds }.
  */
+/** Raw run rows from the ledger (for the budget planner: measuredCost needs pct + concurrent per run). */
+export function runRows() { return readNdjson(FILE()).filter((r) => r.op === 'run'); }
+
 export function rootRuns({ source = null } = {}) {
   const runs = new Map(); const rates = new Map(); const voided = new Set();
   const all = readNdjson(FILE());

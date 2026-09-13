@@ -89,3 +89,17 @@ test('per-window targets: session windows to 95%, weekly and budgets to 100%; th
   assert.equal(nextResetWindows(codex), null);                                            // 92% of a 100% target: not full
   assert.equal(headroomFor([]).headroom, 100);                                            // no windows reported: planner falls back to cost-unknown probing
 });
+
+test('admit: gates dispatch on per-window headroom under targets, and parks (until reset) when a provider is tapped out', async () => {
+  const { admit } = await import('../core/sweep.mjs');
+  const tw = Date.now() + 5 * 86400e3;
+  const codex91 = [{ id: 'codex:w', label: 'Codex weekly', usedPercent: 91, resetsAt: tw, windowMinutes: 10080 }]; // weekly target 100 -> 9% headroom
+  assert.equal(admit(codex91, [{ cost: 3 }, { cost: 3 }, { cost: 3 }, { cost: 3 }]).n, 3);   // 3+3+3=9 fits, 4th does not
+  assert.equal(admit(codex91, [{ cost: 3 }], { runningCost: 8 }).n, 0);                        // 8% already in flight: only 1% free
+  const full = [{ id: 'codex:w', label: 'Codex weekly', usedPercent: 100, resetsAt: tw }];
+  const r = admit(full, [{ cost: 1 }]);
+  assert.equal(r.n, 0); assert.equal(r.until, tw);                                              // tapped out -> park until reset
+  assert.equal(admit([], [{ cost: 5 }]).n, 1);                                                  // no windows reported (grok/ollama): not gated
+  const sess = [{ id: 'c:5h', label: '5-hour', usedPercent: 94, resetsAt: Date.now() + 3600e3 }]; // session target 95 -> 1% headroom
+  assert.equal(admit(sess, [{ cost: 2 }]).n, 0);                                                 // 2% > 1% -> park (session capped at 95%, not 100%)
+});

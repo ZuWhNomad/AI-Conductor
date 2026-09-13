@@ -200,3 +200,9 @@ cheaper than expected speeds up on its own, and one that is draining faster slow
 unlimited but capped by hardware. The cookiebench-trace runner is the first client: phase 1 probes every model at
 its cheapest effort, phase 2 runs the remaining efforts in planner-sized batches per provider (Antigravity per
 model group), all providers concurrently.
+
+**The gate is framework-level, not sweep-only.** `core/tasks.mjs schedule()` calls `admit(windows, pending, {runningCost})`
+before dispatching ANY queued task: it sizes how many tasks of a provider may start now under the per-window targets
+(session 95% / weekly 100%, `targetFor`), counting what in-flight tasks already consume, and parks the rest until the
+binding window resets (`nextResetWindows`). So a delegated task, a benchmark run, or a hand-pinned model all obey the
+same budget. Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.

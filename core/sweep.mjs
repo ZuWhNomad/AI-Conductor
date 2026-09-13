@@ -124,3 +124,17 @@ export function nextResetWindows(windows) {
   const full = (windows || []).filter((w) => (Number(w.usedPercent) || 0) >= targetFor(w) - 0.01 && w.resetsAt);
   return full.length ? Math.min(...full.map((w) => Number(w.resetsAt))) : null;
 }
+
+/**
+ * Scheduler admission: how many more tasks of `pending` (each {provider, model, cost}) may start on a provider right
+ * now, given `runningCost` (summed measured cost of that provider's in-flight tasks) and the per-window targets. Also
+ * returns `until` (reset ms) when nothing fits, so the scheduler can park rather than spin. Deterministic; used for
+ * ALL tasks, not just sweeps — this is the framework budget gate.
+ */
+export function admit(windows, pending, { runningCost = 0, maxParallel = Infinity } = {}) {
+  const { headroom } = headroomFor(windows);
+  const free = headroom - runningCost;
+  if (free <= 0) return { n: 0, until: nextResetWindows(windows), reason: `no headroom (${headroom.toFixed(1)}% window, ${runningCost.toFixed(1)}% already running)` };
+  const g = planGreedy(pending.map((p) => p.cost || 0), { usedPct: 100 - free, bufferPct: 0, maxParallel });
+  return { n: g.n, order: g.order, until: g.n ? null : nextResetWindows(windows), reason: g.reason };
+}

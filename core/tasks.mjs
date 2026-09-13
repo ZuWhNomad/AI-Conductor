@@ -11,7 +11,8 @@ import { contextBlock } from './context.mjs';
 import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, snapshotWindows, CATEGORIES, recommend } from './scorecard.mjs';
+import { recordRun, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { admit, measuredCost } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { mcpServers } from './mcp.mjs';
 
@@ -145,13 +146,32 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
 
 export function schedule() {
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
-  const max = loadConfig().conductor.maxWorkerConcurrency || 3;
+  const cfg = loadConfig();
+  const max = cfg.conductor.maxWorkerConcurrency || 3;
+  const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
   const queued = [...tasks.values()].filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  if (!queued.length || running.size >= max) return;
+  const rows = budget ? runRows() : null;
+  const perTaskCost = (t) => measuredCost(rows, t.provider, { model: t.model }); // % of the tightest window one task of this provider/model consumes
+  // Cost already committed by in-flight tasks, per provider — so a batch does not collectively overrun the window.
+  const runningCost = {};
+  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) runningCost[rt.provider] = (runningCost[rt.provider] || 0) + perTaskCost(rt); }
+  const dispatched = {}; // provider -> % of window this pass has committed
   for (const t of queued) {
-    if (t.status !== 'queued') continue; // A synchronous setup failure can schedule the next task immediately.
+    if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (running.size >= max) break;
     const until = blockedUntil(t.provider);
     if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
+    if (budget) {
+      const windows = providerWindows(t.provider, t.model);
+      const committed = (runningCost[t.provider] || 0) + (dispatched[t.provider] || 0);
+      const a = admit(windows, [{ cost: perTaskCost(t) }], { runningCost: committed, maxParallel: 1 });
+      if (!a.n) { // no headroom under the per-window targets (session 95% / weekly 100%): park until the window resets
+        if (a.until) park(t, a.until, `provider ${t.provider} within its usage buffer (${a.reason}); waiting for reset`);
+        continue;
+      }
+      dispatched[t.provider] = (dispatched[t.provider] || 0) + perTaskCost(t);
+    }
     void run(t);
   }
 }
