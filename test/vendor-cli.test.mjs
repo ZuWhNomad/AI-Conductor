@@ -116,3 +116,14 @@ test('the Claude "weekly Fable" window applies to Fable models only', async () =
   assert.equal(sc.providerUsedPct('claude'), 94);                                    // no model: busiest, as before
   delete lim.getLimits().providers.claude;
 });
+
+test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a small one stays inline (Windows arg-length safety)', async () => {
+  const { VENDORS } = await import('../core/providers/vendors.mjs');
+  const small = VENDORS.grok.headlessArgs({ prompt: 'hi', cwd: 'F:/ws', model: 'grok-4.6', effort: 'high' });
+  assert.ok(small.args.includes('-p') && !small.args.includes('--prompt-file'));
+  const big = VENDORS.grok.headlessArgs({ prompt: 'x'.repeat(20000), cwd: 'F:/ws', model: 'grok-4.6', effort: 'high' });
+  assert.ok(!big.args.includes('-p') && big.args.includes('--prompt-file'));
+  const pf = big.args[big.args.indexOf('--prompt-file') + 1];
+  assert.ok(/grok-prompt-.*\.txt$/.test(pf) && !pf.includes('F:/ws')); // outside the workspace
+  assert.equal((await import('node:fs')).readFileSync(pf, 'utf8').length, 20000);
+});

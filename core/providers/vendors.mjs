@@ -2,9 +2,9 @@
 // install and sign in, how to probe auth and list models, how to run headless, how to parse output.
 // Verified flag sets: agy 1.2.1 (2026-09-11; `-p /usage --output-format json` answers quota without a turn), grok 1.0.0 (2026-09, event schema provisional until a
 // signed-in run), Qwen Code 0.23 and Kimi CLI 1.50 (see notes per spec).
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { findCli } from '../proc.mjs';
@@ -131,7 +131,12 @@ export const VENDORS = {
     parseModels: (out) => out.split('\n').map((l) => /^\s*\*\s+([\w.:-]+)/.exec(l)).filter(Boolean).map((m) => ({ id: m[1], label: m[1] })),
     efforts: ['low', 'medium', 'high'],
     headlessArgs: (t) => {
-      const args = ['-p', t.prompt, '--output-format', 'streaming-messages-json', '--always-approve', '--no-auto-update', '--cwd', t.cwd];
+      // A large prompt as a `-p` CLI arg fails on Windows (command-line length limit) — grok exits ~instantly with
+      // an empty result. `--prompt-file` reads the prompt from disk instead; use it past a safe threshold. The temp
+      // file lives outside the workspace so a benchmark run never sees it.
+      const args = ['--output-format', 'streaming-messages-json', '--always-approve', '--no-auto-update', '--cwd', t.cwd];
+      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt); args.push('--prompt-file', pf); }
+      else args.push('-p', t.prompt);
       let threadId = null;
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
       else { threadId = randomUUID(); args.push('--session-id', threadId); }
