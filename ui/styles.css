@@ -33,8 +33,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* sidebar */
 #sidebar { background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; height: 100vh; min-height: 0; }
 #sidebar .panel { flex: 0 0 auto; }
+/* Chats is the ONLY scrolling region; every other panel (providers included) is pinned. */
 #sidebar .panel.grow { flex: 1 1 auto; min-height: 90px; overflow: auto; }
-#sidebar .panel.providers-panel { flex: 0 1 auto; max-height: 45vh; overflow: auto; }
+/* Providers & limits: pinned near the top, always visible. Bounded so a long list scrolls inside itself
+   instead of pushing the chats list (and Self-improvement) out of view. */
+#sidebar .panel.providers-panel { flex: 0 1 auto; min-height: 120px; max-height: 42vh; overflow: auto; }
 .picker select { min-width: 0; flex: 1; }
 .picker #new-model { flex: 2.2; }
 #chat-header select { max-width: 200px; }
