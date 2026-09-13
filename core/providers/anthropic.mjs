@@ -122,13 +122,26 @@ export async function pollLimits() {
   return normalizeUsage(u);
 }
 
+// Claude model families; any window whose key or a scoped model's name names a family is scoped to that family,
+// so a maxed per-model window (Opus, Sonnet, …) never blocks the other models. Add a family here if Anthropic ships one.
+const CLAUDE_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
+const familyRe = (s) => CLAUDE_FAMILIES.find((f) => String(s || '').toLowerCase().includes(f)) || null;
+const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_haiku: 'weekly Haiku', seven_day_fable: 'weekly Fable', seven_day_overage_included: 'weekly (overage)', overage: 'overage' };
+
 export function normalizeUsage(u) {
   const rl = u?.rate_limits || {};
-  const win = (key, label) => rl[key] ? [{ id: key, label, usedPercent: rl[key].utilization, resetsAt: rl[key].resets_at ? Date.parse(rl[key].resets_at) : null }] : [];
-  const windows = [
-    ...win('five_hour', '5-hour'), ...win('seven_day', 'weekly'), ...win('seven_day_opus', 'weekly Opus'), ...win('seven_day_sonnet', 'weekly Sonnet'),
-    ...(rl.model_scoped || []).map((m) => ({ id: `model:${m.display_name}`, label: `weekly ${m.display_name}`, usedPercent: m.utilization, resetsAt: m.resets_at ? Date.parse(m.resets_at) : null })),
-  ];
+  const windows = [];
+  // Emit EVERY reported rate-limit window (so a newly-added five_hour_opus / seven_day_haiku appears on its own),
+  // each auto-scoped to its model family when the key names one; global windows (five_hour, seven_day) stay unscoped.
+  for (const [key, val] of Object.entries(rl)) {
+    if (key === 'model_scoped' || key === 'extra_usage' || !val || typeof val !== 'object' || val.utilization == null) continue;
+    const models = familyRe(key);
+    windows.push({ id: key, label: WINDOW_LABELS[key] || key.replace(/_/g, ' '), usedPercent: val.utilization, resetsAt: val.resets_at ? Date.parse(val.resets_at) : null, ...(models ? { models } : {}) });
+  }
+  for (const m of rl.model_scoped || []) {
+    const models = familyRe(m.display_name);
+    windows.push({ id: `model:${m.display_name}`, label: `weekly ${m.display_name}`, usedPercent: m.utilization, resetsAt: m.resets_at ? Date.parse(m.resets_at) : null, ...(models ? { models } : {}) });
+  }
   return {
     provider: id, plan: u?.subscription_type || null, available: !!u?.rate_limits_available,
     blocked: windows.some((w) => (w.usedPercent ?? 0) >= 100), windows,
@@ -140,6 +153,6 @@ export function normalizeUsage(u) {
 /** Translate a live SDKRateLimitInfo (from a running session) into a window update. */
 export function windowFromEvent(info) {
   if (!info?.rateLimitType) return null;
-  const labels = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_overage_included: 'weekly (overage)', overage: 'overage' };
-  return { id: info.rateLimitType, label: labels[info.rateLimitType] || info.rateLimitType, usedPercent: info.utilization != null ? Math.round(info.utilization * (info.utilization <= 1 ? 100 : 1)) : null, resetsAt: info.resetsAt ? info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1) : null, status: info.status };
+  const models = familyRe(info.rateLimitType);
+  return { id: info.rateLimitType, label: WINDOW_LABELS[info.rateLimitType] || info.rateLimitType, usedPercent: info.utilization != null ? Math.round(info.utilization * (info.utilization <= 1 ? 100 : 1)) : null, resetsAt: info.resetsAt ? info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1) : null, status: info.status, ...(models ? { models } : {}) };
 }

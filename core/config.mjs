@@ -22,10 +22,13 @@ export const DEFAULTS = {
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
     // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
-    // tool spawns a host shell in the workspace. `shell: true` = allowed (default; needed to run tests/verifiers);
-    // `false` = the run tool is disabled; an array = an allow-list of permitted command prefixes, e.g.
-    // ['py', 'python', 'node', 'npm', 'git', 'openscad', 'potrace']. File tools stay sandboxed to the workspace regardless.
-    shell: true,
+    // tool spawns a host shell in the workspace, so an injected third-party model could otherwise read the plaintext
+    // key store and exfiltrate it. The boundary: `true` = any command; `false` = the run tool is disabled; an array
+    // = an allow-list of permitted command NAMES (exact basename; a single command with no shell operators). Default
+    // is an allow-list covering the benchmark + common coding tools; the trusted conductor can extend it at runtime
+    // (the `allow_command` tool, logged). Do NOT add a shell (bash/sh/cmd/powershell) — that re-enables arbitrary
+    // execution. File tools stay sandboxed to the workspace regardless of this setting.
+    shell: ['py', 'python', 'python3', 'node', 'npm', 'npx', 'git', 'openscad', 'potrace', 'pip', 'pytest'],
     fetchAllowPrivate: false,         // the worker fetch_url tool blocks private/loopback/metadata IPs (SSRF); set true only if your workers must reach an internal docs server on the LAN
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds before escalation
@@ -76,6 +79,13 @@ export const DEFAULTS = {
     fallbackLadder: { low: 1, medium: 1.5, high: 2, xhigh: 3, max: 4, ultra: 6 }, // relative token cost per effort before a model has measured rows at that effort
     blockedMinutes: 30,               // how long a provider is assumed blocked after a limit hit when it gives no retry-after
     quotaPressurePct: 80,             // a provider whose busiest window is past this % is charged at full list price
+    // Use-it-or-lose-it: a subscription's weekly/monthly window that resets soon with quota unused loses that quota
+    // at reset, so spending it now is ~free. Within wasteHorizonHours of a reset, the model's cost is discounted
+    // toward 0 in proportion to (how close the reset is) × (how much headroom is unused) × wasteStrength. Quality still
+    // dominates selection (utility = value×quality − cost), so this only tips the balance among comparable choices.
+    wasteHorizonHours: 48,            // start favouring a soon-resetting subscription this many hours before its reset
+    wasteStrength: 0.9,               // 0 = off; 1 = a fully-unused window at its reset is treated as free
+
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured
     // ceiling − the task's difficulty), so capacity proven at level 4-5 is held back for level 4-5 work.

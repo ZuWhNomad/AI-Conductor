@@ -218,7 +218,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
   const reserve = (provider) => { const w = providerWeight(provider, cfg); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + (cfg.reservePct ?? 0) * w * gap; };
-  const costOf = (g) => { if (g.avgUsd == null) return null; const [p, m] = g.sel.split('>').pop().split(':'); return (g.avgUsd + hourly * (g.avgDurationMs || 0) / 3.6e6) * providerWeight(p, cfg, m === 'default' ? null : m) * reserve(p); };
+  const costOf = (g) => { if (g.avgUsd == null) return null; const [p, m] = g.sel.split('>').pop().split(':'); const model = m === 'default' ? null : m; return (g.avgUsd + hourly * (g.avgDurationMs || 0) / 3.6e6) * providerWeight(p, cfg, model) * reserve(p) * wasteDiscount(p, cfg, model); };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   const bySel = new Map();
@@ -323,6 +323,30 @@ export function providerWeight(provider, cfg = loadConfig().scorecard, model = n
   const base = cfg.providerWeight?.[provider] ?? 1;
   const used = providerUsedPct(provider, { model });
   return used >= (cfg.quotaPressurePct ?? 80) ? 1 : base;
+}
+
+/**
+ * Use-it-or-lose-it cost discount in [~0, 1]. A subscription's weekly/monthly window that resets soon with quota
+ * unused loses that quota at reset, so spending it now is ~free — discount its cost so the planner prefers it while
+ * quality still leads. Only fixed-quota subscription classes (not API, which bills per token, nor the conductor's own
+ * plan, which keeps a buffer). 5-hour windows churn constantly and are ignored — the waste that matters is the weekly.
+ */
+export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = null, now = Date.now()) {
+  const cls = providerClass(provider, cfg);
+  if (cls !== 'subscription' && cls !== 'included') return 1;
+  const horizon = Math.max(1, cfg.wasteHorizonHours ?? 48) * 3600e3;
+  const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? 0.9));
+  let factor = 1;
+  for (const w of providerWindows(provider, model)) {
+    if (!w.resetsAt) continue;
+    if (/hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)) continue; // ignore the 5-hour churn
+    const ms = w.resetsAt - now;
+    if (ms <= 0 || ms > horizon) continue;
+    const headroom = Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100; // unused fraction of the window
+    const proximity = 1 - ms / horizon; // 0 at the horizon edge -> 1 at reset
+    factor = Math.min(factor, 1 - proximity * headroom * strength);
+  }
+  return factor;
 }
 
 const parseSel = (s) => { const [provider, model, effort] = s.split(':'); return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort }; };

@@ -406,3 +406,19 @@ test('modeling: only a recorded pass is routable, at the effort that passed', as
   assert.equal(p.priorFor('codex', 'gpt-5.6-luna', 'modeling').tier, null); // fail
   assert.equal(p.priorFor('kimi', 'kimi-k3', 'modeling').tier, null);       // never benchmarked: no code prior leaks in
 });
+
+test('wasteDiscount: a soon-resetting subscription window with unused quota is discounted', async () => {
+  const { wasteDiscount } = await import('../core/scorecard.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = { wasteHorizonHours: 48, wasteStrength: 0.9, classes: { codex: 'subscription' }, providerWeight: {} };
+  const lim = getLimits();
+  const wk = (usedPercent, hoursToReset) => { lim.providers.codex = { windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent, resetsAt: Date.now() + hoursToReset * 3600e3, windowMinutes: 10080 }] }; };
+  wk(20, 6); assert.ok(wasteDiscount('codex', cfg, null) < 0.5, 'near reset with 80% headroom -> heavy discount');
+  wk(20, 100); assert.equal(wasteDiscount('codex', cfg, null), 1, 'far from reset -> no discount');
+  wk(95, 6); assert.ok(wasteDiscount('codex', cfg, null) > 0.9, 'near reset but little headroom -> tiny discount');
+  // 5-hour windows churn; they are ignored.
+  lim.providers.codex = { windows: [{ id: 'codex:5h', label: '5-hour', usedPercent: 10, resetsAt: Date.now() + 1 * 3600e3, windowMinutes: 300 }] };
+  assert.equal(wasteDiscount('codex', cfg, null), 1, '5-hour window is not a waste source');
+  // API / conductor classes are never discounted (no wasted quota / keep a buffer).
+  assert.equal(wasteDiscount('claude', cfg, null), 1);
+});

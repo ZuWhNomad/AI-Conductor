@@ -10,7 +10,7 @@ import { logImprovement, resolveImprovement } from './improve.mjs';
 import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, saveConfig } from './config.mjs';
 import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
@@ -121,6 +121,25 @@ export function conductorToolDefs({ sessionId, cwd }) {
       },
     },
     { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => (cancelTask(a.task_id) ? `Task ${a.task_id} canceled.` : `unknown task ${a.task_id}`) },
+    {
+      name: 'allow_command',
+      description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad, cmake, pytest). Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
+      schema: z.object({ command: z.string().describe('Bare command name to allow, e.g. "openscad" (no path, no arguments, no shell operators)') }),
+      handler: async (a) => {
+        const raw = String(a.command || '').trim();
+        const base = raw.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
+        if (!base || /[^\w.\-]/.test(base)) return `refused: "${raw}" must be a bare command name (letters, digits, . _ -) with no path, arguments, or shell operators.`;
+        if (['bash', 'sh', 'zsh', 'cmd', 'powershell', 'pwsh', 'env', 'wsl', 'ssh'].includes(base.toLowerCase())) return `refused: "${base}" is a shell/interpreter — allowing it would re-enable arbitrary execution and defeat the boundary.`;
+        const shell = loadConfig().worker?.shell;
+        if (shell === true) return 'worker.shell is already unrestricted (true); no allow-list to extend.';
+        if (shell === false || shell === 'off') return 'worker.shell is off (the run tool is disabled). Turn it into an allow-list in Settings first.';
+        const list = Array.isArray(shell) ? shell : [];
+        if (list.some((x) => x.replace(/\.(exe|cmd|bat|com|ps1)$/i, '') === base)) return `"${base}" is already on the allow-list.`;
+        saveConfig({ worker: { shell: [...list, base] } });
+        logImprovement('idea', 'conductor', `added "${base}" to worker.shell allow-list`, {});
+        return `Added "${base}" to the worker.shell allow-list (now ${list.length + 1} commands). API/Ollama workers can run it.`;
+      },
+    },
     {
       name: 'rate_task',
       description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; fail = abandoned, redone elsewhere or by you. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
