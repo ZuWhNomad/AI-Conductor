@@ -349,11 +349,26 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   return factor;
 }
 
-/** Next reset for a provider whose CLI reports no window, from config `usageResets` (periodHours + anchorAt). Null when none. */
+/**
+ * Next reset for a provider whose CLI reports no window, from config `usageResets`. All times are the machine's
+ * LOCAL (system) timezone — DST-aware — never a hard-coded zone. Two forms:
+ *   { periodHours, resetHour[, resetMinute][, resetDay] } — a wall-clock schedule: daily at resetHour local
+ *     (periodHours 24), or weekly at resetDay (0=Sun..6=Sat) + resetHour local (periodHours 168).
+ *   { periodHours, anchorAt } — step the period from an explicit instant (anchorAt with no offset = local time).
+ * Null when nothing is configured.
+ */
 export function nextScheduledReset(provider, cfg = loadConfig().scorecard, now = Date.now()) {
   const s = cfg.usageResets?.[provider]; if (!s) return null;
   const period = (Number(s.periodHours) || 0) * 3600e3; if (period <= 0) return null;
-  const anchor = s.anchorAt ? Date.parse(s.anchorAt) : NaN;
+  if (s.resetHour != null) { // wall-clock schedule in the system's local timezone
+    const d = new Date(now);
+    d.setHours(Number(s.resetHour) || 0, Number(s.resetMinute) || 0, 0, 0);
+    if (s.resetDay != null) { const delta = (((Number(s.resetDay) - d.getDay()) % 7) + 7) % 7; d.setDate(d.getDate() + delta); }
+    let next = d.getTime();
+    while (next <= now) next += period; // step forward to the first reset strictly after now
+    return next;
+  }
+  const anchor = s.anchorAt ? Date.parse(s.anchorAt) : NaN; // explicit instant (no offset => local)
   if (!Number.isFinite(anchor)) return null;
   const next = anchor + Math.ceil((now - anchor) / period) * period;
   return next <= now ? next + period : next;

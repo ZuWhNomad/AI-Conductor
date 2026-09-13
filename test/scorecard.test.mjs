@@ -425,10 +425,11 @@ test('wasteDiscount: a soon-resetting subscription window with unused quota is d
 
 test('nextScheduledReset + wasteDiscount apply to a windowless provider on a configured schedule', async () => {
   const { nextScheduledReset, wasteDiscount } = await import('../core/scorecard.mjs');
-  const cfg = { usageResets: { grok: { periodHours: 24, anchorAt: '2026-09-14T18:00:00' } }, classes: { grok: 'included' }, wasteHorizonHours: 48, wasteStrength: 0.9, providerWeight: {} };
-  const now = Date.parse('2026-09-15T10:00:00'); // 8h before the next daily reset
+  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteHorizonHours: 48, wasteStrength: 0.9, providerWeight: {} };
+  const now = Date.parse('2026-09-15T10:00:00'); // local morning; next reset is 18:00 LOCAL today
   const nr = nextScheduledReset('grok', cfg, now);
-  assert.ok(nr > now && (nr - now) / 3600e3 < 24, 'next reset is stepped forward from the anchor');
+  assert.ok(nr > now && (nr - now) / 3600e3 < 24, 'next reset stepped forward');
+  assert.equal(new Date(nr).getHours(), 18, 'reset is at the configured local wall-clock hour (system timezone)');
   assert.ok(wasteDiscount('grok', cfg, null, now) < 0.5, 'a windowless provider near its scheduled reset is discounted (plow through it)');
   assert.equal(nextScheduledReset('codex', cfg, now), null, 'no schedule configured -> null');
 });
