@@ -35,9 +35,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 #sidebar .panel { flex: 0 0 auto; }
 /* Chats is the ONLY scrolling region; every other panel (providers included) is pinned. */
 #sidebar .panel.grow { flex: 1 1 auto; min-height: 90px; overflow: auto; }
-/* Providers & limits: pinned near the top, always visible. Bounded so a long list scrolls inside itself
-   instead of pushing the chats list (and Self-improvement) out of view. */
-#sidebar .panel.providers-panel { flex: 0 1 auto; min-height: 120px; max-height: 42vh; overflow: auto; }
+/* Providers & limits: the header row (title + Refresh + auto) stays PINNED; only the provider LIST
+   (#providers) scrolls. The panel itself is bounded and never scrolls as a whole. */
+#sidebar .panel.providers-panel { flex: 0 1 auto; min-height: 120px; max-height: 42vh; overflow: hidden; }
+#sidebar .panel.providers-panel > #providers { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .picker select { min-width: 0; flex: 1; }
 .picker #new-model { flex: 2.2; }
 #chat-header select { max-width: 200px; }
