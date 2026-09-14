@@ -133,3 +133,50 @@ cancel with `POST /api/tasks/:id/cancel`.
   `/api/state.providers.claude.status === 'ok'` first (same for `codex`).
 - Prefer discovery (`/api/state`, `/api/models`, the PID file) over constants so the same script
   runs on any machine.
+
+## Updating Conductor *with* Conductor — sandbox mode
+
+**When to use this:** ONLY when the repo you're changing **is Conductor itself**. A running Conductor
+can't safely rewrite its own files and then restart to test them (it would kill the session hosting
+the work). For any *other* project, skip this section and just point a normal session at that repo.
+
+The fix: run a **stable clone** of Conductor as the engine, on a separate port with an isolated
+state dir, and point its sessions at the real (origin-linked) Conductor repo. The engine never edits
+itself, and you can restart the real repo's instance to test a change without killing the session.
+
+### 0. Check for an existing sandbox FIRST
+Before cloning, look for an existing sandbox (a sibling `*-sandbox` dir, e.g. `<repo>-sandbox`, with
+its own `.state`). If it exists, **reuse it** — just make sure it's current (step 3b) — don't
+re-clone.
+
+### 1. Create it (only if missing)
+- Clone the pushed repo to a sibling dir: `git clone <origin-url> <repo>-sandbox`
+- `cd <repo>-sandbox && npm install`
+
+### 2. Launch the engine (isolated + quiet)
+- Separate port and an **isolated state dir** (a shared state dir = two schedulers over one task
+  journal = double execution):
+  `CONDUCTOR_HOME=<repo>-sandbox/.state  CONDUCTOR_NO_POLL=1  node bin/conductor.mjs start --port <alt-port> --no-open`
+- `CONDUCTOR_NO_POLL=1` stops the sandbox from polling provider usage and from double-scheduling.
+  Because of it the **model registry loads empty** — before creating a session that will delegate to
+  workers, populate it once: `POST /api/models/refresh` (with `content-type: application/json`).
+- (Optional) seed learning so the sandbox recommends well from the start: copy `scorecard.ndjson`
+  (and `limits.json`, `usage-observations.ndjson`) from the main state dir into the sandbox's
+  `.state` **before** launching. Never copy `sessions.json`, `tasks/`, or `server.pid`.
+
+### 3. Use it
+- Drive the sandbox's API (`http://127.0.0.1:<alt-port>`) exactly as in the sections above, but with
+  **`cwd` = the real origin-linked repo** (not the clone). Sessions edit / commit / push the real
+  repo. To test a change, restart the real repo's own instance — the session is safe in the sandbox.
+
+### 3b. Keep both copies current
+- **Pull Conductor updates into the sandbox** (after the real repo advances): stop the sandbox, then
+  in the sandbox dir `git fetch origin && git reset --hard origin/main && npm install`, and relaunch.
+- **Extract the sandbox's learning back to the main** (its sessions accrue scorecard/verdict data):
+  merge the append-only ndjson by exact-line dedup — `scorecard.ndjson`, `usage-observations.ndjson`,
+  `improvements.ndjson` — from `<sandbox>/.state` into the main `~/.conductor2`, with the main
+  conductor **stopped** (two processes appending one file can interleave).
+
+### Teardown
+The sandbox is disposable. Stop it (its own Quit, or kill the `--port <alt-port>` node) when done;
+delete the dir only after syncing its data back.
