@@ -9,7 +9,7 @@ const api = {
 };
 async function ok(r) { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 
-const S = { sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
+const S = { sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
 
 // ---------- markdown-lite ----------
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -447,12 +447,21 @@ async function send() {
   try { await api.post(`/api/sessions/${S.current.id}/messages`, { text }); } catch (e) { addSys(`send failed: ${e.message}`, 'err'); }
 }
 
+// ---------- update affordance ----------
+/** Show + flash the header Update button when this checkout is behind its GitHub remote (from S.update / an 'update' event). */
+function renderUpdate(st = S.update) {
+  const b = $('#btn-update'); if (!b) return;
+  const behind = st && st.git && !st.error ? (st.behind || 0) : 0;
+  if (behind > 0) { b.hidden = false; b.classList.add('flash'); b.textContent = `⬇ Update (${behind})`; b.title = `${behind} newer commit(s) on GitHub — click to pull and then restart`; }
+  else { b.hidden = true; b.classList.remove('flash'); }
+}
+
 // ---------- SSE ----------
 async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
-  renderSessions(); renderProviders(); renderBudget(); renderTasks(); applyAutoRefresh();
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
+  renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   if (!S.bypassTouched) $('#new-bypass').checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; // settings default; a manual toggle sticks
   if (!S.overflowTouched) $('#new-overflow').checked = !!S.config?.conductor?.overflowApi;
   if (S.current) await openSession(S.current.id);
@@ -482,7 +491,10 @@ function connect() {
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
   on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
   on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); }));
-  on('update', (ev) => { const b = $('#btn-update'); if (ev.behind) { b.hidden = false; b.textContent = `⬇ Update (${ev.behind})`; } if (ev.updated) { b.hidden = true; addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); } });
+  on('update', (ev) => { // startup/periodic check found the remote ahead, or an update was just applied
+    if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); }
+    if (ev.updated) { S.update = null; const b = $('#btn-update'); b.hidden = true; b.classList.remove('flash'); addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); }
+  });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
@@ -655,10 +667,10 @@ async function openScores() {
 async function boot() {
   const st = await api.get('/api/state');
   S.boot = st.boot; S.lastSeq = st.seq || 0; // the transcript is rendered from state; only newer events stream in
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
   $('#cwd').value = localStorage.getItem('cwd') || '';
   $('#improve-count').textContent = S.improvements.length;
-  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); applyAutoRefresh();
+  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
@@ -689,7 +701,7 @@ async function boot() {
   $('#model-pop').onclick = (e) => e.stopPropagation();
   document.addEventListener('click', () => toggleModelPop(false));
   $('#btn-improvements').onclick = () => openImprovements();
-  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); } b.disabled = false; };
+  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; b.classList.remove('flash'); try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; S.update = null; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); b.classList.add('flash'); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
   $('#modal-close').onclick = closeModal;
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };

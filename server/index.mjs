@@ -81,7 +81,7 @@ async function route(req, res, url) {
   if (seg[0] === 'mcp' && seg[1]) return mcpRoute(req, res, seg);
   if (seg[0] !== 'api') return false;
 
-  if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), home: homedir(), repoRoot: REPO_ROOT });
+  if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), update: lastUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
     setTimeout(() => { try { stopBackgroundWork(); } catch {} try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
