@@ -28,6 +28,14 @@ export function stopBackgroundWork() {
   try { stopLimitPolling(); } catch {}
   try { killProbes(); } catch {}
 }
+
+/** The model+limit background poll is governed by the UI "auto" control (config ui.autoRefresh): on → poll at
+ *  pollMinutes; off → no poll at all (manual ↻ Refresh and the one-time startup refresh still work). */
+function applyPolling(cfg) {
+  if (process.env.CONDUCTOR_NO_POLL) return;
+  if (cfg.ui?.autoRefresh) { startModelPolling(cfg.pollMinutes); startLimitPolling(cfg.pollMinutes); }
+  else { stopModelPolling(); stopLimitPolling(); }
+}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
@@ -136,7 +144,7 @@ async function route(req, res, url) {
 
   if (p === '/api/settings') {
     if (m === 'GET') return json(res, 200, publicConfig());
-    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); if (!process.env.CONDUCTOR_NO_POLL) { startModelPolling(next.pollMinutes); startLimitPolling(next.pollMinutes); } schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
+    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); applyPolling(next); /* the "auto" control governs the server poll */ schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
   }
 
   if (seg[1] === 'improvements') {
@@ -311,8 +319,8 @@ export function startServer({ port = null } = {}) {
       const addr = `http://127.0.0.1:${server.address().port}`;
       conductor.setServerUrl(addr);
       if (!process.env.CONDUCTOR_NO_POLL) {
-        startModelPolling(cfg.pollMinutes); startLimitPolling(cfg.pollMinutes);
-        refreshModels().then(() => refreshLimits()).catch(() => {});
+        applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
+        refreshModels().then(() => refreshLimits()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
         startScheduledReview();
         startUpdateChecks();
       }
