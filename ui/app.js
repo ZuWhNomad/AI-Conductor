@@ -393,6 +393,7 @@ async function openSession(id) {
   renderHistory(s.messages || []);
   for (const p of s.pending || []) addPermission(p);
   renderSessions(); renderTasks();
+  document.body.classList.remove('nav-open'); // close the mobile drawer after picking a chat
   $('#input').focus();
 }
 function setStatus(st) {
@@ -664,6 +665,8 @@ async function boot() {
   $('#btn-scores').onclick = openScores;
   $('#btn-settings2').onclick = openSettings;
   $('#chat-filter').oninput = (e) => { S.chatFilter = e.target.value; renderSessions(); };
+  $('#btn-nav').onclick = () => document.body.classList.toggle('nav-open');
+  $('#scrim').onclick = () => document.body.classList.remove('nav-open');
   if (localStorage.getItem('systemOpen') === '1') openSystem(true);
   if (!S.sessions.length) $('#newchat-form').hidden = false; // first run: no chats yet, show the form
   // model chip popover: toggle on click, close on outside-click / Escape.
@@ -699,6 +702,6 @@ async function boot() {
   });
   if (!stt.supported) { $('#btn-mic').disabled = true; $('#stt-hint').textContent = 'Speech to text needs Chrome or Edge (Web Speech API).'; }
   $('#btn-mic').onclick = () => stt.toggle();
-  document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'm') { e.preventDefault(); stt.toggle(); ta.focus(); } if (e.key === 'Escape') { if (!$('#model-pop').hidden) toggleModelPop(false); else if (!$('#modal').hidden) closeModal(); else if (stt.active) stt.stop(); } });
+  document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'm') { e.preventDefault(); stt.toggle(); ta.focus(); } if (e.key === 'Escape') { if (!$('#model-pop').hidden) toggleModelPop(false); else if (!$('#modal').hidden) closeModal(); else if (document.body.classList.contains('nav-open')) document.body.classList.remove('nav-open'); else if (stt.active) stt.stop(); } });
 }
 boot().catch((e) => { document.body.innerHTML = `<pre style="padding:20px">Failed to load: ${esc(e.message)}</pre>`; });
