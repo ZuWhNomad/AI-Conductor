@@ -11,7 +11,7 @@ import { contextBlock } from './context.mjs';
 import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
 import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
@@ -294,7 +294,12 @@ function failover(t) {
 // not held up; `flushRecords` lets the CLI/smoke runner wait for the rows before reading them.
 const pendingRecords = new Set();
 function score(t, limitsBefore, concurrent) {
-  const p = refreshLimits({ only: [t.provider] }).catch(() => {}).then(() => { try { recordRun(t, { before: limitsBefore, concurrent }); } catch {} });
+  const p = refreshLimits({ only: [t.provider] }).catch(() => {}).then(() => { try {
+    // Per-task % of the provider window this run burned (max across its windows) — surfaced on the Fleet card.
+    const d = windowDelta(limitsBefore, snapshotWindows(t.provider));
+    if (d) { const max = Math.max(...Object.values(d)); t.pctWindow = Math.round(max * 10) / 10; persist(t); }
+    recordRun(t, { before: limitsBefore, concurrent });
+  } catch {} });
   pendingRecords.add(p);
   p.finally(() => pendingRecords.delete(p));
 }

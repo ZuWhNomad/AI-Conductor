@@ -79,8 +79,6 @@
     <div class="empty">Pick a project folder, choose the conductor model, and start a chat.<br><span class="muted">The conductor plans and reviews; workers (Astra via Codex, local Ollama models, API models) do the typing.</span></div>
   </div>
 
-  <div id="tasks" class="tasks"></div>
-
   <div id="composer" class="composer">
     <div id="interim" class="interim" hidden></div>
     <div class="row">
@@ -91,6 +89,15 @@
     <div id="stt-hint" class="muted tiny"></div>
   </div>
 </main>
+
+<aside id="fleet">
+  <div class="fleet-head">
+    <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock">⟨</button></div>
+    <div id="fleet-counts" class="tiny muted">no workers yet</div>
+    <div id="fleet-budget" class="fleet-budget"></div>
+  </div>
+  <div id="tasks" class="tasks"></div>
+</aside>
 
 <div id="modal" class="modal" hidden><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon">✕</button></div><div id="modal-body" class="modal-body"></div></div></div>
 

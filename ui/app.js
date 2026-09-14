@@ -9,7 +9,7 @@ const api = {
 };
 async function ok(r) { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 
-const S = { sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map() };
+const S = { sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
 
 // ---------- markdown-lite ----------
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -299,21 +299,56 @@ function renderHistory(messages) {
   if (!messages.length) T().append(el('div', 'empty', 'Say what you want done. The conductor will plan, delegate, and review.'));
 }
 
-// ---------- tasks strip ----------
+// ---------- fleet dock ----------
+function myTasks() { return S.tasks.filter((t) => t.sessionId === S.current?.id || t.sessionId == null); } // sessionless = launched from the CLI/API; shown in every chat
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
-  const mine = S.tasks.filter((t) => t.sessionId === S.current?.id || t.sessionId == null).slice(0, 12); // sessionless = launched from the CLI/API; shown in every chat
-  for (const t of mine) box.append(taskCard(t));
+  for (const t of myTasks().slice(0, 30)) box.append(taskCard(t));
+  renderFleetHead();
+}
+function since(iso) { if (!iso) return ''; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`; }
+function isToday(iso) { if (!iso) return false; return new Date(iso).toDateString() === new Date().toDateString(); }
+function statusPhrase(t) { return t.status === 'running' ? `running ${since(t.startedAt)}` : t.status; }
+function cardFoot(t) {
+  const info = S.scoreInfo.get(t.id) || {};
+  const pct = t.pctWindow != null ? t.pctWindow : info.pct;
+  const parts = [];
+  if (pct != null) parts.push(`${pct}% window`);
+  if ((t.rounds || 0) > 0) parts.push(`round ${t.rounds + 1}`);
+  if (t.changedFiles?.length) parts.push(`${t.changedFiles.length} file${t.changedFiles.length > 1 ? 's' : ''}`);
+  if (t.result?.durationMs) parts.push(`${Math.round(t.result.durationMs / 1000)}s`);
+  if (info.verdict) parts.push(`rated ${info.verdict}`);
+  return parts.join(' · ');
 }
 function taskCard(t) {
   const c = el('div', 'task ' + t.status); c.dataset.id = t.id;
-  const h = el('div', 'h'); h.append(el('span', 't', t.title), el('span', 'pill', t.status));
-  const meta = el('div', 'muted tiny', `${t.provider}${t.model ? '/' + t.model : ''} · round ${(t.rounds || 0) + 1}${t.changedFiles?.length ? ` · ${t.changedFiles.length} files` : ''}${t.result?.durationMs ? ` · ${Math.round(t.result.durationMs / 1000)}s` : ''}`);
-  const last = el('div', 'last', lastAction(t));
-  c.append(h, meta, last);
+  const h = el('div', 'h');
+  const right = t.status === 'running' ? el('span', 'dot') : el('span', 'pill', t.status);
+  h.append(el('span', 't', t.title), right);
+  const sub = el('div', 'sub', `${t.provider}${t.model ? '/' + t.model : ''} · ${t.category || '?'}${t.difficulty ? '@' + t.difficulty : ''} · ${statusPhrase(t)}`);
+  c.append(h, sub);
+  const la = lastAction(t);
+  if (la) c.append(el('div', 'last', la));
+  if (t.status === 'running') { const p = el('div', 'prog indet'); p.append(el('i')); c.append(p); }
+  const foot = cardFoot(t);
+  if (foot) c.append(el('div', 'sub', foot));
   c.onclick = () => openTask(t.id);
   S.taskEls.set(t.id, c);
   return c;
+}
+function renderFleetHead() {
+  const mine = myTasks();
+  const running = mine.filter((t) => t.status === 'running').length;
+  const queued = mine.filter((t) => t.status === 'queued').length;
+  const doneToday = mine.filter((t) => t.status === 'done' && isToday(t.finishedAt || t.updatedAt)).length;
+  $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${doneToday} done today` : 'no workers yet';
+  const todays = mine.filter((t) => (t.status === 'done' || t.status === 'failed') && isToday(t.finishedAt || t.updatedAt));
+  const usd = todays.reduce((a, t) => a + (t.result?.costUsd || 0), 0);
+  const wk = todays.reduce((a, t) => a + (t.pctWindow || 0), 0);
+  const box = $('#fleet-budget'); box.innerHTML = '';
+  const bl = el('div', 'bl'); bl.append(el('span', null, 'spent today'), el('span', null, `${wk ? wk.toFixed(1) + '% · ' : ''}$${usd.toFixed(2)}`));
+  const m = el('div', 'meter'); const i = el('i'); i.style.width = Math.min(100, wk) + '%'; m.append(i);
+  box.append(bl, m);
 }
 function lastAction(t) {
   const log = S.workerLog.get(t.id);
@@ -324,10 +359,12 @@ function lastAction(t) {
 function updateTask(t) {
   const i = S.tasks.findIndex((x) => x.id === t.id);
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
-  if (t.sessionId !== S.current?.id && t.sessionId != null) return;
-  const existing = S.taskEls.get(t.id);
-  const fresh = taskCard(t);
-  if (existing) existing.replaceWith(fresh); else $('#tasks').prepend(fresh);
+  if (t.sessionId === S.current?.id || t.sessionId == null) {
+    const existing = S.taskEls.get(t.id);
+    const fresh = taskCard(t);
+    if (existing) existing.replaceWith(fresh); else $('#tasks').prepend(fresh);
+  }
+  renderFleetHead();
 }
 async function openTask(id) {
   const t = await api.get(`/api/tasks/${id}`);
@@ -419,7 +456,8 @@ function connect() {
   const on = (type, fn) => es.addEventListener(type, (e) => { const ev = JSON.parse(e.data); S.lastSeq = Math.max(S.lastSeq, ev.seq); fn(ev); });
   on('session', onSessionEvent);
   on('task', (ev) => updateTask(ev.task));
-  on('worker', (ev) => { const log = S.workerLog.get(ev.taskId) || []; if (ev.item) { log.push(ev.item); if (log.length > 200) log.shift(); S.workerLog.set(ev.taskId, log); } if (ev.error) { log.push({ type: 'error', text: ev.error }); S.workerLog.set(ev.taskId, log); } const c = S.taskEls.get(ev.taskId); if (c) c.querySelector('.last').textContent = lastAction({ id: ev.taskId }); });
+  on('worker', (ev) => { const log = S.workerLog.get(ev.taskId) || []; if (ev.item) { log.push(ev.item); if (log.length > 200) log.shift(); S.workerLog.set(ev.taskId, log); } if (ev.error) { log.push({ type: 'error', text: ev.error }); S.workerLog.set(ev.taskId, log); } const c = S.taskEls.get(ev.taskId); if (c) { const l = c.querySelector('.last'); if (l) l.textContent = lastAction({ id: ev.taskId }); } });
+  on('score', (ev) => { const s = S.scoreInfo.get(ev.taskId) || {}; if (ev.verdict) s.verdict = ev.verdict; if (ev.pct && typeof ev.pct === 'object') { const vals = Object.values(ev.pct); if (vals.length) s.pct = Math.round(Math.max(...vals) * 10) / 10; } S.scoreInfo.set(ev.taskId, s); const t = S.tasks.find((x) => x.id === ev.taskId); if (t) updateTask(t); });
   on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
@@ -596,6 +634,8 @@ async function boot() {
   $('#btn-settings').onclick = openSettings;
   $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);
   $('#btn-budget-details').onclick = () => revealProviders();
+  if (localStorage.getItem('fleetCollapsed') === '1') { document.body.classList.add('fleet-collapsed'); $('#fleet-collapse').textContent = '⟩'; }
+  $('#fleet-collapse').onclick = () => { const c = document.body.classList.toggle('fleet-collapsed'); localStorage.setItem('fleetCollapsed', c ? '1' : '0'); $('#fleet-collapse').textContent = c ? '⟩' : '⟨'; };
   // model chip popover: toggle on click, close on outside-click / Escape.
   $('#model-chip').onclick = (e) => { e.stopPropagation(); toggleModelPop(); };
   $('#model-pop').onclick = (e) => e.stopPropagation();
