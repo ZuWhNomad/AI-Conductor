@@ -56,7 +56,9 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   // the user to re-verify the real limits / reset. Threshold configurable (usageOvershootPct, default 110%).
   const overshootAt = loadConfig().scorecard?.usageOvershootPct ?? 110;
   const flag = (rawPct) => ({ rawPct: Math.round(rawPct * 10) / 10, needsCheck: rawPct >= overshootAt });
-  if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory
+  if (budgetTokens && !obs.length) { // flat budget: 100% at budgetTokens, advisory — ONLY until a check-in exists.
+    // Once the user has calibrated (obs.length), the fitted rate below wins so the recorded % actually moves the bar
+    // (a flat budget ignores check-ins entirely, which made "Calibrate" look like it did nothing).
     const raw = (spent / budgetTokens) * 100;
     return { pct: Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt, ...flag(raw) };
   }

@@ -87,7 +87,7 @@ function renderProviders() {
       if (w.estimated) { // let the user record an actual reading to re-calibrate the estimate
         const row = el('div', 'wl tiny'); const inp = el('input'); inp.type = 'number'; inp.min = 0; inp.max = 100; inp.placeholder = 'actual %'; inp.style.width = '5em';
         const set = el('button', 'sm', 'Calibrate'); set.title = w.note || 'record the real % from the provider site to refine the estimate';
-        set.onclick = async () => { const v = Number(inp.value); if (!(v >= 0 && v <= 100)) return; set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; renderProviders(); } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
+        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); S.limits = await api.get('/api/limits'); inp.value = ''; renderProviders(); } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
         row.append(inp, set); d.append(row);
       }
     }

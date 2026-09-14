@@ -28,3 +28,14 @@ test('estimateUsage is null with no check-in and no seed, but honours a seed rat
   assert.equal(estimateUsage('zzz'), null);
   assert.equal(estimateUsage('zzz', { seedPctPerMToken: 10 }).pct, 10); // 1M * 10%/M
 });
+
+test('a budget estimate switches to the calibrated fit once a check-in exists (Calibrate actually moves the bar)', () => {
+  runAt('grokx', '2026-03-01T10:00:00Z', 500000, 100000); // 600k tokens this window
+  const flat = estimateUsage('grokx', { budgetTokens: 10_000_000 }); // no check-in yet: flat budget 600k/10M = 6%
+  assert.equal(flat.pct, 6); assert.equal(flat.basis, 'budget'); assert.equal(flat.calibrated, false);
+  recordUsage('grokx', 55);                                 // user records the real 55% at 600k tokens
+  const est = estimateUsage('grokx', { budgetTokens: 10_000_000 });
+  assert.equal(est.basis, 'fit');   // the flat budget no longer wins once calibrated
+  assert.equal(est.calibrated, true);
+  assert.equal(est.pct, 55);        // the recorded % drives the bar, not spent/budget (6%)
+});
