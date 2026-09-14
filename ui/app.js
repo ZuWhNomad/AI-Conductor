@@ -94,7 +94,7 @@ function renderProviders() {
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
     box.append(d);
   }
-  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · auto every ${S.config.pollMinutes || 15} min`;
+  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes || 15}m · panel auto ${S.config?.ui?.autoRefresh ? (S.config.ui.autoRefreshMinutes || 15) + 'm' : 'off'}`;
 }
 
 // ---------- conductor picker: provider : model : effort ----------
@@ -354,7 +354,7 @@ async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
-  renderSessions(); renderProviders(); renderTasks();
+  renderSessions(); renderProviders(); renderTasks(); applyAutoRefresh();
   if (!S.bypassTouched) $('#new-bypass').checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; // settings default; a manual toggle sticks
   if (!S.overflowTouched) $('#new-overflow').checked = !!S.config?.conductor?.overflowApi;
   if (S.current) await openSession(S.current.id);
@@ -362,6 +362,14 @@ async function resync() {
 /** Coalesce bursts (e.g. replayed events) into one refetch per key. */
 const pendingRefetch = new Map();
 function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => {}); }, ms)); }
+let autoRefreshTimer = null;
+function applyAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  const on = !!S.config?.ui?.autoRefresh;
+  const min = Math.max(1, Number(S.config?.ui?.autoRefreshMinutes) || 15);
+  const cb = $('#auto-refresh'); if (cb) cb.checked = on;
+  if (on) autoRefreshTimer = setInterval(() => { api.post('/api/models/refresh').catch(() => {}); api.post('/api/limits/refresh').catch(() => {}); }, min * 60_000);
+}
 function connect() {
   const es = new EventSource(`/api/events?since=${S.lastSeq}`);
   // A different boot id means the server restarted: refetch state (which carries the new seq) and reconnect. Never leave the page without a stream.
@@ -374,7 +382,7 @@ function connect() {
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); }));
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
   on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
-  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); }));
+  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); applyAutoRefresh(); }));
   on('update', (ev) => { const b = $('#btn-update'); if (ev.behind) { b.hidden = false; b.textContent = `⬇ Update (${ev.behind})`; } if (ev.updated) { b.hidden = true; addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); } });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
@@ -446,6 +454,7 @@ function openSettings() {
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
+  field('Providers panel auto-refresh every (min)', 'ui.autoRefreshMinutes', c.ui?.autoRefreshMinutes ?? 15, 'number', 'When the "auto" box next to ↻ Refresh is checked, the browser panel re-fetches models+limits this often. Separate from the server registry poll above. Minimum 1 minute.');
   body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
@@ -472,7 +481,7 @@ function openSettings() {
     const wk = pickerValue('wk-'); const cd = pickerValue('cd-');
     patch.worker = { ...(patch.worker || {}), provider: wk.provider, model: wk.model || null, effort: wk.effort };
     patch.conductor = { ...(patch.conductor || {}), provider: cd.provider, model: cd.model || null, effort: cd.effort };
-    S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
+    S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); applyAutoRefresh(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
   };
   body.append(save);
   // Quit: stop the server process from the browser (closing the tab leaves it running).
@@ -521,7 +530,7 @@ async function boot() {
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
   $('#cwd').value = localStorage.getItem('cwd') || '';
   $('#improve-count').textContent = S.improvements.length;
-  refreshNewPicker(false); renderSessions(); renderProviders();
+  refreshNewPicker(false); renderSessions(); renderProviders(); applyAutoRefresh();
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
@@ -531,6 +540,7 @@ async function boot() {
   $('#btn-send').onclick = send;
   $('#btn-stop').onclick = () => S.current && api.post(`/api/sessions/${S.current.id}/interrupt`);
   $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
+  $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
   $('#btn-settings').onclick = openSettings;
   $('#btn-improvements').onclick = () => openImprovements();
   $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); } b.disabled = false; };

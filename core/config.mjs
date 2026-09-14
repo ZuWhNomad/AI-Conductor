@@ -5,6 +5,7 @@ export const DEFAULTS = {
   port: 47474,
   openBrowser: true,
   pollMinutes: 15,                    // model + limit registry refresh cadence
+  ui: { autoRefresh: false, autoRefreshMinutes: 15 }, // Providers-panel client-side auto-refresh; separate from pollMinutes (server registry poll)
   conductor: {                        // selection format everywhere: provider:model:effort
     provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
     model: 'claude-fable-5-1[1m]',    // null = Claude Code CLI default (currently Opus 5)
@@ -123,6 +124,10 @@ export function loadConfig() {
 }
 
 function normalize(cfg) {
+  if (!plain(cfg.ui)) cfg.ui = { ...DEFAULTS.ui };
+  cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
+  if (!Number.isFinite(cfg.ui.autoRefreshMinutes) || cfg.ui.autoRefreshMinutes < 1) cfg.ui.autoRefreshMinutes = DEFAULTS.ui.autoRefreshMinutes;
+  else cfg.ui.autoRefreshMinutes = Math.min(1440, Math.floor(cfg.ui.autoRefreshMinutes));
   for (const [obj, defaults, key] of [[cfg, DEFAULTS, 'pollMinutes'], [cfg.conductor, DEFAULTS.conductor, 'maxWorkerConcurrency'], [cfg.conductor, DEFAULTS.conductor, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'maxRounds'], [cfg.scorecard, DEFAULTS.scorecard, 'minSamples'], [cfg.scorecard, DEFAULTS.scorecard, 'quality'], [cfg.scorecard, DEFAULTS.scorecard, 'qualityValueUsd'], [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes']]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
