@@ -145,4 +145,74 @@ Three items landed (verified by `npm test` — 156 pass, 0 fail). §1 (usage-bar
 ### Dropped
 - The two "session robustness" items are dropped per the user (the session self-managed fine).
 
+## Implemented — 2026-09-14 conductor-edits pass (windows / poll control / Grok calibrate+reset / `ui` category)
+
+Verified by `npm test` (158 pass, 0 fail). Items 1–4 and 6 landed as separate commits; item 5 (editable
+Grok reset) was delegated to a worker (grok-4.6) and reviewed.
+
+### 1. Popping usage command windows — ROOT CAUSE fixed (needs a manual verify)
+`core/proc.mjs` `spawnCli()` now defaults `windowsHide:true` in **all three** branches (npm-shim unwrap,
+the `.cmd` shell fallback — now also with piped stdio — and the plain `.exe`); `killTree`'s `taskkill` is
+windowless too. `core/providers/vendors.mjs` `capture()` (the function behind every `detect` / `listModels` /
+`pollLimits` probe) now unwraps an npm `.cmd` shim to `node <entry>` and runs it directly — **no `cmd.exe`, so
+no grandchild console window can flash** during a refresh or poll tick. Every other spawn on the poll path
+already set `windowsHide:true` (audited: codex `app-server`, agy/grok probes, ollama serve, git, npm). The one
+deliberately-visible spawn (`openTerminal` for sign-in flows) is left as-is.
+- **Manual check still required** (can't be exercised by `npm test`): restart :47474 on this build, click
+  ↻ Refresh and let a poll tick fire — no console windows should appear.
+- Commit `proc: make every CLI spawn windowless on Windows …`.
+
+### 2. The "auto" control now governs the SERVER poll — DONE
+`startModelPolling`/`startLimitPolling` run **only** when `ui.autoRefresh` is on (new `applyPolling()` in
+`server/index.mjs`, used by both startup and `POST /api/settings`). Unchecked → both server pollers are stopped
+and there is no client auto-refresh; checked → they (re)start at `pollMinutes`. Boot still does one refresh so
+the panel isn't blank. Because the default is off, out of the box there is **no periodic poll at all** (only the
+one-time startup refresh + manual ↻), which also removes the recurring window-spawn opportunity. Persisted via
+`/api/settings`. Commit `server: the "auto" control governs the background model/limit poll`.
+
+### 3. Quit stops the server — VERIFIED (no code change needed)
+The Quit control already exists (⚙ Settings modal, `ui/app.js`) and posts `POST /api/shutdown`; the route
+stops background work, requeues in-flight tasks, deletes the pid file and `process.exit(0)`s. Verified
+end-to-end on an isolated throwaway server: shutdown returned `{ok:true,stopping:true}`, the process **exited
+(code 0)** and the port stopped listening.
+
+### 4. Grok "Calibrate" now moves the bar — DONE
+Real cause (diagnosed against the live server): the button was wired correctly and **did** record check-ins,
+but `estimateUsage()` used the flat `scorecard.usageBudgets.grok` token budget for the *displayed* %, ignoring
+the recorded readings — so the bar never changed (the host showed 1% after 2 check-ins). Fix
+(`core/usage-estimate.mjs`): the flat-budget branch applies only **until the first check-in**; once calibrated,
+the fitted %/token rate drives the bar and reflects the recorded %. The Calibrate button (`ui/app.js`) now
+refetches limits so the bar updates **immediately**, and ignores an empty input. Commit
+`usage: Grok Calibrate actually moves the bar`.
+
+### 5. Editable Grok weekly reset day + time — DONE (delegated to grok-4.6, reviewed)
+The ⚙ Settings modal now has a **"Grok reset day"** dropdown (Sunday–Saturday → 0–6) and a **"Grok reset hour
+(0-23, local)"** field, placed after the auto-refresh field. They persist to `scorecard.usageResets.grok`
+(`{ resetDay, resetHour }`) via `/api/settings`, saved as **numbers** — the save loop `Number()`-coerces any
+`cfg-scorecard.usageResets.*` control, since a `<select>` value is otherwise a string. `core/config.mjs`
+`normalize()` now clamps `resetDay` 0–6, `resetHour` 0–23, and `resetMinute` (when present) 0–59, falling back
+to the defaults on garbage. `nextScheduledReset()` (unchanged) consumes them and drives both the estimated-bar
+"resets …" time and the use-it-or-lose-it discount; verified `{ resetDay:3, resetHour:9 }` → next reset
+Wednesday 09:00 local. `periodHours` stays 168 (not exposed). **Delegated** to `grok:grok-4.6:high` (one clean
+pass; conductor reviewed the diff + ran `npm test` = 159 pass, rated pass). Commit `settings: editable Grok
+weekly reset day + time`.
+
+### 6. New `ui` scorecard category + manual diversion — DONE (benchmark deferred)
+`ui` added to `CATEGORIES` (so the `delegate` and `model_scores` category enums pick it up automatically) and
+mapped to the `code` prior kind (`core/priors.mjs`), which gives sensible cold-start tiers (Astra/Sol = A, …)
+with no new tier data. A minimal `classifyCategory()` (`core/scorecard.mjs`) tags UI/CSS/layout/frontend specs
+as `ui` when **no** category is passed, and `createTask()` calls it — so a hand-diverted
+`/worker <provider:model> <UI spec>` task records under `ui` (the delegate tool and both model pickers already
+let the user force a specific model). Optional `ui` smoke fixture deferred (a UI task doesn't fit the battery's
+deterministic `node --test` check cleanly); no benchmark was run (spends budget), as instructed. Commit
+`scorecard: add ui category + classify UI tasks for manual diversion`.
+- **Sandbox note:** this session is hosted by the sandbox conductor on :47475 running the *old* code, whose
+  `delegate` enum lacks `ui`; its own UI-ish delegation was therefore tagged `edit`. The `ui` category records
+  correctly once a conductor is restarted on this build.
+
+### Direct Grok usage — REJECTED (kept the estimate + manual calibration)
+xAI/Grok exposes account usage only inside its interactive TUI — there is no machine-readable/headless usage
+command to poll. So the estimate + manual **Calibrate** check-in (fixed, §4) + the **editable weekly reset**
+(§5) remain the approach, exactly as decided.
+
 _(append further iteration-2 conductor comments below)_
