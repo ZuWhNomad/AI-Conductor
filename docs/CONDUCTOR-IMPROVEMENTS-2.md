@@ -215,4 +215,6 @@ xAI/Grok exposes account usage only inside its interactive TUI — there is no m
 command to poll. So the estimate + manual **Calibrate** check-in (fixed, §4) + the **editable weekly reset**
 (§5) remain the approach, exactly as decided.
 
+Review later — update-available UX: the flashing button is fine for now; reconsider a modal/banner for something more assertive.
+
 _(append further iteration-2 conductor comments below)_

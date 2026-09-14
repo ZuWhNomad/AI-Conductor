@@ -701,7 +701,7 @@ async function boot() {
   $('#model-pop').onclick = (e) => e.stopPropagation();
   document.addEventListener('click', () => toggleModelPop(false));
   $('#btn-improvements').onclick = () => openImprovements();
-  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; b.classList.remove('flash'); try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; S.update = null; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); b.classList.add('flash'); } b.disabled = false; };
+  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; b.classList.remove('flash'); try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; S.update = null; addSys('Already up to date.'); } else { b.hidden = true; S.update = null; const v = `${r.from} → ${r.to}${r.npmInstalled ? ' (dependencies installed)' : ''}`; addSys(r.relaunching ? `Updated ${v}. Restarting Conductor to apply — this tab reconnects automatically…` : `Updated ${v}. Restart Conductor to run the new version.`); } } catch (e) { addSys(`Update failed: ${e.message}`); b.classList.add('flash'); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
   $('#modal-close').onclick = closeModal;
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };

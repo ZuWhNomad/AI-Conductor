@@ -22,6 +22,8 @@ import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '..
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
+let boundPort = null;              // the port this server actually bound — the self-restart relauncher reuses it
+const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding while the outgoing process releases the port
 
 export function stopBackgroundWork() {
   try { stopModelPolling(); } catch {}
@@ -177,7 +179,11 @@ async function route(req, res, url) {
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
   if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
-  if (p === '/api/update' && m === 'POST') return json(res, 200, applyUpdate());
+  if (p === '/api/update' && m === 'POST') { // pull, then self-restart into the new version; relaunching:false falls back to the manual-restart message
+    const r = applyUpdate();
+    const relaunching = !!(r.updated && r.restartNeeded && scheduleRelaunch({ port: boundPort ?? req.socket.localPort }));
+    return json(res, 200, { ...r, relaunching });
+  }
   if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
   return json(res, 404, { error: `no route ${m} ${p}` });
 }
@@ -265,19 +271,61 @@ function startScheduledReview() {
   setInterval(() => check().catch(() => {}), 6 * 3_600_000).unref();
 }
 
-/** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). */
+/** Self-restart: spawn a DETACHED fresh conductor on the SAME port using THIS process's own env (so it inherits the
+ *  real CONDUCTOR_HOME + port, never an ambient shell's), then hand off — once the child is confirmed alive we requeue
+ *  in-flight work, drop the port and exit so the new version takes over. The child's retry-bind (CONDUCTOR_RELAUNCH_WAIT,
+ *  honored in startServer) tolerates the brief window before this process exits. Returns false WITHOUT exiting when the
+ *  child can't be spawned, so callers fall back to "restart manually" and never strand the app dead. spawnFn/exit are
+ *  injectable for tests. */
+export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () => process.exit(0) } = {}) {
+  const argv = [join(REPO_ROOT, 'bin', 'conductor.mjs'), 'start', '--no-open', ...(port ? ['--port', String(port)] : [])];
+  let child;
+  try {
+    child = spawnFn(process.execPath, argv, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, CONDUCTOR_RELAUNCH_WAIT: String(RELAUNCH_WAIT_MS) } });
+  } catch { return false; } // couldn't even spawn → stay up, let the caller show the manual-restart message
+  let handed = false;
+  const handoff = () => {
+    if (handed) return; handed = true;
+    try { child.unref?.(); } catch {}
+    try { stopBackgroundWork(); } catch {}
+    try { abortRunning({ requeue: true }); } catch {} // in-flight worker tasks resume in the new process
+    try { unlinkSync(statePath('server.pid')); } catch {}
+    setTimeout(exit, 300); // let the HTTP response flush before we drop the port
+  };
+  child.once?.('spawn', () => setTimeout(handoff, 400)); // child is alive → release the port for its retry-bind
+  child.once?.('error', (e) => { try { logImprovement('friction', 'update', `relaunch child failed: ${e?.message || e} — staying up; restart manually`); } catch {} });
+  return true;
+}
+
+/** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). On 'auto' it pulls AND
+ *  self-restarts — but only while the server is IDLE (no chat turn running, no worker task active), so an update never
+ *  interrupts in-flight work; while busy it defers and re-checks on a short cadence, applying as soon as work settles. */
 function startUpdateChecks() {
+  let recheck = null; // a short re-check armed while an update is pending but the server is busy
+  const idle = () => {
+    try {
+      if (conductor.listSessions().some((s) => s.status === 'running')) return false;
+      if (listTasks({ limit: 10000 }).some((t) => !['done', 'failed', 'canceled'].includes(t.status))) return false;
+      return true;
+    } catch { return false; } // can't tell → defer rather than risk interrupting work
+  };
   const run = () => {
     try {
       const cfg = loadConfig();
       const policy = cfg.conductor?.autoUpdate ?? 'ask';
       if (policy === 'off') return;
-      const st = checkForUpdates(); // publishes an 'update' event when behind — that's the 'ask' prompt for the UI
-      if (policy === 'auto' && st?.git && !st.error && st.behind && !st.dirty) {
-        const r = applyUpdate(); // git pull + npm install; takes effect on the next restart
-        bus.publish('update', { ...r }); // {updated, from, to, commits, npmInstalled, restartNeeded} — the UI shows "Updated … restart to apply"
-        logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to || '').slice(0, 8)} — restart to apply`, {});
+      const st = checkForUpdates(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
+      if (policy !== 'auto' || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
+      if (!idle()) { // update ready but work is in flight — defer; re-check soon so it applies as soon as we're idle
+        if (!recheck) { recheck = setTimeout(() => { recheck = null; run(); }, 60_000); recheck.unref?.(); }
+        return;
       }
+      const r = applyUpdate(); // git pull + npm install; publishes its own 'update' event
+      // Loop guard: only restart when the pull actually advanced HEAD. After a successful pull we're up to date, so the
+      // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
+      const moved = !!(r.updated && r.to && r.to !== r.from);
+      if (moved && scheduleRelaunch()) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {});
+      else if (moved) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restart to apply (relaunch unavailable)`, {});
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };
   setTimeout(run, 3000).unref();
@@ -313,10 +361,17 @@ export function startServer({ port = null } = {}) {
     }
   });
   const listenPort = port ?? cfg.port;
+  // A relaunch child (scheduleRelaunch) sets CONDUCTOR_RELAUNCH_WAIT so the fresh process tolerates the outgoing one
+  // still holding the port for a moment: retry the bind until this budget elapses. A normal start (flag unset) has a
+  // deadline of "now", so any EADDRINUSE rejects immediately, exactly as before.
+  const relaunchDeadline = Date.now() + Number(process.env.CONDUCTOR_RELAUNCH_WAIT || 0);
   return new Promise((resolve, reject) => {
-    server.on('error', reject);
-    server.listen(listenPort, '127.0.0.1', () => {
-      const addr = `http://127.0.0.1:${server.address().port}`;
+    let settled = false;
+    const onListen = () => {
+      settled = true;
+      boundPort = server.address().port;
+      delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
+      const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
@@ -325,7 +380,14 @@ export function startServer({ port = null } = {}) {
         startUpdateChecks();
       }
       schedule();
-      resolve({ server, url: addr, port: server.address().port });
-    });
+      resolve({ server, url: addr, port: boundPort });
+    };
+    const onError = (e) => {
+      if (settled) return;
+      if (e?.code === 'EADDRINUSE' && Date.now() < relaunchDeadline) { setTimeout(() => server.listen(listenPort, '127.0.0.1', onListen), 250); return; }
+      settled = true; reject(e);
+    };
+    server.on('error', onError);
+    server.listen(listenPort, '127.0.0.1', onListen);
   });
 }

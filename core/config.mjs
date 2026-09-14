@@ -16,8 +16,8 @@ export const DEFAULTS = {
     budgetGate: true,                 // gate ALL task dispatch on per-window budget targets (session 95% / weekly 100%); park until reset when a provider is tapped out
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
-    autoUpdate: 'ask',                // GitHub update policy: 'auto' (pull + npm install automatically, restart on next start) | 'ask' (notify in the UI, apply on click) | 'off' (never check)
-    updateCheckHours: 6,              // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
+    autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
+    updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
   },
   worker: {                           // default grunt worker
     provider: 'codex',
