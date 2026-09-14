@@ -492,7 +492,7 @@ function onSessionEvent(ev) {
 }
 
 // ---------- modals ----------
-function openModal(title, body) { $('#modal-title').textContent = title; const b = $('#modal-body'); b.innerHTML = ''; b.append(body); $('#modal').hidden = false; }
+function openModal(title, body) { document.body.classList.remove('nav-open'); $('#modal-title').textContent = title; const b = $('#modal-body'); b.innerHTML = ''; b.append(body); $('#modal').hidden = false; }
 function closeModal() { $('#modal').hidden = true; }
 async function browse(path) {
   const r = await api.get(`/api/browse?path=${encodeURIComponent(path || localStorage.getItem('cwd') || '')}`);
@@ -643,7 +643,7 @@ async function boot() {
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
   $('#cwd').value = localStorage.getItem('cwd') || '';
   $('#improve-count').textContent = S.improvements.length;
-  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); applyAutoRefresh();
+  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); applyAutoRefresh();
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
