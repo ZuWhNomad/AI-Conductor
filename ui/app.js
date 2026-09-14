@@ -424,7 +424,7 @@ async function browse(path) {
 function openSettings() {
   const c = S.config; const body = el('div');
   const grid = el('div', 'grid');
-  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') i.placeholder = value ? '(saved)' : 'paste key'; grid.append(l, i); };
+  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') i.placeholder = value ? '(saved)' : 'paste key'; grid.append(l, i); return i; };
   const selectField = (label, id, value, opts) => { grid.append(el('label', null, label)); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
   const pickerRow = (label, prefix, sel, opts) => {
     grid.append(el('label', null, label));
@@ -455,6 +455,8 @@ function openSettings() {
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
   field('Providers panel auto-refresh every (min)', 'ui.autoRefreshMinutes', c.ui?.autoRefreshMinutes ?? 15, 'number', 'When the "auto" box next to ↻ Refresh is checked, the browser panel re-fetches models+limits this often. Separate from the server registry poll above. Minimum 1 minute.');
+  { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok reset day')); const s = el('select'); s.id = 'cfg-scorecard.usageResets.grok.resetDay'; days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(c.scorecard?.usageResets?.grok?.resetDay ?? 1); grid.append(s); }
+  const grokHour = field('Grok reset hour (0-23, local)', 'scorecard.usageResets.grok.resetHour', c.scorecard?.usageResets?.grok?.resetHour ?? 18, 'number'); grokHour.min = 0; grokHour.max = 23;
   body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
@@ -476,6 +478,7 @@ function openSettings() {
       if (i.type === 'password') { if (!v || v === '••••') continue; }
       if (i.id === 'cfg-conductor.overflowApi') v = v === 'true';
       if (i.id === 'cfg-conductor.overflowApi') v = v === 'true';
+      if (i.id.startsWith('cfg-scorecard.usageResets.')) v = Number(i.value);
       let o = patch; for (const k of path.slice(0, -1)) o = o[k] = o[k] || {}; o[path.at(-1)] = v;
     }
     const wk = pickerValue('wk-'); const cd = pickerValue('cd-');

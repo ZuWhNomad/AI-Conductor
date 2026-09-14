@@ -67,3 +67,18 @@ test('providers panel auto-refresh settings default and normalize', () => {
   assert.equal(loadConfig().ui.autoRefreshMinutes, 1440);
   saveConfig({ ui: { autoRefresh: false, autoRefreshMinutes: 15 } });
 });
+
+test('grok weekly usage-reset day and hour persist as numbers and clamp', () => {
+  saveConfig({ scorecard: { usageResets: { grok: { resetDay: 3, resetHour: 9 } } } });
+  const g = loadConfig().scorecard.usageResets.grok;
+  assert.equal(g.resetDay, 3);
+  assert.equal(g.resetHour, 9);
+  assert.equal(typeof g.resetDay, 'number');
+  assert.equal(typeof g.resetHour, 'number');
+  assert.equal(g.periodHours, 168);
+  saveConfig({ scorecard: { usageResets: { grok: { resetDay: 9, resetHour: 99 } } } });
+  const g2 = loadConfig().scorecard.usageResets.grok;
+  assert.equal(g2.resetDay, 6);
+  assert.equal(g2.resetHour, 23);
+  saveConfig({ scorecard: { usageResets: { grok: { resetDay: 1, resetHour: 18 } } } }); // restore defaults (shared CONDUCTOR_HOME)
+});

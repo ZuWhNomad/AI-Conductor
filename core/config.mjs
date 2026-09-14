@@ -150,6 +150,17 @@ function normalize(cfg) {
   // Minutes feed setTimeout; anything past a day is a typo (and > 2^31 ms fires immediately).
   if (cfg.worker.timeoutMinutes > 1440) cfg.worker.timeoutMinutes = 1440;
   if (cfg.pollMinutes > 1440) cfg.pollMinutes = 1440;
+  const grokReset = cfg.scorecard.usageResets?.grok;
+  if (plain(grokReset)) {
+    const day = Math.floor(Number(grokReset.resetDay));
+    grokReset.resetDay = Number.isFinite(day) ? Math.min(6, Math.max(0, day)) : DEFAULTS.scorecard.usageResets.grok.resetDay;
+    const hour = Math.floor(Number(grokReset.resetHour));
+    grokReset.resetHour = Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : DEFAULTS.scorecard.usageResets.grok.resetHour;
+    if (grokReset.resetMinute != null) {
+      const minute = Math.floor(Number(grokReset.resetMinute));
+      grokReset.resetMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
+    }
+  }
   return cfg;
 }
 
