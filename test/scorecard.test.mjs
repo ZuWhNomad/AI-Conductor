@@ -488,3 +488,11 @@ test('formatScores surfaces the phantom column and error-rate section', () => {
   assert.match(text, /pass\/fix\/fail\/phantom/);
   assert.match(text, /Error rates/);
 });
+
+test('ui is a first-class category and classifyCategory tags UI/frontend work', () => {
+  assert.ok(sc.CATEGORIES.includes('ui'));
+  assert.equal(pr.KIND.ui, 'code');                                  // ui rides the code priors for cold-start defaults
+  assert.equal(pr.priorFor('codex', 'gpt-6-astra', 'ui').tier, 'A'); // sensible default via the code kind
+  for (const s of ['fix the CSS layout of the sidebar', 'the modal button style is broken', 'update styles.css', 'React component re-renders', 'make the panel responsive']) assert.equal(sc.classifyCategory(s), 'ui', s);
+  for (const s of ['refactor the scheduler', 'add a retry to the API client', 'summarize the docs', '']) assert.equal(sc.classifyCategory(s), null, s);
+});

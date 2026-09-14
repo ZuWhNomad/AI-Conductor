@@ -11,7 +11,7 @@ import { contextBlock } from './context.mjs';
 import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
 import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
@@ -77,7 +77,9 @@ export function createTask(i) {
     threadId: null, rounds: 0, status: 'queued', createdAt: nowIso(), updatedAt: nowIso(), attempts: 0,
     result: null, error: null, resumeAt: null, changedFiles: [], diffStat: '',
     // Scorecard tags: what kind of work this is and how hard; `source` separates smoke runs from real ones.
-    category: CATEGORIES.includes(i.category) ? i.category : i.category ? 'other' : null,
+    // Explicit category wins; an unknown non-empty one collapses to 'other'; when none is given, classify the spec
+    // (today: UI tasks → 'ui') so hand-diverted /worker UI tasks still land under the right category.
+    category: CATEGORIES.includes(i.category) ? i.category : i.category ? 'other' : classifyCategory(`${i.title || ''}\n${i.spec || ''}`),
     difficulty: Number.isInteger(i.difficulty) && i.difficulty >= 1 && i.difficulty <= 5 ? i.difficulty : null,
     source: i.source === 'smoke' ? 'smoke' : 'live',
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain

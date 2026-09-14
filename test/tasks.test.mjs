@@ -56,6 +56,10 @@ test('scorecard tags are validated and inherited by follow-ups', () => {
   const u = createTask({ cwd, category: 'weird', difficulty: 9 });
   assert.equal(u.category, 'other'); assert.equal(u.difficulty, null); assert.equal(u.source, 'live');
   assert.equal(createTask({ cwd }).category, null);
+  // No category given: a UI spec is auto-classified as 'ui' so hand-diverted /worker UI tasks are recorded there.
+  assert.equal(createTask({ cwd, title: 'fix layout', spec: 'the sidebar CSS is misaligned' }).category, 'ui');
+  assert.equal(createTask({ cwd, spec: 'add a database index' }).category, null); // non-UI stays untagged
+  assert.equal(createTask({ cwd, category: 'implement', spec: 'tweak the CSS' }).category, 'implement'); // explicit wins
   assert.equal(createTask({ cwd, retryOf: t.id }).retryOf, t.id);
   assert.equal(createTask({ cwd, retryOf: 5 }).retryOf, null);
   Object.assign(getTask(t.id), { status: 'done', threadId: 'th' });

@@ -12,7 +12,16 @@ import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
-export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'docs', 'review', 'design', 'modeling', 'other'];
+export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'modeling', 'other'];
+
+// Minimal prompt→category classifier. Today it recognizes only UI/frontend work, so a UI task the user diverts by
+// hand (the `/worker …` shortcut and direct-to-worker tasks set no category) is still recorded under `ui` and the
+// scorecard accumulates real per-model UI outcomes. Everything else returns null (unchanged behaviour: untagged
+// unless the caller passed a category). Broaden cautiously — a wrong tag pollutes the ledger.
+const UI_RE = /\b(u[ix]|css|s[ca]ss|html|tailwind|front-?end|style ?sheets?|styles?\.css|index\.html|app\.js|layout|responsive|flex-?box|z-index|viewport|@media|media quer(?:y|ies)|modal|drop-?down|tooltip|side-?bar|nav-?bar|checkbox|dark ?mode|light ?mode|favicon|jsx|tsx|\breact\b|svelte|\bvue\b|\bdom\b|:hover|button style|css class(?:es)?)\b/i;
+export function classifyCategory(text) {
+  return UI_RE.test(String(text || '')) ? 'ui' : null;
+}
 export const VERDICTS = ['pass', 'fixable', 'fail', 'phantom'];
 const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
 const LEVELS = [1, 2, 3, 4, 5];

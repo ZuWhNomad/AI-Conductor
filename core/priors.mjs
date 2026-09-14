@@ -14,7 +14,7 @@ export const TIER_CEILING = { A: 5, B: 3, C: 2, D: 1 };
 //   read   (read, search, summarize, docs)           <- long-context recall (MRCR) + knowledge work (GDPval-AA)
 //   reason (review, design, other)                   <- GDPval-AA, HLE, aggregate indices
 // A rule's `tier` is the default; `tiers.{code,read,reason}` override it where the evidence differs.
-export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', modeling: 'visual', other: 'reason' };
+export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', ui: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', modeling: 'visual', other: 'reason' };
 
 // 3D-modeling / visual-output tasks (STL, CAD, mesh, parametric geometry). No public benchmark covers these,
 // so the only evidence is our own — the cookie-cutter benchmark. **No model passes yet**: the best result is
