@@ -22,7 +22,7 @@ export const lastUpdateStatus = () => last;
 /** { git, branch, head, remote, ahead, behind, dirty, error }. `fetch:false` reuses what the last fetch saw. */
 export function updateStatus({ cwd = REPO_ROOT, fetch = true } = {}) {
   if (!existsSync(join(cwd, '.git'))) return (last = { git: false, error: 'not a git checkout (installed from a zip?) — clone the repo to get updates' });
-  const st = { git: true, branch: null, head: null, remote: null, ahead: 0, behind: 0, dirty: 0, error: null, checkedAt: new Date().toISOString() };
+  const st = { git: true, branch: null, head: null, remote: null, ahead: 0, behind: 0, dirty: 0, untracked: 0, error: null, checkedAt: new Date().toISOString() };
   try {
     st.branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
     st.head = git(['rev-parse', '--short', 'HEAD'], { cwd });
@@ -30,7 +30,9 @@ export function updateStatus({ cwd = REPO_ROOT, fetch = true } = {}) {
     if (fetch) git(['fetch', '--quiet', 'origin'], { cwd, timeout: 60_000 });
     const counts = git(['rev-list', '--left-right', '--count', `HEAD...origin/${st.branch}`], { cwd }).split(/\s+/).map(Number);
     st.ahead = counts[0] || 0; st.behind = counts[1] || 0;
-    st.dirty = git(['status', '--porcelain'], { cwd }).split('\n').filter(Boolean).length;
+    const status = git(['status', '--porcelain'], { cwd }).split('\n').filter(Boolean);
+    st.untracked = status.filter((l) => l.startsWith('??')).length; // informational only — untracked files never block a fast-forward
+    st.dirty = status.length - st.untracked;                        // only tracked (staged/unstaged) edits gate the pull
   } catch (e) { st.error = String(e?.stderr || e?.message || e).trim().split('\n')[0]; }
   return (last = st);
 }
@@ -43,7 +45,15 @@ export function applyUpdate({ cwd = REPO_ROOT, npm = true } = {}) {
   if (st.ahead) throw Object.assign(new Error(`this machine has ${st.ahead} commit(s) the remote lacks — push them first, then update`), { status: 409 });
   if (!st.behind) return { updated: false, head: st.head, npmInstalled: false, restartNeeded: false };
   const before = lockHash(cwd);
-  git(['pull', '--ff-only', '--quiet', 'origin', st.branch], { cwd, timeout: 120_000 });
+  try {
+    git(['pull', '--ff-only', '--quiet', 'origin', st.branch], { cwd, timeout: 120_000 });
+  } catch (e) {
+    // A ff-pull can still fail in the rare case an incoming tracked file would overwrite an existing untracked file.
+    // Surface it clearly (409) so callers fall back gracefully — the UI shows the message / keeps the flashing button,
+    // and the auto path just logs and re-checks later — never a dead or looping state (HEAD didn't move → no restart).
+    const msg = String(e?.stderr || e?.message || e).trim().split('\n').filter(Boolean).slice(0, 2).join(' ');
+    throw Object.assign(new Error(`update pull failed — a local file may block the fast-forward: ${msg}`), { status: 409 });
+  }
   const head = git(['rev-parse', '--short', 'HEAD'], { cwd });
   let npmInstalled = false;
   if (npm && lockHash(cwd) !== before) {
@@ -64,5 +74,5 @@ export function checkForUpdates() {
 export function formatUpdate(st) {
   if (!st.git) return st.error;
   if (st.error) return `${st.branch}@${st.head}: ${st.error}`;
-  return `${st.branch}@${st.head} ← ${st.remote}: ${st.behind ? `${st.behind} update(s) available` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`;
+  return `${st.branch}@${st.head} ← ${st.remote}: ${st.behind ? `${st.behind} update(s) available` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}${st.untracked ? `, ${st.untracked} untracked` : ''}`;
 }

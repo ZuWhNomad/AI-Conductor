@@ -30,14 +30,31 @@ test('update: status counts commits behind the remote and applyUpdate fast-forwa
   assert.equal(applyUpdate({ cwd: b, npm: false }).updated, false);
 });
 
-test('update: refuses over uncommitted changes or unpushed commits, and explains a non-git folder', { skip: !git && 'git not installed' }, () => {
+test('update: refuses over modified TRACKED files or unpushed commits, and explains a non-git folder', { skip: !git && 'git not installed' }, () => {
   const { a, b } = setup();
   writeFileSync(join(a, 'f.txt'), '3'); run(a, 'commit', '--quiet', '-am', 'three'); run(a, 'push', '--quiet');
-  writeFileSync(join(b, 'local.txt'), 'x');
+  writeFileSync(join(b, 'f.txt'), 'edited'); // a modified TRACKED file must block the fast-forward
   assert.throws(() => applyUpdate({ cwd: b, npm: false }), /not committed/);
-  run(b, 'add', '.'); run(b, 'commit', '--quiet', '-m', 'mine');
+  run(b, 'checkout', '--', 'f.txt'); // discard the tracked edit
+  writeFileSync(join(b, 'local.txt'), 'x'); run(b, 'add', '.'); run(b, 'commit', '--quiet', '-m', 'mine');
   assert.throws(() => applyUpdate({ cwd: b, npm: false }), /push them first/);
   const plain = tmpDir('plain');
   assert.equal(updateStatus({ cwd: plain }).git, false);
   assert.match(formatUpdate(updateStatus({ cwd: plain })), /clone the repo/);
+});
+
+test('update: untracked files do NOT block a fast-forward (dirty:0, applyUpdate proceeds)', { skip: !git && 'git not installed' }, () => {
+  const { a, b } = setup();
+  writeFileSync(join(a, 'f.txt'), '4'); run(a, 'commit', '--quiet', '-am', 'four'); run(a, 'push', '--quiet');
+  // b has untracked files present (the real-world case: logs, local notes, docs/plans/*.md) — these must not gate the pull
+  writeFileSync(join(b, 'note.md'), 'local note'); writeFileSync(join(b, 'scratch.log'), 'x');
+  const st = updateStatus({ cwd: b });
+  assert.equal(st.dirty, 0);           // gate value ignores untracked
+  assert.equal(st.untracked, 2);       // still reported, informationally
+  assert.equal(st.behind, 1);
+  assert.match(formatUpdate(st), /2 untracked/);
+  const r = applyUpdate({ cwd: b, npm: false }); // proceeds despite the untracked files
+  assert.equal(r.updated, true); assert.equal(r.commits, 1);
+  assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
+  assert.equal(run(b, 'status', '--porcelain'), '?? note.md\n?? scratch.log'); // untracked files survived the pull
 });
