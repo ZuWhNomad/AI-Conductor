@@ -11,7 +11,7 @@ import { contextBlock } from './context.mjs';
 import { blockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, CATEGORIES, recommend, providerWindows, runRows } from './scorecard.mjs';
 import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
@@ -234,6 +234,9 @@ async function run(t) {
     const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };
     t.changedFiles = [...new Set([...changedSince(t.cwd, before), ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
     t.diffStat = gitDiffStat(t.cwd);
+    const observed = changedSince(t.cwd, before);
+    const claimed = claimedWrites(r.items);
+    const phantom = isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
     if (t.status === 'canceled') { /* keep */ }
     else if (shuttingDown && ac.signal.aborted) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
@@ -250,10 +253,15 @@ async function run(t) {
     } else if (!r.ok) {
       t.status = 'failed'; t.error = r.error || 'worker failed';
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
+    } else if (phantom) {
+      t.status = 'failed'; t.failKind = 'phantom';
+      t.error = `phantom completion: worker reported file write(s) (${claimed.slice(0, 3).join(', ')}${claimed.length > 3 ? ', …' : ''}) but none landed on disk (git shows no change). Recorded as a phantom-failure verdict.`;
+      logImprovement('error', `worker:${t.provider}`, `phantom completion: claimed ${claimed.length} write(s), 0 landed`, { taskId: t.id, model: t.model, title: t.title });
     } else { t.status = 'done'; }
     t.finishedAt = nowIso();
     persist(t);
     if (TERMINAL.has(t.status) && !t.limitHit && t.status !== 'canceled') score(t, limitsBefore, concurrent); // a canceled/aborted run's ~0 tokens must not drag the model's cost means down (like limitHit, it isn't representative)
+    if (t.failKind === 'phantom') { try { rateTask(t.id, 'phantom', 'auto: reported file writes that never landed on disk'); } catch {} }
   } catch (e) {
     t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso();
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().

@@ -13,10 +13,12 @@ import { PROVIDERS } from './providers/index.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
 export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'docs', 'review', 'design', 'modeling', 'other'];
-export const VERDICTS = ['pass', 'fixable', 'fail'];
-const SCORE = { pass: 1, fixable: 0.5, fail: 0 };
+export const VERDICTS = ['pass', 'fixable', 'fail', 'phantom'];
+const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
 const LEVELS = [1, 2, 3, 4, 5];
 export const selOf = (r) => `${r.provider}:${r.model || 'default'}:${r.effort || 'default'}`;
+export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
+export function isPhantomCompletion({ ok, claimed = [], canVerify, observedCount }) { return !!ok && !!canVerify && claimed.length > 0 && observedCount === 0; }
 
 /** Snapshot of a provider's limit windows, taken before a run for the after-run delta. */
 export function snapshotWindows(provider) {
@@ -66,7 +68,7 @@ export function recordRun(t, { before = null, concurrent = 0 } = {}) {
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
-    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, title: t.title,
+    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, title: t.title, failKind: t.failKind || null, rounds: t.rounds ?? null,
   };
   appendNdjson(FILE(), row);
   bus.publish('score', { taskId: t.id, provider: t.provider, model: t.model, pct: row.pct });
@@ -207,7 +209,7 @@ export function summarize({ source = null } = {}) {
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [] }; groups.set(key, g); }
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [] }; groups.set(key, g); }
     g.n++;
     if (x.verdict) { g.rated++; g[x.verdict]++; }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
@@ -228,8 +230,21 @@ export function summarize({ source = null } = {}) {
     return {
       ...g, cost, priorTier: prior?.tier || null, quality, accept: g.rated ? (g.pass + g.fixable) / g.rated : null,
       avgTokens: mean(_tok), avgUsd: _unpriced ? null : mean(_usd), avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
+      errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
     };
   }).sort((a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1));
+}
+
+export function errorRates({ source = null } = {}) {
+  const models = new Map(), providers = new Map();
+  for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict) {
+    for (const [map, key] of [[models, a.sel], [providers, a.provider]]) {
+      let g = map.get(key); if (!g) { g = { key, rated: 0, fail: 0, phantom: 0 }; map.set(key, g); }
+      g.rated++; if (a.verdict === 'fail') g.fail++; if (a.verdict === 'phantom') g.phantom++;
+    }
+  }
+  const finish = (map) => [...map.values()].map((g) => ({ ...g, errorRate: (g.fail + g.phantom) / g.rated, phantomRate: g.phantom / g.rated })).sort((a, b) => b.errorRate - a.errorRate || b.rated - a.rated);
+  return { byModel: finish(models), byProvider: finish(providers) };
 }
 
 /**
@@ -482,8 +497,8 @@ export function formatScores({ category = null, source = null } = {}) {
   const rows = summary.filter((g) => !category || g.category === category);
   if (!rows.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
-  const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail | $/task | %window/task | avg s | rounds | prior'];
-  for (const g of rows) lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail} | ${g.avgUsd == null ? '-' : f(g.avgUsd, 3)} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`);
+  const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
+  for (const g of rows) lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${g.avgUsd == null ? '-' : f(g.avgUsd, 3)} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`);
   const cfg = loadConfig().scorecard;
   lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level))${cfg.usePriors ? '; prior fallback on' : ''}):`);
   let any = false;
@@ -492,5 +507,9 @@ export function formatScores({ category = null, source = null } = {}) {
     if (r) { any = true; lines.push(`- ${c}@${d}: ${r.reason}`); }
   }
   if (!any) lines.push('- none yet (not enough rated runs above the bar)');
+  lines.push('', 'Error rates (φ = phantom / unverified completions):');
+  const ers = errorRates({ source }).byProvider;
+  if (!ers.length) lines.push('- none rated yet');
+  else for (const e of ers) lines.push(`- ${e.key}: ${(e.errorRate * 100).toFixed(0)}% error, ${(e.phantomRate * 100).toFixed(0)}% φ (n=${e.rated})`);
   return lines.join('\n');
 }

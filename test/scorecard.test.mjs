@@ -460,3 +460,31 @@ test('method-c migration voids antigravity rows whose sel carried a spurious eff
   assert.equal(sc.rootRuns().find((c) => c.taskId === 'agy-bad'), undefined);    // dropped from the aggregates
   assert.ok(sc.rootRuns().find((c) => c.taskId === 'agy-good'));                  // the clean family row survives
 });
+
+test('phantom detection helpers', () => {
+  assert.deepEqual(sc.claimedWrites([{ type: 'file_change', changes: [{ path: 'a.js' }, { path: 'b.js' }] }, { type: 'message' }, { type: 'file_change', changes: [{ path: '' }, { nopath: 1 }] }]), ['a.js', 'b.js']);
+  assert.deepEqual(sc.claimedWrites(undefined), []);
+  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: true, observedCount: 0 }), true);
+  assert.equal(sc.isPhantomCompletion({ ok: false, claimed: ['a'], canVerify: true, observedCount: 0 }), false);
+  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: false, observedCount: 0 }), false);
+  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: true, observedCount: 1 }), false);
+  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: [], canVerify: true, observedCount: 0 }), false);
+});
+
+test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', () => {
+  sc.recordRun({ id: 'ph1', title: 'p', status: 'failed', failKind: 'phantom', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'test', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }, {});
+  sc.rateTask('ph1', 'phantom');
+  const g = sc.summarize().find((x) => x.sel === 'codex:gpt-5.6-luna:low' && x.category === 'test' && x.difficulty === 2);
+  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 1); assert.equal(g.phantomRate, 1);
+  const er = sc.errorRates();
+  assert.ok(er.byProvider.find((e) => e.key === 'codex' && e.phantom >= 1));
+  assert.ok(er.byModel.find((e) => e.key === 'codex:gpt-5.6-luna:low' && e.phantom >= 1));
+  assert.doesNotThrow(() => sc.rateTask('ph1', 'phantom'));
+  assert.throws(() => sc.rateTask('ph1', 'meh'), { status: 400 });
+});
+
+test('formatScores surfaces the phantom column and error-rate section', () => {
+  const text = sc.formatScores();
+  assert.match(text, /pass\/fix\/fail\/phantom/);
+  assert.match(text, /Error rates/);
+});
