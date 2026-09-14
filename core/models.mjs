@@ -57,3 +57,7 @@ export function startModelPolling(minutes) {
   timer = setInterval(() => refreshModels().catch(() => {}), Math.max(1, minutes) * 60_000);
   timer.unref();
 }
+
+export function stopModelPolling() {
+  if (timer) { clearInterval(timer); timer = null; }
+}

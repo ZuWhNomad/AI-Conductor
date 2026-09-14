@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli, quoteArg } from '../proc.mjs';
+import { findCli, quoteArg, trackProbe } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
@@ -57,7 +57,8 @@ export function capture(bin, args, { timeoutMs = 30_000, cwd } = {}) {
   const useShell = WIN && /\.(cmd|bat)$/i.test(bin);
   const target = useShell ? [bin, ...args].map(quoteArg).join(' ') : bin;
   return new Promise((resolve) => {
-    execFile(target, useShell ? [] : args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    const child = execFile(target, useShell ? [] : args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    trackProbe(child);
   });
 }
 

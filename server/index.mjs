@@ -7,8 +7,9 @@ import { homedir } from 'node:os';
 import { REPO_ROOT, readJson, writeJson, statePath } from '../core/paths.mjs';
 import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
-import { getModels, refreshModels, startModelPolling } from '../core/models.mjs';
-import { getLimits, refreshLimits, startLimitPolling } from '../core/limits.mjs';
+import { getModels, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
+import { getLimits, refreshLimits, startLimitPolling, stopLimitPolling } from '../core/limits.mjs';
+import { killProbes } from '../core/proc.mjs';
 import { estimateUsage, recordUsage } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import * as ollama from '../core/providers/ollama.mjs';
@@ -21,6 +22,12 @@ import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '..
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
+
+export function stopBackgroundWork() {
+  try { stopModelPolling(); } catch {}
+  try { stopLimitPolling(); } catch {}
+  try { killProbes(); } catch {}
+}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
@@ -69,7 +76,7 @@ async function route(req, res, url) {
   if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), home: homedir(), repoRoot: REPO_ROOT });
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
-    setTimeout(() => { try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
+    setTimeout(() => { try { stopBackgroundWork(); } catch {} try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
     return true;
   }
 

@@ -49,7 +49,7 @@ function openBrowser(url) {
 if (flags.help || cmd === 'help') { console.log(HELP); process.exit(0); }
 
 if (cmd === 'start') {
-  const { startServer } = await import('../server/index.mjs');
+  const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { abortRunning } = await import('../core/tasks.mjs');
   const cfg = loadConfig();
   const { url, port } = await startServer({ port: flags.port ? Number(flags.port) : undefined });
@@ -57,11 +57,11 @@ if (cmd === 'start') {
   console.log(`Conductor 2.0 running at ${url}   (state: ${stateDir()})`);
   console.log('Stop it with:  conductor stop   (or the Quit button in the UI, or Ctrl+C here)');
   if (!flags['no-open'] && cfg.openBrowser) openBrowser(url);
-  const stop = () => { clearPidFile(); abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
+  const stop = () => { clearPidFile(); try { stopBackgroundWork(); } catch {} abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 } else if (cmd === 'stop') {
-  // Kill a running conductor server started with `conductor start` (its pid is in the state dir).
+  // Kill a running conductor server started with `conductor start` (its pid is in the state dir); /T covers its process tree, so no extra cleanup is needed.
   let info = null;
   try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
   if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port 47474.`); process.exit(1); }

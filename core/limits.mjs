@@ -134,3 +134,7 @@ export function startLimitPolling(minutes) {
   timer = setInterval(() => refreshLimits().catch(() => {}), Math.max(1, minutes) * 60_000);
   timer.unref();
 }
+
+export function stopLimitPolling() {
+  if (timer) { clearInterval(timer); timer = null; }
+}

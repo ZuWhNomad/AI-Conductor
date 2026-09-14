@@ -4,6 +4,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 
 const WIN = process.platform === 'win32';
+const probeChildren = new Set();
 
 export function findOnPath(name) {
   const exts = WIN ? ['.cmd', '.exe', '.bat', ''] : [''];
@@ -128,6 +129,23 @@ export function killTree(child) {
     if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
     else child.kill('SIGTERM');
   } catch { try { child.kill(); } catch {} }
+}
+
+export function trackProbe(child) {
+  if (child && child.pid) {
+    probeChildren.add(child);
+    const done = () => probeChildren.delete(child);
+    child.once('exit', done);
+    child.once('error', done);
+  }
+  return child;
+}
+
+export function killProbes() {
+  for (const child of [...probeChildren]) {
+    try { killTree(child); } catch {}
+  }
+  probeChildren.clear();
 }
 
 /** Feed newline-delimited data from a stream to a callback, line by line. */
