@@ -9,7 +9,12 @@
 </head>
 <body>
 <aside id="sidebar">
-  <div class="brand"><span class="logo">🎼</span> <b>Conductor</b> <span class="muted">2.0</span> <button id="btn-settings" class="icon" title="Settings">⚙</button></div>
+  <div class="brand"><span class="logo">🎼</span> <b>Conductor</b> <span class="muted">2.0</span> <button id="btn-quit" class="icon quit" title="Quit — stop the Conductor server">⏻</button> <button id="btn-settings" class="icon" title="Settings">⚙</button></div>
+
+  <section class="panel budget-panel">
+    <div class="row between"><label class="lbl">Budget</label><button id="btn-budget-details" class="linkish tiny" title="Show full providers &amp; limits">details ▸</button></div>
+    <div id="budget" class="budget"></div>
+  </section>
 
   <section class="panel">
     <label class="lbl">Project folder</label>
@@ -48,10 +53,22 @@
   <header id="chat-header">
     <div class="title"><span id="chat-title">No chat selected</span> <span id="chat-cwd" class="muted tiny"></span></div>
     <div class="controls">
-      <select id="provider" title="Conductor provider"></select>
-      <select id="model" title="Conductor model (switches live)"></select>
-      <select id="effort" title="Effort (applies from the next message)"></select>
-      <label class="chk" title="Bypass permission prompts"><input id="bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="overflow" type="checkbox"> API overflow</label>
+      <div class="chipwrap">
+        <button id="model-chip" class="chip" title="Conductor model — click to change"><span id="chip-text" class="muted">No chat selected</span> <span class="caret muted">▾</span></button>
+        <div id="model-pop" class="popover" hidden>
+          <label class="lbl">Conductor (provider : model : effort)</label>
+          <div class="row picker">
+            <select id="provider" title="Conductor provider"></select>
+            <select id="model" title="Conductor model (switches live)"></select>
+            <select id="effort" title="Effort (applies from the next message)"></select>
+          </div>
+          <div class="row wrap chips-toggles">
+            <label class="chk" title="Bypass permission prompts"><input id="bypass" type="checkbox"> auto-approve</label>
+            <label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="overflow" type="checkbox"> API overflow</label>
+          </div>
+          <div class="tiny muted scope-note">Model switches live · effort applies from the next message · provider is fixed for an existing chat.</div>
+        </div>
+      </div>
       <button id="btn-update" class="sm" hidden title="A newer version is on GitHub">⬇ Update</button>
       <span id="status" class="pill">idle</span>
       <button id="btn-stop" class="sm danger" disabled>■ Stop</button>

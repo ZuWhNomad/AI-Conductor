@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="880" viewBox="0 0 1280 880" font-family="Segoe UI, system-ui, -apple-system, Roboto, sans-serif">
+  <title>Conductor 2.0 — proposed UI (annotated)</title>
+  <defs>
+    <style>
+      .bg{fill:#0f1115} .bg2{fill:#161a21} .bg3{fill:#1e232c}
+      .line{stroke:#2a3140;stroke-width:1} .fg{fill:#e6e8ee} .muted{fill:#8a93a6}
+      .accent{fill:#7c9cff} .accent2{fill:#2f4fbf} .ok{fill:#46c88a} .warn{fill:#f0b64a}
+      .bad{fill:#ef6b6b} .purple{fill:#b78cff}
+      .lbl{fill:#8a93a6;font-size:10px;letter-spacing:.6px} text{fill:#e6e8ee;font-size:12px}
+      .tiny{font-size:10px;fill:#8a93a6}
+      .pin{fill:#46c88a} .pintxt{fill:#0f1115;font-size:11px;font-weight:700}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="880"/>
+
+  <!-- ===================== SIDEBAR (300px) — nav first ===================== -->
+  <rect class="bg2" x="0" y="0" width="300" height="880"/>
+  <line class="line" x1="300" y1="0" x2="300" y2="880"/>
+  <text x="14" y="29" font-size="15" font-weight="700">🎼 Conductor 2.0</text>
+  <text x="276" y="29" class="muted" font-size="15">⚙</text>
+  <line class="line" x1="0" y1="46" x2="300" y2="46"/>
+
+  <!-- BUDGET headline (compact, always visible) -->
+  <text x="14" y="66" class="lbl">BUDGET</text><text x="230" y="66" class="tiny">details ▸</text>
+  <text x="14" y="86" font-size="11">claude · session</text><text x="250" y="86" class="tiny">42%</text>
+  <rect class="bg3" x="14" y="92" width="272" height="7" rx="3"/><rect class="ok" x="14" y="92" width="114" height="7" rx="3"/>
+  <text x="14" y="116" font-size="11">codex · weekly</text><text x="250" y="116" class="tiny">63%</text>
+  <rect class="bg3" x="14" y="122" width="272" height="7" rx="3"/><rect class="warn" x="14" y="122" width="171" height="7" rx="3"/>
+  <text x="14" y="146" class="tiny">grok ~71% est · gemini 0% · ollama local · +1</text>
+  <line class="line" x1="0" y1="162" x2="300" y2="162"/>
+
+  <!-- New chat: single button (opens a small form) -->
+  <rect class="accent2" x="14" y="176" width="272" height="30" rx="8"/><text x="118" y="196" font-weight="600">+ New chat</text>
+  <line class="line" x1="0" y1="222" x2="300" y2="222"/>
+
+  <!-- CHATS gets the freed vertical space -->
+  <text x="14" y="242" class="lbl">CHATS</text><text x="250" y="242" class="tiny">🔍</text>
+  <rect class="bg3" x="8" y="250" width="284" height="26" rx="8"/><text x="16" y="267">Auto-planner research &amp; UI plan</text>
+  <text x="16" y="296">Scorecard categories sweep</text>
+  <text x="16" y="322">Windowless spawn poll-gating</text>
+  <text x="16" y="348">Grok calibrate + reset day</text>
+  <text x="16" y="374">UI category classifier</text>
+  <text x="16" y="400" class="muted">Stress test 2026-09</text>
+  <text x="16" y="426" class="muted">Feedback bundle flow</text>
+  <text x="16" y="452" class="muted">Claude plan windows</text>
+  <text x="16" y="478" class="muted">Review framework</text>
+  <line class="line" x1="0" y1="742" x2="300" y2="742"/>
+
+  <!-- SYSTEM drawer (collapsed): admin out of the primary flow -->
+  <text x="14" y="762" class="lbl">SYSTEM</text>
+  <text x="14" y="786" font-size="11">Providers &amp; limits</text><text x="276" y="786" class="muted">▸</text>
+  <text x="14" y="812" font-size="11">Self-improvement</text><rect class="bg3" x="150" y="801" width="22" height="15" rx="7"/><text x="156" y="812" class="tiny">7</text><text x="276" y="812" class="muted">▸</text>
+  <text x="14" y="838" font-size="11">Benchmarks &amp; scores</text><text x="276" y="838" class="muted">▸</text>
+  <text x="14" y="864" font-size="11">Settings</text><text x="276" y="864" class="muted">▸</text>
+
+  <!-- ===================== CHAT COLUMN (300..980) ===================== -->
+  <!-- slim header: one model chip, scope-explicit -->
+  <text x="316" y="24" font-weight="600">Auto-planner research &amp; UI plan</text>
+  <text x="316" y="40" class="tiny">F:\Conductor 2.0</text>
+  <rect class="bg3" x="636" y="10" width="210" height="26" rx="8" stroke="#2a3140"/><text x="648" y="27" font-size="11">claude · opus-4.8 · high</text><text x="828" y="27" class="muted">▾</text>
+  <rect class="bg3" x="856" y="12" width="48" height="22" rx="11"/><text x="866" y="27" class="ok" font-size="11">idle</text>
+  <rect x="912" y="10" width="52" height="26" rx="6" fill="#1e232c" stroke="#ef6b6b"/><text x="920" y="27" class="bad" font-size="11">■ Stop</text>
+  <line class="line" x1="300" y1="46" x2="980" y2="46"/>
+
+  <!-- transcript with an auto-planner PLAN CARD -->
+  <rect x="560" y="66" width="404" height="40" rx="10" fill="#2f4fbf"/><text x="574" y="84" font-size="11">redo the workbench ui, make the tasks less hidden,</text><text x="574" y="99" font-size="11">and stop it running off before I confirm</text>
+
+  <!-- plan / confirm card -->
+  <rect class="bg2" x="316" y="120" width="648" height="196" rx="10" stroke="#b78cff" stroke-width="1.5"/>
+  <text x="332" y="142" font-weight="700" class="purple">Here's what I understand you want ✎</text>
+  <text x="332" y="164" font-size="11" class="fg">• Reorganize the UI so delegated tasks are prominent, not a thin strip.</text>
+  <text x="332" y="182" font-size="11" class="fg">• Add an interpret→confirm step so I check understanding before acting.</text>
+  <text x="332" y="204" font-weight="600" class="fg" font-size="11">One question:</text>
+  <text x="332" y="222" font-size="11" class="muted">Prose plan you reply to, or an editable plan card? (drives how much I build)</text>
+  <text x="332" y="248" font-weight="600" class="fg" font-size="11">Plan (3 steps):</text>
+  <text x="332" y="266" font-size="11" class="muted">1 read DOM/CSS · 2 draft layout + SVGs · 3 delegate X research → scorecard doc</text>
+  <rect class="ok" x="332" y="282" width="86" height="24" rx="6"/><text x="345" y="298" fill="#0f1115" font-size="11" font-weight="600">✓ Confirm</text>
+  <rect class="bg3" x="426" y="282" width="70" height="24" rx="6"/><text x="439" y="298" font-size="11">✎ Edit</text>
+  <rect x="504" y="282" width="64" height="24" rx="6" fill="#1e232c" stroke="#ef6b6b"/><text x="515" y="298" class="bad" font-size="11">✗ No</text>
+
+  <!-- composer with Plan toggle + slash hint -->
+  <line class="line" x1="300" y1="686" x2="980" y2="686"/>
+  <rect class="bg2" x="316" y="700" width="520" height="120" rx="8" stroke="#2a3140"/><text x="332" y="722" class="muted" font-size="11">Tell the conductor what to do…  type / for commands</text>
+  <rect class="bg3" x="316" y="828" width="96" height="24" rx="12" stroke="#b78cff"/><text x="330" y="844" class="purple" font-size="11">◐ Plan mode</text>
+  <text x="424" y="844" class="tiny">/worker  /astra  /ollama …</text>
+  <rect class="bg3" x="846" y="700" width="40" height="34" rx="8"/><text x="858" y="722" font-size="15">🎤</text>
+  <rect class="accent2" x="896" y="700" width="68" height="34" rx="8"/><text x="915" y="722" font-weight="600" font-size="12">Send</text>
+
+  <!-- ===================== FLEET DOCK (980..1280) ===================== -->
+  <rect class="bg2" x="980" y="0" width="300" height="880"/>
+  <line class="line" x1="980" y1="0" x2="980" y2="880"/>
+  <text x="996" y="27" class="lbl">FLEET</text><text x="1180" y="27" class="muted">⟨ collapse</text>
+  <text x="996" y="46" class="tiny">2 running · 1 queued · 3 done today</text>
+  <line class="line" x1="980" y1="58" x2="1280" y2="58"/>
+  <!-- budget-today headline for the fleet -->
+  <text x="996" y="80" font-size="11">spent today</text><text x="1200" y="80" class="tiny">4.1% wk · $0.06</text>
+  <rect class="bg3" x="996" y="86" width="268" height="6" rx="3"/><rect class="accent" x="996" y="86" width="58" height="6" rx="3"/>
+  <line class="line" x1="980" y1="104" x2="1280" y2="104"/>
+
+  <!-- richer task cards -->
+  <rect class="bg2" x="994" y="116" width="272" height="86" rx="10" stroke="#7c9cff"/>
+  <text x="1006" y="136" font-size="11" font-weight="600">X / writing research</text><circle class="accent" cx="1252" cy="131" r="5"/>
+  <text x="1006" y="154" class="tiny">grok · search@3 · running 2m</text>
+  <text x="1006" y="172" class="tiny">web_search: image-gen leaderboards…</text>
+  <rect class="bg3" x="1006" y="180" width="248" height="6" rx="3"/><rect class="accent" x="1006" y="180" width="120" height="6" rx="3"/>
+  <text x="1006" y="198" class="tiny">est. ~1.2% grok window</text>
+
+  <rect class="bg2" x="994" y="212" width="272" height="72" rx="10" stroke="#7c9cff"/>
+  <text x="1006" y="232" font-size="11" font-weight="600">Read fixtures</text><circle class="accent" cx="1252" cy="227" r="5"/>
+  <text x="1006" y="250" class="tiny">astra (codex) · edit@2 · running</text>
+  <text x="1006" y="268" class="tiny">run: node --test  (2 files changed)</text>
+
+  <rect class="bg2" x="994" y="294" width="272" height="60" rx="10" stroke="#2a3140"/>
+  <text x="1006" y="314" font-size="11" font-weight="600">dedupe findings</text><text x="1236" y="314" class="tiny">queued</text>
+  <text x="1006" y="332" class="tiny">waiting for a worker slot · summarize@2</text>
+
+  <rect class="bg2" x="994" y="364" width="272" height="60" rx="10" stroke="#46c88a"/>
+  <text x="1006" y="384" font-size="11" font-weight="600">Scorecard read</text><text x="1206" y="384" class="ok" font-size="10">done ✓</text>
+  <text x="1006" y="402" class="tiny">luna · read@1 · 0.3% · rated pass</text>
+
+  <text x="996" y="452" class="tiny">click a card → worker log, diff, rate</text>
+
+  <!-- ============ IMPROVEMENT PINS ============ -->
+  <g>
+    <circle class="pin" cx="742" cy="23" r="10"/><text x="738" y="27" class="pintxt">A</text>
+    <circle class="pin" cx="150" cy="106" r="10"/><text x="146" y="110" class="pintxt">B</text>
+    <circle class="pin" cx="150" cy="352" r="10"/><text x="146" y="356" class="pintxt">C</text>
+    <circle class="pin" cx="150" cy="786" r="10"/><text x="146" y="790" class="pintxt">D</text>
+    <circle class="pin" cx="1130" cy="131" r="10"/><text x="1126" y="135" class="pintxt">E</text>
+    <circle class="pin" cx="360" cy="844" r="10"/><text x="356" y="848" class="pintxt">F</text>
+    <circle class="pin" cx="640" cy="142" r="10"/><text x="636" y="146" class="pintxt">G</text>
+  </g>
+
+  <!-- legend -->
+  <rect x="330" y="330" width="634" height="212" rx="10" fill="#161a21" stroke="#46c88a"/>
+  <text x="346" y="352" font-weight="700" class="ok">Changes</text>
+  <g font-size="11">
+    <text x="346" y="376" class="fg">Ⓐ One model chip (provider·model·effort) → popover with the pickers + scope; toggles move inside.</text>
+    <text x="346" y="398" class="fg">Ⓑ Global budget headline where you spend — Claude session + Codex up front; full limits in details ▸.</text>
+    <text x="346" y="420" class="fg">Ⓒ New-chat collapses to one button; Chats list gets the freed space and becomes the primary nav.</text>
+    <text x="346" y="442" class="fg">Ⓓ Providers, Self-improvement, Benchmarks, Settings fold into a bottom SYSTEM drawer.</text>
+    <text x="346" y="464" class="fg">Ⓔ Fleet dock replaces the thin strip: counts + budget-today + rich cards (worker, level, %window, rounds).</text>
+    <text x="346" y="486" class="fg">Ⓕ Composer gains a Plan-mode toggle and a discoverable "/" command menu.</text>
+    <text x="346" y="508" class="fg">Ⓖ Auto-planner renders an interpret→confirm plan card (Confirm / Edit / No) before acting.</text>
+    <text x="346" y="530" class="muted">Narrow screens: the Fleet dock collapses to the current bottom strip. Tokens from ui/styles.css.</text>
+  </g>
+</svg>

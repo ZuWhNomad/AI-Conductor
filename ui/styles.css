@@ -41,10 +41,31 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 #sidebar .panel.providers-panel > #providers { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .picker select { min-width: 0; flex: 1; }
 .picker #new-model { flex: 2.2; }
-#chat-header select { max-width: 200px; }
 .brand { padding: 12px 14px; font-size: 16px; display: flex; gap: 6px; align-items: center; border-bottom: 1px solid var(--line); }
 .brand .logo { font-size: 18px; }
+.brand #btn-quit { margin-left: 8px; color: var(--bad); }
+.brand #btn-quit:hover { background: #3a1d1d; border-radius: 6px; }
 .brand #btn-settings { margin-left: auto; }
+.linkish { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0; }
+.linkish:hover { color: var(--accent); border: none; }
+
+/* budget headline */
+.budget-panel { gap: 4px; }
+.budget .b { margin: 2px 0; }
+.budget .bl { display: flex; justify-content: space-between; font-size: 11px; }
+.budget .bl .k { color: var(--fg); } .budget .bl .v { color: var(--muted); }
+.budget .others { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.budget .empty { font-size: 11px; color: var(--muted); }
+
+/* model chip + popover */
+.chipwrap { position: relative; }
+.chip { display: inline-flex; gap: 6px; align-items: center; background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; max-width: 320px; }
+.chip #chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.live #chip-text { color: var(--fg); }
+.popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; width: min(420px, 80vw); background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 4px; }
+.popover .picker select { min-width: 0; flex: 1; }
+.popover .picker #model { flex: 2.2; }
+.popover .chips-toggles { gap: 12px; }
 .panel { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
 .panel.grow { flex: 1; overflow: auto; min-height: 80px; }
 .list .item { padding: 6px 8px; border-radius: 8px; cursor: pointer; display: flex; justify-content: space-between; gap: 6px; align-items: center; }

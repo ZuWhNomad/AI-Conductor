@@ -97,6 +97,48 @@ function renderProviders() {
   $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes || 15}m · panel auto ${S.config?.ui?.autoRefresh ? (S.config.ui.autoRefreshMinutes || 15) + 'm' : 'off'}`;
 }
 
+// ---------- budget headline ----------
+function pickWindow(providerId, rx) {
+  const ws = S.limits.providers[providerId]?.windows || [];
+  return ws.find((w) => rx.test(w.label || '') || rx.test(w.id || '')) || ws[0] || null;
+}
+function budgetBar(label, w) {
+  const b = el('div', 'b');
+  const pct = w ? Math.max(0, Math.min(100, Number(w.usedPercent) || 0)) : 0;
+  const line = el('div', 'bl');
+  line.append(el('span', 'k', label), el('span', 'v', w && w.usedPercent != null ? `${Math.round(pct)}%${w.estimated ? ' est' : ''}` : '—'));
+  const m = el('div', 'meter'); const i = el('i', meterClass(pct)); i.style.width = pct + '%'; m.append(i);
+  b.append(line, m);
+  return b;
+}
+/** Compact always-visible budget: the two classes you actually spend (Claude session, Codex weekly) + a one-line rest. */
+function renderBudget() {
+  const box = $('#budget'); if (!box) return; box.innerHTML = '';
+  const claude = pickWindow('claude', /5-hour|session|hour/i);
+  const codex = pickWindow('codex', /weekly/i);
+  if (claude) box.append(budgetBar('claude · session', claude));
+  if (codex) box.append(budgetBar('codex · weekly', codex));
+  const parts = [];
+  for (const p of S.providers || []) {
+    if (p.id === 'claude' || p.id === 'codex') continue;
+    if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
+    const w = (S.limits.providers[p.id]?.windows || [])[0];
+    if (w && w.usedPercent != null) parts.push(`${p.id} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`);
+    else if (p.kind === 'ollama') parts.push(`${p.id} local`);
+  }
+  if (parts.length) box.append(el('div', 'others', parts.slice(0, 4).join(' · ') + (parts.length > 4 ? ` · +${parts.length - 4}` : '')));
+  if (!claude && !codex && !parts.length) box.append(el('div', 'empty', 'Refresh to load limits'));
+}
+
+// ---------- model chip (header) ----------
+function renderChip() {
+  const t = $('#chip-text'); const chip = $('#model-chip'); if (!t) return;
+  if (!S.current) { t.textContent = 'No chat selected'; chip.classList.remove('live'); return; }
+  const model = S.current.model && S.current.model !== 'default' ? S.current.model : 'default';
+  t.textContent = `${S.current.provider || 'claude'} · ${model} · ${S.current.effort || 'high'}`;
+  chip.classList.add('live');
+}
+
 // ---------- conductor picker: provider : model : effort ----------
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const composite = (v) => `${v.provider}:${v.model || 'default'}:${v.effort || 'default'}`;
@@ -307,7 +349,7 @@ async function openSession(id) {
   const s = await api.get(`/api/sessions/${id}`);
   S.current = s; localStorage.setItem('lastSession', id);
   $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = `${s.cwd} · ${s.selection || ''}`;
-  refreshHeaderPicker(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi;
+  refreshHeaderPicker(); renderChip(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi;
   setStatus(s.status);
   renderHistory(s.messages || []);
   for (const p of s.pending || []) addPermission(p);
@@ -354,7 +396,7 @@ async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
-  renderSessions(); renderProviders(); renderTasks(); applyAutoRefresh();
+  renderSessions(); renderProviders(); renderBudget(); renderTasks(); applyAutoRefresh();
   if (!S.bypassTouched) $('#new-bypass').checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; // settings default; a manual toggle sticks
   if (!S.overflowTouched) $('#new-overflow').checked = !!S.config?.conductor?.overflowApi;
   if (S.current) await openSession(S.current.id);
@@ -378,16 +420,16 @@ function connect() {
   on('session', onSessionEvent);
   on('task', (ev) => updateTask(ev.task));
   on('worker', (ev) => { const log = S.workerLog.get(ev.taskId) || []; if (ev.item) { log.push(ev.item); if (log.length > 200) log.shift(); S.workerLog.set(ev.taskId, log); } if (ev.error) { log.push({ type: 'error', text: ev.error }); S.workerLog.set(ev.taskId, log); } const c = S.taskEls.get(ev.taskId); if (c) c.querySelector('.last').textContent = lastAction({ id: ev.taskId }); });
-  on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); }));
-  on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); }));
+  on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
+  on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
   on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
-  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); applyAutoRefresh(); }));
+  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); }));
   on('update', (ev) => { const b = $('#btn-update'); if (ev.behind) { b.hidden = false; b.textContent = `⬇ Update (${ev.behind})`; } if (ev.updated) { b.hidden = true; addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); } });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
-  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
+  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {
@@ -487,16 +529,10 @@ function openSettings() {
     S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); applyAutoRefresh(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
   };
   body.append(save);
-  // Quit: stop the server process from the browser (closing the tab leaves it running).
+  // Quit: stop the server process from the browser (also available top-left in the brand row).
   const quit = el('button', 'sm danger', 'Quit conductor (stop the server)');
   quit.style.marginLeft = '8px';
-  quit.onclick = async () => {
-    if (!confirm('Stop the conductor server? In-flight tasks will resume next time you start it. This tab will stop working until you restart it.')) return;
-    quit.disabled = true;
-    try { await api.post('/api/shutdown', {}); } catch {}
-    closeModal();
-    document.body.innerHTML = '<div style="padding:2rem;font:14px system-ui">Conductor stopped. Restart it with <code>conductor start</code>, then reload this page.</div>';
-  };
+  quit.onclick = () => quitServer(quit);
   body.append(quit);
   openModal('Settings', body);
 }
@@ -526,6 +562,19 @@ async function runReview() {
   await refreshSessions(); await openSession(s.id);
 }
 
+// ---------- quit / misc ----------
+/** Stop the server process (destructive: gated behind a confirm). Used by the top-left Quit and the Settings Quit. */
+async function quitServer(btn) {
+  if (!confirm('Stop the Conductor server? In-flight tasks resume next time you start it. This tab stops working until you restart it.')) return false;
+  if (btn) btn.disabled = true;
+  try { await api.post('/api/shutdown', {}); } catch {}
+  document.body.innerHTML = '<div style="padding:2rem;font:14px system-ui">Conductor stopped. Restart it with <code>conductor start</code>, then reload this page.</div>';
+  return true;
+}
+function toggleModelPop(force) { const pop = $('#model-pop'); if (!pop) return; pop.hidden = force != null ? !force : !pop.hidden; }
+/** "details ▸" on the budget headline — reveal the full Providers & limits (redefined in Phase 3 to open the SYSTEM drawer). */
+let revealProviders = () => $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
 // ---------- boot ----------
 async function boot() {
   const st = await api.get('/api/state');
@@ -533,7 +582,7 @@ async function boot() {
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers });
   $('#cwd').value = localStorage.getItem('cwd') || '';
   $('#improve-count').textContent = S.improvements.length;
-  refreshNewPicker(false); renderSessions(); renderProviders(); applyAutoRefresh();
+  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); applyAutoRefresh();
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
@@ -545,6 +594,12 @@ async function boot() {
   $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
   $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
   $('#btn-settings').onclick = openSettings;
+  $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);
+  $('#btn-budget-details').onclick = () => revealProviders();
+  // model chip popover: toggle on click, close on outside-click / Escape.
+  $('#model-chip').onclick = (e) => { e.stopPropagation(); toggleModelPop(); };
+  $('#model-pop').onclick = (e) => e.stopPropagation();
+  document.addEventListener('click', () => toggleModelPop(false));
   $('#btn-improvements').onclick = () => openImprovements();
   $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; addSys('Already up to date.'); } } catch (e) { addSys(`Update failed: ${e.message}`); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
@@ -574,6 +629,6 @@ async function boot() {
   });
   if (!stt.supported) { $('#btn-mic').disabled = true; $('#stt-hint').textContent = 'Speech to text needs Chrome or Edge (Web Speech API).'; }
   $('#btn-mic').onclick = () => stt.toggle();
-  document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'm') { e.preventDefault(); stt.toggle(); ta.focus(); } if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else if (stt.active) stt.stop(); } });
+  document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'm') { e.preventDefault(); stt.toggle(); ta.focus(); } if (e.key === 'Escape') { if (!$('#model-pop').hidden) toggleModelPop(false); else if (!$('#modal').hidden) closeModal(); else if (stt.active) stt.stop(); } });
 }
 boot().catch((e) => { document.body.innerHTML = `<pre style="padding:20px">Failed to load: ${esc(e.message)}</pre>`; });
