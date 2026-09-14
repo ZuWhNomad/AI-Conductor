@@ -16,36 +16,46 @@
     <div id="budget" class="budget"></div>
   </section>
 
-  <section class="panel">
-    <label class="lbl">Project folder</label>
-    <div class="row">
-      <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false">
-      <button id="btn-browse" class="sm" title="Browse folders">…</button>
+  <section class="panel newchat-panel">
+    <button id="btn-newchat-toggle" class="primary wide">+ New chat</button>
+    <div id="newchat-form" class="newchat-form" hidden>
+      <label class="lbl">Project folder</label>
+      <div class="row">
+        <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false">
+        <button id="btn-browse" class="sm" title="Browse folders">…</button>
+      </div>
+      <label class="lbl" style="margin-top:6px">Conductor (provider : model : effort)</label>
+      <div class="row picker">
+        <select id="new-provider" title="Provider"></select>
+        <select id="new-model" title="Model"></select>
+        <select id="new-effort" title="Effort"></select>
+      </div>
+      <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label></div>
+      <button id="btn-new" class="primary wide">Start chat</button>
     </div>
-    <label class="lbl" style="margin-top:6px">Conductor (provider : model : effort)</label>
-    <div class="row picker">
-      <select id="new-provider" title="Provider"></select>
-      <select id="new-model" title="Model"></select>
-      <select id="new-effort" title="Effort"></select>
-    </div>
-    <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label></div>
-    <button id="btn-new" class="primary wide">+ New chat</button>
-  </section>
-
-  <section class="panel providers-panel">
-    <div class="row between"><label class="lbl">Providers &amp; limits</label><span class="row"><label class="chk" title="Auto-refresh models & limits on the interval in ⚙ settings"><input id="auto-refresh" type="checkbox"> auto</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></span></div>
-    <div id="providers" class="providers"></div>
-    <div id="refresh-meta" class="muted tiny"></div>
   </section>
 
   <section class="panel grow">
-    <label class="lbl">Chats</label>
+    <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="text" placeholder="🔍 filter" spellcheck="false"></div>
     <div id="sessions" class="list"></div>
   </section>
 
-  <section class="panel">
-    <div class="row between"><label class="lbl">Self-improvement</label><span id="improve-count" class="pill">0</span></div>
-    <div class="row"><button id="btn-improvements" class="sm">Open log</button><button id="btn-review" class="sm">Run review</button></div>
+  <section class="system-panel">
+    <button id="system-toggle" class="system-head wide"><span class="lbl">System</span><span class="caret muted">▸</span></button>
+    <div id="system-body" class="system-body" hidden>
+      <section class="panel providers-panel">
+        <div class="row between"><label class="lbl">Providers &amp; limits</label><span class="row"><label class="chk" title="Auto-refresh models & limits on the interval in ⚙ settings"><input id="auto-refresh" type="checkbox"> auto</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></span></div>
+        <div id="providers" class="providers"></div>
+        <div id="refresh-meta" class="muted tiny"></div>
+      </section>
+      <section class="panel">
+        <div class="row between"><label class="lbl">Self-improvement</label><span id="improve-count" class="pill">0</span></div>
+        <div class="row"><button id="btn-improvements" class="sm">Open log</button><button id="btn-review" class="sm">Run review</button></div>
+      </section>
+      <section class="panel">
+        <div class="row"><button id="btn-scores" class="sm wide">Benchmarks &amp; scores</button><button id="btn-settings2" class="sm wide">Settings</button></div>
+      </section>
+    </div>
   </section>
 </aside>
 

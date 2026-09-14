@@ -57,6 +57,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .budget .others { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .budget .empty { font-size: 11px; color: var(--muted); }
 
+/* new-chat inline form */
+.newchat-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.filter { flex: 0 0 auto; width: 110px; padding: 2px 6px; font-size: 11px; }
+
+/* system drawer */
+.system-panel { flex: 0 0 auto; border-top: 1px solid var(--line); }
+.system-head { display: flex; justify-content: space-between; align-items: center; width: 100%; background: transparent; border: none; border-radius: 0; padding: 10px 12px; cursor: pointer; }
+.system-head:hover { background: var(--bg3); border: none; }
+.system-head .lbl { margin-bottom: 0; cursor: pointer; }
+.system-body { max-height: 66vh; overflow-y: auto; }
+.system-body .panel:last-child { border-bottom: none; }
+
 /* model chip + popover */
 .chipwrap { position: relative; }
 .chip { display: inline-flex; gap: 6px; align-items: center; background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; max-width: 320px; }

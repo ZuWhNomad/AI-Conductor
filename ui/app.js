@@ -29,7 +29,9 @@ function md(src) {
 // ---------- rendering: sidebar ----------
 function renderSessions() {
   const box = $('#sessions'); box.innerHTML = '';
+  const f = (S.chatFilter || '').toLowerCase();
   for (const s of S.sessions) {
+    if (f && !`${s.title || 'New chat'} ${s.cwd || ''}`.toLowerCase().includes(f)) continue;
     const it = el('div', 'item' + (S.current?.id === s.id ? ' active' : ''));
     const t = el('span', 't', s.title || 'New chat'); t.title = `${s.cwd}\n${s.model || 'default model'}`;
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
@@ -407,6 +409,7 @@ async function newSession() {
   let s;
   try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked }); }
   catch (e) { $('#stt-hint').textContent = e.message; return; }
+  $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
   await refreshSessions(); await openSession(s.id);
 }
 async function refreshSessions() { S.sessions = await api.get('/api/sessions'); renderSessions(); }
@@ -610,8 +613,27 @@ async function quitServer(btn) {
   return true;
 }
 function toggleModelPop(force) { const pop = $('#model-pop'); if (!pop) return; pop.hidden = force != null ? !force : !pop.hidden; }
-/** "details ▸" on the budget headline — reveal the full Providers & limits (redefined in Phase 3 to open the SYSTEM drawer). */
-let revealProviders = () => $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+/** SYSTEM drawer: providers, self-improvement, benchmarks, settings out of the primary flow. */
+function openSystem(open) {
+  const b = $('#system-body'); if (!b) return;
+  const isOpen = open != null ? open : b.hidden;
+  b.hidden = !isOpen;
+  localStorage.setItem('systemOpen', isOpen ? '1' : '0');
+  const car = $('#system-toggle .caret'); if (car) car.textContent = isOpen ? '▾' : '▸';
+}
+/** "details ▸" on the budget headline opens the SYSTEM drawer at Providers & limits. */
+function revealProviders() { openSystem(true); $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+async function openScores() {
+  const body = el('div'); body.append(el('div', 'muted tiny', 'Loading…'));
+  openModal('Benchmarks & scores', body);
+  try {
+    const [sc, bn] = await Promise.all([api.get('/api/scores'), api.get('/api/bench').catch(() => null)]);
+    body.innerHTML = '';
+    body.append(el('h4', null, 'Scores (measured worker selection)'));
+    body.append(el('pre', null, sc.text || '(no rated runs yet)'));
+    if (bn?.text) { body.append(el('h4', null, 'Due for benchmark')); body.append(el('pre', null, bn.text)); }
+  } catch (e) { body.innerHTML = ''; body.append(el('div', 'sysline err', e.message)); }
+}
 
 // ---------- boot ----------
 async function boot() {
@@ -636,6 +658,14 @@ async function boot() {
   $('#btn-budget-details').onclick = () => revealProviders();
   if (localStorage.getItem('fleetCollapsed') === '1') { document.body.classList.add('fleet-collapsed'); $('#fleet-collapse').textContent = '⟩'; }
   $('#fleet-collapse').onclick = () => { const c = document.body.classList.toggle('fleet-collapsed'); localStorage.setItem('fleetCollapsed', c ? '1' : '0'); $('#fleet-collapse').textContent = c ? '⟩' : '⟨'; };
+  // new-chat: one button reveals the inline form; SYSTEM drawer folds admin away.
+  $('#btn-newchat-toggle').onclick = () => { const f = $('#newchat-form'); f.hidden = !f.hidden; if (!f.hidden) $('#cwd').focus(); };
+  $('#system-toggle').onclick = () => openSystem();
+  $('#btn-scores').onclick = openScores;
+  $('#btn-settings2').onclick = openSettings;
+  $('#chat-filter').oninput = (e) => { S.chatFilter = e.target.value; renderSessions(); };
+  if (localStorage.getItem('systemOpen') === '1') openSystem(true);
+  if (!S.sessions.length) $('#newchat-form').hidden = false; // first run: no chats yet, show the form
   // model chip popover: toggle on click, close on outside-click / Escape.
   $('#model-chip').onclick = (e) => { e.stopPropagation(); toggleModelPop(); };
   $('#model-pop').onclick = (e) => e.stopPropagation();
