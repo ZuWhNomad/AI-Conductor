@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli, quoteArg, trackProbe } from '../proc.mjs';
+import { findCli, quoteArg, trackProbe, resolveNpmShim } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
@@ -52,12 +52,18 @@ const pyScripts = WIN
     })
   : [join(home, '.local', 'bin')];
 
-/** Run a CLI with stdin closed and capture output (auth probes, model lists). A Windows .cmd/.bat needs the shell (direct execFile throws EINVAL). */
+/**
+ * Run a CLI with stdin closed and capture output (auth probes, model lists). An npm `.cmd` shim is unwrapped to
+ * `node <entry>` and spawned directly — no cmd.exe, so no console window ever flashes during polling. Only a `.cmd`
+ * we cannot unwrap falls back to the shell (windowsHide keeps that windowless too; a direct execFile on it throws EINVAL).
+ */
 export function capture(bin, args, { timeoutMs = 30_000, cwd } = {}) {
-  const useShell = WIN && /\.(cmd|bat)$/i.test(bin);
-  const target = useShell ? [bin, ...args].map(quoteArg).join(' ') : bin;
+  const shim = WIN && /\.(cmd|bat)$/i.test(bin) ? resolveNpmShim(bin) : null;
+  const useShell = !shim && WIN && /\.(cmd|bat)$/i.test(bin);
+  const cmd = shim ? shim.command : useShell ? [bin, ...args].map(quoteArg).join(' ') : bin;
+  const argv = shim ? [...shim.args, ...args] : useShell ? [] : args;
   return new Promise((resolve) => {
-    const child = execFile(target, useShell ? [] : args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    const child = execFile(cmd, argv, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
     trackProbe(child);
   });
 }

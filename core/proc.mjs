@@ -102,12 +102,14 @@ export function winArgEscape(s) {
  * cmd-escaped args (imperfect against a shim's own `%*` re-parse, so unwrapping is strongly preferred).
  */
 export function spawnCli(bin, args, opts = {}) {
+  const base = { windowsHide: true, ...opts }; // never flash a console window on Windows (a caller may still override)
   if (WIN && /\.(cmd|bat)$/i.test(bin)) {
     const shim = resolveNpmShim(bin);
-    if (shim) return spawn(shim.command, [...shim.args, ...args], opts); // no shell: argv passed verbatim, no re-parse
-    return spawn(`${quoteArg(bin)} ${args.map(winArgEscape).join(' ')}`, { ...opts, shell: true });
+    if (shim) return spawn(shim.command, [...shim.args, ...args], base); // no shell: argv passed verbatim, no re-parse
+    // Last-resort .cmd shell fallback: keep it windowless (windowsHide from base) and pipe stdio so no cmd.exe window shows.
+    return spawn(`${quoteArg(bin)} ${args.map(winArgEscape).join(' ')}`, { stdio: ['pipe', 'pipe', 'pipe'], ...base, shell: true });
   }
-  return spawn(bin, args, opts);
+  return spawn(bin, args, base);
 }
 
 export function assertShellSafe(args) {
@@ -126,7 +128,7 @@ export function spawnCodex(args, opts = {}) {
 export function killTree(child) {
   if (!child?.pid || child.exitCode !== null) return; // never spawned (ENOENT) or already gone
   try {
-    if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
     else child.kill('SIGTERM');
   } catch { try { child.kill(); } catch {} }
 }
