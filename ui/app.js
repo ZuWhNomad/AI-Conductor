@@ -100,9 +100,22 @@ function renderProviders() {
 }
 
 // ---------- budget headline ----------
-function pickWindow(providerId, rx) {
-  const ws = S.limits.providers[providerId]?.windows || [];
-  return ws.find((w) => rx.test(w.label || '') || rx.test(w.id || '')) || ws[0] || null;
+/** A window's scope: prefer an explicit `scope`, then windowMinutes (<=300 session / >=10080 weekly), then labels. */
+function windowScope(w) {
+  if (w.scope === 'session' || w.scope === 'weekly') return w.scope;
+  if (typeof w.windowMinutes === 'number') return w.windowMinutes <= 300 ? 'session' : w.windowMinutes >= 10080 ? 'weekly' : null;
+  const s = `${w.label || ''} ${w.id || ''}`;
+  if (/weekly|seven[_ -]?day|7[_ -]?day/i.test(s)) return 'weekly';
+  if (/5[_ -]?hour|\b5h\b|session|\bhour\b/i.test(s)) return 'session';
+  return null;
+}
+/** The plan-level window for a provider+scope: skip per-model/sub-scoped windows, prefer the provider's own primary bucket. */
+function planWindow(providerId, scope) {
+  const ws = (S.limits.providers[providerId]?.windows || []).filter((w) => windowScope(w) === scope);
+  if (!ws.length) return null;
+  const plan = ws.filter((w) => !w.models); // a `models` field marks a per-model window (e.g. claude "weekly Fable")
+  const pool = plan.length ? plan : ws;
+  return pool.find((w) => (w.id || '').startsWith(`${providerId}:`) || /^(five_hour|seven_day)$/.test(w.id || '')) || pool[0];
 }
 function budgetBar(label, w) {
   const b = el('div', 'b');
@@ -113,23 +126,25 @@ function budgetBar(label, w) {
   b.append(line, m);
   return b;
 }
-/** Compact always-visible budget: the two classes you actually spend (Claude session, Codex weekly) + a one-line rest. */
+/** Compact always-visible budget: the SELECTED orchestrator's session + weekly bars first, then a one-line rest. */
 function renderBudget() {
   const box = $('#budget'); if (!box) return; box.innerHTML = '';
-  const claude = pickWindow('claude', /5-hour|session|hour/i);
-  const codex = pickWindow('codex', /weekly/i);
-  if (claude) box.append(budgetBar('claude · session', claude));
-  if (codex) box.append(budgetBar('codex · weekly', codex));
+  const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
+  const session = planWindow(prov, 'session');
+  const weekly = planWindow(prov, 'weekly');
+  if (session) box.append(budgetBar(`${prov} · session`, session));
+  if (weekly) box.append(budgetBar(`${prov} · weekly`, weekly));
+  if (!session && !weekly) { const only = (S.limits.providers[prov]?.windows || [])[0]; if (only) box.append(budgetBar(`${prov} · ${only.estimated ? 'est' : 'usage'}`, only)); }
   const parts = [];
   for (const p of S.providers || []) {
-    if (p.id === 'claude' || p.id === 'codex') continue;
+    if (p.id === prov) continue; // the selected provider is already shown in full above
     if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
     const w = (S.limits.providers[p.id]?.windows || [])[0];
     if (w && w.usedPercent != null) parts.push(`${p.id} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`);
     else if (p.kind === 'ollama') parts.push(`${p.id} local`);
   }
   if (parts.length) box.append(el('div', 'others', parts.slice(0, 4).join(' · ') + (parts.length > 4 ? ` · +${parts.length - 4}` : '')));
-  if (!claude && !codex && !parts.length) box.append(el('div', 'empty', 'Refresh to load limits'));
+  if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
 }
 
 // ---------- model chip (header) ----------
@@ -388,7 +403,7 @@ async function openSession(id) {
   const s = await api.get(`/api/sessions/${id}`);
   S.current = s; localStorage.setItem('lastSession', id);
   $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = `${s.cwd} · ${s.selection || ''}`;
-  refreshHeaderPicker(); renderChip(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi;
+  refreshHeaderPicker(); renderChip(); renderBudget(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi;
   setStatus(s.status);
   renderHistory(s.messages || []);
   for (const p of s.pending || []) addPermission(p);
@@ -471,7 +486,7 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
-  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
+  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); renderBudget(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {
