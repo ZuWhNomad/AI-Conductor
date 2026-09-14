@@ -39,3 +39,18 @@ test('a budget estimate switches to the calibrated fit once a check-in exists (C
   assert.equal(est.calibrated, true);
   assert.equal(est.pct, 55);        // the recorded % drives the bar, not spent/budget (6%)
 });
+
+test('a check-in survives a window drift / restart: the estimate re-applies it on a fresh load', () => {
+  runAt('driftx', '2026-05-01T10:00:00Z', 60000, 41320);   // burst A, ~101320 tokens this window
+  runAt('driftx', '2026-05-01T10:02:00Z', 0, 0);
+  recordUsage('driftx', 26, { at: Date.parse('2026-05-01T10:03:00Z') }); // calibrate 26% against burst A
+  // >6h idle then more usage: the old activity-gap window re-anchored PAST the check-in and reverted to the flat budget.
+  runAt('driftx', '2026-05-01T18:10:00Z', 6000, 4000);     // ~10000 tokens, a new activity-gap window starts here
+  const opts = { budgetTokens: 10_000_000, now: Date.parse('2026-05-01T19:00:00Z') };
+  const a = estimateUsage('driftx', opts);
+  const b = estimateUsage('driftx', opts);                 // a second load re-reads from disk = "after a restart"
+  assert.equal(a.calibrated, true);
+  assert.equal(a.basis, 'fit');                            // NOT the flat 'budget' fallback (~0.1%)
+  assert.ok(a.pct >= 26 && a.pct < 40, `held near the calibrated 26%, got ${a.pct}`);
+  assert.equal(a.pct, b.pct);                              // and it is stable across reloads
+});

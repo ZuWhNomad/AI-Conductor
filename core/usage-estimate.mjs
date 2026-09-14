@@ -3,7 +3,7 @@
 // so far this window, giving a %-per-token rate the estimate extrapolates between check-ins. No timezone math —
 // the window boundary is inferred from a long gap in the provider's own activity, and re-anchored on each reset.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
-import { runRows } from './scorecard.mjs';
+import { runRows, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 
 const FILE = () => statePath('usage-observations.ndjson');
@@ -34,41 +34,70 @@ export function recordUsage(provider, pct, { at = Date.now() } = {}) {
   return row;
 }
 
-/** Observations for the provider that belong to the current window (same window start as now). */
-function windowObservations(provider, now = Date.now()) {
-  const { startTs } = windowTokens(provider, now);
-  return readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && Date.parse(o.windowStart) >= startTs - gapMs(provider) && Date.parse(o.at) >= startTs - gapMs(provider));
+/** Most recent scheduled reset for a provider (the plan's real window floor), or null when it has no schedule. */
+function lastScheduledReset(provider, now = Date.now()) {
+  const cfg = loadConfig().scorecard;
+  const next = nextScheduledReset(provider, cfg, now);
+  if (next == null) return null;
+  const period = (Number(cfg.usageResets?.[provider]?.periodHours) || 0) * 3600_000;
+  return period > 0 ? next - period : null;
+}
+
+/** Provider tokens (in+out) spent since an absolute instant — the through-origin anchor for the estimate. */
+function tokensSince(provider, sinceTs) {
+  return tokenRuns(provider).filter((r) => r.ts >= sinceTs).reduce((s, r) => s + r.tokens, 0);
+}
+
+/** The latest persisted check-in still inside the current reset period (a durable calibration anchor), or null.
+ * Anchoring the estimate to the check-in's OWN recorded window — not a freshly re-inferred activity-gap window — is
+ * what makes a calibrated bar survive restarts and idle gaps. The gap heuristic drifts its window start PAST an older
+ * check-in the moment the provider is idle longer than the gap (Grok's real plan is weekly, the default gap 6h), and
+ * the estimate then silently reverted to the flat token budget (~1%). A scheduled reset (Grok = weekly) expires it. */
+function latestCheckin(provider, now = Date.now()) {
+  const floor = lastScheduledReset(provider, now);
+  const obs = readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && Number.isFinite(Date.parse(o.at)) && (floor == null || Date.parse(o.at) >= floor));
+  return obs.length ? obs.reduce((a, b) => (Date.parse(b.at) >= Date.parse(a.at) ? b : a)) : null;
 }
 
 /**
- * Estimate the provider's current plan % from token spend. Rate = observed % / tokens at the latest check-in
- * (or the slope between the two most recent). Returns null when there is nothing to calibrate from.
- * @param {object} [o] `budgetTokens` (a flat, slightly-conservative "100% at N tokens" reference that overrides the
- *   fitted rate), or `seedPctPerMToken` (a rate used before any check-in exists). The estimate is advisory only —
- *   it is never fed to the scheduler's budget gate, so the conductor keeps dispatching until the real limit hits.
+ * Estimate the provider's current plan % from token spend. Once the user has calibrated (a check-in exists in the
+ * current window), the estimate is anchored to that check-in's recorded window and re-applied on every load — so a
+ * calibrated value holds across restarts until the next check-in or a real reset. Before any check-in it falls back
+ * to a flat token budget (advisory), or a config seed rate, else null. Advisory only — it never gates the scheduler.
+ * @param {object} [o] `budgetTokens` (flat "100% at N tokens" fallback, pre-calibration only), `seedPctPerMToken`
+ *   (a rate used before any check-in exists), `resetsAt` (shown on the bar), `now`.
  */
 export function estimateUsage(provider, { now = Date.now(), budgetTokens = null, seedPctPerMToken = null, resetsAt = null } = {}) {
-  const { spent } = windowTokens(provider, now);
-  const obs = windowObservations(provider, now).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  // Overshoot: how far PAST the projected 100% we have run without the provider actually failing. Because dispatch
-  // runs till the real limit (the estimate never gates it), sailing past ~100% means the projection is stale — the
-  // budget is too low, or (commonly) the window reset earlier than expected (a mid-week reset). `needsCheck` asks
-  // the user to re-verify the real limits / reset. Threshold configurable (usageOvershootPct, default 110%).
+  // Overshoot: running this far PAST the projected 100% without the provider actually failing means the projection is
+  // stale — the budget is too low, or the window reset earlier than expected. `needsCheck` asks the user to re-verify.
   const overshootAt = loadConfig().scorecard?.usageOvershootPct ?? 110;
   const flag = (rawPct) => ({ rawPct: Math.round(rawPct * 10) / 10, needsCheck: rawPct >= overshootAt });
-  if (budgetTokens && !obs.length) { // flat budget: 100% at budgetTokens, advisory — ONLY until a check-in exists.
-    // Once the user has calibrated (obs.length), the fitted rate below wins so the recorded % actually moves the bar
-    // (a flat budget ignores check-ins entirely, which made "Calibrate" look like it did nothing).
-    const raw = (spent / budgetTokens) * 100;
-    return { pct: Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10, rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: obs.at(-1)?.pct ?? null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt, ...flag(raw) };
+  const round1 = (n) => Math.round(Math.max(0, Math.min(100, n)) * 10) / 10;
+
+  const anchor = latestCheckin(provider, now);
+  if (anchor) {
+    // Spend and rate are BOTH measured from the check-in's own window start (exactly as recordUsage measured its
+    // `tokens`), so they stay consistent no matter how the activity-gap heuristic would re-infer the window now.
+    const startTs = Date.parse(anchor.windowStart) || 0;
+    const spent = tokensSince(provider, startTs);
+    // Least-squares fit of pct = rate·tokens through the origin, over every check-in from THIS same window (robust to
+    // whole-percent rounding and uneven spacing); a single check-in gives rate = pct / tokens.
+    const obs = readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && o.windowStart === anchor.windowStart);
+    let num = 0, den = 0; for (const o of obs) { num += o.pct * o.tokens; den += o.tokens * o.tokens; }
+    const rate = den ? num / den : anchor.pct / Math.max(1, anchor.tokens);
+    const raw = spent * rate;
+    return { pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: anchor.pct, anchorAt: anchor.at || null, points: obs.length, calibrated: true, advisory: true, resetsAt, ...flag(raw) };
   }
-  // Least-squares fit of pct = rate·tokens through the origin (0% at the window start): robust to whole-percent
-  // rounding and uneven check-in spacing, and uses every reading. Falls back to a config seed before any check-in.
-  let rate; // % per token
-  if (obs.length) { let num = 0, den = 0; for (const o of obs) { num += o.pct * o.tokens; den += o.tokens * o.tokens; } rate = den ? num / den : obs[obs.length - 1].pct / Math.max(1, obs[obs.length - 1].tokens); }
-  else if (seedPctPerMToken) rate = seedPctPerMToken / 1e6;
-  else return null;
-  const latest = obs[obs.length - 1] || { tokens: 0, pct: 0 };
-  const raw = spent * rate; // through-origin: % scales with tokens spent this window
-  return { pct: Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10, rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: latest.pct, anchorAt: latest.at || null, points: obs.length, calibrated: obs.length > 0, advisory: true, resetsAt, ...flag(raw) };
+
+  // No calibration yet.
+  const { spent } = windowTokens(provider, now);
+  if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory — ONLY until a check-in exists.
+    const raw = (spent / budgetTokens) * 100;
+    return { pct: round1(raw), rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
+  }
+  if (seedPctPerMToken) { // config seed rate before any check-in
+    const rate = seedPctPerMToken / 1e6; const raw = spent * rate;
+    return { pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
+  }
+  return null;
 }
