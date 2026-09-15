@@ -11,13 +11,16 @@ const FILE = () => statePath('improvements.ndjson');
  * @param {string} message
  * @param {object} [context]
  */
-let last = null;
+const recent = new Map();
 export function logImprovement(kind, source, message, context = {}) {
   const msg = String(message).slice(0, 4000);
-  // Collapse repeats: the same problem within 10 minutes is one entry, not a flood.
-  if (last && last.kind === kind && last.source === source && last.message === msg && Date.now() - last.at < 600_000) { last.repeats++; return last.entry; }
+  const now = Date.now();
+  for (const [k, v] of recent) if (now - v.at >= 600_000) recent.delete(k); // prune so the Map cannot grow without bound
+  const key = `${kind}\u0000${source}\u0000${msg}`;
+  const hit = recent.get(key);
+  if (hit) { hit.repeats++; return hit.entry; } // same problem within 10 minutes is one entry, not a flood
   const entry = { id: shortId(), ts: nowIso(), kind, source, message: msg, context, resolved: false };
-  last = { kind, source, message: msg, at: Date.now(), entry, repeats: 0 };
+  recent.set(key, { at: now, entry, repeats: 0 });
   appendNdjson(FILE(), entry);
   bus.publish('improvement', { entry });
   return entry;

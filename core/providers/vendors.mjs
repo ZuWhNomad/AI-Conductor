@@ -33,9 +33,10 @@ export function collapseEffortFamilies(models) {
 
 /** Map an Antigravity (family, effort) selection to the concrete model id agy expects (gemini-3.8-flash + high → gemini-3.8-flash-high). */
 function agyModelArg(model, effort) {
-  if (!model || !effort) return model || null;
+  if (!model) return null;
   if (EFFORT_IN_ID.test(model)) return model;                   // already a concrete/legacy raw id: dispatch as-is, ignore the tag
   const m = findModel('antigravity', model);
+  if (!effort) return m?.efforts?.length ? (m.effortIds?.[m.efforts[0]] || `${model}-${m.efforts[0]}`) : model; // no effort on a known family: cheapest (lowest listed) variant
   if (m?.effortIds?.[effort]) return m.effortIds[effort];       // exact map from the registry
   if (EFFORT_ORDER.includes(effort)) return `${model}-${effort}`; // family + a valid agy level: agy families are family-effort (also covers a not-yet-refreshed registry)
   if (m?.efforts?.length) return m.effortIds?.[m.efforts[m.efforts.length - 1]] || model; // out-of-range effort on a known family: dispatch its top variant, never a bare family id agy would reject

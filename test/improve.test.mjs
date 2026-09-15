@@ -32,6 +32,19 @@ test('log_improvement resolves entries using the review convention', async () =>
   assert.ok(listImprovements().some((entry) => entry.message === 'ordinary idea'));
 });
 
+test('logImprovement collapses repeats by kind+source+message even when another entry is interleaved', () => {
+  const src = 'collapse-key-test';
+  const a = logImprovement('friction', src, 'same problem');
+  logImprovement('friction', src, 'a different problem');
+  const b = logImprovement('friction', src, 'same problem');
+  const c = logImprovement('friction', src, 'yet another message');
+  const mine = listImprovements().filter((e) => e.source === src);
+  assert.equal(a.id, b.id);
+  assert.equal(mine.filter((e) => e.message === 'same problem').length, 1);
+  assert.ok(mine.some((e) => e.message === 'a different problem'));
+  assert.ok(c.id !== a.id && mine.some((e) => e.message === 'yet another message'));
+});
+
 test('limit formatting marks stale windows and truncates the poll error', () => {
   const error = 'not installed '.repeat(10);
   const text = formatLimits({ providers: { codex: { error, windows: [{ label: 'weekly', usedPercent: 42 }] } } });

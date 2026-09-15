@@ -250,7 +250,7 @@ async function run(t) {
       else {
         const until = blockedUntil(t.provider) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000);
         park(t, until, r.error || 'usage limit');
-        logImprovement('friction', `worker:${t.provider}`, `usage limit hit; task parked until ${new Date(until).toISOString()}`, { taskId: t.id, model: t.model });
+        logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }
     } else if (!r.ok) {
       t.status = 'failed'; t.error = r.error || 'worker failed';

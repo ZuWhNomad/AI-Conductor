@@ -52,7 +52,15 @@ if (cmd === 'start') {
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { abortRunning } = await import('../core/tasks.mjs');
   const cfg = loadConfig();
-  const { url, port } = await startServer({ port: flags.port ? Number(flags.port) : undefined });
+  let started;
+  try { started = await startServer({ port: flags.port ? Number(flags.port) : undefined }); }
+  catch (e) {
+    if (e?.code !== 'EADDRINUSE') throw e;
+    const p = flags.port ? Number(flags.port) : cfg.port;
+    console.error(`port ${p} is already in use — Conductor is probably already running at http://127.0.0.1:${p}. Open it, or stop it with: conductor stop`);
+    process.exit(1);
+  }
+  const { url, port } = started;
   writePidFile({ port, url, startedAt: new Date().toISOString() }); // so `conductor stop` (and the UI Quit button) can find this process
   console.log(`Conductor 2.0 running at ${url}   (state: ${stateDir()})`);
   console.log('Stop it with:  conductor stop   (or the Quit button in the UI, or Ctrl+C here)');

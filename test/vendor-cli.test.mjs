@@ -146,6 +146,10 @@ test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id an
   // an out-of-range effort on a known family clamps to the top variant, never a bare (unroutable) family id
   const c = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: 'ultra', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
   assert.equal(c.args[c.args.indexOf('--model') + 1], 'gemini-3.8-flash-high');
+  // no effort on a known family dispatches its cheapest (lowest listed) variant, never a bare family id
+  const d = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: null, prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
+  assert.equal(d.args[d.args.indexOf('--model') + 1], 'gemini-3.8-flash-low');
+  assert.ok(!d.args.includes('--effort'), 'agy rejects --effort; the level lives in the id');
 });
 
 test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a small one stays inline (Windows arg-length safety)', async () => {
