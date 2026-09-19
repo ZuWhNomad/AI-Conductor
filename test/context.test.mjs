@@ -30,3 +30,26 @@ test('context block is capped', () => {
   assert.ok(f.content.length < 1100);
   assert.match(f.content, /truncated/);
 });
+
+test('under the cap the deepest note survives whole; the root note is the one trimmed', () => {
+  const root = tmpDir('cap-deep');
+  mkdirSync(join(root, 'sub'));
+  writeFileSync(join(root, 'CLAUDE.md'), 'r'.repeat(20000));
+  writeFileSync(join(root, 'sub', 'CONTEXT.md'), '# sub notes');
+  const files = findContextFiles(root, ['sub'], { maxChars: 1000 });
+  assert.deepEqual(files.map((f) => f.file.replaceAll('\\', '/')), ['CLAUDE.md', 'sub/CONTEXT.md']);
+  assert.equal(files[1].content, '# sub notes');
+  assert.match(files[0].content, /^r{989}\n…\(truncated\)$/);
+  assert.deepEqual(findContextFiles(root, ['sub'], { maxChars: 5 }).map((f) => f.content), ['# sub\n…(truncated)']); // no budget left: the root note is dropped
+});
+
+test('a CLAUDE.md that only points at AGENTS.md, or duplicates it, is injected once', () => {
+  const root = tmpDir('ptr');
+  writeFileSync(join(root, 'AGENTS.md'), '# rules');
+  writeFileSync(join(root, 'CLAUDE.md'), '@AGENTS.md\n');
+  assert.deepEqual(findContextFiles(root).map((f) => [f.file, f.content]), [['AGENTS.md', '# rules']]);
+  writeFileSync(join(root, 'CLAUDE.md'), '# rules');
+  assert.deepEqual(findContextFiles(root).map((f) => f.file), ['CLAUDE.md']);
+  writeFileSync(join(root, 'CLAUDE.md'), '@../outside.md'); // a pointer out of the project is left as text, never followed
+  assert.deepEqual(findContextFiles(root).map((f) => f.content), ['@../outside.md', '# rules']);
+});

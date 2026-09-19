@@ -58,7 +58,7 @@ Improvement log (unresolved, newest last):
 ${list || '(empty)'}
 
 Do this:
-1. Read docs/ARCHITECTURE.md and CLAUDE.md first. Group the log entries by root cause.
+1. Read docs/ARCHITECTURE.md and AGENTS.md first. Group the log entries by root cause.
 2. Pick the highest-value fixes that are safe. Delegate mechanical implementation to a worker with a precise spec; review the diff yourself.
 3. Run \`npm test\` and make it pass. Do not change behaviour beyond the fixes.
 4. For each entry you addressed, call the log_improvement tool with kind "idea" and message "resolved <id>: <one line>" — the server marks it resolved.

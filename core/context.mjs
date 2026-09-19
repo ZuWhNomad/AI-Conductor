@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 const NOTE_NAMES = ['CONTEXT.md', 'CLAUDE.md', 'AGENTS.md'];
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__', '.conductor2']);
 
-/** Note files from each path's directory up to the project root (root first), de-duplicated. */
+/** Note files from each path's directory up to the project root (root first), de-duplicated by file and by content. */
 export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
   const root = resolve(cwd);
   const seen = new Set();
@@ -19,20 +19,26 @@ export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
     while (d === root || d.startsWith(root + sep)) { dirs.add(d); if (d === root) break; d = dirname(d); } // `+ sep`: F:\proj-backup must not count as inside F:\proj
   }
   const ordered = [...dirs].sort((a, b) => a.length - b.length);
-  let total = 0;
   for (const d of ordered) {
     for (const n of NOTE_NAMES) {
-      const f = join(d, n);
-      if (seen.has(f) || !existsSync(f)) continue;
-      seen.add(f);
+      let f = join(d, n);
+      if (!existsSync(f)) continue;
       let content = readFileSync(f, 'utf8');
-      if (total + content.length > maxChars) content = content.slice(0, Math.max(0, maxChars - total)) + '\n…(truncated)';
-      total += content.length;
+      const ptr = content.trim().match(/^@(\S+)$/); // a pure pointer (CLAUDE.md = "@AGENTS.md"): inject what it points at, once
+      if (ptr && isInside(root, join(d, ptr[1]))) { try { content = readFileSync(join(d, ptr[1]), 'utf8'); f = join(d, ptr[1]); } catch {} }
+      if (seen.has(f) || seen.has(content.trim())) continue; // same file, or a byte-identical copy (CLAUDE.md == AGENTS.md)
+      seen.add(f); seen.add(content.trim());
       out.push({ file: relative(root, f) || n, content });
-      if (total >= maxChars) return out;
     }
   }
-  return out;
+  // The cap trims from the root end: the deepest note is the most specific to the paths being touched.
+  let left = maxChars, i = out.length;
+  while (i > 0 && left > 0) {
+    const o = out[--i], take = Math.min(left, o.content.length);
+    if (take < o.content.length) o.content = o.content.slice(0, take) + '\n…(truncated)';
+    left -= take;
+  }
+  return out.slice(i);
 }
 
 export function contextBlock(cwd, paths = []) {

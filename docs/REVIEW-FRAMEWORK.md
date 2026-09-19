@@ -27,7 +27,7 @@ fixes broke.
 - **Security** — auth, secrets, injection surfaces, the worker shell boundary, redaction.
 - **Hardcode → dynamic** — magic values / identities / paths that should be configurable; distinguish "genuinely
   should be tunable" from "fine as a constant" (don't propose churn).
-- **Framework / guidelines** — adherence to CLAUDE.md and docs/ARCHITECTURE.md (ESM, no build, the provider /
+- **Framework / guidelines** — adherence to AGENTS.md and docs/ARCHITECTURE.md (ESM, no build, the provider /
   worker / events / secrets contracts).
 - **General correctness & design** — bugs, edge cases, coherence across modules.
 - **Budgeting & model selection** — the sweep planner, `admit`, scorecard `recommend`, failover, per-window logic.
