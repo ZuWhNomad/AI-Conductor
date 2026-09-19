@@ -2,6 +2,7 @@
 // the Anthropic Messages API) so they get the full toolset; the OpenAI-compatible loop is the fallback.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findOnPath as findOnPathOnly, findCli } from '../proc.mjs';
 const findOnPath = (name) => findCli(name) || findOnPathOnly(name) || (process.platform === 'win32' && process.env.LOCALAPPDATA && [join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe')].find((p) => existsSync(p))) || null;
@@ -28,7 +29,8 @@ export async function ensureRunning() {
   if (!bin || !loadConfig().providers.ollama?.autoStart) return false;
   if (!starting) {
     starting = (async () => {
-      const p = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+      // cwd: the server outlives Conductor, and on Windows a process pins its cwd (the folder could not be moved or deleted).
+      const p = spawn(bin, ['serve'], { cwd: homedir(), detached: true, stdio: 'ignore', windowsHide: true });
       p.unref();
       for (let i = 0; i < 20; i++) { await new Promise((r) => setTimeout(r, 500)); if (await ping()) return true; }
       return false;
