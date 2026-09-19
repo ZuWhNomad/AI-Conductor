@@ -26,7 +26,7 @@ export async function runSmoke({ models, tasks = null, sessionId = 'smoke', keep
     for (const b of battery) {
       const base = { provider: sel.provider, model: sel.model || null, effort: sel.effort || null, task: b.id, category: b.category, difficulty: b.difficulty };
       if (!providerAvailable(sel.provider, { overflowApi: true, model: sel.model })) { push({ ...base, verdict: 'skipped', notes: 'provider at its usage limit' }); continue; }
-      // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\MDESKT~1.000\...), which the Codex sandbox denies.
+      // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\LONGNA~1\...), which the Codex sandbox denies.
       const dir = realpathSync.native(mkdtempSync(join(tmpdir(), `conductor-smoke-${b.id}-`)));
       let res;
       try {
