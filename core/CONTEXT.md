@@ -20,6 +20,26 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `feedback.mjs`, `bench.mjs`, `update.mjs`, `mcp.mjs`,
   `context.mjs`, `improve.mjs`, `session-flags.mjs`.
 
+**Symptom → file.** Start here instead of reading the folder.
+
+| symptom | look in |
+|---|---|
+| a task sits queued, is parked, or did not resume / fail over | `tasks.mjs` (`schedule`, `park`, `failover`), then `sweep.mjs` (`admit`) and `limits.mjs` (`blockedUntil`) |
+| the wrong worker model / effort was auto-picked | `scorecard.mjs` (`recommend`, `classifyCategory`); prices and tiers in `priors.mjs`; knobs in `config.mjs` `scorecard.*` |
+| a worker "succeeded" but changed nothing, or a verdict / score looks wrong | `scorecard.mjs` (`isPhantomCompletion`, `recordRun`, `rateTask`), `tasks.mjs` `run()` |
+| a usage bar is wrong, stale or missing | `providers/<vendor>.mjs` `pollLimits()` → `limits.mjs`; windowless providers (Grok): `usage-estimate.mjs` |
+| a model is missing from the picker, or has the wrong efforts | `providers/<vendor>.mjs` `listModels()` → `models.mjs`; subscription CLIs: `providers/vendors.mjs` (`collapseEffortFamilies`) |
+| a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.mjs` |
+| the worker got the wrong instructions (notes, recipe, MCP servers) | `tasks.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `recipes/`, `mcp.mjs`, `prompts/worker.md` |
+| the conductor chat misbehaves (streaming, permissions, model switch, history) | `conductor.mjs`; what it is told: `prompts/conductor*.md`, `prompts/orchestration.md` |
+| a conductor tool is missing or returns the wrong thing | `tools.mjs` (defined once, served to all three runtimes) |
+| a `run_plan` stage, vote or loop goes wrong | `plans.mjs` |
+| the UI does not update | the event is not published: `bus.mjs` + the publishing module; then `ui/CONTEXT.md` |
+| a setting does not apply or does not persist | `config.mjs` (`DEFAULTS`, `loadConfig`, `saveConfig`) |
+| update / self-restart problems | `update.mjs`, then `server/index.mjs` (`scheduleRelaunch`, `startUpdateChecks`) |
+| smoke battery or re-benchmark scheduling | `smoke/` (see its `CONTEXT.md`), `bench.mjs` |
+| improvement log, self-review, feedback bundle | `improve.mjs`, `feedback.mjs` |
+
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.
 - State lives under `~/.conductor2` via `paths.mjs` (atomic `writeJson`). Tests set `CONDUCTOR_HOME`.
