@@ -1,6 +1,7 @@
 # Conductor 2.0 — notes for agents working on this repo
 
-Read `docs/ARCHITECTURE.md` first. Then:
+If `../WORKSPACE.md` exists, read it first (local workspace index; never commit it or copy its paths into this repo).
+Read `docs/ARCHITECTURE.md` next. Then:
 
 - **No build step.** Plain ESM (`.mjs`), Node >= 22. Two runtime dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`). Do not add more without a strong reason.
 - **Ladder before code:** does it need to exist → stdlib → platform feature → existing dependency → one line → then write the minimum.
