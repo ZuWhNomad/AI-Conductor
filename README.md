@@ -121,8 +121,8 @@ git clone https://github.com/ZuWhNomad/AI-Conductor.git
 
 Then run `share/install.cmd` (Windows) or `share/install.sh`, and log in to your own accounts
 (nothing in the repo carries anyone's keys or logins: they live in `~/.conductor2/config.json` and
-the vendor CLIs' own login state). `conductor share` still zips the folder (without `node_modules`)
-to your Desktop for offline hand-offs.
+the vendor CLIs' own login state). `conductor share` still zips the committed files (what git tracks, so
+never local state) to your Desktop for offline hand-offs.
 
 ## Configuration
 

@@ -35,7 +35,7 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor bench [--run] [--days N] [--refresh]
                                              models with no battery or a stale one (default 21 days); --run probes then batteries them
   conductor review [--model M]               headless self-review of this workbench from the improvement log
-  conductor share                            zip this folder (without node_modules/state) to your Desktop
+  conductor share                            zip the committed files (what git tracks) to your Desktop
   conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
@@ -193,13 +193,10 @@ if (cmd === 'start') {
   process.exit(0);
 } else if (cmd === 'share') {
   const out = join(homedir(), 'Desktop', 'Conductor-2.0-share.zip');
-  const excludes = ['node_modules', '.git', '.conductor2'];
-  if (process.platform === 'win32') {
-    const items = (await import('node:fs')).readdirSync(REPO_ROOT).filter((f) => !excludes.includes(f)).map((f) => `'${join(REPO_ROOT, f)}'`).join(',');
-    execFileSync('powershell', ['-NoProfile', '-Command', `Compress-Archive -Force -Path ${items} -DestinationPath '${out}'`], { stdio: 'inherit' });
-  } else {
-    execFileSync('zip', ['-r', out, '.', ...excludes.flatMap((e) => ['-x', `${e}/*`])], { cwd: REPO_ROOT, stdio: 'inherit' });
-  }
+  // Zip what git tracks at HEAD, never the disk: local state (.state/), *.local.* files and anything untracked cannot ship.
+  const { findCli } = await import('../core/proc.mjs');
+  try { execFileSync(findCli('git') || 'git', ['-C', REPO_ROOT, 'archive', '--format=zip', '-o', out, 'HEAD'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); }
+  catch (e) { console.error(`share needs git and a git checkout of Conductor (${String(e.stderr || e.message).trim().split('\n')[0]}).\nSend your friend the repository link instead: ${JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).repository.url}`); process.exit(1); }
   console.log(`Wrote ${out}\nYour friend unzips it, runs share/install.cmd (or install.sh), then logs in with: claude auth login  and  codex login`);
 } else {
   console.error(`unknown command ${cmd}\n${HELP}`); process.exit(2);
