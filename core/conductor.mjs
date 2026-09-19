@@ -16,7 +16,7 @@ import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { runCodex } from './workers/codex.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
-import { getModels } from './models.mjs';
+import { getModels, findModel } from './models.mjs';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'prompts', f), 'utf8');
 const PROMPT = prompt('conductor.md') + '\n\n' + prompt('orchestration.md'); // policy + the structural playbook (model-agnostic)
@@ -70,6 +70,9 @@ export function parseSelection(sel, fallback = {}) {
   return out;
 }
 
+/** A model whose registry entry lists no efforts must never carry one (same guard as createTask): Ollama answers 400 "does not support thinking". */
+const honoredEffort = (provider, model, effort) => (findModel(provider, model)?.efforts?.length === 0 ? null : effort);
+
 function defaultModelFor(provider) {
   const ms = getModels().models.filter((m) => m.provider === provider && m.kind === 'agent');
   return (ms.find((m) => m.isDefault) || ms[0])?.id || null;
@@ -118,7 +121,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     if (!sel.model && runtime !== 'claude') throw new Error(`No model known for provider ${sel.provider}; refresh models or pick one explicitly`);
   } catch (e) { throw Object.assign(e, { status: 400 }); }
   const s = {
-    id: shortId(), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: sel.effort,
+    id: shortId(), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: honoredEffort(sel.provider, sel.model, sel.effort),
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
     costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null,
   };
@@ -322,7 +325,7 @@ async function runTurn(s, text) {
       if (p.kind === 'ollama') { await ollama.ensureRunning(); wc = { baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama' }; }
       else wc = p.workerConfig();
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
-      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: s.effort || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })), signal: ac.signal, onEvent, maxIterations: loadConfig().conductor.maxTurns || 9999, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes || 120) * 60_000 });
+      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })), signal: ac.signal, onEvent, maxIterations: loadConfig().conductor.maxTurns || 9999, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes || 120) * 60_000 });
       if (mine()) { s.history = r.messages || s.history; writeJson(HIST(s.id, 'loop'), s.history); }
       if (r.error && /context|too many tokens|maximum.*length|token limit/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
       if (r.ok && r.finalMessage && !s.messages.some((m) => m.role === 'assistant' && m.blocks?.[0]?.text === r.finalMessage)) onEvent('item', { item: { type: 'agent_message', text: r.finalMessage }, phase: 'completed' });

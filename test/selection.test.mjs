@@ -1,8 +1,13 @@
-import { tmpDir } from './_env.mjs';
+import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { writeJson } from '../core/paths.mjs';
+import { bus } from '../core/bus.mjs';
 
-const { parseSelection, createSession, deleteSession, setTitle } = await import('../core/conductor.mjs');
+// The registry is loaded at import time: seed the one model the no-effort test needs (no Codex models, on purpose).
+writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'ollama', id: 'qwen2.5:3b', kind: 'agent', cost: 'free-local', efforts: [] }] });
+const { parseSelection, createSession, deleteSession, setTitle, setEffort, sendMessage } = await import('../core/conductor.mjs');
 
 test('provider:model:effort parsing', () => {
   const cfg = { provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'high' };
@@ -68,6 +73,29 @@ test('sessions use the configured default; any agent provider can conduct, image
   const c2 = createSession({ cwd, provider: 'codex', model: 'gpt-6-astra' });
   assert.equal(c2.selection, 'codex:gpt-6-astra:high');
   deleteSession(c2.id);
-  assert.throws(() => createSession({ cwd, model: 'codex::high' }), /No model known/); // registry empty in tests
+  assert.throws(() => createSession({ cwd, model: 'codex::high' }), /No model known/); // no Codex models in the test registry
   assert.throws(() => createSession({ cwd, model: 'sd:x:low' }), /cannot conduct/);
+});
+
+test('a model that lists no efforts never carries one: not on the session, not in the loop request', async (ctx) => {
+  const cwd = tmpDir('sel-noeffort');
+  const d = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b' }); // would inherit the configured default (high)
+  assert.equal(d.effort, null);
+  assert.equal(d.selection, 'ollama:qwen2.5:3b:default');
+  deleteSession(d.id);
+  const s = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b', effort: 'high' }); // the UI picker always posts one
+  assert.equal(s.effort, null);
+  setEffort(s.id, 'high'); // the header picker (or a session saved before this guard) can still put one back
+  let body;
+  ctx.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (!String(url).endsWith('/chat/completions')) return Response.json({ version: 'test' }); // ensureRunning's ping: no spawn
+    body = JSON.parse(opts.body);
+    return Response.json({ choices: [{ message: { role: 'assistant', content: 'hi' } }] });
+  });
+  const idle = new Promise((r) => bus.on('event', function f(e) { if (e.sessionId === s.id && e.kind === 'status' && e.status === 'idle') { bus.off('event', f); r(); } }));
+  await sendMessage(s.id, 'hello');
+  await idle;
+  assert.equal(body.model, 'qwen2.5:3b');
+  assert.equal('reasoning_effort' in body, false);
+  deleteSession(s.id);
 });
