@@ -3,7 +3,8 @@
 A local, multi-model agent workbench: a Claude Code clone whose selected Claude model is the
 **conductor** (plans, delegates, reviews) and whose grunt work goes to cheaper workers
 (GPT-6 Astra via the Codex CLI on your ChatGPT subscription, local Ollama models, or any
-OpenAI-compatible API). Browser UI with speech-to-text. Node >= 22, one runtime dependency.
+OpenAI-compatible API). Browser UI with speech-to-text. Node >= 22, two runtime
+dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 
 ## Ladder decisions (why it is built this way)
 
@@ -53,15 +54,17 @@ core/
   conductor.mjs          chat sessions = Agent SDK queries with streaming input
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, park/resume on limits
-  prompts/               conductor.md, worker.md (the orchestration policy lives here)
-  workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, index.mjs
-  providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, index.mjs
+  plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
+  prompts/               conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md (the orchestration policy lives here)
+  workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, vendor-cli.mjs, index.mjs
+  providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
   models.mjs             model registry: merges provider lists, auto-poll + force refresh
   limits.mjs             limit registry: per-provider windows, never assumed static
   context.mjs            CONTEXT.md discovery + path-scoped injection into worker specs
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
   scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
+  priors.mjs             public priors: API list prices (shadow dollars) + benchmark tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
   recipes.mjs, recipes/  category → instruction set handed to a worker (e.g. image-to-3d-model)

@@ -8,3 +8,5 @@ Thumbs.db
 Conductor-feedback-*.json
 .env
 .env.*
+*.local.*
+.state/
