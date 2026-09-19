@@ -15,6 +15,7 @@ const post = (p, b) => fetch(url + p, { method: 'POST', headers: { 'content-type
 test('static UI and state endpoint', async () => {
   const html = await fetch(url + '/').then((r) => r.text());
   assert.match(html, /Conductor 2\.0/);
+  assert.match((await fetch(url + '/app.js')).headers.get('content-type'), /javascript/); // guard: UI served from REPO_ROOT/ui
   assert.equal((await fetch(url + '/../package.json')).status, 404);
   const st = await get('/api/state');
   assert.equal(st.version, '2.0.0');

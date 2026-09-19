@@ -2,7 +2,7 @@
 import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 
@@ -100,4 +100,21 @@ test('worker timeout can be raised per category; long runs are logged', async ()
   saveConfig({ worker: { timeoutByCategory: { modeling: 300 } } });
   assert.equal(loadConfig().worker.timeoutByCategory.modeling, 300);
   saveConfig({ worker: { timeoutByCategory: { modeling: 240 } } });
+});
+
+// Guards for folder moves: REPO_ROOT is computed from where core/paths.mjs sits, and a test that forgets _env.mjs
+// touches the real ~/.conductor2.
+test('REPO_ROOT points at the repo (package.json is there)', async () => {
+  const { REPO_ROOT } = await import('../core/paths.mjs');
+  assert.equal(JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).name, 'conductor');
+});
+
+test('every test file imports _env.mjs before any repo module', () => {
+  const dir = import.meta.dirname;
+  for (const f of readdirSync(dir, { recursive: true }).filter((n) => n.endsWith('.test.mjs'))) {
+    const src = readFileSync(join(dir, f), 'utf8');
+    const env = src.search(/import\s[^;]*?['"](?:\.\.?\/)+_env\.mjs['"]/);
+    const repo = src.search(/['"](?:\.\.\/)+(?:core|server|bin|ui)\//);
+    assert.ok(env >= 0 && (repo < 0 || env < repo), `${f} must import _env.mjs first`);
+  }
 });
