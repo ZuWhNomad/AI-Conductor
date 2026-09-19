@@ -83,7 +83,6 @@ export const DEFAULTS = {
     usageGapHours: { default: 6 },    // a gap this long in a provider's own activity starts a fresh usage window; per-provider override, e.g. { grok: 24 } for a daily reset
     windowTargets: { session: 95, other: 100 }, // dispatch gate: a rolling session/5-hour window is used to 95%, weekly/monthly/budget windows to 100%
     difficultyEffort: { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' }, // cold-start effort per difficulty (clamped to what the model offers)
-    fallbackLadder: { low: 1, medium: 1.5, high: 2, xhigh: 3, max: 4, ultra: 6 }, // relative token cost per effort before a model has measured rows at that effort
     blockedMinutes: 30,               // how long a provider is assumed blocked after a limit hit when it gives no retry-after
     quotaPressurePct: 80,             // a provider whose busiest window is past this % is charged at full list price
     // Use-it-or-lose-it: a subscription's weekly/monthly window that resets soon with quota unused loses that quota

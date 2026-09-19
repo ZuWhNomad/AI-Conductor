@@ -1,37 +1,8 @@
-// Usage-managed sweeps: how many tasks may run in parallel on a provider right now without blowing its windows.
-// Probe first (one cheap task per provider/model), measure what a task costs in % of each window (the scorecard
-// records the delta), then size each batch from the headroom that remains under a buffer. Re-plan after every batch.
+// The framework budget gate: may one more task start on a provider right now without blowing its windows?
+// A task's cost is measured per window (the scorecard records each run's % delta) and charged against that window's
+// own target. Used by `core/tasks.mjs schedule()` for ALL tasks.
 import { getLimits } from './limits.mjs';
-import { providerWindows } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
-
-/**
- * Parallelism for one provider (and, where windows are per model group, one model).
- * @param {object} o
- * @param {number} o.costPct       measured % of the tightest window one task consumes (0 = unknown)
- * @param {number} o.usedPct       % of that window used now
- * @param {number} [o.bufferPct]   % of the window to leave untouched (default 25)
- * @param {number} [o.maxParallel] hard cap per provider (default 4)
- * @param {number} [o.remaining]   tasks still to run
- * @param {boolean} [o.unlimited]  local provider: no window at all
- * @returns {{ n: number, reason: string }} n = 0 means wait for the window to reset
- */
-export function planBatch({ costPct, usedPct, bufferPct = 25, maxParallel = 4, remaining = Infinity, unlimited = false }) {
-  if (unlimited) return { n: Math.min(maxParallel, remaining), reason: 'no window (local)' };
-  const headroom = 100 - bufferPct - (usedPct || 0);
-  if (headroom <= 0) return { n: 0, reason: `window at ${usedPct}%: wait for reset` };
-  if (!costPct || costPct <= 0) return { n: Math.min(1, remaining), reason: 'cost unknown: one at a time until measured' };
-  const fits = Math.floor(headroom / costPct);
-  if (fits < 1) return { n: 0, reason: `one task (~${costPct}%) would cross the ${100 - bufferPct}% line` };
-  return { n: Math.max(0, Math.min(maxParallel, fits, remaining)), reason: `${headroom.toFixed(1)}% headroom / ${costPct}% per task` };
-}
-
-/** Per-task cost on a provider from recorded scorecard rows: the largest window delta any probe run consumed (conservative). */
-export function measuredCost(rows, provider, { model = null } = {}) {
-  let cost = 0;
-  for (const [, per] of Object.entries(measuredCostByWindow(rows, provider, { model }))) if (per > cost) cost = per;
-  return cost;
-}
 
 /**
  * Per-task cost measured SEPARATELY for each window id: `{ windowId: %-per-task }`. A build that moves a 5-hour
@@ -54,84 +25,11 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
   return cost;
 }
 
-/** Busiest window that applies to this provider/model right now (0 when it reports none). */
-export function usedNow(provider, model = null) {
-  return Math.max(0, ...providerWindows(provider, model).map((w) => Number(w.usedPercent) || 0));
-}
-
-/** Plan the next batch for a provider from live limits + recorded costs. */
-export function nextBatch({ provider, model = null, rows, remaining, bufferPct, maxParallel, unlimited = false }) {
-  return planBatch({ costPct: measuredCost(rows, provider, { model }), usedPct: usedNow(provider, model), bufferPct, maxParallel, remaining, unlimited });
-}
-
-/**
- * Cost multiplier of an effort level relative to the probe effort for a model, from what the scorecard already
- * measured: average tokens per task at each effort (any category, smoke or live), because provider windows are
- * billed by tokens and a probe at `low` tells us nothing about `ultra` on its own. Falls back to a conservative
- * ladder when the model has no rows at that effort. Deterministic; no model in the loop.
- */
-const FALLBACK_LADDER = { low: 1, medium: 1.5, high: 2, xhigh: 3, max: 4, ultra: 6 };
-export function effortMultiplier(summary, provider, model, effort, probeEffort = 'low') {
-  const tok = (e) => { const rows = summary.filter((g) => g.steps === 1 && g.sel === `${provider}:${model}:${e || 'default'}` && g.avgTokens > 0); if (!rows.length) return null; return rows.reduce((s, g) => s + g.avgTokens * g.n, 0) / rows.reduce((s, g) => s + g.n, 0); };
-  const a = tok(probeEffort), b = tok(effort);
-  if (a && b) return Math.max(1, b / a);
-  const ladder = { ...FALLBACK_LADDER, ...(loadConfig().scorecard?.fallbackLadder || {}) };
-  return Math.max(1, (ladder[effort] || 2) / (ladder[probeEffort] || 1));
-}
-
-/**
- * Greedy batch over heterogeneous costs: sort ascending, take tasks while their summed cost stays under the headroom.
- * Returns how many of the sorted tasks to run now and the order (indices into the input). Zero when even the
- * cheapest does not fit. A task with unknown cost (0) runs alone so it gets measured.
- */
-export function planGreedy(costs, { usedPct, bufferPct = 25, maxParallel = Infinity, unlimited = false }) {
-  const order = costs.map((c, i) => ({ c: c || 0, i })).sort((a, b) => a.c - b.c);
-  const idx = order.map((o) => o.i);
-  if (unlimited) return { n: Math.min(maxParallel, order.length), order: idx, reason: 'no window (local)' };
-  const headroom = 100 - bufferPct - (usedPct || 0);
-  if (headroom <= 0) return { n: 0, order: idx, reason: `window at ${usedPct}%: wait for reset` };
-  let sum = 0, n = 0;
-  for (const o of order) {
-    if (o.c <= 0) { if (!n) n = 1; break; }            // unknown cost: run it alone, measure, re-plan
-    if (sum + o.c > headroom) break;
-    sum += o.c; n++;
-    if (n >= maxParallel) break;
-  }
-  return { n, order: idx, reason: n ? `${headroom.toFixed(1)}% headroom, ${n} task(s) summing to ~${sum.toFixed(1)}%` : `cheapest task (~${order[0]?.c.toFixed(1)}%) would cross the ${100 - bufferPct}% line` };
-}
-
-/**
- * When a provider has no headroom, when does it get some back? The earliest reset among the windows that apply
- * to the model and are the ones holding it (used above the line). ms timestamp, or null when the provider reports
- * no reset times (then the caller must poll). Sleep until this instead of polling: the limits registry already knows.
- */
-export function nextReset(provider, model = null, { bufferPct = 25, sessionOnly = false } = {}) {
-  const ws = providerWindows(provider, model).filter((w) => !sessionOnly || /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600));
-  const binding = ws.filter((w) => (Number(w.usedPercent) || 0) >= 100 - bufferPct && w.resetsAt);
-  if (!binding.length) return null;
-  return Math.min(...binding.map((w) => Number(w.resetsAt)));
-}
-
 // --- Per-window targets (2026-09-12): a session window (5-hour and the like) is used up to 95%, everything else
 // (weekly, monthly, a budget) up to 100%. The gate applies to every subscription; a provider with only a weekly
 // window (Codex) is simply planned against 100% of it.
 export const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
 export const targetFor = (w) => { const t = loadConfig().scorecard?.windowTargets || {}; return isSession(w) ? (t.session ?? 95) : (t.other ?? 100); };
-
-/** Headroom under the per-window targets: the tightest window decides. */
-export function headroomFor(windows) {
-  let headroom = Infinity, binding = null;
-  for (const w of windows || []) { const h = targetFor(w) - (Number(w.usedPercent) || 0); if (h < headroom) { headroom = h; binding = w; } }
-  return { headroom: headroom === Infinity ? 100 : headroom, binding };
-}
-
-/** planGreedy against live windows instead of a flat buffer. */
-export function planGreedyWindows(costs, windows, { maxParallel = Infinity, unlimited = false } = {}) {
-  const { headroom, binding } = headroomFor(windows);
-  const r = planGreedy(costs, { usedPct: 100 - headroom - 0, bufferPct: 0, maxParallel, unlimited });
-  if (binding && !r.n) r.reason = `${binding.label || binding.id} at ${binding.usedPercent}% of a ${targetFor(binding)}% target`;
-  return r;
-}
 
 /** Earliest reset among windows at or over their target. */
 export function nextResetWindows(windows) {
@@ -140,26 +38,14 @@ export function nextResetWindows(windows) {
 }
 
 /**
- * Scheduler admission: how many more tasks of `pending` (each {provider, model, cost}) may start on a provider right
- * now, given `runningCost` (summed measured cost of that provider's in-flight tasks) and the per-window targets. Also
- * returns `until` (reset ms) when nothing fits, so the scheduler can park rather than spin. Deterministic; used for
- * ALL tasks, not just sweeps — this is the framework budget gate.
+ * Scheduler admission: how many of `pending` (each `{ costs: { windowId: % } }`) may start on a provider right now,
+ * given `runningByWindow` (summed measured cost of its in-flight tasks, per window id) and the per-window targets.
+ * Greedy-fills cheapest first; a task must fit in EVERY window it touches, each charged its own cost against its own
+ * headroom. Also returns `until` (reset ms) when nothing fits. Deterministic.
  */
-export function admit(windows, pending, { runningCost = 0, runningByWindow = null, maxParallel = Infinity } = {}) {
-  // Per-window mode: any pending task carries `costs` ({windowId: %}). A task must fit in EVERY window it touches,
-  // each charged its own cost against its own headroom (fixes the "one window's % applied to all windows" over-block).
-  if ((pending || []).some((p) => p && p.costs)) return admitPerWindow(windows, pending, { runningByWindow, runningCost, maxParallel });
-  const { headroom } = headroomFor(windows);
-  const free = headroom - runningCost;
-  if (free <= 0) return { n: 0, until: nextResetWindows(windows), reason: `no headroom (${headroom.toFixed(1)}% window, ${runningCost.toFixed(1)}% already running)` };
-  const g = planGreedy(pending.map((p) => p.cost || 0), { usedPct: 100 - free, bufferPct: 0, maxParallel });
-  return { n: g.n, order: g.order, until: g.n ? null : nextResetWindows(windows), reason: g.reason };
-}
-
-/** admit() with per-window costs: greedy-fill tasks (cheapest first) while every window still has room. */
-function admitPerWindow(windows, pending, { runningByWindow = null, runningCost = 0, maxParallel = Infinity } = {}) {
+export function admit(windows, pending, { runningByWindow = null, maxParallel = Infinity } = {}) {
   const wins = windows || [];
-  const head = new Map(wins.map((w) => [w.id, targetFor(w) - (Number(w.usedPercent) || 0) - (runningByWindow?.[w.id] ?? runningCost)]));
+  const head = new Map(wins.map((w) => [w.id, targetFor(w) - (Number(w.usedPercent) || 0) - (runningByWindow?.[w.id] || 0)]));
   if (wins.length && [...head.values()].some((h) => h <= 0)) {
     const b = [...wins].sort((a, c) => (targetFor(a) - (a.usedPercent || 0)) - (targetFor(c) - (c.usedPercent || 0)))[0];
     return { n: 0, order: pending.map((_, i) => i), until: nextResetWindows(wins), reason: `no headroom (${b?.label || b?.id} at ${b?.usedPercent}% of ${targetFor(b)}%)` };

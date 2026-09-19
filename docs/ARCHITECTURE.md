@@ -62,7 +62,7 @@ core/
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
   scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
-  sweep.mjs              usage-managed batching + the admit() budget gate (per-window targets)
+  sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
   recipes.mjs, recipes/  category → instruction set handed to a worker (e.g. image-to-3d-model)
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
@@ -194,23 +194,14 @@ as input, delegates fixes, runs `npm test`, and marks entries resolved.
 launcher. Friends log in to their own Claude / ChatGPT accounts once (`claude auth login`,
 `codex login`). See README.
 
-## Usage-managed sweeps (`core/sweep.mjs`)
+## The budget gate (`core/sweep.mjs`)
 
-A benchmark sweep over many model×effort selections must not run everything one after another, nor blow a
-provider's window by running everything at once. `planBatch` sizes the next batch for a provider from three
-numbers: the measured cost of one task in % of the tightest window (`measuredCost`, the largest window delta any
-probe run recorded in the scorecard, divided by how many tasks ran concurrently), the windows' current use, and a
-**target per window**: a session window (5-hour and the like) is planned to 95%, everything else (weekly, monthly, a
-budget) to 100% (`targetFor`, `headroomFor`); the tightest window decides, so Codex with only a weekly window is planned
-against 100% of it. Costs at other effort levels are extrapolated from the tokens per task the scorecard already holds
-(`effortMultiplier`); batches are filled cheapest-first (`planGreedyWindows`). Unknown cost means one task at a time until a probe has measured it;
-no headroom means sleep until the binding window's reset (`nextResetWindows`), not poll. The sweep re-plans after every batch, so a provider whose runs turn out
-cheaper than expected speeds up on its own, and one that is draining faster slows down. Local providers are
-unlimited but capped by hardware. The cookiebench-trace runner is the first client: phase 1 probes every model at
-its cheapest effort, phase 2 runs the remaining efforts in planner-sized batches per provider (Antigravity per
-model group), all providers concurrently.
+Every run's cost is measured in % of each provider window (the scorecard records the window deltas, divided by how
+many tasks ran concurrently: `measuredCostByWindow`) and charged against a **target per window**: a session window
+(5-hour and the like) is used to 95%, everything else (weekly, monthly, a budget) to 100% (`targetFor`,
+`scorecard.windowTargets`); so Codex with only a weekly window is planned against 100% of it.
 
-**The gate is framework-level, not sweep-only.** `core/tasks.mjs schedule()` calls `admit(windows, [{costs}], {runningByWindow})`
+**The gate is framework-level.** `core/tasks.mjs schedule()` calls `admit(windows, [{costs}], {runningByWindow})`
 before dispatching ANY queued task. `admit` charges each task its own cost in EACH window (`measuredCostByWindow`) and
 admits it only if it fits EVERY window under that window's target (session 95% / weekly 100%, `targetFor`), counting
 what in-flight and this-pass tasks already consume per window. So a delegated task, a benchmark run, or a hand-pinned
@@ -224,4 +215,4 @@ model all obey the same budget. Two rules matter:
   cost is measured, so a batch can't flood an unmetered window.
 
 Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
-`planBatch`/`nextBatch`/`nextReset` and `admit.until`/`nextResetWindows` are legacy/test-only helpers, not the live path.
+`admit` also returns `until` (the earliest reset among full windows, `nextResetWindows`); the scheduler does not use it today.
