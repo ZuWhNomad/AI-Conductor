@@ -135,3 +135,36 @@ test('runWorker persists and replays conversation history for API worker follow-
     { role: 'assistant', content: 'response to Follow up second' }
   ]);
 });
+
+const reply = (message) => Response.json({ choices: [{ message: { role: 'assistant', ...message } }] });
+const toolCall = (name, args, id = 'c1') => ({ tool_calls: [{ id, function: { name, arguments: args } }] });
+
+test('malformed tool arguments are returned as an error to the model instead of running the tool with {}', async (ctx) => {
+  let n = 0; const ran = [];
+  ctx.mock.method(globalThis, 'fetch', async () => (++n === 1 ? reply(toolCall('probe', '{"path": ')) : reply({ content: 'done' })));
+  const r = await runOpenAICompat({ ...base, extraTools: [{ def: { name: 'probe', parameters: { type: 'object' } }, impl: (a) => { ran.push(a); return 'ran'; } }] });
+  assert.equal(r.ok, true); assert.deepEqual(ran, []);
+  assert.match(r.messages.find((m) => m.role === 'tool').content, /^error: arguments invalid \(.*\); resend/);
+});
+
+test('the same call with the same arguments is executed twice, then refused', async (ctx) => {
+  let n = 0; let ran = 0;
+  ctx.mock.method(globalThis, 'fetch', async () => (++n <= 4 ? reply(toolCall('probe', '{"x":1}', 'c' + n)) : reply({ content: 'done' })));
+  const r = await runOpenAICompat({ ...base, extraTools: [{ def: { name: 'probe', parameters: { type: 'object' } }, impl: () => { ran++; return 'same'; } }] });
+  assert.equal(r.ok, true); assert.equal(ran, 2);
+  const tools = r.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.deepEqual(tools.slice(0, 2), ['same', 'same']);
+  assert.match(tools[2], /already made 2 times in a row/); assert.match(tools[3], /already made 3 times in a row/);
+});
+
+test('a read-only task sends no write, edit or run tool; the run tool states its limits', async (ctx) => {
+  const seen = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => { seen.push(JSON.parse(opts.body).tools.map((x) => x.function)); return reply({ content: 'ok' }); });
+  await runOpenAICompat({ ...base, sandbox: 'read-only' });
+  await runOpenAICompat({ ...base });
+  const names = (i) => seen[i].map((f) => f.name);
+  for (const n of ['write_file', 'edit_file', 'run']) { assert.ok(!names(0).includes(n), n + ' absent for read-only'); assert.ok(names(1).includes(n), n + ' present otherwise'); }
+  assert.ok(names(0).includes('read_file') && names(0).includes('search'));
+  const run = seen[1].find((f) => f.name === 'run');
+  assert.match(run.description, /Run ONE program.*No shell/); assert.match(run.description, /Only these programs are allowed.*git/);
+});

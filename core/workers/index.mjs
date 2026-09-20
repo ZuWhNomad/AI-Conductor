@@ -18,7 +18,7 @@ export async function runWorker(t, { signal } = {}) {
   const p = getProvider(t.provider);
   const cfg = loadConfig();
   const mcp = mcpServersFor(t.category, cfg); // scoped by category: a data MCP is not loaded into a refactor
-  const base = { id: t.id, cwd: t.cwd, prompt: t.prompt, model: t.model || undefined, effort: t.effort || undefined, signal, timeoutMs: t.timeoutMs, provider: p.id, mcp, mcpServers: forClaudeSdk(mcp), maxIterations: cfg.worker.maxIterations };
+  const base = { id: t.id, cwd: t.cwd, prompt: t.prompt, model: t.model || undefined, effort: t.effort || undefined, signal, timeoutMs: t.timeoutMs, provider: p.id, mcp, mcpServers: forClaudeSdk(mcp), maxIterations: cfg.worker.maxIterations, sandbox: t.sandbox || null };
   let r;
   switch (p.kind) {
     case 'codex':

@@ -41,6 +41,12 @@ const TOOLS = [
   { name: 'fetch_url', description: 'HTTP GET a public http(s) URL and return its text (HTML tags stripped, max 60k characters, 30s timeout). No search engine: you need the URL. If a site blocks you (403), report that instead of retrying.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
 ];
 
+/** The run tool's description, from the configured boundary: one program, no shell, the allow-list. */
+export function runDescription(shell) {
+  const gate = shell === false ? 'Disabled in this workspace: every command is refused' : Array.isArray(shell) ? `Only these programs are allowed (first word of the command): ${shell.join(', ')}; anything else is refused` : 'Any program';
+  return `Run ONE program in the project directory. No shell: no pipes, redirects, && ; or environment expansion; give the program and its arguments only. ${gate}. timeout_s (default 120). Returns exit code and output.`;
+}
+
 /** True for loopback / private / link-local / metadata / reserved IPs — the SSRF blocklist. */
 function isPrivateIp(ip) {
   if (net.isIP(ip) === 4) {
@@ -154,7 +160,11 @@ export async function runOpenAICompat(t) {
   const res = { ok: false, provider: t.provider || 'openai-compat', finalMessage: '', items: [], usage: { input_tokens: 0, output_tokens: 0 }, error: null, limitHit: false, retryAfterMs: null, messages: null };
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data }); t.onEvent?.(event, data); };
   const impl = { ...makeTools(t.cwd, t.signal), ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, x.impl])) };
-  const defs = [...TOOLS, ...(t.extraTools || []).map((x) => x.def)];
+  // read-only (a review): no write, edit or run tool at all, so a reviewer on these models cannot change the repo.
+  // The run tool's description states its real limits, so a model does not burn a turn discovering them.
+  const readOnly = t.sandbox === 'read-only';
+  const defs = [...TOOLS.filter((d) => !readOnly || !['write_file', 'edit_file', 'run'].includes(d.name)).map((d) => (d.name === 'run' ? { ...d, description: runDescription(loadConfig().worker?.shell) } : d)), ...(t.extraTools || []).map((x) => x.def)];
+  let lastKey = null, repeat = 0; // repeated-call guard: the same tool with the same arguments, over and over
   const messages = t.history?.length ? [...t.history] : [{ role: 'system', content: t.system || 'You are a careful software engineer working in the project directory. Use the tools to inspect and change files, run the verification commands, then finish with a short report.' }];
   if (t.prompt) messages.push({ role: 'user', content: t.prompt });
   res.messages = messages;
@@ -184,11 +194,17 @@ export async function runOpenAICompat(t) {
       if (!calls.length) { res.finalMessage = msg.content || ''; res.ok = true; break; }
       for (const c of calls) {
         if (t.signal?.aborted) throw new Error('aborted');
-        let args = {}; try { args = JSON.parse(c.function.arguments || '{}'); } catch {}
-        emit('item', { item: { id: c.id, type: 'tool_use', name: c.function.name, input: JSON.stringify(args).slice(0, 300), args }, phase: 'started' });
+        let args = {}, argError = null; try { args = JSON.parse(c.function.arguments || '{}'); } catch (e) { argError = e.message; }
+        emit('item', { item: { id: c.id, type: 'tool_use', name: c.function.name, input: (argError ? String(c.function.arguments) : JSON.stringify(args)).slice(0, 300), args }, phase: 'started' });
         let out; let isError = false;
-        try { out = impl[c.function.name] ? String(await impl[c.function.name](args)) : `unknown tool ${c.function.name}`; }
-        catch (e) { out = `error: ${e.message}`; isError = true; }
+        const key = c.function.name + '\u0000' + (c.function.arguments || '');
+        repeat = key === lastKey ? repeat + 1 : 1; lastKey = key;
+        if (argError) { out = `error: arguments invalid (${argError}); resend the call with valid JSON arguments`; isError = true; } // broken JSON used to run the tool with {} (a directory read, a no-op write) and mislead the model
+        else if (repeat >= 3) { out = `error: this exact call (same tool, same arguments) was already made ${repeat - 1} times in a row and its result will not change; do something different or finish`; isError = true; }
+        else {
+          try { out = impl[c.function.name] ? String(await impl[c.function.name](args)) : `unknown tool ${c.function.name}`; }
+          catch (e) { out = `error: ${e.message}`; isError = true; }
+        }
         res.items.push({ type: 'tool_use', name: c.function.name, input: args, output: out.slice(0, 2000) });
         emit('tool_result', { toolUseId: c.id, name: c.function.name, isError, text: out.slice(0, 4000) });
         messages.push({ role: 'tool', tool_call_id: c.id, content: out });

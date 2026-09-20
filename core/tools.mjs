@@ -87,7 +87,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
         timeout_minutes: z.number().optional().describe('Max wait when blocking (default 45)'),
-        sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Codex workers only; other providers ignore it, so tell non-Codex reviewers "do not modify files" in the spec.'),
+        sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
         let { provider, model, effort, category, difficulty } = a; let pick = null;
