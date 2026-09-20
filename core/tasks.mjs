@@ -30,15 +30,23 @@ const tasks = new Map();
 const running = new Map();   // id -> AbortController
 const waiters = new Map();   // id -> resolve[]
 
-// Load the journal so history survives restarts and interrupted work resumes.
+// Load the journal so history survives restarts and interrupted work resumes. Work interrupted long ago is NOT
+// replayed: a start after a crash used to requeue day-old tasks all at once (the 09-16 hang), and the manual recovery
+// was to edit every journal file by hand.
 try {
+  const hours = loadConfig().worker.resumeMaxAgeHours ?? 6; let stale = 0;
   for (const f of readdirSync(DIR())) {
     if (!f.endsWith('.json')) continue;
     const t = readJson(join(DIR(), f));
     if (!t?.id) continue;
-    if (t.status === 'running' || t.status === 'parked') { t.status = 'queued'; t.resume = true; }
+    if (t.status === 'running' || t.status === 'parked') {
+      const last = Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0;
+      if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(join(DIR(), f), t); }
+      else { t.status = 'queued'; t.resume = true; }
+    }
     tasks.set(t.id, t);
   }
+  if (stale) logImprovement('friction', 'tasks', `${stale} interrupted task(s) older than ${hours} h were not resumed at start`, { count: stale });
 } catch {}
 
 function persist(t) {

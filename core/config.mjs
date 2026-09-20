@@ -24,6 +24,7 @@ export const DEFAULTS = {
     provider: 'codex',
     model: 'gpt-6-astra',
     effort: 'medium',
+    resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
     // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
