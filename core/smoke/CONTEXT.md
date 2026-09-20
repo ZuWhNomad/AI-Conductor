@@ -1,5 +1,8 @@
 # core/smoke — model smoke battery
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** Seed the scorecard (`core/scorecard.mjs`) with automatically rated runs so worker
 selection is empirical rather than assumed. Every battery task is a tiny scratch project with a
 deterministic check.

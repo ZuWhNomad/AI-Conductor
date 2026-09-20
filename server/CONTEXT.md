@@ -1,5 +1,8 @@
 # server/ — HTTP + SSE + static UI
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** One file, `index.mjs`: the local HTTP server between the browser UI and `core/`. JSON API, the SSE event
 stream, static files from `ui/`, and a minimal MCP endpoint for Codex conductors. Binds to 127.0.0.1 only. It holds no
 state of its own: every route is a thin call into a `core/` module.

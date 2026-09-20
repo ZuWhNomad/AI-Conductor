@@ -11,4 +11,9 @@ Read `docs/ARCHITECTURE.md` next. Then:
 - **Events:** everything the UI sees goes through `core/bus.mjs` (`bus.publish(type, data)`). Keep payloads small; the ring buffer replays the last 2000.
 - **Secrets:** API keys live only in `~/.conductor2/config.json`; `publicConfig()` redacts them. Never log them.
 - **Windows first:** spawn CLIs without a shell (see `core/proc.mjs`); prefer stdin for long prompts.
-- When you add a folder or module, add a short `CONTEXT.md` (purpose, entry points, invariants, how to test).
+- **This repo is the product, not the project.** Plans, reviews, backlogs, research and dated logs go in the user's
+  notes location (`../WORKSPACE.md` says where) — never in here, not even temporarily. `test/hygiene.test.mjs` fails
+  on a tracked `plans/`, `reviews/` or `notes/` folder. `docs/` is for documentation a stranger who cloned this repo
+  would need; everything about how we decided or what to do next is a note, not a doc.
+- When you add a folder or module, add a short `CONTEXT.md` (purpose, entry points, invariants, how to test) — every
+  folder has one, it is the first thing an agent reads, and the same hygiene test checks it exists.

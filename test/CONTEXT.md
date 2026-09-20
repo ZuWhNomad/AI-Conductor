@@ -1,5 +1,8 @@
 # Tests
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 Node's built-in test runner. Run `npm test` from the repository root (it preloads `test/_env.mjs` with `--import`), or one
 file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… test/workers/`.
 

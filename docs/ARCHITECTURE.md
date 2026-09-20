@@ -86,8 +86,13 @@ scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
 share/                   install.cmd, install.sh (for friends)
 test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/), the rest flat
-docs/                    this file
+docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, ROADMAP-capabilities
 ```
+
+Every folder above also holds a `CONTEXT.md` — purpose, entry points, invariants, how to test — which is what an
+agent reads first and what `core/context.mjs` injects into a worker's spec by path. Project notes (plans, reviews,
+backlogs, dated logs) are **not** in this repo; they live in the user's notes location, and `test/hygiene.test.mjs`
+fails if any appear here.
 
 ## Plans (core/plans.mjs, `run_plan` tool)
 

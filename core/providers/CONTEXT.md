@@ -1,5 +1,8 @@
 # core/providers/ — how each vendor lists models and reports limits
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** One module per vendor: detect whether it's installed/authed, list its models, and poll its usage
 windows. This is the *catalog + meter* layer; how a task actually runs lives in `core/workers/`.
 

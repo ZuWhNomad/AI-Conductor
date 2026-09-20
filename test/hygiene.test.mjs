@@ -148,3 +148,21 @@ test('every test file imports _env.mjs before any repo module', () => {
     assert.ok(env >= 0 && (repo < 0 || env < repo), `${f} must import _env.mjs first`);
   }
 });
+
+test('the product repo carries no project notes, and every code folder has a CONTEXT.md', async () => {
+  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { execFileSync } = await import('node:child_process');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: REPO_ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+
+  // Plans, reviews, backlogs and logs belong in the user's notes location, never in the product. They arrive by
+  // accident (an agent writes its plan next to the code it is changing) and then ship to everyone who clones this.
+  const notes = tracked.filter((f) => /^(plans|reviews|notes)\//i.test(f) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW)[-_.]/i.test(f));
+  assert.deepEqual(notes, [], `project notes tracked in the product repo: ${notes.join(', ')} — move them to the notes location (see AGENTS.md)`);
+
+  // A folder holding code or policy text gets a CONTEXT.md: it is what an agent reads first, and context.mjs injects
+  // the nearest one into every worker spec.
+  const dirs = [...new Set(tracked.filter((f) => f.includes('/')).map((f) => f.split('/').slice(0, -1).join('/')))];
+  const { existsSync } = await import('node:fs');
+  const missing = dirs.filter((d) => !existsSync(join(REPO_ROOT, d, 'CONTEXT.md'))).sort(); // on disk, so a new one counts before it is staged
+  assert.deepEqual(missing, [], `folders without a CONTEXT.md: ${missing.join(', ')}`);
+});

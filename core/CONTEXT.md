@@ -1,5 +1,8 @@
 # core/ — the engine
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** Everything the workbench does between the HTTP layer (`server/`) and the vendor CLIs: task
 scheduling, budget-aware model selection, limits, the chat conductor, and the tool surface.
 

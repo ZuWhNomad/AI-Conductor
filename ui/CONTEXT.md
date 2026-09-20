@@ -1,5 +1,8 @@
 # ui/ — the browser app
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** The workbench UI: vanilla HTML/JS/CSS served as static files by `server/index.mjs`. No framework, no build
 step, no bundler; edits are live on the next page reload.
 

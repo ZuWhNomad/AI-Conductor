@@ -1,5 +1,8 @@
 # core/workers/ — how each provider kind executes a task
 
+**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
+working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+
 **Purpose.** A worker runs one task (a spec in a cwd) on a given provider and returns a common result. One runner
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
 
