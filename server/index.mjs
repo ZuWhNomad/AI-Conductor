@@ -302,23 +302,42 @@ function startScheduledReview() {
  *  honored in startServer) tolerates the brief window before this process exits. Returns false WITHOUT exiting when the
  *  child can't be spawned, so callers fall back to "restart manually" and never strand the app dead. spawnFn/exit are
  *  injectable for tests. */
-export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () => process.exit(0) } = {}) {
+export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () => process.exit(0), okTimeoutMs = 10_000 } = {}) {
   const argv = [join(REPO_ROOT, 'bin', 'conductor.mjs'), 'start', '--no-open', ...(port ? ['--port', String(port)] : [])];
+  const okFile = statePath('relaunch-ok'); try { unlinkSync(okFile); } catch {}
   let child;
   try {
     child = spawnFn(process.execPath, argv, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, CONDUCTOR_RELAUNCH_WAIT: String(RELAUNCH_WAIT_MS) } });
   } catch { return false; } // couldn't even spawn → stay up, let the caller show the manual-restart message
-  let handed = false;
+  let settled = false;
   const handoff = () => {
-    if (handed) return; handed = true;
+    if (settled) return; settled = true;
     try { child.unref?.(); } catch {}
     try { stopBackgroundWork(); } catch {}
     try { abortRunning({ requeue: true }); } catch {} // in-flight worker tasks resume in the new process
     try { unlinkSync(statePath('server.pid')); } catch {}
     setTimeout(exit, 300); // let the HTTP response flush before we drop the port
   };
-  child.once?.('spawn', () => setTimeout(handoff, 400)); // child is alive → release the port for its retry-bind
-  child.once?.('error', (e) => { try { logImprovement('friction', 'update', `relaunch child failed: ${e?.message || e} — staying up; restart manually`); } catch {} });
+  // A child that dies on import (missing dependency, syntax error) must not take the running server down with it:
+  // the previous version stays up, says so, and the user restarts by hand once it is fixed.
+  const fail = (why) => {
+    if (settled) return; settled = true;
+    try { child.kill?.(); } catch {}
+    try { logImprovement('friction', 'update', 'update applied, but the new version failed to start (' + why + '); still running the previous version — fix it, then restart by hand'); } catch {}
+    bus.publish('update', { relaunchFailed: true, why });
+  };
+  // Hand over only once the child proves it can start: it writes relaunch-ok as it enters its bind loop (imports done).
+  child.once?.('spawn', () => {
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      if (settled) return clearInterval(timer);
+      if (existsSync(okFile)) { clearInterval(timer); handoff(); }
+      else if (Date.now() - t0 > okTimeoutMs) { clearInterval(timer); fail('no start signal within ' + Math.round(okTimeoutMs / 1000) + ' s'); }
+    }, 200);
+    timer.unref?.();
+  });
+  child.once?.('exit', (code, sig) => fail('exited with ' + (sig || 'code ' + code) + ' before binding'));
+  child.once?.('error', (e) => { try { logImprovement('friction', 'update', 'relaunch child failed: ' + (e?.message || e) + ' — staying up; restart manually'); } catch {} });
   return true;
 }
 
@@ -394,6 +413,8 @@ export function startServer({ port = null } = {}) {
   // still holding the port for a moment: retry the bind until this budget elapses. A normal start (flag unset) has a
   // deadline of "now", so any EADDRINUSE rejects immediately, exactly as before.
   const relaunchDeadline = Date.now() + Number(process.env.CONDUCTOR_RELAUNCH_WAIT || 0);
+  // Relaunch child: every import above succeeded, so tell the outgoing process it may hand over the port.
+  if (process.env.CONDUCTOR_RELAUNCH_WAIT) { try { writeFileSync(statePath('relaunch-ok'), String(process.pid)); } catch {} }
   return new Promise((resolve, reject) => {
     let settled = false;
     const onListen = () => {

@@ -76,7 +76,7 @@ core/
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
   bench.mjs              re-benchmark scheduler + new-model detection
   session-flags.mjs      per-session toggles (e.g. API overflow)
-  update.mjs             self-update via git
+  update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs)
 server/index.mjs         HTTP + SSE + static UI
