@@ -80,7 +80,11 @@ test('grok weekly usage-reset day and hour persist as numbers and clamp', () => 
   const g2 = loadConfig().scorecard.usageResets.grok;
   assert.equal(g2.resetDay, 6);
   assert.equal(g2.resetHour, 23);
-  saveConfig({ scorecard: { usageResets: { grok: { resetDay: 1, resetHour: 18 } } } }); // restore defaults (shared CONDUCTOR_HOME)
+  // No schedule is shipped (a plan's reset can move, so nothing is assumed): it exists only once the user sets it,
+  // and "not set" is written as periodHours 0.
+  assert.deepEqual(DEFAULTS.scorecard.usageResets, {});
+  saveConfig({ scorecard: { usageResets: { grok: { periodHours: 0 } } } });
+  assert.equal(loadConfig().scorecard.usageResets.grok.periodHours, 0);
 });
 
 test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code, else ~/.conductor2', async () => {

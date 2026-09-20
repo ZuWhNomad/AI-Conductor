@@ -1,7 +1,19 @@
 // Estimate a provider's plan usage % from token spend, for providers whose CLI reports no window (e.g. Grok).
-// Calibrated by manual check-ins the user records ("Grok 17%"): each pairs an observed % with the tokens spent
-// so far this window, giving a %-per-token rate the estimate extrapolates between check-ins. No timezone math —
-// the window boundary is inferred from a long gap in the provider's own activity, and re-anchored on each reset.
+//
+// The user's check-in is the truth: "Grok 36%" means the bar reads 36% now, whether that is up or down from what
+// Conductor showed. From there the bar grows by tokens × a learned rate:
+//
+//     pct(now) = anchorPct + rate × (tokens spent since the anchor)
+//
+// The rate is measured from ASCENDING RUNS of check-ins only: split the history at every drop (a drop means the plan
+// window reset, or the user corrected us), and each remaining run contributes one %-per-token measurement. So
+// 0,10,50,70,0,50,0,23 yields three measurements, each from its own origin, and the median of them sharpens as more
+// weeks are recorded. A reset is data, not noise.
+//
+// There is deliberately no window inference here: an earlier version fitted pct = rate × tokens through the origin
+// over one inferred window, which cannot express "0% at 8.7M tokens" except as rate 0 — so a reset check-in was
+// averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
+// A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
 import { runRows, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
@@ -26,12 +38,62 @@ export function windowTokens(provider, now = Date.now()) {
   return { spent, startTs, runs: runs.length - startIdx };
 }
 
-/** Record a user check-in: observed % now, paired with tokens spent this window. */
+/** Cumulative provider tokens (in+out) up to an instant. The basis for every delta between check-ins: unlike
+ *  window-relative counts it never moves when the window heuristic re-infers a boundary. */
+function totalTokens(provider, upTo = Infinity) {
+  return tokenRuns(provider).filter((r) => r.ts <= upTo).reduce((s, r) => s + r.tokens, 0);
+}
+
+/** Record a user check-in: the observed % now, with the cumulative token counter it was observed at. */
 export function recordUsage(provider, pct, { at = Date.now() } = {}) {
   const { spent, startTs } = windowTokens(provider, at);
-  const row = { op: 'usage', provider, at: new Date(at).toISOString(), pct: Number(pct), tokens: spent, windowStart: new Date(startTs).toISOString() };
+  // `total` is what the rate is measured from; `tokens`/`windowStart` stay for rows written before that existed.
+  const row = { op: 'usage', provider, at: new Date(at).toISOString(), pct: Number(pct), tokens: spent, windowStart: new Date(startTs).toISOString(), total: totalTokens(provider, at) };
   appendNdjson(FILE(), row);
   return row;
+}
+
+/** Every check-in for a provider, oldest first. */
+function checkins(provider) {
+  return readNdjson(FILE())
+    .filter((o) => o.op === 'usage' && o.provider === provider && Number.isFinite(Date.parse(o.at)) && Number.isFinite(Number(o.pct)))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+/** Tokens spent between two check-ins, or null when the two rows share no common basis (old rows from different
+ *  inferred windows: their `tokens` counters are not comparable, so that pair simply teaches us nothing). */
+function tokensBetween(a, b) {
+  if (Number.isFinite(a.total) && Number.isFinite(b.total)) return b.total - a.total;
+  if (a.windowStart && a.windowStart === b.windowStart) return (b.tokens || 0) - (a.tokens || 0);
+  return null;
+}
+
+const MIN_RUN_TOKENS = 50_000; // a run shorter than this measures rounding, not a burn rate
+const median = (xs) => { const s = [...xs].sort((x, y) => x - y); const i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+
+/** The %-per-token rate, measured once per ascending run of check-ins and medianed across runs (all history, so it
+ *  keeps improving). Returns null until one run is long enough to mean anything. */
+export function learnedRate(provider, obs = checkins(provider)) {
+  const runs = [];
+  let run = [];
+  for (const o of obs) {
+    const prev = run[run.length - 1];
+    // A drop ends the run (the window reset, or we were corrected). So does a pair we cannot measure across: rows
+    // written before `total` existed count tokens from their own inferred window, so a run spanning two of those
+    // windows has no common basis — splitting keeps the measurable part instead of discarding the whole run.
+    if (prev && (Number(o.pct) < Number(prev.pct) || tokensBetween(prev, o) == null)) { runs.push(run); run = []; }
+    run.push(o);
+  }
+  runs.push(run);
+  const slopes = [];
+  for (const r of runs) {
+    if (r.length < 2) continue;
+    const first = r[0], last = r[r.length - 1];
+    const dPct = Number(last.pct) - Number(first.pct);
+    const dTok = tokensBetween(first, last);
+    if (dPct > 0 && dTok != null && dTok >= MIN_RUN_TOKENS) slopes.push(dPct / dTok);
+  }
+  return slopes.length ? { rate: median(slopes), runs: slopes.length, lo: Math.min(...slopes), hi: Math.max(...slopes) } : null;
 }
 
 /** Most recent scheduled reset for a provider (the plan's real window floor), or null when it has no schedule. */
@@ -48,22 +110,12 @@ function tokensSince(provider, sinceTs) {
   return tokenRuns(provider).filter((r) => r.ts >= sinceTs).reduce((s, r) => s + r.tokens, 0);
 }
 
-/** The latest persisted check-in still inside the current reset period (a durable calibration anchor), or null.
- * Anchoring the estimate to the check-in's OWN recorded window — not a freshly re-inferred activity-gap window — is
- * what makes a calibrated bar survive restarts and idle gaps. The gap heuristic drifts its window start PAST an older
- * check-in the moment the provider is idle longer than the gap (Grok's real plan is weekly, the default gap 6h), and
- * the estimate then silently reverted to the flat token budget (~1%). A scheduled reset (Grok = weekly) expires it. */
-function latestCheckin(provider, now = Date.now()) {
-  const floor = lastScheduledReset(provider, now);
-  const obs = readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && Number.isFinite(Date.parse(o.at)) && (floor == null || Date.parse(o.at) >= floor));
-  return obs.length ? obs.reduce((a, b) => (Date.parse(b.at) >= Date.parse(a.at) ? b : a)) : null;
-}
-
 /**
- * Estimate the provider's current plan % from token spend. Once the user has calibrated (a check-in exists in the
- * current window), the estimate is anchored to that check-in's recorded window and re-applied on every load — so a
- * calibrated value holds across restarts until the next check-in or a real reset. Before any check-in it falls back
- * to a flat token budget (advisory), or a config seed rate, else null. Advisory only — it never gates the scheduler.
+ * Estimate the provider's current plan % from token spend. The last check-in the user recorded is the anchor — its
+ * value is shown as-is and the bar grows from it at the learned rate, so a correction lands immediately and a reset
+ * (type 0) really reads 0. A configured reset schedule moves the anchor to 0 at the scheduled instant; without one,
+ * nothing is assumed. Before any check-in it falls back to a flat token budget (advisory), or a config seed rate,
+ * else null. Advisory only — it never gates the scheduler.
  * @param {object} [o] `budgetTokens` (flat "100% at N tokens" fallback, pre-calibration only), `seedPctPerMToken`
  *   (a rate used before any check-in exists), `resetsAt` (shown on the bar), `now`.
  */
@@ -74,19 +126,25 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   const flag = (rawPct) => ({ rawPct: Math.round(rawPct * 10) / 10, needsCheck: rawPct >= overshootAt });
   const round1 = (n) => Math.round(Math.max(0, Math.min(100, n)) * 10) / 10;
 
-  const anchor = latestCheckin(provider, now);
+  const obs = checkins(provider).filter((o) => Date.parse(o.at) <= now);
+  const anchor = obs[obs.length - 1] || null;
   if (anchor) {
-    // Spend and rate are BOTH measured from the check-in's own window start (exactly as recordUsage measured its
-    // `tokens`), so they stay consistent no matter how the activity-gap heuristic would re-infer the window now.
-    const startTs = Date.parse(anchor.windowStart) || 0;
-    const spent = tokensSince(provider, startTs);
-    // Least-squares fit of pct = rate·tokens through the origin, over every check-in from THIS same window (robust to
-    // whole-percent rounding and uneven spacing); a single check-in gives rate = pct / tokens.
-    const obs = readNdjson(FILE()).filter((o) => o.op === 'usage' && o.provider === provider && o.windowStart === anchor.windowStart);
-    let num = 0, den = 0; for (const o of obs) { num += o.pct * o.tokens; den += o.tokens * o.tokens; }
-    const rate = den ? num / den : anchor.pct / Math.max(1, anchor.tokens);
-    const raw = spent * rate;
-    return { pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: anchor.pct, anchorAt: anchor.at || null, points: obs.length, calibrated: true, advisory: true, resetsAt, ...flag(raw) };
+    let anchorPct = Number(anchor.pct), anchorTs = Date.parse(anchor.at);
+    // A reset schedule the user configured (only then does one exist) zeroes the bar at its instant and keeps the rate.
+    const sched = lastScheduledReset(provider, now);
+    if (sched != null && sched > anchorTs) { anchorPct = 0; anchorTs = sched; }
+    const spent = tokensSince(provider, anchorTs);
+    const learned = learnedRate(provider, obs);
+    // Before any ascending run exists, one check-in still implies an average rate (X% consumed by N tokens).
+    const implied = anchor.tokens > 0 && anchorPct > 0 ? Number(anchor.pct) / anchor.tokens : null;
+    const rate = learned?.rate ?? implied ?? (seedPctPerMToken ? seedPctPerMToken / 1e6 : budgetTokens ? 1 / budgetTokens : 0);
+    const raw = anchorPct + spent * rate;
+    return {
+      pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit',
+      anchorPct, anchorAt: new Date(anchorTs).toISOString(), points: obs.length,
+      rateBasis: learned ? 'runs' : implied ? 'checkin' : 'fallback', runs: learned?.runs || 0,
+      calibrated: true, advisory: true, resetsAt, ...flag(raw),
+    };
   }
 
   // No calibration yet.

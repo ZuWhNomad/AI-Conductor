@@ -232,7 +232,7 @@ function limitsWithEstimates() {
     const note = est.needsCheck
       ? `past projected limit (~${est.rawPct}%) but still running — did it reset early, or is the budget too low? Re-check the real usage and calibrate.`
       : est.calibrated
-        ? `~${est.ratePctPerMToken}%/M tokens from ${est.points} check-in(s)`
+        ? `${est.anchorPct}% recorded${est.anchorAt ? ` ${new Date(est.anchorAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''} + ~${est.ratePctPerMToken}%/M tokens since${est.rateBasis === 'runs' ? ` (${est.runs} measured run${est.runs > 1 ? 's' : ''})` : est.rateBasis === 'checkin' ? ' (implied by one check-in)' : ''}`
         : budgetTokens
           ? `uncalibrated estimate against a ${(budgetTokens / 1e6).toLocaleString()}M-token budget — record a real usage % to calibrate`
           : 'uncalibrated estimate — record a real usage % to calibrate';

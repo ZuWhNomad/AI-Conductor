@@ -96,12 +96,13 @@ export const DEFAULTS = {
     // dominates selection (utility = value×quality − cost), so this only tips the balance among comparable choices.
     wasteHorizonHours: 48,            // start favouring a soon-resetting subscription this many hours before its reset
     wasteStrength: 0.9,               // 0 = off; 1 = a fully-unused window at its reset is treated as free
-    // Reset schedule for providers whose CLI reports NO window (Grok, …), so the use-it-or-lose-it discount still
-    // applies. Times are the machine's LOCAL (system) timezone, DST-aware — never a hard-coded zone. Per provider:
-    // { periodHours, resetHour } for a daily wall-clock reset (add resetDay 0-6 + periodHours 168 for weekly), or
-    // { periodHours, anchorAt } to step from an explicit instant. Set once; "use till it fails" refines the boundary
-    // over time. Grok is seeded with a daily 18:00 local reset — change resetHour if yours differs.
-    usageResets: { grok: { periodHours: 168, resetDay: 1, resetHour: 18 } }, // Grok = WEEKLY, Monday 18:00 local (the observed reset was Mon 14 Sep 6pm); change resetDay/resetHour if yours differs
+    // Reset schedules for providers whose CLI reports NO window (Grok, …). Times are the machine's LOCAL timezone,
+    // DST-aware — never a hard-coded zone. Per provider: { periodHours, resetHour } for a daily wall-clock reset
+    // (add resetDay 0-6 from Sunday + periodHours 168 for weekly), or { periodHours, anchorAt } to step from an
+    // explicit instant; periodHours 0 or absent = no schedule.
+    // EMPTY ON PURPOSE: a plan's reset can move, and assuming the wrong one is worse than assuming none — it zeroes
+    // the usage bar early and hands out a use-it-or-lose-it discount that was never earned. Set yours in Settings.
+    usageResets: {},
 
     rebenchDays: 21,                  // `conductor bench` re-runs a selection's battery after this many days
     // Reservation, derived from data: a provider's cost on a task is multiplied by 1 + reservePct × weight × (its measured
@@ -169,16 +170,17 @@ function normalize(cfg) {
   // Minutes feed setTimeout; anything past a day is a typo (and > 2^31 ms fires immediately).
   if (cfg.worker.timeoutMinutes > 1440) cfg.worker.timeoutMinutes = 1440;
   if (cfg.pollMinutes > 1440) cfg.pollMinutes = 1440;
-  const grokReset = cfg.scorecard.usageResets?.grok;
-  if (plain(grokReset)) {
-    const day = Math.floor(Number(grokReset.resetDay));
-    grokReset.resetDay = Number.isFinite(day) ? Math.min(6, Math.max(0, day)) : DEFAULTS.scorecard.usageResets.grok.resetDay;
-    const hour = Math.floor(Number(grokReset.resetHour));
-    grokReset.resetHour = Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : DEFAULTS.scorecard.usageResets.grok.resetHour;
-    if (grokReset.resetMinute != null) {
-      const minute = Math.floor(Number(grokReset.resetMinute));
-      grokReset.resetMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
-    }
+  // A reset schedule the user entered: clamp the wall-clock fields (a <select> hands us strings, and garbage here
+  // would move the reset instant). Any provider, not just Grok, since `usageResets` ships empty.
+  for (const s of Object.values(cfg.scorecard.usageResets || {})) {
+    if (!plain(s)) continue;
+    const clamp = (v, hi, fallback) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(0, n)) : fallback; };
+    if (s.resetDay != null) s.resetDay = clamp(s.resetDay, 6, null);
+    if (s.resetHour != null) s.resetHour = clamp(s.resetHour, 23, 0);
+    if (s.resetMinute != null) s.resetMinute = clamp(s.resetMinute, 59, 0);
+    // A wall-clock schedule with no period would be read as "no schedule", silently ignoring a day the user set.
+    // Infer the obvious one: a weekday means weekly, an hour alone means daily. An explicit 0 stays 0 (= not set).
+    if (s.periodHours == null && (s.resetDay != null || s.resetHour != null)) s.periodHours = s.resetDay != null ? 168 : 24;
   }
   return cfg;
 }
