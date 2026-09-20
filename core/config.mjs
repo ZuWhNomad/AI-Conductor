@@ -12,7 +12,7 @@ export const DEFAULTS = {
   ui: { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
     provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
-    model: 'claude-fable-5-1[1m]',    // null = Claude Code CLI default (currently Opus 5)
+    model: 'opus[1m]',                // the newest Opus with 1M context (Opus 5 today); null = whatever the Claude Code CLI defaults to
     effort: 'high',
     permissionMode: 'acceptEdits',    // 'acceptEdits' (ask for the rest) | 'bypassPermissions'
     overflowApi: false,               // new chats: may the router spend pay-per-token APIs once subscriptions are capped?

@@ -50,8 +50,8 @@ test('setTitle renames a chat, trims and clamps, and rejects empty or unknown', 
 test('sessions use the configured default; any agent provider can conduct, image providers cannot', () => {
   const cwd = tmpDir('sel');
   const s = createSession({ cwd });
-  assert.equal(s.model, 'claude-fable-5-1[1m]');
-  assert.equal(s.selection, 'claude:claude-fable-5-1[1m]:high');
+  assert.equal(s.model, 'opus[1m]');            // DEFAULTS.conductor.model
+  assert.equal(s.selection, 'claude:opus[1m]:high');
   assert.equal(s.runtime, 'claude');
   deleteSession(s.id);
   const d = createSession({ cwd, model: 'default', effort: 'low' });
