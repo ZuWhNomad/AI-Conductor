@@ -468,6 +468,24 @@ function renderUpdate(st = S.update) {
   if (behind > 0) { b.hidden = false; b.classList.add('flash'); b.textContent = `⬇ Update (${behind})`; b.title = `${behind} newer commit(s) on GitHub — click to pull and then restart`; }
   else { b.hidden = true; b.classList.remove('flash'); }
 }
+/** One source of truth for the four post-update states, from merged flags (updated/npmInstalled/npmError/relaunching/relaunchFailed). */
+function updateMessage(o) {
+  const v = `${o.from} → ${o.to}${o.npmInstalled ? ' (dependencies installed)' : ''}`;
+  if (o.relaunchFailed) return { text: `Update applied, but the new version failed to start (${o.why}); still running the previous version. Fix it, then restart by hand.`, cls: 'err' };
+  if (o.relaunching) return { text: `Updated ${v}. Restarting Conductor to apply — this tab reconnects automatically…`, cls: '' };
+  if (o.npmError) return { text: `Updated ${o.from} → ${o.to}, but npm install failed (${o.npmError}): run "npm install" in the Conductor folder, then restart.`, cls: 'warn' };
+  if (o.updated) return { text: `Updated ${v}. Restart Conductor to run the new version.`, cls: '' };
+  return null;
+}
+/** Merge each update signal (they arrive as up to two separate events/responses) and render into ONE reused line, so the
+ *  applied→relaunching sequence never leaves a contradictory message and arrival order does not matter. */
+function noteUpdate(o) {
+  S.updateState = { ...(S.updateState || {}), ...o };
+  if (S.updateState.updated || S.updateState.relaunching) { S.update = null; const b = $('#btn-update'); if (b) { b.hidden = true; b.classList.remove('flash'); } }
+  const m = updateMessage(S.updateState); if (!m) return;
+  if (S.updateLine && S.updateLine.isConnected) { S.updateLine.className = 'sysline ' + m.cls; S.updateLine.textContent = m.text; }
+  else S.updateLine = addSys(m.text, m.cls);
+}
 
 // ---------- SSE ----------
 async function resync() {
@@ -504,10 +522,9 @@ function connect() {
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
   on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
   on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); }));
-  on('update', (ev) => { // startup/periodic check found the remote ahead, or an update was just applied
-    if (ev.relaunchFailed) { addSys('Update applied, but the new version failed to start (' + ev.why + '); still running the previous version. Fix it, then restart by hand.', 'err'); return; }
-    if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); }
-    if (ev.updated) { S.update = null; const b = $('#btn-update'); b.hidden = true; b.classList.remove('flash'); addSys(ev.npmError ? `Updated ${ev.from} → ${ev.to}, but npm install failed (${ev.npmError}): run "npm install" in the Conductor folder, then restart.` : `Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`, ev.npmError ? 'warn' : undefined); }
+  on('update', (ev) => { // remote ahead, an update was applied, a relaunch started, or a relaunch failed
+    if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); return; }
+    noteUpdate(ev); // updated / relaunching / relaunchFailed — merged into one line
   });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
@@ -716,7 +733,7 @@ async function boot() {
   $('#model-pop').onclick = (e) => e.stopPropagation();
   document.addEventListener('click', () => toggleModelPop(false));
   $('#btn-improvements').onclick = () => openImprovements();
-  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; b.classList.remove('flash'); try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; S.update = null; addSys('Already up to date.'); } else { b.hidden = true; S.update = null; const v = `${r.from} → ${r.to}${r.npmInstalled ? ' (dependencies installed)' : ''}`; addSys(r.relaunching ? `Updated ${v}. Restarting Conductor to apply — this tab reconnects automatically…` : `Updated ${v}. Restart Conductor to run the new version.`); } } catch (e) { addSys(`Update failed: ${e.message}`); b.classList.add('flash'); } b.disabled = false; };
+  $('#btn-update').onclick = async () => { const b = $('#btn-update'); b.disabled = true; b.classList.remove('flash'); try { const r = await api.post('/api/update'); if (!r.updated) { b.hidden = true; S.update = null; addSys('Already up to date.'); } else noteUpdate(r); } catch (e) { addSys(`Update failed: ${e.message}`); b.classList.add('flash'); } b.disabled = false; };
   $('#btn-review').onclick = runReview;
   $('#modal-close').onclick = closeModal;
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
