@@ -9,6 +9,7 @@ const api = {
 };
 async function ok(r) { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 
+const authTimers = new Map(); // one pending "stop waiting" timer per provider
 const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
 
 // ---------- markdown-lite ----------
@@ -74,7 +75,7 @@ function renderProviders() {
       e.stopPropagation(); const b = e.target; b.disabled = true;
       try {
         const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command;
-        if (r.ok) { S.awaitingAuth.add(p.id); renderProviders(); setTimeout(() => { S.awaitingAuth.delete(p.id); renderProviders(); }, 5 * 60_000); }
+        if (r.ok) { S.awaitingAuth.add(p.id); renderProviders(); clearTimeout(authTimers.get(p.id)); authTimers.set(p.id, setTimeout(() => { S.awaitingAuth.delete(p.id); authTimers.delete(p.id); renderProviders(); }, 5 * 60_000)); }
       } catch (err) { $('#stt-hint').textContent = err.message; } finally { b.disabled = false; }
     };
     if (action) {
@@ -90,7 +91,8 @@ function renderProviders() {
     name.append(left, controls); d.append(name);
     // "Not logged in" is a CACHED answer that a re-probe can overturn (the user may have signed in elsewhere), so say
     // when it was taken and offer a targeted one. A missing API key is not that case — probing it changes nothing —
-    // so those rows stay quiet; same rule as the server's sweep.
+    // so those rows stay quiet. (The server's timed sweep is the signed-out half of this; an error is shown here too
+    // because a human looking at the panel can act on it.)
     if (!usable && (st.status === 'error' || (st.installed !== false && st.loggedIn === false))) {
       const line = el('div', 'wl tiny');
       if (S.awaitingAuth.has(p.id)) line.append(el('span', 'muted', 'waiting for sign-in…'));
@@ -661,7 +663,7 @@ function openSettings() {
   // Grok reset: "not set" is the default and means Conductor assumes NO reset (no "resets …" on the bar, no
   // use-it-or-lose-it discount) — a guessed reset time is worse than none. Set it once you know yours.
   { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok weekly reset day')); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
-  const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', grokReset()?.resetHour ?? 18, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
+  const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour ?? 18, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
   body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
@@ -687,7 +689,7 @@ function openSettings() {
       let o = patch; for (const k of path.slice(0, -1)) o = o[k] = o[k] || {}; o[path.at(-1)] = v;
     }
     // Grok reset: day -1 = not set -> periodHours 0, which every reader treats as "no schedule" (nothing is assumed).
-    const rday = Number($('#cfg-grok-reset-day').value); const rhour = Number($('#cfg-grok-reset-hour').value);
+    const rday = Number($('#cfg-grok-reset-day').value); const rawHour = $('#cfg-grok-reset-hour').value.trim(); const rhour = rawHour === '' ? (c.scorecard?.usageResets?.grok?.resetHour ?? 18) : Number(rawHour);
     patch.scorecard = { ...(patch.scorecard || {}), usageResets: { grok: rday < 0 ? { periodHours: 0 } : { periodHours: 168, resetDay: rday, resetHour: Number.isFinite(rhour) ? rhour : 18 } } };
     const wk = pickerValue('wk-'); const cd = pickerValue('cd-');
     patch.worker = { ...(patch.worker || {}), provider: wk.provider, model: wk.model || null, effort: wk.effort };

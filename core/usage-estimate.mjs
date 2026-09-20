@@ -15,7 +15,7 @@
 // averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
 // A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
-import { runRows, nextScheduledReset } from './scorecard.mjs';
+import { runRows, prevScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 
 const FILE = () => statePath('usage-observations.ndjson');
@@ -96,14 +96,9 @@ export function learnedRate(provider, obs = checkins(provider)) {
   return slopes.length ? { rate: median(slopes), runs: slopes.length, lo: Math.min(...slopes), hi: Math.max(...slopes) } : null;
 }
 
-/** Most recent scheduled reset for a provider (the plan's real window floor), or null when it has no schedule. */
-function lastScheduledReset(provider, now = Date.now()) {
-  const cfg = loadConfig().scorecard;
-  const next = nextScheduledReset(provider, cfg, now);
-  if (next == null) return null;
-  const period = (Number(cfg.usageResets?.[provider]?.periodHours) || 0) * 3600_000;
-  return period > 0 ? next - period : null;
-}
+/** Most recent scheduled reset for a provider (the plan's real window floor), or null when it has no schedule.
+ *  Read from the user's Settings on every call, so editing the day or hour moves the boundary immediately. */
+const lastScheduledReset = (provider, now = Date.now()) => prevScheduledReset(provider, loadConfig().scorecard, now);
 
 /** Provider tokens (in+out) spent since an absolute instant — the through-origin anchor for the estimate. */
 function tokensSince(provider, sinceTs) {
@@ -124,25 +119,30 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   // stale — the budget is too low, or the window reset earlier than expected. `needsCheck` asks the user to re-verify.
   const overshootAt = loadConfig().scorecard?.usageOvershootPct ?? 110;
   const flag = (rawPct) => ({ rawPct: Math.round(rawPct * 10) / 10, needsCheck: rawPct >= overshootAt });
+  const pctPerM = (r) => Math.round(r * 1e6 * 100) / 100; // rate is percent-per-token; show it per million
   const round1 = (n) => Math.round(Math.max(0, Math.min(100, n)) * 10) / 10;
 
   const obs = checkins(provider).filter((o) => Date.parse(o.at) <= now);
   const anchor = obs[obs.length - 1] || null;
   if (anchor) {
-    let anchorPct = Number(anchor.pct), anchorTs = Date.parse(anchor.at);
-    // A reset schedule the user configured (only then does one exist) zeroes the bar at its instant and keeps the rate.
+    let anchorPct = Number(anchor.pct), anchorTs = Date.parse(anchor.at), anchorFrom = 'checkin';
+    // A reset schedule the user configured (only then does one exist) zeroes the bar at its instant and keeps the
+    // rate. `<= now` matters: a day offset longer than the period puts the "last" reset in the future, which would
+    // pin the bar at 0 until that date.
     const sched = lastScheduledReset(provider, now);
-    if (sched != null && sched > anchorTs) { anchorPct = 0; anchorTs = sched; }
+    if (sched != null && sched <= now && sched > anchorTs) { anchorPct = 0; anchorTs = sched; anchorFrom = 'reset'; }
     const spent = tokensSince(provider, anchorTs);
     const learned = learnedRate(provider, obs);
-    // Before any ascending run exists, one check-in still implies an average rate (X% consumed by N tokens).
-    const implied = anchor.tokens > 0 && anchorPct > 0 ? Number(anchor.pct) / anchor.tokens : null;
-    const rate = learned?.rate ?? implied ?? (seedPctPerMToken ? seedPctPerMToken / 1e6 : budgetTokens ? 1 / budgetTokens : 0);
+    // No ascending run yet = the burn rate is genuinely unknown, so fall back to the same advisory rate the
+    // uncalibrated bar uses. Dividing this check-in's % by "tokens spent this window" would be a rate built on the
+    // activity-gap guess this model exists to be rid of — one small window turns "50%" into 500%/M.
+    const rate = learned?.rate ?? (seedPctPerMToken ? seedPctPerMToken / 1e6 : budgetTokens ? 100 / budgetTokens : 0);
     const raw = anchorPct + spent * rate;
     return {
-      pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit',
-      anchorPct, anchorAt: new Date(anchorTs).toISOString(), points: obs.length,
-      rateBasis: learned ? 'runs' : implied ? 'checkin' : 'fallback', runs: learned?.runs || 0,
+      pct: round1(raw), rate, ratePctPerMToken: pctPerM(rate), spent, basis: 'fit',
+      anchorPct, anchorAt: new Date(anchorTs).toISOString(), anchorFrom, points: obs.length,
+      rateBasis: learned ? 'runs' : 'fallback', runs: learned?.runs || 0,
+      rateLo: learned?.lo ?? null, rateHi: learned?.hi ?? null,
       calibrated: true, advisory: true, resetsAt, ...flag(raw),
     };
   }
@@ -151,11 +151,11 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   const { spent } = windowTokens(provider, now);
   if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory — ONLY until a check-in exists.
     const raw = (spent / budgetTokens) * 100;
-    return { pct: round1(raw), rate: 1 / budgetTokens, ratePctPerMToken: Math.round(1e6 / budgetTokens * 100) / 100, spent, budgetTokens, basis: 'budget', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
+    return { pct: round1(raw), rate: 100 / budgetTokens, ratePctPerMToken: pctPerM(100 / budgetTokens), spent, budgetTokens, basis: 'budget', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
   }
   if (seedPctPerMToken) { // config seed rate before any check-in
     const rate = seedPctPerMToken / 1e6; const raw = spent * rate;
-    return { pct: round1(raw), rate, ratePctPerMToken: Math.round(rate * 1e6 * 100) / 100, spent, basis: 'fit', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
+    return { pct: round1(raw), rate, ratePctPerMToken: pctPerM(rate), spent, basis: 'fit', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
   }
   return null;
 }

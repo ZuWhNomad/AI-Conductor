@@ -42,3 +42,14 @@ test('the slow sweep re-probes installed-but-signed-out providers only', () => {
     xai: { installed: true, configured: false },     // missing API key: arrives through Settings, which refreshes
   }), ['grok']);
 });
+
+test('a re-auth watch waits for the sign-out before it accepts ok again', () => {
+  // On relogin the provider is still signed in when the watch starts; stopping at the first ok would end it before
+  // the CLI's logout had even run.
+  let calls = 0; const seq = ['ok', 'unavailable', 'unavailable', 'ok'];
+  const w = watchSignIn('kimi', { intervalMs: 1, maxMs: 5000, awaitDrop: true, refresh: async () => { calls++; }, statusOf: () => seq[Math.min(calls, seq.length) - 1] });
+  return new Promise((r) => setTimeout(r, 60)).then(() => {
+    assert.equal(w.stopped, true);
+    assert.equal(calls, 4);          // it rode through the drop and stopped on the ok that followed
+  });
+});

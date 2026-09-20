@@ -110,3 +110,15 @@ test('auto-update idle gate: empty is not enough, it must also have been quiet',
   assert.equal(isIdle({ runningSessions: 1, openTasks: 0, lastActivity: now - quietMs * 2, now, quietMs }), false);
   assert.equal(isIdle({ runningSessions: 0, openTasks: 2, lastActivity: now - quietMs * 2, now, quietMs }), false);
 });
+
+test('POST /api/models/refresh: no body, {} and {only:[…]} all work', async () => {
+  // The route started reading a body when `only` was added; the UI posts it both with and without one, so a bodyless
+  // POST must not hang or 400. (A scoped refresh also skips the capability detection a full one triggers.)
+  const send = (body) => fetch(url + '/api/models/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body }) });
+  for (const body of [undefined, '{}', JSON.stringify({ only: ['grok'] }), JSON.stringify({ only: [] }), 'not json']) {
+    const r = await send(body);
+    assert.equal(r.status, 200, `body: ${body}`);
+    const j = await r.json();
+    assert.ok(j.providers, `body: ${body}`);
+  }
+});

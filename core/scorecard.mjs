@@ -429,21 +429,31 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
  *   { periodHours, anchorAt } — step the period from an explicit instant (anchorAt with no offset = local time).
  * Null when nothing is configured.
  */
-export function nextScheduledReset(provider, cfg = loadConfig().scorecard, now = Date.now()) {
+export function nextScheduledReset(provider, cfg = loadConfig().scorecard, now = Date.now()) { return scheduledReset(provider, cfg, now, 1); }
+/** The most recent reset at or before `now` (or null). Derived the same way as the next one, so the two can never
+ *  disagree — the old "next − periodHours" could even land in the future when the day offset exceeded the period. */
+export function prevScheduledReset(provider, cfg = loadConfig().scorecard, now = Date.now()) { return scheduledReset(provider, cfg, now, -1); }
+
+function scheduledReset(provider, cfg, now, dir) {
   const s = cfg.usageResets?.[provider]; if (!s) return null;
-  const period = (Number(s.periodHours) || 0) * 3600e3; if (period <= 0) return null;
-  if (s.resetHour != null) { // wall-clock schedule in the system's local timezone
+  if (Number(s.periodHours) === 0) return null; // explicit "not set" (what Settings writes for "assume none")
+  if (s.resetHour != null) {
+    // Wall-clock schedule, recomputed from the settings on every call: change the day or the hour and the boundary
+    // moves with it, no migration and no stored instant to go stale. Stepping by CALENDAR days rather than a fixed
+    // millisecond period is what keeps 22:00 at 22:00 across a DST change.
+    const step = s.resetDay != null ? 7 : 1;
     const d = new Date(now);
     d.setHours(Number(s.resetHour) || 0, Number(s.resetMinute) || 0, 0, 0);
     if (s.resetDay != null) { const delta = (((Number(s.resetDay) - d.getDay()) % 7) + 7) % 7; d.setDate(d.getDate() + delta); }
-    let next = d.getTime();
-    while (next <= now) next += period; // step forward to the first reset strictly after now
-    return next;
+    if (dir > 0) { while (d.getTime() <= now) d.setDate(d.getDate() + step); }        // first reset strictly after now
+    else { while (d.getTime() > now) d.setDate(d.getDate() - step); }                 // last reset at or before now
+    return d.getTime();
   }
+  const period = (Number(s.periodHours) || 0) * 3600e3; if (period <= 0) return null;
   const anchor = s.anchorAt ? Date.parse(s.anchorAt) : NaN; // explicit instant (no offset => local)
   if (!Number.isFinite(anchor)) return null;
   const next = anchor + Math.ceil((now - anchor) / period) * period;
-  return next <= now ? next + period : next;
+  return dir > 0 ? (next <= now ? next + period : next) : (next <= now ? next : next - period);
 }
 
 const parseSel = (s) => { const [provider, model, effort] = s.split(':'); return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort }; };

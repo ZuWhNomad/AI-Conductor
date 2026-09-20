@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendNdjson, statePath } from '../core/paths.mjs';
 const { windowTokens, recordUsage, estimateUsage, learnedRate } = await import('../core/usage-estimate.mjs');
-const { saveConfig } = await import('../core/config.mjs');
+const { saveConfig, loadConfig } = await import('../core/config.mjs');
+const { nextScheduledReset, prevScheduledReset } = await import('../core/scorecard.mjs');
 
 const runAt = (provider, iso, inTok, outTok) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: iso, provider, model: 'm', tokens: { in: inTok, out: outTok, cached: 999999 }, status: 'done' });
 
@@ -15,13 +16,21 @@ test('windowTokens sums in+out since the last long gap (a new usage window), ign
   assert.equal(w.spent, 600000);   // 400k + 200k, old 100k excluded, cached ignored
 });
 
-test('estimateUsage calibrates a %-per-token rate from a check-in and extrapolates', () => {
-  recordUsage('xai', 12, { at: Date.parse('2026-01-03T12:00:00Z') }); // 12% observed at 600k tokens -> implied 20%/M
-  let est = estimateUsage('xai');
-  assert.equal(est.pct, 12); assert.equal(est.ratePctPerMToken, 20); assert.equal(est.calibrated, true);
-  runAt('xai', '2026-01-03T13:00:00Z', 300000, 0); // now 900k tokens this window
-  est = estimateUsage('xai');
-  assert.equal(est.pct, 18);       // 900k * 20%/M (through origin)
+test('one check-in anchors the bar but does NOT invent a burn rate', () => {
+  recordUsage('xai', 12, { at: Date.parse('2026-01-03T12:00:00Z') });
+  // A single reading says where we are, not how fast we burn: dividing 12% by "tokens spent this window" would be a
+  // rate built on the activity-gap guess (one small window would read 500%/M). Fall back to the advisory budget.
+  let est = estimateUsage('xai', { budgetTokens: 10_000_000 });
+  assert.equal(est.pct, 12); assert.equal(est.rateBasis, 'fallback'); assert.equal(est.ratePctPerMToken, 10);
+  assert.equal(estimateUsage('xai').ratePctPerMToken, 0); // and with no budget or seed, it simply holds
+  runAt('xai', '2026-01-03T13:00:00Z', 300000, 0);
+  assert.equal(estimateUsage('xai', { budgetTokens: 10_000_000 }).pct, 15); // 12 + 300k x 10%/M
+  // A second, higher check-in makes a real run: now the rate is measured, not assumed.
+  recordUsage('xai', 20, { at: Date.parse('2026-01-03T14:00:00Z') });
+  est = estimateUsage('xai', { budgetTokens: 10_000_000 });
+  assert.equal(est.rateBasis, 'runs'); assert.equal(est.runs, 1);
+  assert.equal(est.ratePctPerMToken, 26.67); // (20-12) over the 300k spent between the two check-ins
+  assert.equal(est.pct, 20);                 // anchored on the newest reading, nothing spent since
 });
 
 test('estimateUsage is null with no check-in and no seed, but honours a seed rate', () => {
@@ -114,4 +123,45 @@ test('a reset schedule is honoured only when configured, and then zeroes the bar
   const est = estimateUsage('sched', { now });
   assert.equal(est.pct, 0);                                 // midnight passed: the bar starts over
   assert.equal(est.ratePctPerMToken, 40);                   // the measured burn rate is kept
+});
+
+test('the reset boundary is read from settings every time: weekly Sat 22:00, and 22:00 stays 22:00 across DST', () => {
+  // The user's real setting, stored the way Settings writes it (no periodHours: the day implies weekly).
+  saveConfig({ scorecard: { usageResets: { satx: { resetDay: 6, resetHour: 22 } } } });
+  const local = (s) => new Date(s).getTime();                       // parsed as LOCAL wall clock, like the schedule
+  const next = (at) => nextScheduledReset('satx', loadConfig().scorecard, local(at));
+  const prev = (at) => prevScheduledReset('satx', loadConfig().scorecard, local(at));
+  assert.equal(new Date(next('2026-09-20T12:00:00')).getDay(), 6);  // Sunday -> the coming Saturday
+  assert.equal(new Date(next('2026-09-20T12:00:00')).getHours(), 22);
+  assert.equal(prev('2026-09-20T12:00:00'), local('2026-09-19T22:00:00')); // and the one before is last Saturday
+  assert.equal(prev('2026-09-19T22:00:00'), local('2026-09-19T22:00:00')); // exactly at the boundary: it has happened
+  assert.equal(prev('2026-09-19T21:59:59'), local('2026-09-12T22:00:00')); // a minute before: it has not
+  // Across the (US) DST change on 2026-11-01: stepping by calendar days keeps the wall-clock hour.
+  assert.equal(new Date(next('2026-10-31T23:00:00')).getHours(), 22);
+  assert.equal(new Date(prev('2026-11-03T12:00:00')).getHours(), 22);
+  // Changing the setting moves the boundary immediately — no migration, nothing stored.
+  saveConfig({ scorecard: { usageResets: { satx: { resetDay: 2, resetHour: 9 } } } });
+  assert.equal(new Date(next('2026-09-20T12:00:00')).getDay(), 2);
+  assert.equal(new Date(next('2026-09-20T12:00:00')).getHours(), 9);
+  saveConfig({ scorecard: { usageResets: { satx: { periodHours: 0 } } } });
+  assert.equal(next('2026-09-20T12:00:00'), null);                  // "not set" really means not set
+});
+
+test('the last reset is never in the future, whatever shape the schedule is in', () => {
+  // The old "next − periodHours" could land ahead of now (a day offset longer than the period), which pinned the bar
+  // at 0 until that date. prev/next are now derived the same way, so the invariant holds for every shape.
+  const now = Date.parse('2026-09-20T12:00:00Z');
+  for (const s of [
+    { resetDay: 6, resetHour: 22 },                        // weekly, as Settings writes it
+    { resetDay: 6, resetHour: 22, periodHours: 24 },       // weekly day with a mismatched period
+    { resetDay: 0, resetHour: 0 },                         // Sunday midnight: day 0 is a real day, not "absent"
+    { resetHour: 9 },                                      // daily
+    { periodHours: 100, anchorAt: '2026-01-01T00:00:00' }, // the explicit-instant form
+  ]) {
+    saveConfig({ scorecard: { usageResets: { shapex: s } } });
+    const cfg = loadConfig().scorecard;
+    const prev = prevScheduledReset('shapex', cfg, now), next = nextScheduledReset('shapex', cfg, now);
+    assert.ok(prev <= now, `prev in the future for ${JSON.stringify(s)}`);
+    assert.ok(next > now, `next not in the future for ${JSON.stringify(s)}`);
+  }
 });

@@ -42,16 +42,20 @@ export function stopBackgroundWork() {
 // providers. Both go through refreshModels, so the registry write and the `models` event stay in one place.
 const signInWatches = new Map();
 
-/** Re-probe one provider until it comes back `ok` (or the window runs out). Injectables are for tests. */
-export function watchSignIn(id, { intervalMs = 5000, maxMs = 5 * 60_000, refresh = (only) => refreshModels({ only }), statusOf = (p) => getModels().providers?.[p]?.status } = {}) {
+/** Re-probe one provider until it comes back `ok` (or the window runs out). `awaitDrop` is for re-auth, where the
+ *  provider is still signed in when the watch starts: stopping at the first `ok` would end it before the logout even
+ *  ran. Injectables are for tests. */
+export function watchSignIn(id, { intervalMs = 5000, maxMs = 5 * 60_000, awaitDrop = false, refresh = (only) => refreshModels({ only }), statusOf = (p) => getModels().providers?.[p]?.status } = {}) {
   stopSignInWatch(id);
-  const w = { until: Date.now() + maxMs, stopped: false, timer: null, ticks: 0 };
+  const w = { until: Date.now() + maxMs, stopped: false, timer: null, ticks: 0, sawDrop: !awaitDrop };
   const tick = async () => {
     if (w.stopped) return;
     w.ticks++;
     try { await refresh([id]); } catch {}
     if (w.stopped) return;
-    if (statusOf(id) === 'ok' || Date.now() >= w.until) return stopSignInWatch(id);
+    const status = statusOf(id);
+    if (status !== 'ok') w.sawDrop = true;
+    if ((status === 'ok' && w.sawDrop) || Date.now() >= w.until) return stopSignInWatch(id);
     w.timer = setTimeout(tick, intervalMs); w.timer.unref?.();
   };
   w.timer = setTimeout(tick, intervalMs); w.timer.unref?.();
@@ -248,7 +252,7 @@ async function route(req, res, url) {
     const note = seg[3] === 'install' ? 'Wait for the installer to finish in the window that opened — Conductor re-checks by itself.'
       : (prov.spec?.login?.note || `Finish the ${seg[3] === 'relogin' ? 're-auth (log out, then sign in)' : 'sign-in'} in the window that opened — Conductor re-checks by itself.`);
     const opened = openTerminal(`Conductor — ${seg[2]} ${seg[3]}`, command);
-    if (opened && !process.env.CONDUCTOR_NO_POLL) watchSignIn(seg[2]); // re-probe until it comes back ok: no manual Refresh
+    if (opened && !process.env.CONDUCTOR_NO_POLL) watchSignIn(seg[2], { awaitDrop: seg[3] === 'relogin' }); // re-probe until it comes back ok: no manual Refresh
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
   if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
@@ -263,6 +267,7 @@ async function route(req, res, url) {
 
 /** Serve limits with a synthetic "estimated" window for subscription providers whose CLI reports no window (Grok):
  *  usage is estimated from token spend, calibrated by the user's check-ins (POST /api/providers/:id/usage). */
+const pct1 = (n) => Math.round(n * 10) / 10; // %/M tokens, one decimal
 function limitsWithEstimates() {
   const lim = getLimits();
   const out = { ...lim, providers: { ...lim.providers } };
@@ -279,7 +284,7 @@ function limitsWithEstimates() {
     const note = est.needsCheck
       ? `past projected limit (~${est.rawPct}%) but still running — did it reset early, or is the budget too low? Re-check the real usage and calibrate.`
       : est.calibrated
-        ? `${est.anchorPct}% recorded${est.anchorAt ? ` ${new Date(est.anchorAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''} + ~${est.ratePctPerMToken}%/M tokens since${est.rateBasis === 'runs' ? ` (${est.runs} measured run${est.runs > 1 ? 's' : ''})` : est.rateBasis === 'checkin' ? ' (implied by one check-in)' : ''}`
+        ? `${est.anchorPct}% ${est.anchorFrom === 'reset' ? 'at the scheduled reset' : 'recorded'}${est.anchorAt ? ` ${new Date(est.anchorAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''} + ~${est.ratePctPerMToken}%/M tokens since${est.rateBasis === 'runs' ? ` (${est.runs} measured run${est.runs > 1 ? 's' : ''}${est.runs > 1 ? `, ${pct1(est.rateLo * 1e6)}–${pct1(est.rateHi * 1e6)}` : ''})` : ' — burn rate not measured yet, record a second, higher % to learn it'}`
         : budgetTokens
           ? `uncalibrated estimate against a ${(budgetTokens / 1e6).toLocaleString()}M-token budget — record a real usage % to calibrate`
           : 'uncalibrated estimate — record a real usage % to calibrate';
