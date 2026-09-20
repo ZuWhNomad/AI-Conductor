@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname, resolve, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { REPO_ROOT, readJson, writeJson, statePath } from '../core/paths.mjs';
 import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
@@ -26,6 +27,7 @@ let boundPort = null;              // the port this server actually bound — th
 const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding while the outgoing process releases the port
 
 export function stopBackgroundWork() {
+  try { clearInterval(lagTimer); loopLag.disable(); } catch {}
   try { stopModelPolling(); } catch {}
   try { stopLimitPolling(); } catch {}
   try { killProbes(); } catch {}
@@ -37,6 +39,22 @@ function applyPolling(cfg) {
   if (process.env.CONDUCTOR_NO_POLL) return;
   if (cfg.ui?.autoRefresh) { startModelPolling(cfg.pollMinutes); startLimitPolling(cfg.pollMinutes); }
   else { stopModelPolling(); stopLimitPolling(); }
+}
+// Event-loop lag: the one number that says whether the server is stalling (synchronous work on the dispatch path,
+// too many tasks at once). Sampled continuously; read live by /api/doctor; every minute the p99 is checked and reset.
+const loopLag = monitorEventLoopDelay({ resolution: 20 });
+let lagTimer = null;
+const lagStats = () => ({ p99Ms: Math.round(loopLag.percentile(99) / 1e6), maxMs: Math.round(loopLag.max / 1e6), sinceMs: Math.round(loopLag.count * 20) });
+/** Pure: a friction entry when the last minute's p99 crosses the threshold, else null. */
+export const lagVerdict = (p99Ms, thresholdMs, context = {}) => p99Ms > thresholdMs ? { message: `event loop lag p99=${Math.round(p99Ms)}ms over the last minute (threshold ${thresholdMs}ms)`, context } : null;
+function startLagMonitor() {
+  loopLag.enable();
+  lagTimer = setInterval(() => {
+    const { p99Ms } = lagStats(); loopLag.reset();
+    const tasks = listTasks({ limit: 10000 });
+    const v = lagVerdict(p99Ms, Number(loadConfig().server?.lagWarnMs ?? 500), { running: tasks.filter((t) => t.status === 'running').length, queued: tasks.filter((t) => t.status === 'queued').length, sessions: conductor.listSessions().filter((s) => s.status === 'running').length });
+    if (v) { try { logImprovement('friction', 'server', v.message, v.context); } catch {} }
+  }, 60_000).unref();
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
@@ -250,7 +268,7 @@ export async function doctorReport() {
   const ol = await PROVIDERS.ollama.detect();
   rows.push({ name: 'ollama', value: ol.version || (ol.installed ? 'installed (not running)' : 'missing'), status: ol.installed ? 'ok' : 'optional: https://ollama.com' });
   rows.push({ name: 'git', value: cliVersion('git') || 'missing', status: '' });
-  return { rows, path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath() };
+  return { rows, path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath(), eventLoop: lagStats() };
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */
@@ -373,6 +391,7 @@ export function startServer({ port = null } = {}) {
       delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);
+      startLagMonitor();
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
         refreshModels().then(() => refreshLimits()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank

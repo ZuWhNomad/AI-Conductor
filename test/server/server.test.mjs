@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request } from 'node:http';
 
-const { startServer } = await import('../../server/index.mjs');
+const { startServer, lagVerdict, doctorReport } = await import('../../server/index.mjs');
 const { server, url } = await startServer({ port: 0 });
 after(() => server.close());
 
@@ -93,4 +93,12 @@ test('bad requests are client errors and leave state usable', async () => {
   const file = join(cwd, 'file.txt'); writeFileSync(file, 'test');
   const browse = await fetch(url + '/api/browse?path=' + encodeURIComponent(file));
   assert.equal(browse.status, 200); const b = await browse.json(); assert.deepEqual(b.dirs, []); assert.equal(b.error, 'ENOTDIR');
+});
+
+test('event-loop lag: sampled live for doctor; a friction verdict only above the threshold', async () => {
+  assert.equal(lagVerdict(120, 500), null);
+  const v = lagVerdict(900, 500, { running: 3 });
+  assert.match(v.message, /p99=900ms/); assert.equal(v.context.running, 3);
+  const d = await doctorReport();
+  assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
 });

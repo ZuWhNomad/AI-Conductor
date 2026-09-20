@@ -103,6 +103,7 @@ export const DEFAULTS = {
     // ceiling − the task's difficulty), so capacity proven at level 4-5 is held back for level 4-5 work.
     reservePct: 0.5,
   },
+  server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
   smoke: { timeoutMinutes: 10 },      // per smoke-battery task
   mcpServers: {},                     // conductor-wide MCP: name -> { url } | { command, args, env }; null removes an inherited one
 };
