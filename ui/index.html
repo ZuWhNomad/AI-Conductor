@@ -105,6 +105,10 @@
   <div class="fleet-head">
     <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock">⟨</button></div>
     <div id="fleet-counts" class="tiny muted">no workers yet</div>
+    <div id="fleet-scope" class="seg" role="group" aria-label="Show workers for this chat or all chats">
+      <button type="button" data-scope="mine">This chat</button>
+      <button type="button" data-scope="all">All</button>
+    </div>
     <div id="fleet-budget" class="fleet-budget"></div>
   </div>
   <div id="tasks" class="tasks"></div>

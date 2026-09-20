@@ -133,13 +133,16 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* fleet dock */
 #fleet { grid-area: fleet; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; min-height: 0; min-width: 0; }
 .fleet-head { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.seg { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--muted); padding: 2px 10px; font-size: 11px; line-height: 1.6; cursor: pointer; }
+.seg button.on { background: var(--accent); color: #fff; }
 #fleet-collapse { font-size: 13px; }
 .fleet-budget .bl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 .fleet-budget .meter { margin-top: 2px; }
 .fleet-budget .meter > i { background: var(--accent); }
 /* collapsed: reclaim the column, leave just the expand handle */
 body.fleet-collapsed { grid-template-columns: 320px 1fr 40px; }
-body.fleet-collapsed #fleet .lbl, body.fleet-collapsed #fleet-counts, body.fleet-collapsed #fleet-budget, body.fleet-collapsed #tasks { display: none; }
+body.fleet-collapsed #fleet .lbl, body.fleet-collapsed #fleet-counts, body.fleet-collapsed #fleet-scope, body.fleet-collapsed #fleet-budget, body.fleet-collapsed #tasks { display: none; }
 body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 
 .tasks { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; overflow-y: auto; min-height: 0; }
@@ -194,7 +197,7 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
   body { height: 100vh; grid-template-columns: 320px 1fr; grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "sidebar main" "fleet fleet"; }
   #main, #sidebar { height: auto; min-height: 0; } /* a 100vh row would push the dock one screen down (body cannot scroll) */
   #fleet { border-left: none; border-top: 1px solid var(--line); max-height: 34vh; }
-  .fleet-head { flex-direction: row; align-items: center; gap: 12px; }
+  .fleet-head { flex-direction: row; align-items: center; gap: 12px; flex-wrap: wrap; }
   .fleet-head > .row.between { flex: 0 0 auto; }
   #fleet-budget { flex: 1; }
   .tasks { flex-direction: row; overflow-x: auto; overflow-y: hidden; }

@@ -35,7 +35,8 @@ function renderSessions() {
     const it = el('div', 'item' + (S.current?.id === s.id ? ' active' : ''));
     const t = el('span', 't', s.title || 'New chat'); t.title = `${s.cwd}\n${s.model || 'default model'}`;
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
-    const st = el('span', 'pill' + (s.status === 'running' ? ' running' : ''), s.status === 'running' ? '●' : '');
+    const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
+    const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
     const ren = el('span', 'x', '✎'); ren.title = 'Rename chat';
     ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
     const x = el('span', 'x', '✕'); x.title = 'Delete chat';
@@ -323,7 +324,10 @@ function renderHistory(messages) {
 }
 
 // ---------- fleet dock ----------
-function myTasks() { return S.tasks.filter((t) => t.sessionId === S.current?.id || t.sessionId == null); } // sessionless = launched from the CLI/API; shown in every chat
+// scope: 'all' when no chat is open, else the remembered choice (default 'mine' = this chat only). sessionless tasks (CLI/API) always show.
+function fleetScope() { return S.current ? (localStorage.getItem('fleetScope') || 'mine') : 'all'; }
+function inFleet(t) { return fleetScope() === 'all' || t.sessionId === S.current?.id || t.sessionId == null; }
+function myTasks() { return S.tasks.filter(inFleet); }
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
   for (const t of myTasks().slice(0, 30)) box.append(taskCard(t));
@@ -365,6 +369,8 @@ function renderFleetHead() {
   const queued = mine.filter((t) => t.status === 'queued').length;
   const doneToday = mine.filter((t) => t.status === 'done' && isToday(t.finishedAt || t.updatedAt)).length;
   $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${doneToday} done today` : 'no workers yet';
+  const scope = fleetScope();
+  for (const b of $('#fleet-scope').querySelectorAll('button')) b.classList.toggle('on', b.dataset.scope === scope);
   const todays = mine.filter((t) => (t.status === 'done' || t.status === 'failed') && isToday(t.finishedAt || t.updatedAt));
   const usd = todays.reduce((a, t) => a + (t.result?.costUsd || 0), 0);
   const wk = todays.reduce((a, t) => a + (t.pctWindow || 0), 0);
@@ -382,12 +388,13 @@ function lastAction(t) {
 function updateTask(t) {
   const i = S.tasks.findIndex((x) => x.id === t.id);
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
-  if (t.sessionId === S.current?.id || t.sessionId == null) {
+  if (inFleet(t)) {
     const existing = S.taskEls.get(t.id);
     const fresh = taskCard(t);
     if (existing) existing.replaceWith(fresh); else $('#tasks').prepend(fresh);
   }
   renderFleetHead();
+  renderSessions();
 }
 async function openTask(id) {
   const t = await api.get(`/api/tasks/${id}`);
@@ -693,6 +700,7 @@ async function boot() {
   $('#btn-budget-details').onclick = () => revealProviders();
   if (localStorage.getItem('fleetCollapsed') === '1') { document.body.classList.add('fleet-collapsed'); $('#fleet-collapse').textContent = '⟩'; }
   $('#fleet-collapse').onclick = () => { const c = document.body.classList.toggle('fleet-collapsed'); localStorage.setItem('fleetCollapsed', c ? '1' : '0'); $('#fleet-collapse').textContent = c ? '⟩' : '⟨'; };
+  $('#fleet-scope').onclick = (e) => { const b = e.target.closest('button[data-scope]'); if (!b) return; localStorage.setItem('fleetScope', b.dataset.scope); renderTasks(); };
   // new-chat: one button reveals the inline form; SYSTEM drawer folds admin away.
   $('#btn-newchat-toggle').onclick = () => { const f = $('#newchat-form'); f.hidden = !f.hidden; if (!f.hidden) $('#cwd').focus(); };
   $('#system-toggle').onclick = () => openSystem();
