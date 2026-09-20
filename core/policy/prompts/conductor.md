@@ -82,7 +82,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **Provider limits fail over.** If a worker's provider hits its usage limit mid-task, the task is
   re-issued on the next qualified provider as a retry chain and the report says `failed over to task
   <id>`: await that id. Nothing is charged against the model that was cut off.
-- `model_scores` shows the table and the current pick per category and level. `smoke_test` runs a
+- `delegate` without a model already auto-picks the worker from the scorecard. `model_scores` is for inspection:
+  by default the best pick and runner-up per category and level (levels collapsed when identical) plus the benched
+  cells; `detail: true` or a `category` gives the full table with reasons. `smoke_test` runs a
   fixed battery (read/search/edit/implement/test/refactor/debug, levels 1–5) against a model to seed
   its scores; run it before trusting a new or cheap model with real work.
 

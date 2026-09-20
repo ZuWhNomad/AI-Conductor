@@ -16,7 +16,7 @@ const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
   },
 });
 const cmd = positionals[0] || 'start';
@@ -27,7 +27,7 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor doctor                           check Node, Claude login, Codex login, Ollama
   conductor models [--refresh] [--json]      list models across providers
   conductor limits [--refresh] [--json]      show usage limits per provider
-  conductor scores [--category C] [--source live|smoke] [--json] [--void-env]
+  conductor scores [--category C] [--source live|smoke] [--json|--csv] [--void-env]
                                              scorecard: quality, $ and % of window per model, category and level;
                                              --void-env excludes smoke runs the sandbox blocked (not the model's fault)
   conductor smoke --models p:m[:e],...  | --all-models  [--tasks id,id] [--keep] [--agents-md FILE --variant NAME]
@@ -110,7 +110,7 @@ if (cmd === 'start') {
   }
   process.exit(0);
 } else if (cmd === 'scores') {
-  const { summarize, formatScores, voidTask, rootRuns } = await import('../core/scorecard.mjs');
+  const { summarize, formatScores, scoresCsv, voidTask, rootRuns } = await import('../core/scorecard.mjs');
   if (flags['void-env']) {
     // Exclude smoke runs the harness failed (sandbox denied the workspace) — the model never got to work.
     const { envFailure } = await import('../core/smoke/index.mjs');
@@ -125,7 +125,7 @@ if (cmd === 'start') {
     console.log(`${n} run(s) voided`);
   }
   const o = { category: flags.category || null, source: flags.source || null };
-  console.log(flags.json ? JSON.stringify(summarize(o), null, 2) : formatScores(o));
+  if (flags.csv) process.stdout.write(scoresCsv(o)); else console.log(flags.json ? JSON.stringify(summarize(o), null, 2) : formatScores(o));
   process.exit(0);
 } else if (cmd === 'smoke') {
   const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../core/smoke/index.mjs');

@@ -496,3 +496,25 @@ test('ui is a first-class category and classifyCategory tags UI/frontend work', 
   for (const s of ['fix the CSS layout of the sidebar', 'the modal button style is broken', 'update styles.css', 'React component re-renders', 'make the panel responsive']) assert.equal(sc.classifyCategory(s), 'ui', s);
   for (const s of ['refactor the scheduler', 'add a retry to the API client', 'summarize the docs', '']) assert.equal(sc.classifyCategory(s), null, s);
 });
+
+test('short view: best pick + runner-up per category, levels collapsed, same top pick as recommend(); benched cells; csv', () => {
+  const short = sc.formatScoresShort();
+  const full = sc.formatScores();
+  assert.ok(short.length < full.length / 2, 'short ' + short.length + ' vs full ' + full.length);
+  const cfg = loadConfig().scorecard;
+  for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5]) {
+    const r = sc.recommend({ category: c, difficulty: d });
+    if (!r) continue;
+    const line = short.split('\n').find((l) => new RegExp('^- ' + c + '@(\\d-)?' + d + ':|^- ' + c + '@' + d + '-').test(l) || new RegExp('^- ' + c + '@(\\d)-(\\d):').test(l) && (() => { const m = /@(\d)-(\d):/.exec(l); return Number(m[1]) <= d && d <= Number(m[2]); })());
+    assert.ok(line, 'no short line for ' + c + '@' + d);
+    assert.ok(line.includes(r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default')), line);
+    assert.match(line, /runner-up/);
+  }
+  assert.match(short, /@\d-\d:/);                                     // identical levels collapsed into a range
+  const bad = sc.summarize().find((g) => g.steps === 1 && g.rated >= cfg.minSamples && g.quality != null && g.quality < cfg.quality);
+  if (bad) assert.ok(short.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'benched cell listed');
+  assert.equal(sc.formatScoresShort(), short);                           // memoised: same inputs, same text
+  const csv = sc.scoresCsv();
+  assert.match(csv.split('\n')[0], /^sel,category,difficulty,/);
+  assert.equal(csv.trim().split('\n').length, sc.summarize().length + 1);
+});

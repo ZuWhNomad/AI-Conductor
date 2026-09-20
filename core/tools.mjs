@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig } from './config.mjs';
-import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, effortForTask } from './scorecard.mjs';
+import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
 import { sessionFlags } from './session-flags.mjs';
@@ -172,9 +172,9 @@ export function conductorToolDefs({ sessionId, cwd }) {
     },
     {
       name: 'model_scores',
-      description: 'Scorecard: per model (and observed model ladders), category and difficulty — verdict quality, $ per task at API list price, % of the provider window — plus the current best-value plan per category/level and the public prior tier for comparison.',
-      schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs') }),
-      handler: async (a) => { const { dueForBench, formatBench } = await import('./bench.mjs'); const due = dueForBench(); return formatScores({ category: a.category || null, source: a.source || null }) + (due.length ? `\n\nBench hygiene: ${formatBench(due)}` : ''); },
+      description: 'Scorecard. Default: the short view: best pick + runner-up per category and level, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
+      schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs'), detail: z.boolean().optional().describe('Full table, plans with reasons and error rates (long)') }),
+      handler: async (a) => { const { dueForBench, formatBench } = await import('./bench.mjs'); const due = dueForBench(); return (a.detail || a.category ? formatScores({ category: a.category || null, source: a.source || null }) : formatScoresShort({ source: a.source || null })) + (due.length ? `\n\nBench hygiene: ${formatBench(due)}` : ''); },
     },
     {
       name: 'smoke_test',

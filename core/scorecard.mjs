@@ -220,6 +220,7 @@ export function summarize({ source = null } = {}) {
     let g = groups.get(key);
     if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [] }; groups.set(key, g); }
     g.n++;
+    if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
     if (x.verdict) { g.rated++; g[x.verdict]++; }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd); else g._unpriced = true;
@@ -264,7 +265,10 @@ export function errorRates({ source = null } = {}) {
  */
 export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, _noExtrap = false } = {}) {
   const cfg = loadConfig().scorecard;
-  const avail = (provider, model) => providerAvailable(provider, { overflowApi, cfg, model });
+  // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
+  const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
+  const avail = memo((provider, model) => providerAvailable(provider, { overflowApi, cfg, model }));
+  const weight = memo((provider, model) => providerWeight(provider, cfg, model));
   const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd || 0;
   const excluded = (sel) => sel.split('>').some((s) => exclude.includes(s) || exclude.includes(s.split(':').slice(0, 2).join(':')));
   const blockedSel = (sel) => sel.split('>').some((s) => { const [p, m] = s.split(':'); return !avail(p, m === 'default' ? null : m); });
@@ -273,8 +277,8 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
-  const reserve = (provider) => { const w = providerWeight(provider, cfg); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + (cfg.reservePct ?? 0) * w * gap; };
-  const costOf = (g) => { if (g.avgUsd == null) return null; const [p, m] = g.sel.split('>').pop().split(':'); const model = m === 'default' ? null : m; return (g.avgUsd + hourly * (g.avgDurationMs || 0) / 3.6e6) * providerWeight(p, cfg, model) * reserve(p) * wasteDiscount(p, cfg, model); };
+  const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + (cfg.reservePct ?? 0) * w * gap; };
+  const costOf = (g) => { if (g.avgUsd == null) return null; const [p, m] = g.sel.split('>').pop().split(':'); const model = m === 'default' ? null : m; return (g.avgUsd + hourly * (g.avgDurationMs || 0) / 3.6e6) * weight(p, model) * reserve(p) * wasteDiscount(p, cfg, model); };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   const bySel = new Map();
@@ -498,6 +502,61 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
   const best = cands[0];
   if (!best) return null;
   return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
+}
+
+/**
+ * Short view (what the conductor gets by default): one line per category and level, levels collapsed when the
+ * picks are identical: the best pick and the runner-up (recommend() again with the best pick's model excluded),
+ * each with expected quality, $/task and flags. Then the benched cells (enough samples, below the quality bar):
+ * a computed view of the ledger, never a second record. Memoised on the ledger, limits, models and config, since
+ * 140 recommend() calls take seconds on a large ledger.
+ */
+let shortMemo = null;
+export function formatScoresShort({ source = null } = {}) {
+  const cfg = loadConfig().scorecard;
+  let key = source + '|' + JSON.stringify(cfg) + '|' + (getLimits().updatedAt || '') + '|' + (getModels().updatedAt || '');
+  try { const st = statSync(FILE()); key += '|' + st.size + ':' + st.mtimeMs; } catch { key += '|none'; }
+  if (shortMemo?.key === key) return shortMemo.text;
+  const all = summarize({ source });
+  if (!all.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
+  const money = (v) => (v == null ? 'unpriced' : '$' + v.toFixed(v < 0.1 ? 3 : 2));
+  const sel = (r) => r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default');
+  const cell = (r) => {
+    if (!r) return '-';
+    if (!r.plan) return sel(r) + ' (prior only)';
+    const from = /extrapolated from level (\d)/.exec(r.reason || '');
+    const flags = [r.plan.estimated ? 'est.' : null, from ? 'from L' + from[1] : null].filter(Boolean); // the ladder's fallback step is detail: it changes per level and the auto-pick applies it anyway
+    return sel(r) + ' q' + r.plan.quality.toFixed(2) + ' ' + money(r.plan.usd) + (flags.length ? ' [' + flags.join(', ') + ']' : '');
+  };
+  const lines = ['Best pick + runner-up per category@level (q = expected quality 0-1 over >= ' + cfg.minSamples + ' rated; $ per task at API list price x provider weight; est. = estimated ladder). Full table and reasons: model_scores with detail: true or a category.'];
+  for (const c of CATEGORIES) {
+    const runs = [];
+    for (const d of LEVELS) {
+      const best = recommend({ category: c, difficulty: d, source, summary: all });
+      if (!best) continue;
+      const second = recommend({ category: c, difficulty: d, source, summary: all, exclude: [best.provider + ':' + (best.model || 'default')] });
+      const text = cell(best) + ' | runner-up ' + cell(second);
+      const last = runs[runs.length - 1];
+      if (last && last.text === text && last.to === d - 1) last.to = d; else runs.push({ from: d, to: d, text });
+    }
+    for (const r of runs) lines.push('- ' + c + '@' + (r.from === r.to ? r.from : r.from + '-' + r.to) + ': ' + r.text);
+  }
+  if (lines.length === 1) lines.push('- no pick yet (not enough rated runs above the bar)');
+  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.minSamples && g.quality != null && g.quality < cfg.quality);
+  if (benched.length) {
+    lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.minSamples + ' rated; recommend() skips these cells; a better run lifts them):');
+    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+  }
+  const text = lines.join('\n');
+  shortMemo = { key, text };
+  return text;
+}
+
+/** `conductor scores --csv`: the summary table as CSV (opens in Excel). */
+export function scoresCsv({ source = null } = {}) {
+  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'phantomRate', 'priorTier', 'cost', 'last'];
+  const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  return [cols.join(','), ...summarize({ source }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
 }
 
 /** Conductor/CLI view: the table plus the current plan per category and level. */
