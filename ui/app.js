@@ -444,16 +444,26 @@ async function newSession() {
   await refreshSessions(); await openSession(s.id);
 }
 async function refreshSessions() { S.sessions = await api.get('/api/sessions'); renderSessions(); }
+// Slash commands that send straight to a worker (zero conductor tokens). The send() matcher is built from this table (one source of truth).
+const COMMANDS = [
+  { cmd: 'worker', args: '<spec>', help: 'Auto-picked worker (no conductor tokens)' },
+  { cmd: 'astra', args: '<spec>', help: 'Astra — Codex worker' },
+  { cmd: 'codex', args: '<spec>', help: 'Codex worker' },
+  { cmd: 'ollama', args: '<model> <spec>', help: 'Local Ollama model' },
+  { cmd: 'claude', args: '<model> <spec>', help: 'Claude worker' },
+];
+const DIRECT_RE = new RegExp(`^\\/(${COMMANDS.map((c) => c.cmd).join('|')})(?:\\s+(\\S+))?\\s+([\\s\\S]+)$`);
 async function send() {
   const ta = $('#input'); const text = ta.value.trim(); if (!text) return;
   if (!S.current) { await newSession(); if (!S.current) return; }
   ta.value = ''; ta.style.height = '';
   // "/worker <spec>" (or "/astra", "/ollama <model> <spec>") sends straight to a worker: zero conductor tokens.
-  const direct = text.match(/^\/(worker|astra|codex|ollama|claude)(?:\s+(\S+))?\s+([\s\S]+)$/);
+  const direct = text.match(DIRECT_RE);
   if (direct) {
     const [, kind, arg, spec] = direct;
-    const provider = kind === 'worker' ? undefined : kind === 'astra' ? 'codex' : kind;
-    const model = kind === 'ollama' || kind === 'claude' ? arg : undefined;
+    let provider = kind === 'worker' ? undefined : kind === 'astra' ? 'codex' : kind;
+    let model = kind === 'ollama' || kind === 'claude' ? arg : undefined;
+    if (kind === 'worker' && arg) { const m = S.models.models.find((x) => x.id === arg || x.resolved === arg); if (m) { provider = m.provider; model = m.id; } } // /worker <model> targets it; otherwise arg is prepended to the spec (below)
     const body = { sessionId: S.current.id, cwd: S.current.cwd, spec: model ? spec : (arg ? `${arg} ${spec}` : spec), provider, model };
     addUser(text);
     try { const t = await api.post('/api/tasks', body); addSys(`worker task ${t.id} queued (${t.provider}${t.model ? '/' + t.model : ''})`); } catch (e) { addSys(`task failed: ${e.message}`, 'err'); }
@@ -461,6 +471,33 @@ async function send() {
   }
   try { await api.post(`/api/sessions/${S.current.id}/messages`, { text }); } catch (e) { addSys(`send failed: ${e.message}`, 'err'); }
 }
+function cmdMenuOpen() { return !$('#cmd-menu').hidden; }
+function closeCmdMenu() { const m = $('#cmd-menu'); m.hidden = true; m.innerHTML = ''; S.cmdItems = []; S.cmdSel = 0; }
+/** Items for the current query: matching COMMANDS, then matching registry agent models as `/worker <id>`. */
+function cmdItemsFor(query) {
+  const q = query.toLowerCase(); const items = [];
+  for (const c of COMMANDS) if (!q || c.cmd.startsWith(q)) items.push({ label: `/${c.cmd} ${c.args}`, help: c.help, insert: `/${c.cmd} ` });
+  for (const m of S.models.models) if (m.kind === 'agent' && (!q || m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))) items.push({ label: `/worker ${m.id}`, help: m.provider, insert: `/worker ${m.id} ` });
+  return items;
+}
+/** Open only when the whole composer is a single leading `/token` (no space yet); otherwise close. */
+function updateCmdMenu() {
+  const ta = $('#input'); const v = ta.value;
+  if (!/^\/[^\s]*$/.test(v)) return closeCmdMenu();
+  const items = cmdItemsFor(v.slice(1));
+  if (!items.length) return closeCmdMenu();
+  S.cmdItems = items; S.cmdSel = Math.min(S.cmdSel || 0, items.length - 1);
+  const box = $('#cmd-menu'); box.innerHTML = '';
+  items.forEach((it, i) => {
+    const row = el('div', 'cmd-item' + (i === S.cmdSel ? ' on' : ''));
+    row.append(el('span', 'c', it.label)); if (it.help) row.append(el('span', 'h', it.help));
+    row.onmousedown = (e) => { e.preventDefault(); S.cmdSel = i; pickCmd(); }; // mousedown fires before the textarea blur, so focus is kept
+    box.append(row);
+  });
+  box.hidden = false;
+}
+function moveCmd(d) { const n = S.cmdItems.length; if (!n) return; S.cmdSel = (S.cmdSel + d + n) % n; const box = $('#cmd-menu'); [...box.children].forEach((c, i) => c.classList.toggle('on', i === S.cmdSel)); box.children[S.cmdSel]?.scrollIntoView({ block: 'nearest' }); }
+function pickCmd() { const it = S.cmdItems[S.cmdSel]; if (!it) return; const ta = $('#input'); ta.value = it.insert; closeCmdMenu(); ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
 
 // ---------- update affordance ----------
 /** Show + flash the header Update button when this checkout is behind its GitHub remote (from S.update / an 'update' event). */
@@ -752,8 +789,17 @@ async function boot() {
   $('#bypass').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/mode`, { permissionMode: e.target.checked ? 'bypassPermissions' : 'acceptEdits' });
   $('#cwd').onchange = (e) => localStorage.setItem('cwd', e.target.value.trim());
   const ta = $('#input');
-  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'; });
+  ta.addEventListener('keydown', (e) => {
+    if (cmdMenuOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); return moveCmd(1); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); return moveCmd(-1); }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return pickCmd(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); return closeCmdMenu(); }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'; updateCmdMenu(); });
+  ta.addEventListener('blur', () => setTimeout(closeCmdMenu, 120)); // clicking outside closes it; item mousedown keeps focus so a pick still lands
 
   // speech to text
   const stt = createSTT({
