@@ -55,6 +55,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .budget .bl { display: flex; justify-content: space-between; font-size: 11px; }
 .budget .bl .k { color: var(--fg); } .budget .bl .v { color: var(--muted); }
 .budget .others { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.budget .others .warn { color: var(--warn); } .budget .others .bad { color: var(--bad); }
+.budget.stale .b, .budget.stale .others { opacity: .55; }
 .budget .empty { font-size: 11px; color: var(--muted); }
 
 /* new-chat inline form */
@@ -100,7 +102,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 #main { grid-area: main; display: grid; grid-template-rows: auto 1fr auto; height: 100vh; overflow: hidden; min-width: 0; }
 #chat-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); gap: 10px; }
 #chat-header .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#chat-header .controls { display: flex; gap: 8px; align-items: center; }
+#chat-header .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; justify-content: flex-end; }
 .nav-toggle { display: none; font-size: 18px; }
 #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; display: none; }
 .transcript { overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -161,7 +163,8 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 
 /* composer */
 .composer { padding: 10px 14px 12px; border-top: 1px solid var(--line); }
-.composer textarea { flex: 1; resize: vertical; min-height: 44px; max-height: 40vh; }
+.composer .row { min-width: 0; }
+.composer textarea { flex: 1; min-width: 0; resize: vertical; min-height: 44px; max-height: 40vh; }
 .composer .mic { font-size: 18px; padding: 4px 10px; }
 .composer .mic.on { background: #3a1d1d; border-color: var(--bad); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(239,107,107,.15); } }
@@ -188,7 +191,8 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 
 /* narrow: the Fleet dock falls back to a bottom strip */
 @media (max-width: 1100px) {
-  body { grid-template-columns: 320px 1fr; grid-template-rows: 1fr auto; grid-template-areas: "sidebar main" "fleet fleet"; }
+  body { height: 100vh; grid-template-columns: 320px 1fr; grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "sidebar main" "fleet fleet"; }
+  #main, #sidebar { height: auto; min-height: 0; } /* a 100vh row would push the dock one screen down (body cannot scroll) */
   #fleet { border-left: none; border-top: 1px solid var(--line); max-height: 34vh; }
   .fleet-head { flex-direction: row; align-items: center; gap: 12px; }
   .fleet-head > .row.between { flex: 0 0 auto; }
@@ -197,6 +201,10 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
   .task { min-width: 240px; max-width: 320px; flex: 0 0 auto; }
   body.fleet-collapsed { grid-template-columns: 320px 1fr; }
   body.fleet-collapsed #fleet { max-height: none; }
+}
+@media (max-width: 480px) {
+  .chip { max-width: 44vw; }
+  #status { display: none; }
 }
 @media (max-width: 900px) {
   body { grid-template-columns: 1fr; grid-template-areas: "main" "fleet"; }

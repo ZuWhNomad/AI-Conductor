@@ -130,6 +130,11 @@ function budgetBar(label, w) {
 function renderBudget() {
   const box = $('#budget'); if (!box) return; box.innerHTML = '';
   const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
+  const pst = S.models.providers[prov] || {};
+  if (pst.status && pst.status !== 'ok') box.append(el('div', 'empty', `${prov}: ${pst.loggedIn === false ? 'not signed in' : pst.configured === false ? 'no key' : pst.installed === false ? 'not installed' : pst.error ? 'error' : pst.status}`));
+  // Numbers older than this boot are last run's: show them dimmed with their time until the first refresh lands.
+  const asOf = S.limits.updatedAt ? new Date(S.limits.updatedAt).getTime() : 0;
+  box.classList.toggle('stale', !!S.boot && asOf < S.boot);
   const session = planWindow(prov, 'session');
   const weekly = planWindow(prov, 'weekly');
   if (session) box.append(budgetBar(`${prov} · session`, session));
@@ -140,10 +145,11 @@ function renderBudget() {
     if (p.id === prov) continue; // the selected provider is already shown in full above
     if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
     const w = (S.limits.providers[p.id]?.windows || [])[0];
-    if (w && w.usedPercent != null) parts.push(`${p.id} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`);
-    else if (p.kind === 'ollama') parts.push(`${p.id} local`);
+    if (w && w.usedPercent != null) parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
+    else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
   }
-  if (parts.length) box.append(el('div', 'others', parts.slice(0, 4).join(' · ') + (parts.length > 4 ? ` · +${parts.length - 4}` : '')));
+  if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
+  if (box.classList.contains('stale') && asOf) box.append(el('div', 'empty', `as of ${new Date(asOf).toLocaleTimeString()} (refreshing)`));
   if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
 }
 
