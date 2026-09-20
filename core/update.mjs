@@ -2,7 +2,7 @@
 // Status is a fetch + counts; applying is a fast-forward pull plus `npm install` when the lockfile moved.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './paths.mjs';
 import { findCli } from './proc.mjs';
@@ -15,6 +15,15 @@ function git(args, { cwd = REPO_ROOT, timeout = 30_000 } = {}) {
   return execFileSync(gitBin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 const lockHash = (cwd) => { try { return createHash('sha1').update(readFileSync(join(cwd, 'package-lock.json'))).digest('hex'); } catch { return null; } };
+
+/** npm without a shell: node + the npm-cli.js beside the running node (npm.cmd is a cmd shim that execFile cannot run
+ *  on Node 24: EINVAL); else the npm on PATH, through a shell only when it is a .cmd (the arguments are fixed literals). */
+export function npmCommand() {
+  const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(cli)) return { command: process.execPath, args: [cli], shell: false };
+  const bin = findCli('npm'); if (!bin) return null;
+  return { command: bin, args: [], shell: /[.]cmd$/i.test(bin) };
+}
 
 let last = null;
 export const lastUpdateStatus = () => last;
@@ -38,7 +47,7 @@ export function updateStatus({ cwd = REPO_ROOT, fetch = true } = {}) {
 }
 
 /** Fast-forward to origin; refuses when there are local changes or local commits the remote lacks. */
-export function applyUpdate({ cwd = REPO_ROOT, npm = true } = {}) {
+export function applyUpdate({ cwd = REPO_ROOT, npm = true, exec = execFileSync } = {}) {
   const st = updateStatus({ cwd });
   if (!st.git || st.error) throw Object.assign(new Error(st.error || 'not a git checkout'), { status: 400 });
   if (st.dirty) throw Object.assign(new Error(`${st.dirty} local change(s) not committed — commit or stash them first (GitHub Desktop shows them)`), { status: 409 });
@@ -55,13 +64,17 @@ export function applyUpdate({ cwd = REPO_ROOT, npm = true } = {}) {
     throw Object.assign(new Error(`update pull failed — a local file may block the fast-forward: ${msg}`), { status: 409 });
   }
   const head = git(['rev-parse', '--short', 'HEAD'], { cwd });
-  let npmInstalled = false;
+  // The lockfile moved: install. A failure here must not throw — HEAD has already moved — it is reported, and the
+  // caller does not restart into a checkout whose dependencies are missing.
+  let npmInstalled = false, npmError = null;
   if (npm && lockHash(cwd) !== before) {
-    const npmBin = findCli('npm');
-    if (npmBin) { execFileSync(npmBin, ['install', '--no-fund', '--no-audit'], { cwd, windowsHide: true, timeout: 600_000, stdio: 'ignore' }); npmInstalled = true; }
+    const n = npmCommand();
+    if (!n) npmError = 'npm not found';
+    else try { exec(n.command, [...n.args, 'install', '--no-fund', '--no-audit'], { cwd, windowsHide: true, timeout: 600_000, stdio: 'ignore', shell: n.shell }); npmInstalled = true; }
+    catch (e) { npmError = String(e?.message || e).trim().split('\n')[0].slice(0, 200); }
   }
   last = null;
-  const r = { updated: true, from: st.head, to: head, commits: st.behind, npmInstalled, restartNeeded: true };
+  const r = { updated: true, from: st.head, to: head, commits: st.behind, npmInstalled, npmError, restartNeeded: true };
   bus.publish('update', { ...r });
   return r;
 }

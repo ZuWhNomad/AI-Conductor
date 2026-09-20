@@ -499,7 +499,7 @@ function connect() {
   on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); }));
   on('update', (ev) => { // startup/periodic check found the remote ahead, or an update was just applied
     if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); }
-    if (ev.updated) { S.update = null; const b = $('#btn-update'); b.hidden = true; b.classList.remove('flash'); addSys(`Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`); }
+    if (ev.updated) { S.update = null; const b = $('#btn-update'); b.hidden = true; b.classList.remove('flash'); addSys(ev.npmError ? `Updated ${ev.from} → ${ev.to}, but npm install failed (${ev.npmError}): run "npm install" in the Conductor folder, then restart.` : `Updated ${ev.from} → ${ev.to}${ev.npmInstalled ? ' (dependencies installed)' : ''}. Restart Conductor to run the new version.`, ev.npmError ? 'warn' : undefined); }
   });
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }

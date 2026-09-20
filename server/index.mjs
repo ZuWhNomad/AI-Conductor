@@ -199,7 +199,7 @@ async function route(req, res, url) {
   if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
   if (p === '/api/update' && m === 'POST') { // pull, then self-restart into the new version; relaunching:false falls back to the manual-restart message
     const r = applyUpdate();
-    const relaunching = !!(r.updated && r.restartNeeded && scheduleRelaunch({ port: boundPort ?? req.socket.localPort }));
+    const relaunching = !!(r.updated && r.restartNeeded && !r.npmError && scheduleRelaunch({ port: boundPort ?? req.socket.localPort }));
     return json(res, 200, { ...r, relaunching });
   }
   if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
@@ -342,7 +342,8 @@ function startUpdateChecks() {
       // Loop guard: only restart when the pull actually advanced HEAD. After a successful pull we're up to date, so the
       // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
       const moved = !!(r.updated && r.to && r.to !== r.from);
-      if (moved && scheduleRelaunch()) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {});
+      if (r.npmError) logImprovement('friction', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)}, but npm install failed (${r.npmError}) — run \`npm install\` in the Conductor folder, then restart`, {});
+      else if (moved && scheduleRelaunch()) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {});
       else if (moved) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restart to apply (relaunch unavailable)`, {});
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { findCli } from '../core/proc.mjs';
-const { updateStatus, applyUpdate, formatUpdate } = await import('../core/update.mjs');
+const { updateStatus, applyUpdate, formatUpdate, npmCommand } = await import('../core/update.mjs');
 
 const git = findCli('git');
 const run = (cwd, ...args) => execFileSync(git, args, { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -57,4 +57,19 @@ test('update: untracked files do NOT block a fast-forward (dirty:0, applyUpdate 
   assert.equal(r.updated, true); assert.equal(r.commits, 1);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
   assert.equal(run(b, 'status', '--porcelain'), '?? note.md\n?? scratch.log'); // untracked files survived the pull
+});
+
+test('update: a lockfile change runs npm through the injected exec; a failing install is reported, never thrown', { skip: !git && 'git not installed' }, () => {
+  const { a, b } = setup();
+  writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
+  const calls = [];
+  const r = applyUpdate({ cwd: b, exec: (cmd, args, opts) => { calls.push({ cmd, args, opts }); } });
+  assert.equal(r.updated, true); assert.equal(r.npmInstalled, true); assert.equal(r.npmError, null);
+  assert.equal(calls.length, 1); assert.deepEqual(calls[0].args.slice(-3), ['install', '--no-fund', '--no-audit']); assert.equal(calls[0].opts.cwd, b);
+  writeFileSync(join(a, 'package-lock.json'), '{"v":2}'); run(a, 'commit', '--quiet', '-am', 'lock2'); run(a, 'push', '--quiet');
+  const bad = applyUpdate({ cwd: b, exec: () => { throw new Error('spawn npm.cmd EINVAL'); } });
+  assert.equal(bad.updated, true); assert.equal(bad.npmInstalled, false); assert.match(bad.npmError, /EINVAL/);
+  assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD')); // HEAD moved anyway: the caller must not restart blindly
+  const n = npmCommand();
+  assert.ok(n === null || (n.command && Array.isArray(n.args)));
 });
