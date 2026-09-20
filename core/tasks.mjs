@@ -154,7 +154,7 @@ function wake(t) {
   waiters.delete(t.id);
 }
 
-function buildPrompt(t) {
+export function buildPrompt(t) {
   const pre = t.resume ? RESUME_NOTE : '';
   if (t.followUpOf) return `${pre}Follow-up from the conductor on your previous work in this same thread. Address every point, re-run the verification, and report in the same format.\n\n${t.spec}`;
   const ctx = contextBlock(t.cwd, t.paths);
@@ -166,9 +166,14 @@ ${MSW}
 
 Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   const recipe = recipeFor(t.category, t.variant);
-  // The recipe and the capability lines share one budget (spec-append cap), so the two cannot silently double a prompt.
-  const cap = loadConfig().worker.specAppendChars ?? 3000;
-  const tools = capabilityLines(t.category, { maxChars: Math.max(0, cap - (recipe || '').length) });
+  // Recipe and capability lines get SEPARATE budgets. They used to share one (`specAppendChars`), which meant a
+  // recipe longer than the cap silently drove capabilityLines to maxChars:0 — the worker lost every tool line while
+  // the recipe was appended unclipped. A long recipe must never be able to starve the tool index.
+  const wcfg = loadConfig().worker;
+  const recipeCap = wcfg.recipeChars ?? 6000;
+  const toolsCap = wcfg.toolLineChars ?? 1500;
+  if (recipe && recipe.length > recipeCap) logImprovement('friction', 'recipes', `recipe for '${t.category}'${t.variant ? ` (variant ${t.variant})` : ''} is ${recipe.length} chars, over the ${recipeCap} budget`, { taskId: t.id, title: t.title });
+  const tools = capabilityLines(t.category, { maxChars: toolsCap });
   return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 

@@ -92,6 +92,36 @@ test('recipe variants: a task variant selects the B recipe; unknown variants fal
   assert.equal(recipeFor('debug', 'recipe-b'), null);
 });
 
+test('summarize has no default recipe; the video variants resolve by name', async () => {
+  const { recipeFor } = await import('../core/recipes.mjs');
+  // A video-briefing recipe must NOT be appended to every summarize task (diffs, docs, changelogs).
+  assert.equal(recipeFor('summarize'), null);
+  assert.equal(recipeFor('summarize', 'nope'), null);
+  assert.match(recipeFor('summarize', 'video-finance'), /Claim check and updated picture/);
+  assert.match(recipeFor('summarize', 'video-general'), /general video briefing/i);
+});
+
+test('a long recipe cannot starve the capability lines (they have separate budgets)', async () => {
+  const tk = await import('../core/tasks.mjs');
+  const { capabilityLines } = await import('../core/capabilities.mjs');
+  const { recipeFor } = await import('../core/recipes.mjs');
+
+  const recipe = recipeFor('summarize', 'video-finance');
+  assert.ok(recipe.length > 3000, `recipe is ${recipe.length} chars - this test is meaningless if it is short`);
+
+  // The capability block the worker SHOULD get, computed independently of buildPrompt.
+  const expected = capabilityLines('summarize', { maxChars: 1500 });
+  assert.ok(expected.length > 0, 'summarize has capability lines to lose');
+
+  const withRecipe = tk.buildPrompt({ cwd: HOME, title: 't', spec: 's', category: 'summarize', provider: 'claude', variant: 'video-finance' });
+  assert.ok(withRecipe.includes(recipe), 'the recipe reaches the worker spec');
+  // The regression: recipe and tool lines shared one budget, so a recipe over the cap drove
+  // capabilityLines to maxChars:0 and the worker silently lost EVERY tool line while the recipe
+  // was still appended unclipped. Assert on the real capability block, not on any '- x: ' line -
+  // the recipe is full of those, which is what made the first version of this test vacuous.
+  assert.ok(withRecipe.includes(expected), 'capability lines survive a recipe longer than the old shared cap');
+});
+
 test('worker timeout can be raised per category; long runs are logged', async () => {
   const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
   assert.equal(DEFAULTS.worker.timeoutByCategory.modeling, 240);

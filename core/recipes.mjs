@@ -9,9 +9,12 @@ import { loadConfig } from './config.mjs';
 const DIR = join(REPO_ROOT, 'core', 'policy', 'recipes');
 // Default per category. modeling: recipe B (A/B on 2026-09-12: visually substantially better than A on Sol and Terra).
 export const RECIPES = { modeling: 'image-to-3d-model.b.md' };
+// summarize has NO default on purpose: a video-briefing recipe appended to every summarize task (diffs, docs) is
+// noise, and a self-scoping first line is a soft instruction a weak worker ignores. Video tasks opt in by variant;
+// the `youtube` entry in policy/capabilities.json tells the conductor which variant to set.
 // Variants: a task whose `variant` names one of these gets it instead of the default (the scorecard keeps the variant).
 // recipe-c is the two-stage pipeline: a cheap model traces (recipe-c-trace), a strong model builds (recipe-c).
-export const RECIPE_VARIANTS = { modeling: { 'recipe-a': 'image-to-3d-model.md', 'recipe-b': 'image-to-3d-model.b.md', 'recipe-c': 'image-to-3d-model.c-build.md', 'recipe-c-trace': 'image-to-3d-model.c-trace.md' } };
+export const RECIPE_VARIANTS = { modeling: { 'recipe-a': 'image-to-3d-model.md', 'recipe-b': 'image-to-3d-model.b.md', 'recipe-c': 'image-to-3d-model.c-build.md', 'recipe-c-trace': 'image-to-3d-model.c-trace.md' }, summarize: { 'video-general': 'video-briefing-general.md', 'video-finance': 'video-briefing-finance.md' } };
 
 const cache = new Map();
 // Config can add/override routing without a code edit: recipes.defaults[category] and recipes.variants[category][variant].

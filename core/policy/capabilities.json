@@ -49,10 +49,10 @@
   },
   {
     "name": "youtube", "kind": "access", "categories": ["summarize"],
-    "purpose": "The task has a YouTube link: a text model cannot watch it; use the captions program when the words are enough, otherwise a model that takes the video itself",
+    "purpose": "The task has a YouTube link. A Conductor worker has no network and cannot watch it, fetch captions or reach YouTube at all - the video must be briefed outside Conductor first. For a FINANCIAL video, run the task with variant video-finance; otherwise variant video-general. Those recipes say what to do with the briefing once it is on disk",
     "match": ["youtube.com/", "youtu.be/"],
     "providers": [],
     "added": "curated", "keywords": ["youtube", "video"],
-    "note": "providers is empty until a Gemini route is proven to open a video (framework spike); an empty list applies no gate"
+    "note": "Gemini (3.8 Flash + Extended thinking) is a proven route and does read on-screen detail, but it is driven by hand outside Conductor: ingestion is flaky and some videos stall on every attempt. providers stays empty - an empty list applies no gate"
   }
 ]
