@@ -199,7 +199,8 @@ function agentProviders({ conductOnly }) {
   return ps.length ? ps : [{ id: 'claude' }];
 }
 function modelsFor(provider) { return S.models.models.filter((m) => (provider === ALL || m.provider === provider) && m.kind === 'agent'); }
-const modelLabel = (m, withProvider) => `${withProvider ? m.provider + ' · ' : ''}${m.label}${m.resolved && m.resolved !== m.id ? ` (${m.resolved})` : ''}`;
+// Labels already name the model an alias resolves to, and the selection line under the pickers spells the id out.
+const modelLabel = (m, withProvider) => `${withProvider ? m.provider + ' · ' : ''}${m.label}`;
 /** "Other…" asks for a model id and adds it to the select so it round-trips like any listed model. Only prompts on a user pick. */
 function resolveOther(prefix, interactive = false) {
   const P = $(`#${prefix}provider`), M = $(`#${prefix}model`);

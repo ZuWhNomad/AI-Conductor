@@ -90,6 +90,17 @@ function oauthToken() {
   } catch { return null; }
 }
 
+/**
+ * "claude-opus-4-5-20251101" -> "Claude Opus 4.5": the Models API's own naming, rebuilt for an id it does not list.
+ * Words become the name, trailing numbers the version, a date suffix is dropped.
+ */
+function prettyName(id) {
+  const words = [], ver = [];
+  for (const part of String(id).replace(/-\d{8}$/, '').split('-')) (/^\d+$/.test(part) ? ver : words).push(part);
+  if (!words.length) return null;
+  return words.map((w) => w[0].toUpperCase() + w.slice(1)).join(' ') + (ver.length ? ' ' + ver.join('.') : '');
+}
+
 /** Every model the account can use, from the Models API (live: new models appear without an update). */
 export async function listApiModels() {
   const token = oauthToken();
@@ -105,8 +116,20 @@ export async function listModels() {
     withControl((q) => q.supportedModels()),
     listApiModels().catch(() => []),
   ]);
+  // The CLI's alias names ("Default (recommended)", "Opus (1M context)") read nothing like the Models API's
+  // "Claude Opus 4.8", so one selector mixes two conventions. Name every alias after the model it resolves to,
+  // and keep what the alias itself means as a suffix.
+  const apiName = new Map(api.map((m) => [m.id, m.label]));
+  const aliasLabel = (m) => {
+    const resolved = m.resolvedModel || m.value;
+    const base = resolved.replace(/\[1m\]$/, '');
+    const name = apiName.get(base) || prettyName(base);
+    if (!name) return m.displayName;
+    const oneM = resolved.endsWith('[1m]') || m.value.endsWith('[1m]'); // fable-5-1[1m] resolves to an id without the marker
+    return name + (oneM ? ' (1M context)' : '') + (m.value === 'default' ? ' · default' : '');
+  };
   const out = (aliases || []).map((m) => ({
-    provider: id, id: m.value, resolved: m.resolvedModel || null, label: m.displayName, description: m.description || '',
+    provider: id, id: m.value, resolved: m.resolvedModel || null, label: aliasLabel(m), description: m.description || '',
     efforts: m.supportedEffortLevels || (m.supportsEffort ? ['low', 'medium', 'high'] : []), kind: 'agent', cost: 'subscription',
   }));
   const covered = new Set(out.flatMap((m) => [m.id, m.resolved, (m.resolved || '').replace(/\[1m\]$/, '')]).filter(Boolean));
