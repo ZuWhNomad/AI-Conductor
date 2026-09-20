@@ -12,11 +12,12 @@ import { loadConfig } from './config.mjs';
  */
 export function measuredCostByWindow(rows, provider, { model = null } = {}) {
   const cost = {};
+  const windows = getLimits().providers[provider]?.windows || []; // once: getLimits() stats the file on every call
   for (const r of rows) {
     if (r.provider !== provider || !r.pct) continue;
     if (model && r.model !== model) continue;
     for (const [id, d] of Object.entries(r.pct)) {
-      const w = (getLimits().providers[provider]?.windows || []).find((x) => x.id === id);
+      const w = windows.find((x) => x.id === id);
       if (w?.models && r.model && !new RegExp(w.models, 'i').test(r.model)) continue;
       const per = d / ((r.concurrent || 0) + 1); // the window moved for every task running at the time, not just this one
       if (per > (cost[id] || 0)) cost[id] = per;

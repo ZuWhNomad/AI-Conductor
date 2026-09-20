@@ -1,4 +1,5 @@
 // User configuration: defaults merged with ~/.conductor2/config.json.
+import { statSync } from 'node:fs';
 import { readJson, writeJson, statePath } from './paths.mjs';
 
 export const DEFAULTS = {
@@ -119,8 +120,18 @@ function deepMerge(a, b) {
   return out;
 }
 
+// The overrides file is read once per change (stat, not read+parse, on every call): loadConfig() sits on every hot
+// path. Callers still get a fresh merged object each time, so mutating it never leaks.
+let fileCache = { key: null, value: {} };
+function overrides() {
+  let key = 'none';
+  try { const s = statSync(FILE()); key = `${s.size}:${s.mtimeMs}`; } catch {}
+  if (key !== fileCache.key) fileCache = { key, value: key === 'none' ? {} : readJson(FILE(), {}) };
+  return fileCache.value;
+}
+
 export function loadConfig() {
-  return normalize(deepMerge(DEFAULTS, readJson(FILE(), {})));
+  return normalize(deepMerge(DEFAULTS, overrides()));
 }
 
 function normalize(cfg) {
@@ -177,6 +188,7 @@ export function saveConfig(patch) {
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
   const effective = normalize(deepMerge(DEFAULTS, deepMerge(readJson(FILE(), {}), clean)));
   writeJson(FILE(), pruneToDefaults(effective, DEFAULTS));
+  fileCache = { key: null, value: {} }; // our own write: re-read on the next load even if size and mtime did not move
   return effective;
 }
 

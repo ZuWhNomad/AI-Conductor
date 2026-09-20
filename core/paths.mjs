@@ -9,9 +9,10 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** CONDUCTOR_HOME, else a `.state/` folder beside the code (a dev checkout: own state and port, never the daily driver's), else ~/.conductor2. */
 export const resolveStateDir = () => process.env.CONDUCTOR_HOME || [join(REPO_ROOT, '.state')].find((d) => existsSync(d)) || join(homedir(), '.conductor2');
 
+let madeDir = null;
 export function stateDir() {
   const d = resolveStateDir();
-  mkdirSync(d, { recursive: true });
+  if (d !== madeDir) { mkdirSync(d, { recursive: true }); madeDir = d; }
   return d;
 }
 
