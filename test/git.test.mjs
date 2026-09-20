@@ -9,21 +9,21 @@ const { findCli } = await import('../core/proc.mjs');
 const { _git } = await import('../core/tasks.mjs');
 const git = findCli('git');
 
-test('git detects new and modified untracked files and includes them in the summary', { skip: !git }, () => {
+test('git detects new and modified untracked files and includes them in the summary', { skip: !git }, async () => {
   const cwd = tmpDir('git');
   execFileSync(git, ['init', '--quiet'], { cwd, windowsHide: true });
-  const before = _git.gitStatus(cwd);
+  const before = await _git.gitStatus(cwd);
   const file = join(cwd, 'new.txt');
   writeFileSync(file, 'new');
-  assert.deepEqual(_git.changedSince(cwd, before), ['new.txt']);
-  const created = _git.gitStatus(cwd);
+  assert.deepEqual(await _git.changedSince(cwd, before), ['new.txt']);
+  const created = await _git.gitStatus(cwd);
   writeFileSync(file, 'different content');
   const later = new Date(Date.now() + 2000); utimesSync(file, later, later);
-  assert.deepEqual(_git.changedSince(cwd, created), ['new.txt']);
-  assert.match(_git.gitDiffStat(cwd), /untracked: new\.txt/);
+  assert.deepEqual(await _git.changedSince(cwd, created), ['new.txt']);
+  assert.match(await _git.gitDiffStat(cwd), /untracked: new\.txt/);
   mkdirSync(join(cwd, 'nested'));
   writeFileSync(join(cwd, 'nested', 'space name.txt'), 'first');
-  const nested = _git.gitStatus(cwd);
+  const nested = await _git.gitStatus(cwd);
   writeFileSync(join(cwd, 'nested', 'space name.txt'), 'second and longer');
-  assert.deepEqual(_git.changedSince(cwd, nested), ['nested/space name.txt']);
+  assert.deepEqual(await _git.changedSince(cwd, nested), ['nested/space name.txt']);
 });

@@ -1,7 +1,9 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { join, isAbsolute, relative } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
 import { loadConfig } from './config.mjs';
@@ -227,16 +229,17 @@ async function run(t) {
       const rw = providerWindows(rt.provider, rt.model).map((w) => w.id);
       return rw.length === 0 || rw.some((wid) => myWins.has(wid));
     }).length;
-    const before = gitStatus(t.cwd);
+    const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
     const wcfg = loadConfig().worker;
     const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory?.[t.category] || wcfg.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
     if ((r.durationMs || 0) > (wcfg.longRunMinutes || 60) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files };
     const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };
-    t.changedFiles = [...new Set([...changedSince(t.cwd, before), ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
-    t.diffStat = gitDiffStat(t.cwd);
-    const observed = changedSince(t.cwd, before);
+    const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
+    const observed = diffStatus(before, after);
+    t.changedFiles = [...new Set([...observed, ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
+    t.diffStat = await gitDiffStat(t.cwd, after);
     const claimed = claimedWrites(r.items);
     const phantom = isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
@@ -305,41 +308,45 @@ function score(t, limitsBefore, concurrent) {
 }
 export const flushRecords = () => Promise.allSettled([...pendingRecords]);
 
-// --- git helpers (best effort; silent when not a repo or git is missing) ---
+// --- git helpers (best effort; silent when not a repo or git is missing). All async: they run on the dispatch path,
+// and a synchronous git call per task (up to 10 s each) stalled every chat and poll when tasks started together. ---
+const execFileP = promisify(execFile);
 let gitBin;
-function git(cwd, args) {
+async function git(cwd, args) {
   if (!existsSync(join(cwd, '.git'))) return null;
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) return null;
-  try { return execFileSync(gitBin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000 }); } catch { return null; }
+  try { return (await execFileP(gitBin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
 }
-function gitStatus(cwd) {
-  const out = git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
+async function gitStatus(cwd) {
+  const out = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
   if (out == null) return null;
-  const entries = out.split('\0'); const statusMap = new Map();
+  const entries = out.split('\0'); const statusMap = new Map(); const untracked = [];
   for (let i = 0; i < entries.length; i++) {
     const l = entries[i]; if (!l) continue;
-    const name = l.slice(3); let status = l.slice(0, 2);
+    const name = l.slice(3); const status = l.slice(0, 2);
     if (/[RC]/.test(status)) i++; // -z emits the original name after a rename/copy destination.
-    if (status === '??') { try { const s = statSync(join(cwd, name)); status = `?? ${s.mtimeMs}:${s.size}`; } catch {} }
+    if (status === '??') untracked.push(name);
     statusMap.set(name, status);
   }
+  // An untracked file carries its mtime+size, so an edit to it counts as a change too.
+  await Promise.all(untracked.map(async (name) => { try { const s = await stat(join(cwd, name)); statusMap.set(name, `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
   return statusMap;
 }
-function changedSince(cwd, before) {
-  const after = gitStatus(cwd);
+/** Pure: files whose status differs between two snapshots (everything, when there was no before). */
+function diffStatus(before, after) {
   if (!after) return [];
   if (!before) return [...after.keys()];
   return [...after.keys()].filter((f) => !before.has(f) || before.get(f) !== after.get(f));
 }
-function gitDiffStat(cwd) {
-  const a = git(cwd, ['diff', '--stat']) || '';
-  const b = git(cwd, ['diff', '--cached', '--stat']) || '';
-  const untracked = [...(gitStatus(cwd) || [])].filter(([, s]) => s.startsWith('??')).map(([name]) => name).slice(0, 50);
-  return [(a + b).trim().slice(0, 3000), untracked.length ? `untracked: ${untracked.join(', ')}` : ''].filter(Boolean).join('\n');
+async function changedSince(cwd, before) { return diffStatus(before, await gitStatus(cwd)); }
+async function gitDiffStat(cwd, status = null) {
+  const [a, b] = await Promise.all([git(cwd, ['diff', '--stat']), git(cwd, ['diff', '--cached', '--stat'])]);
+  const untracked = [...(status || await gitStatus(cwd) || [])].filter(([, s]) => s.startsWith('??')).map(([name]) => name).slice(0, 50);
+  return [((a || '') + (b || '')).trim().slice(0, 3000), untracked.length ? `untracked: ${untracked.join(', ')}` : ''].filter(Boolean).join('\n');
 }
 
-export const _git = { gitStatus, changedSince, gitDiffStat };
+export const _git = { gitStatus, changedSince, gitDiffStat, diffStatus };
 
 /** One compact, conductor-facing summary of a task. */
 export function describeTask(t) {

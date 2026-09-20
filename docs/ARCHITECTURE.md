@@ -41,7 +41,10 @@ the last segment when it is a known effort word, so Ollama ids like `qwen3.8:lat
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
 thread/session id, status, result, usage). Tasks that die at a provider limit are parked with a
-`resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`).
+`resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). Everything on the dispatch path is
+asynchronous: the git reads around a run (`status` before and after, `diff --stat`) go through `execFile`, so many tasks
+starting or finishing together never stall the event loop; `/api/doctor` reports the loop's p99 lag and a friction entry
+is logged when a minute's p99 exceeds `server.lagWarnMs`.
 
 ## Directory map
 

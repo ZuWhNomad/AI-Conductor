@@ -134,6 +134,7 @@ test('abortRunning aborts every active worker', async (ctx) => {
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
     schedule();
+    for (let i = 0; i < 50 && signals.length < 2; i++) await new Promise((r) => setTimeout(r, 20)); // the worker starts after an async git read
     assert.equal(signals.length, 2);
     abortRunning();
     assert.ok(signals.every((signal) => signal.aborted));
@@ -189,4 +190,23 @@ test('createTask strips an effort a model cannot honor (Method C guard D)', asyn
   const unknown = createTask({ cwd, provider: 'antigravity', model: 'not-in-registry', effort: 'high' });
   assert.equal(unknown.effort, 'high');                                                 // unknown model: the guard can't judge, leaves it
   for (const t of [stripped, kept, clamped, unknown]) cancelTask(t.id);
+});
+
+test('dispatch is not serialized on git: two tasks are running before the first git read resolves', async (ctx) => {
+  const { findCli } = await import('../core/proc.mjs');
+  const { execFileSync } = await import('node:child_process');
+  const git = findCli('git'); if (!git) return;
+  const dirs = [tmpDir('inter-a'), tmpDir('inter-b')];
+  for (const d of dirs) execFileSync(git, ['init', '--quiet'], { cwd: d, windowsHide: true });
+  const starts = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => { starts.push(Date.now()); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek; // an earlier test may have left it blocked
+  const batch = dirs.map((cwd) => createTask({ cwd, provider: 'deepseek', spec: 'x' }));
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    schedule();
+    assert.deepEqual(batch.map((t) => getTask(t.id).status), ['running', 'running']); // both flipped synchronously; neither waited for the other's git status
+    for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(starts.length, 2);
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); for (const t of batch) cancelTask(t.id); }
 });
