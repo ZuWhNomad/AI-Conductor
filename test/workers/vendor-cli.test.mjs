@@ -44,7 +44,12 @@ test('vendor runner classifies auth and limit failures and non-zero exits', asyn
 });
 
 test('grok and antigravity model lists parse', () => {
-  assert.deepEqual(VENDORS.grok.parseModels('You are not authenticated.\n\nDefault model: grok-4.5\n\nAvailable models:\n  * grok-4.5 (default)\n'), [{ id: 'grok-4.5', label: 'grok-4.5' }]);
+  assert.deepEqual(VENDORS.grok.parseModels('You are not authenticated.\n\nDefault model: grok-4.5\n\nAvailable models:\n  * grok-4.5 (default)\n'), [{ id: 'grok-4.5', label: 'grok-4.5', isDefault: true }]);
+  // Recorded from `grok models` on a signed-in machine (2026-09-20): the default is starred, the rest are dashed.
+  assert.deepEqual(VENDORS.grok.parseModels('You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n'), [
+    { id: 'grok-4.6', label: 'grok-4.6', isDefault: true },
+    { id: 'grok-4.5', label: 'grok-4.5', isDefault: false },
+  ]);
   assert.deepEqual(VENDORS.antigravity.parseModels('Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n').map((m) => m.id), ['gemini-3.8-flash-high', 'claude-sonnet-4-6']);
 });
 

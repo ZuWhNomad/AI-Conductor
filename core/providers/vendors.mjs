@@ -176,7 +176,9 @@ export const VENDORS = {
     login: { args: ['login'] },
     loginHint: 'grok login',
     probe: { args: ['models'], signedOut: /You are not authenticated/i },
-    parseModels: (out) => out.split('\n').map((l) => /^\s*\*\s+([\w.:-]+)/.exec(l)).filter(Boolean).map((m) => ({ id: m[1], label: m[1] })),
+    // `grok models` marks the default with `*` and every other model with `-`; matching only `*` hid all the rest
+    // (this machine listed grok-4.6 and grok-4.5 and Conductor saw one model).
+    parseModels: (out) => out.split('\n').map((l) => /^\s*[*-]\s+([\w.:-]+)/.exec(l)).filter(Boolean).map((m) => ({ id: m[1], label: m[1], isDefault: /^\s*\*/.test(m[0]) })),
     efforts: ['low', 'medium', 'high'],
     headlessArgs: (t) => {
       // A large prompt as a `-p` CLI arg fails on Windows (command-line length limit) — grok exits ~instantly with
