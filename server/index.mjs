@@ -31,7 +31,53 @@ export function stopBackgroundWork() {
   try { clearInterval(lagTimer); loopLag.disable(); } catch {}
   try { stopModelPolling(); } catch {}
   try { stopLimitPolling(); } catch {}
+  try { stopSignInWatches(); clearInterval(detectTimer); detectTimer = null; } catch {}
   try { killProbes(); } catch {}
+}
+
+// --- noticing an auth change we did not cause ------------------------------------------------------------------
+// The provider registry is a cache, and with auto-refresh off nothing re-probes it: signing in outside the app — or
+// while the boot probe was mid-flight — left "not logged in" on screen until the user pressed ↻ Refresh. Two cheap
+// probes close that: a burst right after we open a sign-in terminal, and a slow sweep of installed-but-signed-out
+// providers. Both go through refreshModels, so the registry write and the `models` event stay in one place.
+const signInWatches = new Map();
+
+/** Re-probe one provider until it comes back `ok` (or the window runs out). Injectables are for tests. */
+export function watchSignIn(id, { intervalMs = 5000, maxMs = 5 * 60_000, refresh = (only) => refreshModels({ only }), statusOf = (p) => getModels().providers?.[p]?.status } = {}) {
+  stopSignInWatch(id);
+  const w = { until: Date.now() + maxMs, stopped: false, timer: null, ticks: 0 };
+  const tick = async () => {
+    if (w.stopped) return;
+    w.ticks++;
+    try { await refresh([id]); } catch {}
+    if (w.stopped) return;
+    if (statusOf(id) === 'ok' || Date.now() >= w.until) return stopSignInWatch(id);
+    w.timer = setTimeout(tick, intervalMs); w.timer.unref?.();
+  };
+  w.timer = setTimeout(tick, intervalMs); w.timer.unref?.();
+  signInWatches.set(id, w);
+  return w;
+}
+export function stopSignInWatch(id) { const w = signInWatches.get(id); if (w) { w.stopped = true; clearTimeout(w.timer); signInWatches.delete(id); } }
+function stopSignInWatches() { for (const id of [...signInWatches.keys()]) stopSignInWatch(id); }
+
+/** Which providers are worth re-probing on a timer: installed, but signed out. A missing API key never fixes itself
+ *  in the background (it arrives through Settings, which refreshes already), so those are left alone. */
+export function staleAuthProviders(providers = getModels().providers || {}) {
+  return Object.keys(PROVIDERS).filter((id) => providers[id]?.installed !== false && providers[id]?.loggedIn === false);
+}
+
+let detectTimer = null;
+function applyDetectSweep(cfg) {
+  if (detectTimer) { clearInterval(detectTimer); detectTimer = null; }
+  if (process.env.CONDUCTOR_NO_POLL) return;
+  const minutes = Number(cfg.ui?.detectMinutes ?? 5);
+  if (!(minutes > 0)) return;
+  detectTimer = setInterval(() => {
+    const stale = staleAuthProviders();
+    if (stale.length) refreshModels({ only: stale }).catch(() => {});
+  }, minutes * 60_000);
+  detectTimer.unref();
 }
 
 /** The model+limit background poll is governed by the UI "auto" control (config ui.autoRefresh): on → poll at
@@ -147,7 +193,7 @@ async function route(req, res, url) {
   }
 
   if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
-  if (p === '/api/models/refresh' && m === 'POST') { const r = await refreshModels(); detectCapabilities().catch(() => {}); return json(res, 200, r); }
+  if (p === '/api/models/refresh' && m === 'POST') { const b = await readBody(req).catch(() => ({})); const only = Array.isArray(b?.only) && b.only.length ? b.only : null; const r = await refreshModels(only ? { only } : undefined); if (!only) detectCapabilities().catch(() => {}); return json(res, 200, r); }
   if (p === '/api/limits' && m === 'GET') return json(res, 200, limitsWithEstimates());
   if (seg[1] === 'providers' && seg[2] && seg[3] === 'usage' && m === 'POST') {
     const b = await readBody(req); const pct = Number(b.pct);
@@ -172,7 +218,7 @@ async function route(req, res, url) {
 
   if (p === '/api/settings') {
     if (m === 'GET') return json(res, 200, publicConfig());
-    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); applyPolling(next); /* the "auto" control governs the server poll */ schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
+    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); applyPolling(next); applyDetectSweep(next); /* the "auto" control governs the server poll */ schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
   }
 
   if (seg[1] === 'improvements') {
@@ -199,9 +245,10 @@ async function route(req, res, url) {
       command = login && logout ? `${logout} & ${login}` : login; // `&` = run login even if logout errored
     }
     if (!command) return json(res, 400, { error: `${seg[2]} has no ${seg[3]} command` });
-    const note = seg[3] === 'install' ? 'Wait for the installer to finish in the window that opened, then press Refresh.'
-      : (prov.spec?.login?.note || `Finish the ${seg[3] === 'relogin' ? 're-auth (log out, then sign in)' : 'sign-in'} in the window that opened, then press Refresh.`);
+    const note = seg[3] === 'install' ? 'Wait for the installer to finish in the window that opened — Conductor re-checks by itself.'
+      : (prov.spec?.login?.note || `Finish the ${seg[3] === 'relogin' ? 're-auth (log out, then sign in)' : 'sign-in'} in the window that opened — Conductor re-checks by itself.`);
     const opened = openTerminal(`Conductor — ${seg[2]} ${seg[3]}`, command);
+    if (opened && !process.env.CONDUCTOR_NO_POLL) watchSignIn(seg[2]); // re-probe until it comes back ok: no manual Refresh
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
   if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
@@ -427,6 +474,7 @@ export function startServer({ port = null } = {}) {
       startLagMonitor();
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
+        applyDetectSweep(cfg); // and the slow re-probe of signed-out providers (independent of that control)
         refreshModels().then(() => refreshLimits()).then(() => detectCapabilities()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
         startScheduledReview();
         startUpdateChecks();

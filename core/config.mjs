@@ -6,7 +6,10 @@ export const DEFAULTS = {
   port: 47474,
   openBrowser: true,
   pollMinutes: 15,                    // model + limit registry refresh cadence
-  ui: { autoRefresh: false, autoRefreshMinutes: 15 }, // Providers-panel client-side auto-refresh; separate from pollMinutes (server registry poll)
+  // Providers-panel client-side auto-refresh; separate from pollMinutes (server registry poll). `detectMinutes` is a
+  // third, much cheaper thing: how often an INSTALLED BUT SIGNED-OUT provider is re-probed so a sign-in done outside
+  // the app is noticed without pressing Refresh (0 = off).
+  ui: { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
     provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
     model: 'claude-fable-5-1[1m]',    // null = Claude Code CLI default (currently Opus 5)

@@ -57,7 +57,7 @@ test('worker.escalationRounds defaults to 2, allows 0 (disable), rejects negativ
 });
 
 test('providers panel auto-refresh settings default and normalize', () => {
-  assert.deepEqual(loadConfig().ui, { autoRefresh: false, autoRefreshMinutes: 15 });
+  assert.deepEqual(loadConfig().ui, { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 });
   saveConfig({ ui: { autoRefresh: 'yes', autoRefreshMinutes: 0 } });
   assert.equal(loadConfig().ui.autoRefresh, true);
   assert.equal(loadConfig().ui.autoRefreshMinutes, 15);

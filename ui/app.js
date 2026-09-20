@@ -9,7 +9,7 @@ const api = {
 };
 async function ok(r) { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 
-const S = { sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
+const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
 
 // ---------- markdown-lite ----------
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -66,10 +66,17 @@ function renderProviders() {
     left.append(el('i', 'dot ' + (usable ? (lim.blocked ? 'bad' : 'ok') : st.status === 'error' ? 'bad' : '')), nameEl);
     const right = el('span', 'muted', usable ? `${st.count || 0} models${lim.plan ? ` · ${lim.plan}` : ''}` : (st.loggedIn === false ? 'not logged in' : st.configured === false ? 'no key' : st.installed === false ? 'not installed' : st.error ? 'error' : st.status || '…'));
     right.title = st.error || p.auth?.setup || '';
-    // One-click install / sign-in: opens a real terminal (browser logins need one), then Refresh.
+    // One-click install / sign-in: opens a real terminal (browser logins need one). The server then re-probes until
+    // the provider comes back ok, so nobody has to press Refresh; we just show that we are waiting.
     const action = st.installed === false && p.canInstall ? 'install' : st.installed !== false && st.loggedIn === false && p.canLogin ? 'login' : null;
     const controls = el('span', 'row');
-    const runAction = (act) => async (e) => { e.stopPropagation(); const b = e.target; b.disabled = true; try { const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command; } catch (err) { $('#stt-hint').textContent = err.message; } finally { b.disabled = false; } };
+    const runAction = (act) => async (e) => {
+      e.stopPropagation(); const b = e.target; b.disabled = true;
+      try {
+        const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command;
+        if (r.ok) { S.awaitingAuth.add(p.id); renderProviders(); setTimeout(() => { S.awaitingAuth.delete(p.id); renderProviders(); }, 5 * 60_000); }
+      } catch (err) { $('#stt-hint').textContent = err.message; } finally { b.disabled = false; }
+    };
     if (action) {
       const btn = el('button', 'sm', action === 'install' ? 'Install' : 'Sign in'); btn.title = `${p.auth?.setup || ''}`.trim();
       btn.onclick = runAction(action); controls.append(btn);
@@ -81,6 +88,20 @@ function renderProviders() {
       re.onclick = runAction('relogin'); controls.append(re);
     }
     name.append(left, controls); d.append(name);
+    // "Not logged in" is a CACHED answer that a re-probe can overturn (the user may have signed in elsewhere), so say
+    // when it was taken and offer a targeted one. A missing API key is not that case — probing it changes nothing —
+    // so those rows stay quiet; same rule as the server's sweep.
+    if (!usable && (st.status === 'error' || (st.installed !== false && st.loggedIn === false))) {
+      const line = el('div', 'wl tiny');
+      if (S.awaitingAuth.has(p.id)) line.append(el('span', 'muted', 'waiting for sign-in…'));
+      else {
+        line.append(el('span', 'muted', st.updatedAt ? `checked ${new Date(st.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'never checked'));
+        const rc = el('button', 'sm ghost', 'Recheck'); rc.title = `Re-probe ${p.id} now`;
+        rc.onclick = async (e) => { e.stopPropagation(); rc.disabled = true; try { await api.post('/api/models/refresh', { only: [p.id] }); } catch (err) { $('#stt-hint').textContent = err.message; } finally { rc.disabled = false; } };
+        line.append(rc);
+      }
+      d.append(line);
+    }
     if (lim.balance) d.append(el('div', 'wl tiny', `balance ${lim.balance.amount} ${lim.balance.currency}${lim.balance.granted > 0 ? ` · ${lim.balance.granted} granted (free)` : ''}${lim.balance.available ? '' : ' · exhausted'}`));
     // Fixed order: session → per-model → weekly → other. Prefer an explicit w.scope (windowScope already does), else infer.
     const wrank = (w) => { const s = w.scope || windowScope(w); return s === 'session' ? 0 : (s === 'model' || w.models) ? 1 : s === 'weekly' ? 2 : 3; };
