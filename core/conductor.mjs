@@ -18,7 +18,7 @@ import { runCodex } from './workers/codex.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel } from './models.mjs';
 
-const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'prompts', f), 'utf8');
+const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');
 const PROMPT = prompt('conductor.md') + '\n\n' + prompt('orchestration.md'); // policy + the structural playbook (model-agnostic)
 const PROMPT_CODEX = prompt('conductor-codex.md');
 const PROMPT_LOOP = prompt('conductor-loop.md');

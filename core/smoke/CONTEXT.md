@@ -11,7 +11,7 @@ tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the tasks); `formatSmok
 - One task at a time per run, so the before/after limit delta belongs to that task.
 - Every entry has `setup`, `check` and a reference `solve`; `test/smoke.test.mjs` proves each check
   fails on the untouched fixture and passes on the reference solution. Keep that true when adding tasks.
-- Ids are `category-level`; difficulty 1–5 follows the rubric in `core/prompts/conductor.md`. Levels
+- Ids are `category-level`; difficulty 1–5 follows the rubric in `core/policy/prompts/conductor.md`. Levels
   1–3 are sanity checks almost every model passes; 4–5 (`implement-4` evaluator, `test-4` mutant-killing
   suite, `debug-5` async pool) are where ceilings show. Add harder rungs when everything passes again.
 - Checks must not trust the worker's report: inspect files or run `node --test`.

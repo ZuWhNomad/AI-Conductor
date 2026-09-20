@@ -55,7 +55,9 @@ core/
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, park/resume on limits
   plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
-  prompts/               conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md (the orchestration policy lives here)
+  policy/                the orchestration policy, text only (no code):
+    prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
+    recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)
   workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, vendor-cli.mjs, index.mjs
   providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
   models.mjs             model registry: merges provider lists, auto-poll + force refresh
@@ -67,7 +69,7 @@ core/
   priors.mjs             public priors: API list prices (shadow dollars) + benchmark tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
-  recipes.mjs, recipes/  category → instruction set handed to a worker (e.g. image-to-3d-model)
+  recipes.mjs            loads policy/recipes/ (category → recipe, variants)
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
   bench.mjs              re-benchmark scheduler + new-model detection
   session-flags.mjs      per-session toggles (e.g. API overflow)
@@ -90,9 +92,9 @@ N votes/lenses; `until_dry` loops; templated specs with `{{goal}}`, `{{seen}}`, 
 `{{results:<stage>}}`) and the executor runs it on the task scheduler, parsing `findings[]` and
 `{real, reason}` JSON blocks out of worker reports and tallying votes. No model is ever chosen by
 the executor: each task carries the conductor's provider/model/effort, or nothing (auto-pick).
-The playbook the conductor follows lives in `core/prompts/orchestration.md`.
+The playbook the conductor follows lives in `core/policy/prompts/orchestration.md`.
 
-## Orchestration policy (summary; full text in core/prompts/conductor.md)
+## Orchestration policy (summary; full text in core/policy/prompts/conductor.md)
 
 1. The conductor's own tokens are the scarce resource. Anything that is mostly typing is delegated.
 2. Delegation is a written spec: goal, files, constraints, acceptance criteria, verification command.

@@ -37,7 +37,7 @@ export const DEFAULTS = {
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds on the SAME worker before escalating to a stronger model
     escalationRounds: 2,              // after maxRounds fail: attempts on the best AVAILABLE model (scorecard top-quality, filtered by limits) before the conductor does the task itself. 0 = skip escalation (straight to the conductor)
-    msw: true,                        // append the MSW kernel (core/prompts/msw.md) to every worker preamble
+    msw: true,                        // append the MSW kernel (core/policy/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     maxTurns: 500,                    // tool turns per Claude-harness worker task
     maxTurnsLocal: 60,                // tool turns for a local (Ollama-via-Claude-harness) worker task — smaller models loop more, so cap lower

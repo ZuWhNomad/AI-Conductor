@@ -57,7 +57,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
   one module · 3 multi-file or needs understanding of surrounding code · 4 ambiguous, debugging,
   cross-cutting · 5 design-heavy, high blast radius.
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag
-  `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/recipes/`) with its spec,
+  `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/policy/recipes/`) with its spec,
   so give it the reference images and the engineering numbers. **Only a model with a recorded PASS may take
   this work** (currently `codex:gpt-6-astra` at **ultra**; the auto-pick enforces it). "Close" results waste
   tokens exactly like fails, so never fall back to a weaker model or a lower effort: if the passing model is

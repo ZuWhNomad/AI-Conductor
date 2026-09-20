@@ -18,9 +18,9 @@ import { recipeFor } from './recipes.mjs';
 import { mcpServers } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
-const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'prompts', 'worker.md'), 'utf8');
+const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8');
 // MSW kernel (necessity test for every claim): measured 2026-09-09 on the battery as 5-15% faster and 3-10% fewer output tokens at equal pass rate.
-const MSW = readFileSync(join(REPO_ROOT, 'core', 'prompts', 'msw.md'), 'utf8');
+const MSW = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'msw.md'), 'utf8');
 const RESUME_NOTE = 'You were interrupted earlier (usage limit or restart). Continue from the current state of the files; do not redo finished work.\n\n';
 const TERMINAL = new Set(['done', 'failed', 'canceled']);
 

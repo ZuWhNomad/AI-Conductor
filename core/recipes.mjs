@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { REPO_ROOT } from './paths.mjs';
 import { loadConfig } from './config.mjs';
 
-const DIR = join(REPO_ROOT, 'core', 'recipes');
+const DIR = join(REPO_ROOT, 'core', 'policy', 'recipes');
 // Default per category. modeling: recipe B (A/B on 2026-09-12: visually substantially better than A on Sol and Terra).
 export const RECIPES = { modeling: 'image-to-3d-model.b.md' };
 // Variants: a task whose `variant` names one of these gets it instead of the default (the scorecard keeps the variant).

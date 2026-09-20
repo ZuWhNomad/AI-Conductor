@@ -74,7 +74,7 @@ Command line:
 HOW THE CONDUCTOR DELEGATES
 ---------------------------
 
-The policy lives in core/prompts/conductor.md (edit it to change behaviour). In short: the
+The policy lives in core/policy/prompts/conductor.md (edit it to change behaviour). In short: the
 conductor keeps intent, decomposition, specs, review and verification for itself; everything that
 is mostly typing goes to a worker with a self-contained spec and a verification command. Fix rounds
 go back to the same worker thread (max 3), risky tasks get two independent attempts, Claude

@@ -1,4 +1,4 @@
-# core/recipes
+# core/policy/recipes
 
 **Purpose.** Hand-curated instruction sets per coarse task category, appended to a worker's spec by
 `core/tasks.mjs buildPrompt` via `core/recipes.mjs recipeFor(category)`. A recipe says *how* to approach a
