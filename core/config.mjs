@@ -19,6 +19,7 @@ export const DEFAULTS = {
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
     updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
+    updateQuietMinutes: 15,           // an auto-update restart needs this long without any API write or task change: an external driver between two passes is not idle
   },
   worker: {                           // default grunt worker
     provider: 'codex',

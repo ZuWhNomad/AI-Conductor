@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request } from 'node:http';
 
-const { startServer, lagVerdict, doctorReport } = await import('../../server/index.mjs');
+const { startServer, lagVerdict, doctorReport, isIdle } = await import('../../server/index.mjs');
 const { server, url } = await startServer({ port: 0 });
 after(() => server.close());
 
@@ -101,4 +101,12 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
   assert.match(v.message, /p99=900ms/); assert.equal(v.context.running, 3);
   const d = await doctorReport();
   assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
+});
+
+test('auto-update idle gate: empty is not enough, it must also have been quiet', () => {
+  const now = 1_000_000, quietMs = 15 * 60_000;
+  assert.equal(isIdle({ runningSessions: 0, openTasks: 0, lastActivity: now - 60_000, now, quietMs }), false);   // a driver posted a minute ago
+  assert.equal(isIdle({ runningSessions: 0, openTasks: 0, lastActivity: now - quietMs, now, quietMs }), true);
+  assert.equal(isIdle({ runningSessions: 1, openTasks: 0, lastActivity: now - quietMs * 2, now, quietMs }), false);
+  assert.equal(isIdle({ runningSessions: 0, openTasks: 2, lastActivity: now - quietMs * 2, now, quietMs }), false);
 });

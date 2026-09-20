@@ -134,6 +134,10 @@ cancel with `POST /api/tasks/:id/cancel`.
   `/api/state.providers.claude.status === 'ok'` first (same for `codex`).
 - Prefer discovery (`/api/state`, `/api/models`, the PID file) over constants so the same script
   runs on any machine.
+- Before a long driven job: `POST /api/settings {"conductor":{"autoUpdate":"off"}}` (live, no restart), and turn it back on
+  afterwards. An automatic update restarts the server only when it has been idle *and quiet* for
+  `conductor.updateQuietMinutes` (default 15), but a job that pauses longer than that between passes would still be
+  interrupted.
 - Changing Conductor itself: never edit the checkout that is running your session (a restart would kill it).
   Run one checkout as the engine and edit a second one; give the second its own state dir (create `.state/` in it,
   with a `config.json` that sets another `port`), because two servers on one state dir run every task twice.

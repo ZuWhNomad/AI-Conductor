@@ -56,6 +56,13 @@ function startLagMonitor() {
     if (v) { try { logImprovement('friction', 'server', v.message, v.context); } catch {} }
   }, 60_000).unref();
 }
+// Activity stamp for the auto-update gate: every API write and every task status change. "Idle" must mean quiet,
+// not merely empty — an external driver between two passes has no running turn and no open task, yet a restart
+// then loses its job (the 09-15 incident).
+let lastActivity = Date.now();
+bus.on('event', (ev) => { if (ev.type === 'task') lastActivity = Date.now(); });
+/** Pure: may the server restart itself now? */
+export const isIdle = ({ runningSessions, openTasks, lastActivity, now = Date.now(), quietMs }) => runningSessions === 0 && openTasks === 0 && now - lastActivity >= quietMs;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
@@ -322,9 +329,11 @@ function startUpdateChecks() {
   let recheck = null; // a short re-check armed while an update is pending but the server is busy
   const idle = () => {
     try {
-      if (conductor.listSessions().some((s) => s.status === 'running')) return false;
-      if (listTasks({ limit: 10000 }).some((t) => !['done', 'failed', 'canceled'].includes(t.status))) return false;
-      return true;
+      return isIdle({
+        runningSessions: conductor.listSessions().filter((s) => s.status === 'running').length,
+        openTasks: listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status)).length,
+        lastActivity, quietMs: Number(loadConfig().conductor?.updateQuietMinutes ?? 15) * 60_000,
+      });
     } catch { return false; } // can't tell → defer rather than risk interrupting work
   };
   const run = () => {
@@ -370,6 +379,7 @@ export function startServer({ port = null } = {}) {
     if (![ `127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}` ].includes(host)) return json(res, 403, { error: 'bad host' });
     if (origin !== undefined && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(origin)) return json(res, 403, { error: 'bad origin' });
     if (req.method === 'POST' && !req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'content-type must be application/json' });
+    if (req.method !== 'GET') lastActivity = Date.now();
     const url = new URL(req.url, 'http://127.0.0.1');
     try {
       if (!(await route(req, res, url))) serveStatic(req, res, url);
