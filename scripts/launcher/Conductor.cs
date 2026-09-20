@@ -23,6 +23,7 @@ static class Launcher
         string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         Directory.SetCurrentDirectory(root);
         string stateDir = Environment.GetEnvironmentVariable("CONDUCTOR_HOME");
+        if (string.IsNullOrEmpty(stateDir) && Directory.Exists(Path.Combine(root, ".state"))) stateDir = Path.Combine(root, ".state"); // a dev checkout: own state + port (same rule as core/paths.mjs)
         if (string.IsNullOrEmpty(stateDir)) stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".conductor2");
         Directory.CreateDirectory(stateDir);
         int port = ReadPort(Path.Combine(stateDir, "config.json"));

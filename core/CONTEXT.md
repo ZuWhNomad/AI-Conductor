@@ -42,7 +42,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.
-- State lives under `~/.conductor2` via `paths.mjs` (atomic `writeJson`). Tests set `CONDUCTOR_HOME`.
+- State lives in the state dir via `paths.mjs` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that
+  folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
 - `config.json` holds only the user's overrides; `loadConfig()` folds `DEFAULTS` in at read time, so a new default
   reaches every user. Secrets live only in config and are never logged; `publicConfig()` redacts them.
 - The usage estimate is advisory — it is never fed to the `admit` gate.

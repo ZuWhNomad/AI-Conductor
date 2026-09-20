@@ -48,7 +48,7 @@ thread/session id, status, result, usage). Tasks that die at a provider limit ar
 ```
 bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, review, share
 core/
-  paths.mjs              state dir (~/.conductor2), atomic JSON, ndjson append
+  paths.mjs              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
   bus.mjs                event bus with ring buffer (SSE replay)
   conductor.mjs          chat sessions = Agent SDK queries with streaming input

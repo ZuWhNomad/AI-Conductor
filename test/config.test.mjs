@@ -82,3 +82,14 @@ test('grok weekly usage-reset day and hour persist as numbers and clamp', () => 
   assert.equal(g2.resetHour, 23);
   saveConfig({ scorecard: { usageResets: { grok: { resetDay: 1, resetHour: 18 } } } }); // restore defaults (shared CONDUCTOR_HOME)
 });
+
+test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code, else ~/.conductor2', async () => {
+  const { resolveStateDir, REPO_ROOT } = await import('../core/paths.mjs');
+  const { existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { homedir } = await import('node:os');
+  assert.equal(resolveStateDir(), process.env.CONDUCTOR_HOME);
+  const saved = process.env.CONDUCTOR_HOME; delete process.env.CONDUCTOR_HOME;
+  try { assert.equal(resolveStateDir(), existsSync(join(REPO_ROOT, '.state')) ? join(REPO_ROOT, '.state') : join(homedir(), '.conductor2')); }
+  finally { process.env.CONDUCTOR_HOME = saved; }
+});

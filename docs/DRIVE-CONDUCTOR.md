@@ -14,7 +14,8 @@ working directories at runtime. It works on Windows, macOS, and Linux.
 Conductor 2.0 binds to `127.0.0.1` on a fixed port. Discover the URL in this order:
 
 1. **Read the PID file** (authoritative — it records the live `url` and `port`):
-   - State dir = `$CONDUCTOR_HOME` if set, else `~/.conductor2` (Windows: `%USERPROFILE%\.conductor2`).
+   - State dir = `$CONDUCTOR_HOME` if set, else `<repo>/.state` if that folder exists, else `~/.conductor2`
+     (Windows: `%USERPROFILE%\.conductor2`).
    - File: `<state-dir>/server.pid` → JSON `{ "pid", "port", "url", "startedAt" }`. Use its `url`.
 2. **Fallback probe:** if the PID file is missing, try `http://127.0.0.1:47474` (the default port).
 3. **Verify** with `GET /api/state` (see below). If it answers, you have the right base URL.
@@ -127,12 +128,12 @@ cancel with `POST /api/tasks/:id/cancel`.
 
 ## Notes
 
-- State lives under `~/.conductor2` (override with `CONDUCTOR_HOME`). The server listens only on
+- State lives under `~/.conductor2` (override with `CONDUCTOR_HOME`, or by creating `.state/` in the checkout). The server listens only on
   `127.0.0.1`.
 - The `claude` provider runs via the Claude Agent SDK and needs `claude` to be logged in; check
   `/api/state.providers.claude.status === 'ok'` first (same for `codex`).
 - Prefer discovery (`/api/state`, `/api/models`, the PID file) over constants so the same script
   runs on any machine.
 - Changing Conductor itself: never edit the checkout that is running your session (a restart would kill it).
-  Run one checkout as the engine and edit a second one; give the second its own `CONDUCTOR_HOME` and port
-  when you start it, because two servers on one state dir run every task twice.
+  Run one checkout as the engine and edit a second one; give the second its own state dir (create `.state/` in it,
+  with a `config.json` that sets another `port`), because two servers on one state dir run every task twice.
