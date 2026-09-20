@@ -9,7 +9,7 @@ tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the tasks); `formatSmok
 
 **Invariants.**
 - One task at a time per run, so the before/after limit delta belongs to that task.
-- Every entry has `setup`, `check` and a reference `solve`; `test/smoke.test.mjs` proves each check
+- Every entry has `setup`, `check` and a reference `solve`; `test/smoke/smoke.test.mjs` proves each check
   fails on the untouched fixture and passes on the reference solution. Keep that true when adding tasks.
 - Ids are `category-level`; difficulty 1–5 follows the rubric in `core/policy/prompts/conductor.md`. Levels
   1–3 are sanity checks almost every model passes; 4–5 (`implement-4` evaluator, `test-4` mutant-killing
@@ -21,5 +21,5 @@ tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the tasks); `formatSmok
   a second smoke process or restart the server mid-run: whoever loads the journal next resumes the
   in-flight smoke task and records it twice.
 
-**How to test.** `node --test test/smoke.test.mjs` (no live models; the runner is driven with a
+**How to test.** `node --test test/smoke/` (no live models; the runner is driven with a
 stub `execute`). A live run: `conductor smoke --models codex:gpt-5.6-luna:low --tasks read-1,edit-1`.

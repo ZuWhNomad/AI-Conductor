@@ -26,5 +26,5 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   `(family, effort) → concrete id` via `agyModelArg` (never a `--effort` flag). A model with an empty `efforts` list
   must never carry an effort — the scorecard's `effortForTask` returns null for it, and `createTask` strips a stray one.
 
-**How to test.** `test/vendor-cli.test.mjs` (record each CLI's event shapes), `test/limits.test.mjs`
+**How to test.** `test/workers/vendor-cli.test.mjs` (record each CLI's event shapes), `test/limits.test.mjs`
 (window normalization / block semantics), `test/selection.test.mjs`. Tests isolate state via `CONDUCTOR_HOME`.

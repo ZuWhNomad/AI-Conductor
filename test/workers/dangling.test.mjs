@@ -1,8 +1,8 @@
-import './_env.mjs';
+import '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { closeDanglingToolCalls } = await import('../core/workers/openai-compat.mjs');
+const { closeDanglingToolCalls } = await import('../../core/workers/openai-compat.mjs');
 
 test('an interrupted tool-call turn is closed so strict APIs accept the replayed history', () => {
   const messages = [

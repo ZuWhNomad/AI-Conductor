@@ -80,7 +80,7 @@ server/index.mjs         HTTP + SSE + static UI
 scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
 share/                   install.cmd, install.sh (for friends)
-test/                    node --test
+test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/), the rest flat
 docs/                    this file
 ```
 

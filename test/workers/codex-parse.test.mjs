@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import './_env.mjs';
+import '../_env.mjs';
 
-const { applyCodexEvent, summarizeItem } = await import('../core/workers/codex.mjs');
+const { applyCodexEvent, summarizeItem } = await import('../../core/workers/codex.mjs');
 
 // Real events captured from `codex exec --json` (codex-cli 0.153.4).
 const EVENTS = [

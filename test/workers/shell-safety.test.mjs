@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import './_env.mjs';
-import { resolveNpmShim, winArgEscape, spawnCli } from '../core/proc.mjs';
-import { shellDenied } from '../core/workers/openai-compat.mjs';
+import '../_env.mjs';
+import { resolveNpmShim, winArgEscape, spawnCli } from '../../core/proc.mjs';
+import { shellDenied } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';
 

@@ -1,10 +1,10 @@
-import './_env.mjs';
+import '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 
-const { scheduleRelaunch, startServer } = await import('../server/index.mjs');
+const { scheduleRelaunch, startServer } = await import('../../server/index.mjs');
 
 const fakeChild = () => Object.assign(new EventEmitter(), { unref() {} });
 const listen0 = async () => { const s = createServer((_, res) => res.end()); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };

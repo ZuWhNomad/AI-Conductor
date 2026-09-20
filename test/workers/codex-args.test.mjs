@@ -1,4 +1,4 @@
-import { tmpDir } from './_env.mjs';
+import { tmpDir } from '../_env.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, utimesSync } from 'node:fs';
@@ -7,9 +7,9 @@ import { join } from 'node:path';
 const previous = process.env.CONDUCTOR_CODEX;
 process.env.CONDUCTOR_CODEX = process.platform === 'win32' ? 'C:\\definitely\\missing\\codex.exe' : '/definitely/missing/codex';
 after(() => { if (previous === undefined) delete process.env.CONDUCTOR_CODEX; else process.env.CONDUCTOR_CODEX = previous; });
-const { runCodex } = await import('../core/workers/codex.mjs');
-const { runClaude } = await import('../core/workers/claude.mjs');
-const { assertShellSafe, codexCommand } = await import('../core/proc.mjs');
+const { runCodex } = await import('../../core/workers/codex.mjs');
+const { runClaude } = await import('../../core/workers/claude.mjs');
+const { assertShellSafe, codexCommand } = await import('../../core/proc.mjs');
 const cwd = tmpDir('codex-args');
 
 test('invalid Codex model and effort are rejected before spawning', async () => {
@@ -36,7 +36,7 @@ test('cmd shim guard rejects shell metacharacters', () => {
 });
 
 test('app-server spawn failures reject without unhandled error events', async () => {
-  const { withAppServer } = await import('../core/providers/codex.mjs');
+  const { withAppServer } = await import('../../core/providers/codex.mjs');
   await assert.rejects(withAppServer(() => assert.fail('must not connect')), /ENOENT|spawn/i);
 });
 

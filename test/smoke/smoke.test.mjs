@@ -1,11 +1,11 @@
-import { HOME, tmpDir } from './_env.mjs';
+import { HOME, tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 
-const { BATTERY } = await import('../core/smoke/battery.mjs');
-const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../core/smoke/index.mjs');
-const { recordRun, rootRuns } = await import('../core/scorecard.mjs');
+const { BATTERY } = await import('../../core/smoke/battery.mjs');
+const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../../core/smoke/index.mjs');
+const { recordRun, rootRuns } = await import('../../core/scorecard.mjs');
 
 for (const b of BATTERY) {
   test(`battery ${b.id}: check fails on the untouched fixture and passes on the reference solution`, async () => {

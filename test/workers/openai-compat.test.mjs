@@ -1,8 +1,8 @@
-import { tmpDir } from './_env.mjs';
+import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { runOpenAICompat } = await import('../core/workers/openai-compat.mjs');
+const { runOpenAICompat } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
 
 test('cancellation between tool calls prevents the next tool from running', async (ctx) => {
@@ -39,8 +39,8 @@ test('an unlimited task can fetch without a caller signal or timeout', async (ct
 });
 
 test('DeepSeek balance parses and providers expose a homepage', async () => {
-  const { parseDeepseekBalance } = await import('../core/providers/openai-compat.mjs');
-  const { providerSummaries } = await import('../core/providers/index.mjs');
+  const { parseDeepseekBalance } = await import('../../core/providers/openai-compat.mjs');
+  const { providerSummaries } = await import('../../core/providers/index.mjs');
   assert.deepEqual(parseDeepseekBalance({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '4.87' }] }), { amount: 4.87, granted: 0, toppedUp: 0, currency: 'USD', available: true });
   assert.equal(parseDeepseekBalance({ is_available: false, balance_infos: [{ currency: 'CNY', total_balance: '0.00' }] }).available, false);
   assert.equal(parseDeepseekBalance({}), null);
@@ -50,8 +50,8 @@ test('DeepSeek balance parses and providers expose a homepage', async () => {
 });
 
 test('a prepaid balance becomes a budget window (% consumed, $ left)', async () => {
-  const { budgetWindow } = await import('../core/providers/openai-compat.mjs');
-  const { saveConfig } = await import('../core/config.mjs');
+  const { budgetWindow } = await import('../../core/providers/openai-compat.mjs');
+  const { saveConfig } = await import('../../core/config.mjs');
   saveConfig({ providers: { deepseek: { budgetUsd: 5 } } });
   const w = budgetWindow('deepseek', { amount: 4.79, currency: 'USD', available: true });
   assert.equal(w.id, 'deepseek:budget');
@@ -62,11 +62,11 @@ test('a prepaid balance becomes a budget window (% consumed, $ left)', async () 
 });
 
 test('balance: granted (free) credit is reported separately and makes the provider free-class until spent', async () => {
-  const { parseDeepseekBalance } = await import('../core/providers/openai-compat.mjs');
+  const { parseDeepseekBalance } = await import('../../core/providers/openai-compat.mjs');
   const b = parseDeepseekBalance({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '6.10', granted_balance: '1.67', topped_up_balance: '4.43' }] });
   assert.deepEqual(b, { amount: 6.1, granted: 1.67, toppedUp: 4.43, currency: 'USD', available: true });
-  const lim = await import('../core/limits.mjs');
-  const sc = await import('../core/scorecard.mjs');
+  const lim = await import('../../core/limits.mjs');
+  const sc = await import('../../core/scorecard.mjs');
   lim.getLimits().providers.deepseek = { provider: 'deepseek', balance: b, windows: [] };
   assert.equal(sc.providerClass('deepseek'), 'free');
   lim.getLimits().providers.deepseek.balance.granted = 0;
@@ -75,7 +75,7 @@ test('balance: granted (free) credit is reported separately and makes the provid
 });
 
 test('DeepSeek off-peak: half price outside Mon-Fri 01-04 / 06-10 UTC', async () => {
-  const { priceFor, offPeakFactor } = await import('../core/priors.mjs');
+  const { priceFor, offPeakFactor } = await import('../../core/priors.mjs');
   assert.equal(offPeakFactor('deepseek', new Date('2026-09-09T02:30:00Z')), 1);   // Wednesday, peak
   assert.equal(offPeakFactor('deepseek', new Date('2026-09-09T12:00:00Z')), 0.5); // Wednesday, off-peak
   assert.equal(offPeakFactor('deepseek', new Date('2026-09-12T02:30:00Z')), 0.5); // Saturday
@@ -86,9 +86,9 @@ test('DeepSeek off-peak: half price outside Mon-Fri 01-04 / 06-10 UTC', async ()
 });
 
 test('runWorker persists and replays conversation history for API worker follow-ups', async (ctx) => {
-  const { runWorker } = await import('../core/workers/index.mjs');
+  const { runWorker } = await import('../../core/workers/index.mjs');
   const { existsSync } = await import('node:fs');
-  const { statePath, readJson } = await import('../core/paths.mjs');
+  const { statePath, readJson } = await import('../../core/paths.mjs');
 
   const requests = [];
   ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {

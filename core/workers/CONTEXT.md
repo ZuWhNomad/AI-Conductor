@@ -22,5 +22,5 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
   (`true` | `false` | allow-list) via `shellDenied`; file tools stay sandboxed to the workspace via `safe()`.
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 
-**How to test.** `test/openai-compat.test.mjs`, `test/shell-safety.test.mjs` (spawn/allow-list),
-`test/vendor-cli.test.mjs`, `test/codex-args.test.mjs` / `codex-parse.test.mjs`. `CONDUCTOR_HOME`-isolated.
+**How to test.** `test/workers/`: `openai-compat.test.mjs`, `shell-safety.test.mjs` (spawn/allow-list),
+`vendor-cli.test.mjs`, `codex-args.test.mjs` / `codex-parse.test.mjs`. `CONDUCTOR_HOME`-isolated.

@@ -1,9 +1,9 @@
-import { tmpDir } from './_env.mjs';
+import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { runVendorCli } = await import('../core/workers/vendor-cli.mjs');
-const { VENDORS, providerFor } = await import('../core/providers/vendors.mjs');
+const { runVendorCli } = await import('../../core/workers/vendor-cli.mjs');
+const { VENDORS, providerFor } = await import('../../core/providers/vendors.mjs');
 
 // Events captured from a real `agy -p ... --output-format stream-json` run (agy 1.1.27, 2026-09-08).
 const AGY = [
@@ -59,7 +59,7 @@ test('providerFor exposes install/login commands and reports a missing binary', 
 });
 
 test('grok: streaming-messages-json shapes recorded 2026-09-10 parse to text, usage and session', async () => {
-  const { VENDORS } = await import('../core/providers/vendors.mjs');
+  const { VENDORS } = await import('../../core/providers/vendors.mjs');
   const spec = VENDORS.grok; const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0, spec };
   const emit = () => {};
   const lines = [
@@ -67,7 +67,7 @@ test('grok: streaming-messages-json shapes recorded 2026-09-10 parse to text, us
     { type: 'assistant', message: { id: 'msg_0', role: 'assistant', model: 'grok-4.6', content: [{ type: 'thinking', thinking: 'reply pong' }, { type: 'text', text: 'pong' }], stop_reason: 'end_turn' } },
     { type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'pong', usage: { input_tokens: 15559, output_tokens: 41, cache_read_input_tokens: 128, cache_creation_input_tokens: 0 }, total_cost_usd: 0.031428, session_id: '01a08d12-ac3f-7341-b8ec-77cb6e8fb010' },
   ];
-  const { _P } = await import('../core/workers/vendor-cli.mjs').catch(() => ({}));
+  const { _P } = await import('../../core/workers/vendor-cli.mjs').catch(() => ({}));
   for (const obj of lines) spec.parse(obj, st, emit);
   assert.equal(st.finalText, 'pong');
   assert.equal(st.error, null);
@@ -78,7 +78,7 @@ test('grok: streaming-messages-json shapes recorded 2026-09-10 parse to text, us
 });
 
 test('a quota error printed on stdout (kimi 1.50, 403 access_terminated_error) counts as a limit hit', async () => {
-  const { VENDORS } = await import('../core/providers/vendors.mjs');
+  const { VENDORS } = await import('../../core/providers/vendors.mjs');
   const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0 };
   VENDORS.kimi.parseText(`Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`, st);
   const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
@@ -86,7 +86,7 @@ test('a quota error printed on stdout (kimi 1.50, 403 access_terminated_error) c
 });
 
 test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09-11) parses into model-group windows', async () => {
-  const { parseAgyUsage } = await import('../core/providers/vendors.mjs');
+  const { parseAgyUsage } = await import('../../core/providers/vendors.mjs');
   const rec = '{"conversation_id":"","status":"SUCCESS","response":"Gemini Models\\tWeekly Limit Remaining\\t83%\\t2026-09-17T20:44:33Z\\n","duration_seconds":0,"num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8341392278671265,"reset_time":"2026-09-17T20:44:33Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.9859520792961121,"reset_time":"2026-09-11T12:06:03Z"}]},{"name":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.6587018370628357,"reset_time":"2026-09-17T20:46:25Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0,"reset_time":"2026-09-11T12:08:32Z"}]}]}}}';
   const u = parseAgyUsage(rec);
   assert.equal(u.windows.length, 4);
@@ -96,8 +96,8 @@ test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09
   assert.equal(c5.usedPercent, 100); assert.equal(c5.models, '^(claude|gpt)'); assert.equal(c5.label, 'Claude and GPT 5-hour');
   assert.equal(parseAgyUsage('jetski: no output produced'), null);
   // The router applies a window only to the models it meters: Claude on the Google plan is full, Gemini is not.
-  const lim = await import('../core/limits.mjs');
-  const sc = await import('../core/scorecard.mjs');
+  const lim = await import('../../core/limits.mjs');
+  const sc = await import('../../core/scorecard.mjs');
   lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: u.windows };
   assert.equal(sc.providerUsedPct('antigravity', { model: 'gemini-3.8-flash-low' }), 16.59);
   assert.equal(sc.providerUsedPct('antigravity', { model: 'claude-sonnet-4-6' }), 100);
@@ -109,7 +109,7 @@ test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09
 });
 
 test('the Claude "weekly Fable" window applies to Fable models only', async () => {
-  const lim = await import('../core/limits.mjs'); const sc = await import('../core/scorecard.mjs');
+  const lim = await import('../../core/limits.mjs'); const sc = await import('../../core/scorecard.mjs');
   lim.getLimits().providers.claude = { provider: 'claude', windows: [{ id: 'claude:5h', label: '5-hour', usedPercent: 20 }, { id: 'claude:w', label: 'weekly', usedPercent: 60 }, { id: 'claude:wf', label: 'weekly Fable', usedPercent: 94 }] };
   assert.equal(sc.providerUsedPct('claude', { model: 'claude-opus-4-8' }), 60);   // Fable window ignored for Opus
   assert.equal(sc.providerUsedPct('claude', { model: 'claude-fable-5-1[1m]' }), 94);
@@ -118,7 +118,7 @@ test('the Claude "weekly Fable" window applies to Fable models only', async () =
 });
 
 test('Method C: collapseEffortFamilies folds -low/-medium/-high into one family model with real efforts + concrete-id map', async () => {
-  const { collapseEffortFamilies } = await import('../core/providers/vendors.mjs');
+  const { collapseEffortFamilies } = await import('../../core/providers/vendors.mjs');
   const out = collapseEffortFamilies([
     { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
     { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
@@ -135,7 +135,7 @@ test('Method C: collapseEffortFamilies folds -low/-medium/-high into one family 
 });
 
 test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id and never passes --effort', async () => {
-  const { getModels } = await import('../core/models.mjs');
+  const { getModels } = await import('../../core/models.mjs');
   getModels().models.push({ provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent', efforts: ['low', 'medium', 'high'], effortIds: { low: 'gemini-3.8-flash-low', medium: 'gemini-3.8-flash-medium', high: 'gemini-3.8-flash-high' } });
   const a = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: 'high', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
   assert.equal(a.args[a.args.indexOf('--model') + 1], 'gemini-3.8-flash-high');
@@ -153,7 +153,7 @@ test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id an
 });
 
 test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a small one stays inline (Windows arg-length safety)', async () => {
-  const { VENDORS } = await import('../core/providers/vendors.mjs');
+  const { VENDORS } = await import('../../core/providers/vendors.mjs');
   const small = VENDORS.grok.headlessArgs({ prompt: 'hi', cwd: 'F:/ws', model: 'grok-4.6', effort: 'high' });
   assert.ok(small.args.includes('-p') && !small.args.includes('--prompt-file'));
   const big = VENDORS.grok.headlessArgs({ prompt: 'x'.repeat(20000), cwd: 'F:/ws', model: 'grok-4.6', effort: 'high' });

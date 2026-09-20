@@ -1,11 +1,11 @@
-import { tmpDir } from './_env.mjs';
+import { tmpDir } from '../_env.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request } from 'node:http';
 
-const { startServer } = await import('../server/index.mjs');
+const { startServer } = await import('../../server/index.mjs');
 const { server, url } = await startServer({ port: 0 });
 after(() => server.close());
 
@@ -75,7 +75,7 @@ test('bad requests are client errors and leave state usable', async () => {
     assert.equal((await fetch(url + '/api/state')).status, 200);
   }
   assert.equal((await send('/api/settings', { conductor: null })).status, 200);
-  const { DEFAULTS } = await import('../core/config.mjs');
+  const { DEFAULTS } = await import('../../core/config.mjs');
   assert.deepEqual((await get('/api/settings')).conductor, DEFAULTS.conductor);
   assert.equal((await send('/api/settings', { pollMinutes: 'abc' })).status, 200);
   assert.equal((await get('/api/settings')).pollMinutes, 15);

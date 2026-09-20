@@ -35,5 +35,5 @@ state of its own: every route is a thin call into a `core/` module.
 - The UI is served from `REPO_ROOT/ui` with a MIME map that has `.js` but no `.mjs`: browser modules stay `.js`.
 - Background work (polling, scheduled review, update checks) starts only when `CONDUCTOR_NO_POLL` is unset.
 
-**How to test.** `node --test test/server.test.mjs test/relaunch.test.mjs test/shutdown.test.mjs`
+**How to test.** `node --test test/server/`
 (`startServer({ port: 0 })` on a temp `CONDUCTOR_HOME`).
