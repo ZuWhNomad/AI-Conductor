@@ -176,6 +176,11 @@ Codex conductors and workers via `codex exec -c mcp_servers.*` (servers Codex al
 get `default_tools_approval_mode="approve"`, which exec mode needs). Workers are told which
 servers they have in their preamble, so research that needs a data MCP can be delegated.
 
+**Scoped to the task's category.** A server entry may carry `categories: [...]` (in config; `{ categories }` alone
+tags a server inherited from Codex or Claude). A worker task gets every untagged server plus the ones tagged with
+its category; untagged tasks and conductor sessions get everything. So a data MCP's tool schemas are not loaded
+into a refactor (`mcpServersFor` in `core/mcp.mjs`).
+
 ## Limits and models (never static)
 
 - Claude: SDK `rate_limit_event`s during sessions + `usage` control request (5h / 7d / per-model windows).

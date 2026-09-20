@@ -28,7 +28,7 @@ enabled = false
 [windows]
 sandbox = "elevated"
 `);
-const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, readClaudeJson } = await import('../core/mcp.mjs');
+const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, mcpServersFor, readClaudeJson } = await import('../core/mcp.mjs');
 const { saveConfig } = await import('../core/config.mjs');
 
 test('Codex config.toml MCP tables parse (url, command/args/env, disabled dropped)', () => {
@@ -66,4 +66,14 @@ test('Agent SDK shape and source skipping', () => {
   const reg = { a: { url: 'https://a/mcp', source: 'claude' }, b: { command: 'b.exe', args: ['1'], env: {}, source: 'codex' } };
   assert.deepEqual(forClaudeSdk(reg), { a: { type: 'http', url: 'https://a/mcp' }, b: { command: 'b.exe', args: ['1'], env: {} } });
   assert.deepEqual(Object.keys(forClaudeSdk(reg, { skip: ['claude'] })), ['b']);
+});
+
+test('a tagged server is attached only to worker tasks of its categories; untagged servers and untagged tasks get everything', () => {
+  const cfg = { mcpServers: { warehouse: { categories: ['search', 'research'] }, extra: { url: 'https://extra/mcp', categories: ['modeling'] }, tool: { command: 'x.exe' } } };
+  const names = (c) => Object.keys(mcpServersFor(c, cfg)).filter((n) => ['node_repl', 'warehouse', 'extra', 'tool'].includes(n)).sort();
+  assert.deepEqual(names('implement'), ['node_repl', 'tool']);            // node_repl (inherited, untagged) + tool (untagged)
+  assert.deepEqual(names('search'), ['node_repl', 'tool', 'warehouse']);  // the tag-only entry scoped the inherited warehouse
+  assert.deepEqual(names('modeling'), ['extra', 'node_repl', 'tool']);
+  assert.deepEqual(names(null), ['extra', 'node_repl', 'tool', 'warehouse']);
+  assert.equal(mcpServers(cfg).warehouse.source, 'codex');                // tagging does not change where it came from
 });

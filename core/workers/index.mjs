@@ -7,7 +7,7 @@ import { runClaude } from './claude.mjs';
 import { runOpenAICompat } from './openai-compat.mjs';
 import { runImage } from './image.mjs';
 import { runVendorCli } from './vendor-cli.mjs';
-import { mcpServers, forClaudeSdk } from '../mcp.mjs';
+import { mcpServersFor, forClaudeSdk } from '../mcp.mjs';
 import { readJson, writeJson, statePath } from '../paths.mjs';
 
 /**
@@ -17,7 +17,7 @@ import { readJson, writeJson, statePath } from '../paths.mjs';
 export async function runWorker(t, { signal } = {}) {
   const p = getProvider(t.provider);
   const cfg = loadConfig();
-  const mcp = mcpServers(cfg);
+  const mcp = mcpServersFor(t.category, cfg); // scoped by category: a data MCP is not loaded into a refactor
   const base = { id: t.id, cwd: t.cwd, prompt: t.prompt, model: t.model || undefined, effort: t.effort || undefined, signal, timeoutMs: t.timeoutMs, provider: p.id, mcp, mcpServers: forClaudeSdk(mcp), maxIterations: cfg.worker.maxIterations };
   let r;
   switch (p.kind) {

@@ -44,8 +44,23 @@ export function mcpServers(cfg = loadConfig()) {
   let codex = {}; try { codex = parseCodexToml(readFileSync(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml'), 'utf8')); } catch {}
   for (const [n, s] of Object.entries(codex)) out[n] = { ...s, source: 'codex' };
   for (const [n, s] of Object.entries(readClaudeJson())) out[n] = { ...s, source: 'claude' };
-  for (const [n, s] of Object.entries(cfg.mcpServers || {})) { if (s === null || s === false) delete out[n]; else if (s.url || s.command) out[n] = { ...s, source: 'conductor' }; }
+  for (const [n, s] of Object.entries(cfg.mcpServers || {})) {
+    if (s === null || s === false) delete out[n];
+    else if (s.url || s.command) out[n] = { ...s, source: 'conductor' };
+    else if (Array.isArray(s.categories) && out[n]) out[n] = { ...out[n], categories: s.categories }; // tag-only entry: scope an inherited server
+  }
   return out;
+}
+
+/**
+ * The servers a WORKER task gets: every server with no `categories`, plus those tagged with the task's category.
+ * Untagged tasks get everything (unchanged behaviour). Every registered server used to be attached to every worker
+ * (~45 tool schemas into a refactor); scoping is the first measurable saving of the capability index (plan Part H3).
+ */
+export function mcpServersFor(category, cfg = loadConfig()) {
+  const all = mcpServers(cfg);
+  if (!category) return all;
+  return Object.fromEntries(Object.entries(all).filter(([, s]) => !Array.isArray(s.categories) || !s.categories.length || s.categories.includes(category)));
 }
 
 /** Agent SDK shape. `skip` drops sources the SDK already loads itself (a conductor session with settingSources 'user' has ~/.claude.json). */

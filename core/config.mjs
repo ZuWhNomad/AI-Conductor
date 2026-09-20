@@ -108,7 +108,7 @@ export const DEFAULTS = {
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
   smoke: { timeoutMinutes: 10 },      // per smoke-battery task
-  mcpServers: {},                     // conductor-wide MCP: name -> { url } | { command, args, env }; null removes an inherited one
+  mcpServers: {},                     // conductor-wide MCP: name -> { url } | { command, args, env } [+ categories: ['search', ...]]; null removes an inherited one; { categories } alone tags an inherited one. Tagged servers are attached only to worker tasks of those categories
 };
 
 const FILE = () => statePath('config.json');

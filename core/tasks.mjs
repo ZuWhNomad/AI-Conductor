@@ -17,7 +17,7 @@ import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindow
 import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
-import { mcpServers } from './mcp.mjs';
+import { mcpServersFor } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
 const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8');
@@ -157,7 +157,7 @@ function buildPrompt(t) {
   const pre = t.resume ? RESUME_NOTE : '';
   if (t.followUpOf) return `${pre}Follow-up from the conductor on your previous work in this same thread. Address every point, re-run the verification, and report in the same format.\n\n${t.spec}`;
   const ctx = contextBlock(t.cwd, t.paths);
-  const mcp = t.provider === 'codex' || t.provider === 'claude' ? Object.keys(mcpServers()) : [];
+  const mcp = t.provider === 'codex' || t.provider === 'claude' ? Object.keys(mcpServersFor(t.category)) : [];
   const mcpNote = mcp.length ? `\n\nMCP servers available to you: ${mcp.join(', ')}. Use them for data instead of guessing.` : '';
   const msw = loadConfig().worker.msw === false ? '' : `
 
