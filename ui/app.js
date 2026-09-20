@@ -82,7 +82,9 @@ function renderProviders() {
     }
     name.append(left, controls); d.append(name);
     if (lim.balance) d.append(el('div', 'wl tiny', `balance ${lim.balance.amount} ${lim.balance.currency}${lim.balance.granted > 0 ? ` · ${lim.balance.granted} granted (free)` : ''}${lim.balance.available ? '' : ' · exhausted'}`));
-    for (const w of lim.windows || []) {
+    // Fixed order: session → per-model → weekly → other. Prefer an explicit w.scope (windowScope already does), else infer.
+    const wrank = (w) => { const s = w.scope || windowScope(w); return s === 'session' ? 0 : (s === 'model' || w.models) ? 1 : s === 'weekly' ? 2 : 3; };
+    for (const w of [...(lim.windows || [])].sort((a, b) => wrank(a) - wrank(b))) {
       const pct = Math.max(0, Math.min(100, Number(w.usedPercent) || 0));
       const m = el('div', 'meter'); const i = el('i', meterClass(pct)); i.style.width = pct + '%'; m.append(i);
       const wl = el('div', 'wl'); wl.append(el('span', null, w.label + (w.estimated ? ' ~est' : '')), el('span', null, `${w.usedPercent ?? '?'}%${w.remaining ? ' · ' + w.remaining : ''}${w.resetsAt ? ' · resets ' + new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`));
