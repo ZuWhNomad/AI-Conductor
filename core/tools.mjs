@@ -15,6 +15,9 @@ import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresSh
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
 import { sessionFlags } from './session-flags.mjs';
+import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched } from './capabilities.mjs';
+
+const offered = new Map(); // sessionId -> Set of capability names already offered in that chat
 
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '?');
 
@@ -104,7 +107,9 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const { escalate, escalationsUsed, blocked, remaining } = escalationState({ hasFailed: !!failed, depth, rootRounds: root?.rounds || 0, failedRounds: failed?.rounds || 0, maxRounds: cfg.worker.maxRounds || 3, escRounds });
         if (!provider && !model && category) {
           if (blocked) return `Escalation budget spent: the best-available model was already tried ${escalationsUsed} time(s) (worker.escalationRounds=${escRounds}) after the review rounds, and the task still failed. Per the ladder, the conductor is the final fallback — finish this one yourself now (or name a provider/model explicitly to override).`;
-          pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi });
+          const gate = accessProviders(`${a.title}\n${a.spec}`);
+          pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
+          if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
           if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
           if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; }
         }
@@ -113,7 +118,15 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
-        const chosen = pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : category && !a.provider && !a.model ? `\nWorker: configured default ${t.provider}:${t.model || 'default'} (scorecard has no qualified plan for ${category}@${difficulty || 2} yet)` : '';
+        const known = offered.get(sessionId) || offered.set(sessionId, new Set()).get(sessionId);
+        const offer = category ? missingFor(category).filter((e) => !known.has(e.name)) : [];
+        for (const e of offer) known.add(e.name);
+        const offerNote = offer.length ? `\nNot installed on this machine but would make ${category} work cheaper or better: ${offer.map((e) => `${e.name} (${e.purpose.split('. ')[0]}; installer: ${e.install.url}${e.install.command ? `, or \`${e.install.command}\`` : ''})`).join('; ')}. Tell the user once; never install it yourself.` : '';
+        if (shouldResearch(category)) {
+          const rt = createTask({ sessionId, cwd, title: `research: programs for ${category} work`, spec: researchSpec(category, a.title), category: 'search', difficulty: 2, noFailover: true });
+          awaitTask(rt.id, 20 * 60_000).then((done) => { const found = parseResearched(done?.result?.finalMessage || '', category); if (found.length) saveConfig({ tools: { index: Object.fromEntries(found.map((e) => [e.name, e])) } }); logImprovement('idea', 'capabilities', found.length ? `research proposed ${found.map((e) => e.name).join(', ')} for ${category} work — review them (conductor doctor) and set tools.index.<name>.approved = true to use them` : `research found no program for ${category} work`, { taskId: rt.id }); }).catch(() => {});
+        }
+        const chosen = (pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : category && !a.provider && !a.model ? `\nWorker: configured default ${t.provider}:${t.model || 'default'} (scorecard has no qualified plan for ${category}@${difficulty || 2} yet)` : '') + offerNote;
         if (a.background) return `Task ${t.id} queued (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
         return (await finish(t, a.timeout_minutes)) + chosen;
       },

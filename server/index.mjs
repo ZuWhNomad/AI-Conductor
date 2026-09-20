@@ -20,6 +20,7 @@ import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
 import { summarize, formatScores, nextScheduledReset, migrateScorecard } from '../core/scorecard.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
+import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -146,7 +147,7 @@ async function route(req, res, url) {
   }
 
   if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
-  if (p === '/api/models/refresh' && m === 'POST') return json(res, 200, await refreshModels());
+  if (p === '/api/models/refresh' && m === 'POST') { const r = await refreshModels(); detectCapabilities().catch(() => {}); return json(res, 200, r); }
   if (p === '/api/limits' && m === 'GET') return json(res, 200, limitsWithEstimates());
   if (seg[1] === 'providers' && seg[2] && seg[3] === 'usage' && m === 'POST') {
     const b = await readBody(req); const pct = Number(b.pct);
@@ -275,7 +276,7 @@ export async function doctorReport() {
   const ol = await PROVIDERS.ollama.detect();
   rows.push({ name: 'ollama', value: ol.version || (ol.installed ? 'installed (not running)' : 'missing'), status: ol.installed ? 'ok' : 'optional: https://ollama.com' });
   rows.push({ name: 'git', value: cliVersion('git') || 'missing', status: '' });
-  return { rows, path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath(), eventLoop: lagStats() };
+  return { rows, capabilities: capabilityReport(), path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath(), eventLoop: lagStats() };
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */
@@ -426,7 +427,7 @@ export function startServer({ port = null } = {}) {
       startLagMonitor();
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
-        refreshModels().then(() => refreshLimits()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
+        refreshModels().then(() => refreshLimits()).then(() => detectCapabilities()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
         startScheduledReview();
         startUpdateChecks();
       }

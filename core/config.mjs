@@ -26,6 +26,7 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
+    specAppendChars: 3000,            // budget shared by the recipe and the capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
     // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
@@ -108,6 +109,10 @@ export const DEFAULTS = {
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
   smoke: { timeoutMinutes: 10 },      // per smoke-battery task
+  tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
+    index: {},                        // machine-specific entries by name: { kind, categories, purpose, invoke, detect, install, platforms }; null removes a shared one; extra fields tag it
+    researchOnMiss: false,            // a category with no entry at all → one bounded background search task proposes programs (unapproved until you set approved: true)
+  },
   mcpServers: {},                     // conductor-wide MCP: name -> { url } | { command, args, env } [+ categories: ['search', ...]]; null removes an inherited one; { categories } alone tags an inherited one. Tagged servers are attached only to worker tasks of those categories
 };
 

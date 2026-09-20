@@ -61,6 +61,7 @@ core/
   policy/                the orchestration policy, text only (no code):
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
     recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)
+    capabilities.json    shared catalogue of programs / access rules per category (path-free; machine entries live in config)
   workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, vendor-cli.mjs, index.mjs
   providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
   models.mjs             model registry: merges provider lists, auto-poll + force refresh
@@ -73,6 +74,7 @@ core/
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
   recipes.mjs            loads policy/recipes/ (category → recipe, variants)
+  capabilities.mjs       capability index: policy/capabilities.json + config tools.index; detect (async), spec lines per category, access gates, research on a miss
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
   bench.mjs              re-benchmark scheduler + new-model detection
   session-flags.mjs      per-session toggles (e.g. API overflow)

@@ -78,6 +78,7 @@ export function recordRun(t, { before = null, concurrent = 0 } = {}) {
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, title: t.title, failKind: t.failKind || null, rounds: t.rounds ?? null,
+    tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
   };
   appendNdjson(FILE(), row);
   bus.publish('score', { taskId: t.id, provider: t.provider, model: t.model, pct: row.pct });
@@ -263,7 +264,7 @@ export function errorRates({ source = null } = {}) {
  * quality bar, observed ladders, and estimated ladders (cheap first step, qualified fallback; assumes
  * independent failures). Returns null when nothing measured qualifies (then the prior fallback, if enabled).
  */
-export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, _noExtrap = false } = {}) {
+export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, _noExtrap = false } = {}) {
   const cfg = loadConfig().scorecard;
   // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
@@ -273,7 +274,8 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const excluded = (sel) => sel.split('>').some((s) => exclude.includes(s) || exclude.includes(s.split(':').slice(0, 2).join(':')));
   const blockedSel = (sel) => sel.split('>').some((s) => { const [p, m] = s.split(':'); return !avail(p, m === 'default' ? null : m); });
   const all = summary || summarize({ source });
-  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel));
+  const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
+  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel));
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
@@ -335,10 +337,10 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, _noExtrap: true });
+      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, _noExtrap: true });
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
-    return priorFallback({ category, difficulty, exclude, cfg, overflowApi });
+    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers });
   }
   const first = best.ref;
   const money = (v) => (v == null ? 'unpriced' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
@@ -485,13 +487,13 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
 }
 
 /** Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level). */
-function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false }) {
+function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null }) {
   if (!cfg.usePriors) return null;
   const reg = getModels();
   const cands = [];
   for (const m of reg.models) {
     if (m.kind !== 'agent' || reg.providers[m.provider]?.status !== 'ok' || !providerAvailable(m.provider, { overflowApi, cfg, model: m.id })) continue;
-    if (exclude.includes(`${m.provider}:${m.id}`)) continue;
+    if (exclude.includes(`${m.provider}:${m.id}`) || (providers && !providers.includes(m.provider))) continue;
     const p = priorFor(m.provider, m.id, category);
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
     const price = priceFor(m.provider, m.id, { scorecard: cfg });

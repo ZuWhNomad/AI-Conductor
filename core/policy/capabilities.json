@@ -1,0 +1,58 @@
+[
+  {
+    "name": "tesseract", "kind": "cli", "categories": ["read"],
+    "purpose": "OCR: turns a scanned page or screenshot into text, deterministic and far cheaper than a model reading an image",
+    "invoke": "tesseract <image> <out-basename>   (writes <out-basename>.txt; add -l <lang> for other languages)",
+    "detect": { "command": "tesseract", "args": ["--version"] },
+    "install": { "url": "https://github.com/tesseract-ocr/tesseract#installing-tesseract", "command": "winget install UB-Mannheim.TesseractOCR" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["ocr", "scan", "image to text"]
+  },
+  {
+    "name": "pdftotext", "kind": "cli", "categories": ["read", "summarize"],
+    "purpose": "The text layer of a PDF (poppler): exact text with layout for zero model tokens; OCR only when the PDF is a scan",
+    "invoke": "pdftotext -layout <file.pdf> <out.txt>",
+    "detect": { "command": "pdftotext", "args": ["-v"] },
+    "install": { "url": "https://poppler.freedesktop.org/", "command": "winget install oschwartz10612.Poppler" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["pdf", "extract"]
+  },
+  {
+    "name": "yt-dlp", "kind": "cli", "categories": ["summarize"],
+    "purpose": "Downloads a YouTube video's captions (subtitles only, no video) so a text model can read the transcript for zero video tokens",
+    "invoke": "yt-dlp --skip-download --write-auto-sub --sub-lang en --sub-format vtt -o <out> <url>",
+    "detect": { "command": "yt-dlp", "args": ["--version"] },
+    "install": { "url": "https://github.com/yt-dlp/yt-dlp/releases", "command": "winget install yt-dlp.yt-dlp" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["youtube", "captions", "subtitles", "transcript"]
+  },
+  {
+    "name": "ffmpeg", "kind": "cli", "categories": ["summarize"],
+    "purpose": "Audio/video conversion and frame extraction (one frame at a timestamp, or the audio track for transcription)",
+    "invoke": "ffmpeg -ss <hh:mm:ss> -i <video> -frames:v 1 <frame.png>",
+    "detect": { "command": "ffmpeg", "args": ["-version"] },
+    "install": { "url": "https://ffmpeg.org/download.html", "command": "winget install Gyan.FFmpeg" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["video", "audio", "frame"]
+  },
+  {
+    "name": "openscad", "kind": "cli", "categories": ["modeling"],
+    "purpose": "Renders parametric CAD (.scad) to STL; the modeling recipe builds on it",
+    "invoke": "openscad -o <out.stl> <model.scad>",
+    "detect": { "command": "openscad", "args": ["--version"] },
+    "install": { "url": "https://openscad.org/downloads.html", "command": "winget install OpenSCAD.OpenSCAD" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["cad", "stl", "3d"]
+  },
+  {
+    "name": "potrace", "kind": "cli", "categories": ["modeling"],
+    "purpose": "Traces a bitmap into vector paths (SVG): the trace step of the modeling recipe",
+    "invoke": "potrace <in.pbm> -s -o <out.svg>",
+    "detect": { "command": "potrace", "args": ["--version"] },
+    "install": { "url": "https://potrace.sourceforge.net/#downloading" },
+    "platforms": ["win", "mac", "linux"], "added": "curated", "keywords": ["trace", "vector", "svg"]
+  },
+  {
+    "name": "youtube", "kind": "access", "categories": ["summarize"],
+    "purpose": "The task has a YouTube link: a text model cannot watch it; use the captions program when the words are enough, otherwise a model that takes the video itself",
+    "match": ["youtube.com/", "youtu.be/"],
+    "providers": [],
+    "added": "curated", "keywords": ["youtube", "video"],
+    "note": "providers is empty until a Gemini route is proven to open a video (framework spike); an empty list applies no gate"
+  }
+]

@@ -8,6 +8,10 @@ not `core/*.mjs`.
   `msw.md` (the MSW kernel appended to it when `worker.msw` is on). Loaded by `core/conductor.mjs` and `core/tasks.mjs`.
 - `recipes/` — per-category instruction sets appended to a worker's spec (see `recipes/CONTEXT.md`). Loaded by
   `core/recipes.mjs`; a new recipe is registered there.
+- `capabilities.json` — the shared capability index: one entry per program, MCP server or access rule, with the task
+  categories it serves, what it does better than a model, how to invoke it (path-free), how to detect it and the
+  official installer link. Loaded by `core/capabilities.mjs`; only installed entries reach a worker's spec (after the
+  recipe, under one shared character budget). Machine-specific entries go in config `tools.index`, not here.
 
 **Invariants.** Machine-independent: no absolute paths, no user names, tools referenced by name. Keep each file short
 enough that a small local model can hold it with the tools' schemas. Path-free: the loaders build paths from

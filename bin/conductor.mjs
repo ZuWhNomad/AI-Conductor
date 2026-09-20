@@ -84,6 +84,8 @@ if (cmd === 'start') {
   const { doctorReport } = await import('../server/index.mjs');
   const r = await doctorReport();
   for (const row of r.rows) console.log(`${row.name.padEnd(20)} ${String(row.value).padEnd(28)} ${row.status}${row.path ? `   (${row.path})` : ''}`);
+  console.log('\nCapability index (programs a worker is told about, by task category; missing ones are offered, never installed):');
+  for (const c of r.capabilities) console.log(`${c.name.padEnd(20)} ${c.categories.join(',').padEnd(28)} ${c.status}`);
   if (flags.json) console.log(JSON.stringify(r, null, 2));
   process.exit(0);
 } else if (cmd === 'models' || cmd === 'limits') {

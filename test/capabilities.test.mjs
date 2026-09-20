@@ -1,0 +1,67 @@
+import { HOME } from './_env.mjs';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const cap = await import('../core/capabilities.mjs');
+const { saveConfig } = await import('../core/config.mjs');
+
+test('the index merges the shared catalogue with config (add, tag, remove) and filters by platform', () => {
+  const names = cap.loadIndex({ tools: { index: {} } }).map((e) => e.name);
+  assert.ok(names.includes('tesseract') && names.includes('yt-dlp') && names.includes('youtube'));
+  const cfg = { tools: { index: { tesseract: null, ledger: { kind: 'cli', categories: ['read'], purpose: 'private OCR pipeline', invoke: 'ledger-ocr <pdf>', detect: { command: 'ledger-ocr' } }, pdftotext: { categories: ['read', 'summarize', 'search'] }, elsewhere: { kind: 'app', categories: ['read'], purpose: 'x', platforms: ['mac'] } } } };
+  const idx = cap.loadIndex(cfg);
+  assert.ok(!idx.find((e) => e.name === 'tesseract'));                                   // removed
+  assert.equal(idx.find((e) => e.name === 'ledger').source, 'config');                    // machine-specific entry
+  assert.deepEqual(idx.find((e) => e.name === 'pdftotext').categories, ['read', 'summarize', 'search']); // tagged a shared one
+  assert.equal(idx.find((e) => e.name === 'pdftotext').source, 'repo');
+  assert.ok(!idx.find((e) => e.name === 'elsewhere'), 'a mac-only entry is not offered on this platform');
+});
+
+test('spec lines list only installed entries, respect the budget, and never a proposed entry', () => {
+  writeFileSync(join(HOME, 'capabilities.json'), JSON.stringify({ tesseract: { available: true, version: 'tesseract 5.3.0' }, pdftotext: { available: false }, ledger: { available: true } }));
+  const cfg = { tools: { index: { ledger: { kind: 'cli', categories: ['read'], purpose: 'private OCR pipeline', invoke: 'ledger-ocr <pdf>' }, guess: { kind: 'cli', categories: ['read'], purpose: 'found by research', invoke: 'guess', install: { url: 'https://x' }, added: 'researched 2026-09-20', approved: false } } } };
+  const text = cap.capabilityLines('read', { cfg });
+  assert.match(text, /^# Programs and services/);
+  assert.match(text, /- tesseract \(tesseract 5\.3\.0\): OCR/);
+  assert.match(text, /- ledger: private OCR pipeline\. Invoke: ledger-ocr <pdf>/);
+  assert.doesNotMatch(text, /pdftotext/);                                                 // missing here
+  assert.doesNotMatch(text, /guess/);                                                     // proposed, not approved
+  assert.equal(cap.capabilityLines('debug', { cfg }), '');                                // nothing for that category
+  const tight = cap.capabilityLines('read', { cfg, maxChars: 120 });
+  assert.ok(tight.length < 300 && tight.split('\n').length <= 2, tight);                  // the budget cuts the list, never the first line
+  assert.deepEqual(cap.missingFor('read', { tools: { index: {} } }).map((e) => e.name), ['pdftotext']);
+  assert.match(cap.capabilityReport(cfg).find((r) => r.name === 'guess').status, /^proposed/);
+  assert.match(cap.capabilityReport(cfg).find((r) => r.name === 'pdftotext').status, /^missing → https:/);
+});
+
+test('access rules restrict the providers for a matching task text; an empty providers list applies no gate', () => {
+  assert.equal(cap.accessProviders('summarize https://www.youtube.com/watch?v=abc', { tools: { index: {} } }), null); // youtube entry has no proven providers yet
+  const cfg = { tools: { index: { youtube: { providers: ['gemini'] }, xlinks: { kind: 'access', categories: ['search'], purpose: 'x.com links open only on Grok', match: ['x.com/', 'twitter.com/'], providers: ['grok'] } } } };
+  assert.deepEqual(cap.accessProviders('read https://YouTu.be/abc please', cfg), { providers: ['gemini'], names: ['youtube'] });
+  assert.deepEqual(cap.accessProviders('what does https://x.com/foo/status/1 say', cfg), { providers: ['grok'], names: ['xlinks'] });
+  assert.equal(cap.accessProviders('refactor the scheduler', cfg), null);
+});
+
+test('research on a miss is opt-in, once per category per 30 days; reports parse into unapproved proposals', () => {
+  assert.equal(cap.shouldResearch('docs', { tools: { researchOnMiss: false, index: {} } }), false);
+  const cfg = { tools: { researchOnMiss: true, index: {} } };
+  assert.equal(cap.shouldResearch('read', cfg), false);                                   // has entries already
+  assert.equal(cap.shouldResearch('docs', cfg), true);
+  assert.equal(cap.shouldResearch('docs', cfg), false);                                   // recorded: not again
+  const report = 'Reasoning here.\n```json\n[{"name":"mkdocs","kind":"cli","purpose":"builds docs sites","invoke":"mkdocs build","detect":{"command":"mkdocs"},"install":{"url":"https://www.mkdocs.org/","command":"pip install mkdocs"}},{"name":"bad one","install":{"url":"http://mirror"}}]\n```';
+  const got = cap.parseResearched(report, 'docs');
+  assert.equal(got.length, 1);
+  assert.equal(got[0].name, 'mkdocs'); assert.equal(got[0].approved, false); assert.match(got[0].added, /^researched 20/); assert.deepEqual(got[0].categories, ['docs']);
+  assert.deepEqual(cap.parseResearched('no block', 'docs'), []);
+  saveConfig({ tools: { index: { mkdocs: got[0] } } });
+  assert.equal(cap.capabilitiesFor('docs').find((e) => e.name === 'mkdocs').approved, false);
+});
+
+test('detection runs the catalogue windowless and records availability in the state dir', async () => {
+  const st = await cap.detectCapabilities({ tools: { index: { git: { kind: 'cli', categories: ['other'], purpose: 'version control', invoke: 'git', detect: { command: 'git', args: ['--version'] } }, nope: { kind: 'cli', categories: ['other'], purpose: 'x', invoke: 'x', detect: { command: 'definitely-not-installed-xyz' } } } } });
+  assert.equal(st.nope.available, false);
+  if (st.git.available) assert.match(st.git.version, /^git version/);
+  assert.equal(cap.detectionStatus().nope.available, false);
+});

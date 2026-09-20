@@ -17,8 +17,9 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   windowless providers (never gates dispatch).
 - `conductor.mjs` — chat sessions (Agent SDK / Codex / API). `tools.mjs` — the tools a conductor session gets.
 - `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON.
-- `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `feedback.mjs`, `bench.mjs`, `update.mjs`, `mcp.mjs`,
-  `context.mjs`, `improve.mjs`, `session-flags.mjs`.
+- `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
+  category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
+  `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.
 
 **Symptom → file.** Start here instead of reading the folder.
 
@@ -30,7 +31,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | a usage bar is wrong, stale or missing | `providers/<vendor>.mjs` `pollLimits()` → `limits.mjs`; windowless providers (Grok): `usage-estimate.mjs` |
 | a model is missing from the picker, or has the wrong efforts | `providers/<vendor>.mjs` `listModels()` → `models.mjs`; subscription CLIs: `providers/vendors.mjs` (`collapseEffortFamilies`) |
 | a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.mjs` |
-| the worker got the wrong instructions (notes, recipe, MCP servers) | `tasks.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs`, `prompts/worker.md` |
+| the worker got the wrong instructions (notes, recipe, MCP servers, programs) | `tasks.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs` (scoped by category), `capabilities.mjs` + `policy/capabilities.json`, `prompts/worker.md` |
 | the conductor chat misbehaves (streaming, permissions, model switch, history) | `conductor.mjs`; what it is told: `policy/prompts/conductor*.md`, `policy/prompts/orchestration.md` |
 | a conductor tool is missing or returns the wrong thing | `tools.mjs` (defined once, served to all three runtimes) |
 | a `run_plan` stage, vote or loop goes wrong | `plans.mjs` |

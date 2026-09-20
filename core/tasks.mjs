@@ -17,6 +17,7 @@ import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindow
 import { findModel } from './models.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
+import { capabilityLines } from './capabilities.mjs';
 import { mcpServersFor } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
@@ -165,7 +166,10 @@ ${MSW}
 
 Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   const recipe = recipeFor(t.category, t.variant);
-  return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}`;
+  // The recipe and the capability lines share one budget (spec-append cap), so the two cannot silently double a prompt.
+  const cap = loadConfig().worker.specAppendChars ?? 3000;
+  const tools = capabilityLines(t.category, { maxChars: Math.max(0, cap - (recipe || '').length) });
+  return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 
 export function schedule() {
@@ -238,11 +242,12 @@ async function run(t) {
       return rw.length === 0 || rw.some((wid) => myWins.has(wid));
     }).length;
     const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
+    Object.assign(t, await repoSize(t.cwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
     const wcfg = loadConfig().worker;
     const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory?.[t.category] || wcfg.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
     if ((r.durationMs || 0) > (wcfg.longRunMinutes || 60) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
-    t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files };
+    t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
     const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };
     const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
     const observed = diffStatus(before, after);
@@ -355,6 +360,30 @@ async function gitDiffStat(cwd, status = null) {
 }
 
 export const _git = { gitStatus, changedSince, gitDiffStat, diffStatus };
+
+/** Which tools/programs/MCP calls a worker used: { calls, errors, byName } from its items (all of them, not the journaled tail). */
+export function countTools(items) {
+  const out = { calls: 0, errors: 0, byName: {} };
+  for (const i of items || []) {
+    if (!i || !/tool_use|command_execution|mcp_tool_call/.test(i.type || '')) continue;
+    const name = i.type === 'mcp_tool_call' ? `mcp:${i.server || '?'}:${i.tool || '?'}` : i.type === 'command_execution' ? `run:${String(i.command || '').trim().split(/\s+/)[0] || '?'}` : String(i.name || '?');
+    out.calls++; out.byName[name] = (out.byName[name] || 0) + 1;
+    if (i.error || i.isError || (typeof i.exitCode === 'number' && i.exitCode !== 0) || (typeof i.exit_code === 'number' && i.exit_code !== 0) || /^error:/i.test(String(i.output || ''))) out.errors++;
+  }
+  return out.calls ? out : null;
+}
+
+// Tracked-file count and bytes of a task's repo (git ls-tree at HEAD), cached per cwd for ten minutes: the cheap
+// "small project or large repo" signal recorded on every run row, so tool scores can later be split by it.
+const sizeCache = new Map();
+async function repoSize(cwd) {
+  const hit = sizeCache.get(cwd); if (hit && Date.now() - hit.at < 600_000) return hit.v;
+  let v = { repoFiles: null, repoBytes: null };
+  const out = await git(cwd, ['ls-tree', '-r', '-l', 'HEAD']);
+  if (out != null) { let files = 0, bytes = 0; for (const line of out.split('\n')) { const m = /^\S+ blob \S+\s+(\d+|-)\t/.exec(line); if (m) { files++; bytes += Number(m[1]) || 0; } } v = { repoFiles: files, repoBytes: bytes }; }
+  sizeCache.set(cwd, { at: Date.now(), v });
+  return v;
+}
 
 /** One compact, conductor-facing summary of a task. */
 export function describeTask(t) {
