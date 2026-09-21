@@ -27,7 +27,9 @@ test('a modelling task still gets the whole recipe, drafting stage included', as
   const { recipeFor } = await import('../core/recipes.mjs');
   const r = recipeFor('modeling');
   assert.match(r, /B0\.1 . DRAFTING/);
-  assert.match(r, /## B2\. Geometry in Python/, 'modelling keeps the geometry stages');
+  // Section numbers move when a stage is inserted, so assert on the stage's subject, not its number.
+  assert.match(r, /Geometry in Python with shapely \+ manifold3d/, 'modelling keeps the geometry stage');
+  assert.match(r, /Rectify the photograph before you trace it/, 'and the rectification stage that precedes it');
   assert.match(r, /W \+ 1\.5 mm/, 'and the clearance rule the drafting stage is checked against');
 });
 
