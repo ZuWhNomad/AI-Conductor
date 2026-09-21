@@ -4,6 +4,31 @@ Same goal and rules as recipe A (trace the reference; never draw from the descri
 frame; every inner wall connected; iterate on the flat preview; deliver STL + generator + notes). What
 changes, from the 2026-09-12 research reports:
 
+## B0. Draft the artwork before you build any geometry
+The drawing and the solid are two different problems. Settle the drawing first, on its own, because a picture costs
+seconds to redo and a mesh costs half an hour — and every minute spent on booleans before the artwork is right is
+spent twice.
+
+1. Produce **`out/artwork.png`**: a flat top view of your 2-D centrelines, thin strokes on white, at the design's
+   real proportions. No extrusion, no booleans, no mesh, no verifier.
+2. Put it **beside the reference image and go feature by feature**, in writing: name each feature the spec lists and
+   say whether it reads. "The treeline reads as a row of firs" / "the treeline reads as a zigzag" — not "looks close".
+   A feature you cannot name is a feature you have not checked.
+3. Check the **spacing rule in 2-D, where it is cheap to fix**. An impression wall of width W centred on its path
+   consumes W before any gap exists, so two neighbouring paths need centrelines at least **W + 1.5 mm** apart
+   (1.4 mm walls -> 3.0 mm). Measure the minimum centreline separation across the whole drawing and fix violations
+   by moving lines, not by thinning walls. A gap that closes in 2-D is a solid blob in the print and a smear in the
+   dough.
+4. Only when the drawing reads correctly AND the spacing rule holds do you go on to B1-B4 and build the solid.
+5. **If a reviewer is in the loop, stop here and show them `artwork.png` before building.** Discovering an artwork
+   problem after a build means the build was wasted.
+
+**Simplify by construction, never by decimation.** When the reference has finer detail than your wall width can
+carry, do not trace it and then drop points — a decimated trace is not a simpler shape, it is noise that used to be
+a shape. Take only the *layout* from the image (where the band runs, where the tips sit) and draw the feature
+yourself as a parametric shape at a size the wall can hold: fewer elements, bolder, with the variation that makes
+them read. Count how many elements the space affords at W + 1.5 mm spacing before you draw any of them.
+
 ## B1. The model never hand-writes coordinates
 Hand-fitting Bézier control points is where most tokens went. Instead:
 1. Trace to SVG with **vtracer** (`pip` package, deterministic, one call) or potrace; keep the raw trace.
@@ -49,8 +74,8 @@ means your CSG was sloppy: fix the input, do not ship the repaired mesh silently
 one body, section loop counts at flange / mid / just below inner-wall top / cutting edge, extents in the box,
 then the task's own verifier.
 
-## B5. Same deliverables as A
-STL, `build.py` (trace → paths.json → edits.json → geometry → STL, reproducible), `paths.json`, `edits.json`,
+## B5. Deliverables
+`out/artwork.png` (the approved 2-D draft from B0), STL, `build.py` (trace → paths.json → edits.json → geometry → STL, reproducible), `paths.json`, `edits.json`,
 top-view preview, NOTES.md with Hausdorff/SSIM per iteration, verifier output, tool versions, doubts.
 
 ## Tools (all pre-installed; run Python via the workspace shim)
