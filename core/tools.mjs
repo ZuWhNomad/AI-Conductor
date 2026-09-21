@@ -37,6 +37,20 @@ export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, 
   return { escalate, escalationsUsed, blocked: escalate && escalationsUsed >= escRounds, remaining: escRounds - (escalationsUsed + 1) };
 }
 
+/** Selection string for a task or a recommend() pick. */
+export const selOf = (x) => `${x.provider}:${x.model || 'default'}:${x.effort || 'default'}`;
+
+/**
+ * "Escalate, or stay at the ceiling." A retry_of excludes every selection already tried, so when the failed worker
+ * IS the best available for this category@difficulty the auto-pick can only route DOWNWARD — which is a demotion
+ * wearing an escalation's clothes. Detect that and keep iterating on the ceiling model instead. Effort is part of
+ * the selection, so moving the same model to a higher effort still counts as a real escalation. Pure, so it is
+ * unit-tested; `top` is recommend()'s best-available pick with nothing excluded.
+ */
+export function atCeiling(top, failed) {
+  return !!(top && failed && selOf(top) === selOf(failed));
+}
+
 export function formatModels(reg = getModels()) {
   const byProv = new Map();
   for (const m of reg.models) { if (!byProv.has(m.provider)) byProv.set(m.provider, []); byProv.get(m.provider).push(m); }
@@ -108,6 +122,12 @@ export function conductorToolDefs({ sessionId, cwd }) {
         if (!provider && !model && category) {
           if (blocked) return `Escalation budget spent: the best-available model was already tried ${escalationsUsed} time(s) (worker.escalationRounds=${escRounds}) after the review rounds, and the task still failed. Per the ladder, the conductor is the final fallback — finish this one yourself now (or name a provider/model explicitly to override).`;
           const gate = accessProviders(`${a.title}\n${a.spec}`);
+          // Escalate only when there is something better to escalate TO. The chain's own selections are excluded
+          // from the auto-pick, so a worker that is already the ceiling would be "escalated" to a weaker model.
+          if (escalate && failed) {
+            const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || [])], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
+            if (atCeiling(top, failed)) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(failed)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds || 3} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
+          }
           pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
           if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
           if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;

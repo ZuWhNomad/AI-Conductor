@@ -40,3 +40,28 @@ test('escalationRounds 0 disables escalation: the reviewed worker hands straight
   const s = escalationState({ hasFailed: true, depth: 1, rootRounds: 3, failedRounds: 3, maxRounds: 3, escRounds: 0 });
   assert.equal(s.escalate, true); assert.equal(s.blocked, true); // escalate would apply, but the budget is 0 -> blocked now
 });
+
+// --- "escalate, or stay at the ceiling" -------------------------------------------------------------------
+const { atCeiling, selOf } = await import('../core/tools.mjs');
+
+test('selOf normalises a task and a recommend() pick to the same selection string', () => {
+  assert.equal(selOf({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }), 'codex:gpt-6-astra:ultra');
+  assert.equal(selOf({ provider: 'claude' }), 'claude:default:default'); // absent model/effort are the defaults
+});
+
+test('at the ceiling: the best available IS the failed worker, so a retry_of would route downward', () => {
+  const failed = { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' };
+  assert.equal(atCeiling({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }, failed), true);
+});
+
+test('not at the ceiling: a better model, or the same model at a higher effort, is a real escalation', () => {
+  const failed = { provider: 'codex', model: 'gpt-6-astra', effort: 'high' };
+  assert.equal(atCeiling({ provider: 'claude', model: 'claude-opus-4-8', effort: 'max' }, failed), false);
+  // effort is part of the selection: same model, higher effort, still an escalation
+  assert.equal(atCeiling({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }, failed), false);
+});
+
+test('no pick and no failed task are never "at the ceiling"', () => {
+  assert.equal(atCeiling(null, { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }), false);
+  assert.equal(atCeiling({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }, null), false);
+});
