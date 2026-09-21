@@ -4,30 +4,41 @@ Same goal and rules as recipe A (trace the reference; never draw from the descri
 frame; every inner wall connected; iterate on the flat preview; deliver STL + generator + notes). What
 changes, from the 2026-09-12 research reports:
 
-## B0. Draft the artwork before you build any geometry
-The drawing and the solid are two different problems. Settle the drawing first, on its own, because a picture costs
-seconds to redo and a mesh costs half an hour — and every minute spent on booleans before the artwork is right is
-spent twice.
+## B0. The two stages, and which one you are in
+This job has two stages that fail for different reasons and are judged by different things. Do not mix them.
 
-1. Produce **`out/artwork.png`**: a flat top view of your 2-D centrelines, thin strokes on white, at the design's
-   real proportions. No extrusion, no booleans, no mesh, no verifier.
-2. Put it **beside the reference image and go feature by feature**, in writing: name each feature the spec lists and
-   say whether it reads. "The treeline reads as a row of firs" / "the treeline reads as a zigzag" — not "looks close".
-   A feature you cannot name is a feature you have not checked.
-3. Check the **spacing rule in 2-D, where it is cheap to fix**. An impression wall of width W centred on its path
-   consumes W before any gap exists, so two neighbouring paths need centrelines at least **W + 1.5 mm** apart
-   (1.4 mm walls -> 3.0 mm). Measure the minimum centreline separation across the whole drawing and fix violations
-   by moving lines, not by thinning walls. A gap that closes in 2-D is a solid blob in the print and a smear in the
-   dough.
-4. Only when the drawing reads correctly AND the spacing rule holds do you go on to B1-B4 and build the solid.
-5. **If a reviewer is in the loop, stop here and show them `artwork.png` before building.** Discovering an artwork
-   problem after a build means the build was wasted.
+**B0.1 — DRAFTING: settle the drawing.** Deliverable: `out/artwork.png`, a flat top view of your 2-D centrelines,
+thin strokes on white, at the design's real proportions. No extrusion, no booleans, no mesh, no verifier, no STL.
+A round here costs seconds; a round in B0.2 costs half an hour, so everything that can be decided on paper is
+decided here.
 
-**Simplify by construction, never by decimation.** When the reference has finer detail than your wall width can
-carry, do not trace it and then drop points — a decimated trace is not a simpler shape, it is noise that used to be
-a shape. Take only the *layout* from the image (where the band runs, where the tips sit) and draw the feature
-yourself as a parametric shape at a size the wall can hold: fewer elements, bolder, with the variation that makes
-them read. Count how many elements the space affords at W + 1.5 mm spacing before you draw any of them.
+1. Put the drawing **beside the reference and go feature by feature, in writing**: name each feature the spec lists
+   and say whether it reads. "The treeline reads as a row of firs" / "the treeline reads as a zigzag" — not "looks
+   close". A feature you cannot name is a feature you have not checked.
+2. Check the **spacing rule now, where a fix is free**. An impression wall of width W centred on its path consumes
+   W before any gap exists, so two neighbouring paths need centrelines at least **W + 1.5 mm** apart (1.4 mm walls
+   -> 3.0 mm). Measure the minimum centreline separation across the whole drawing. Fix violations by moving lines,
+   never by thinning walls: a gap that closes on paper is a solid blob in the print and a smear in the dough.
+3. Junctions are binary. Two paths either **share a point exactly** — so their strokes fuse into one solid — or stay
+   **>= 2.0 mm apart**. Nothing in between; a near-miss is the defect that looks fine on screen and prints as a blob.
+4. **Simplify by construction, never by decimation.** When the reference carries finer detail than your wall can
+   hold, do not trace it and then drop points: a decimated trace is not a simpler shape, it is noise that used to be
+   a shape. Take only the *layout* from the image — where a band runs, where the tips sit — and draw the feature
+   yourself as a parametric shape at a size the wall can carry. Count how many elements the space affords at
+   W + 1.5 mm spacing **before** you draw any of them, and if the honest answer is nine where the photo has thirty,
+   draw nine.
+5. Satisfying every rule is not the same as looking right. A shape can be geometrically perfect and still read as
+   the wrong object — triangles hanging from a line satisfy every constraint above and read as teeth. Judge the
+   picture as a picture, and if it reads wrong, change the shape rather than tuning its numbers.
+
+**If your task is tagged `drafting`, B0.1 is the whole job: stop at the approved drawing and deliver it. Ignore
+everything below about STLs, meshes and verifiers.** If a reviewer is in the loop, stop and show them
+`artwork.png` before going further, whatever the tag says.
+
+**B0.2 — MODELLING: build the solid.** Only once the drawing reads correctly and the spacing rule holds. Apply wall
+widths and tapers, decide the final size, then follow B1-B4 and the task's own verifier. If clearance forces a
+change to the artwork at this point, go back to B0.1 with the specific line that has to move — do not quietly
+redraw geometry that was already approved.
 
 ## B1. The model never hand-writes coordinates
 Hand-fitting Bézier control points is where most tokens went. Instead:

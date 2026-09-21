@@ -12,7 +12,7 @@ import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
-export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'modeling', 'other'];
+export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
 
 // Minimal prompt→category classifier. Today it recognizes only UI/frontend work, so a UI task the user diverts by
 // hand (the `/worker …` shortcut and direct-to-worker tasks set no category) is still recorded under `ui` and the

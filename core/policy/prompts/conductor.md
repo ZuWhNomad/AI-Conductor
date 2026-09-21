@@ -56,6 +56,12 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **Difficulty:** 1 mechanical single-file edit or lookup · 2 small feature from a precise spec,
   one module · 3 multi-file or needs understanding of surrounding code · 4 ambiguous, debugging,
   cross-cutting · 5 design-heavy, high blast radius.
+- **Drafting** (turning a reference image into clean 2-D line art, before any geometry exists): tag
+  `category: "drafting"`. The worker gets the same image→3D recipe, whose **B0.1** is the drafting stage and tells
+  it to stop at an approved drawing. Unlike modeling this has **no pass-gate**: it is cheap, fast and judged by
+  eye, so try several models on it. Split an image→3D job this way whenever the artwork is the risky part — a
+  drafting round costs minutes, a modeling round costs half an hour, and a drawing that does not read wastes the
+  geometry built on top of it.
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag
   `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/policy/recipes/`) with its spec,
   so give it the reference images and the engineering numbers. **Only a model with a recorded PASS may take

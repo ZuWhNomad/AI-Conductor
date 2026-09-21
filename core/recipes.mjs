@@ -8,7 +8,9 @@ import { loadConfig } from './config.mjs';
 
 const DIR = join(REPO_ROOT, 'core', 'policy', 'recipes');
 // Default per category. modeling: recipe B (A/B on 2026-09-12: visually substantially better than A on Sol and Terra).
-export const RECIPES = { modeling: 'image-to-3d-model.b.md' };
+// drafting gets the SAME file: its B0.1 is the drafting stage and says to stop there, so a drafting task is never
+// told to deliver an STL. Splitting the file would duplicate the clearance arithmetic in two places.
+export const RECIPES = { drafting: 'image-to-3d-model.b.md', modeling: 'image-to-3d-model.b.md' };
 // summarize has NO default on purpose: a video-briefing recipe appended to every summarize task (diffs, docs) is
 // noise, and a self-scoping first line is a soft instruction a weak worker ignores. Video tasks opt in by variant;
 // the `youtube` entry in policy/capabilities.json tells the conductor which variant to set.

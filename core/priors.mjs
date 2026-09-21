@@ -14,13 +14,17 @@ export const TIER_CEILING = { A: 5, B: 3, C: 2, D: 1 };
 //   read   (read, search, summarize, docs)           <- long-context recall (MRCR) + knowledge work (GDPval-AA)
 //   reason (review, design, other)                   <- GDPval-AA, HLE, aggregate indices
 // A rule's `tier` is the default; `tiers.{code,read,reason}` override it where the evidence differs.
-export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', ui: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', modeling: 'visual', other: 'reason' };
+export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', ui: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', drafting: 'visual', modeling: 'visual', other: 'reason' };
 
 // 3D-modeling / visual-output tasks (STL, CAD, mesh, parametric geometry). No public benchmark covers these,
 // so the only evidence is our own — the cookie-cutter benchmark. **No model passes yet**: the best result is
 // "close but no cigar", so the conductor should set expectations and prefer the recorded best models. This is
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
+// `drafting` is the 2-D half of the same work: turn a reference image into clean line art. It is visual, but it
+// is cheap, fast and reviewable at a glance, so it deliberately carries NO pass-gate — the point is to let many
+// models attempt it and to collect the evidence the scorecard does not have yet. Only `modeling` (which commits a
+// worker to geometry, meshes and long runs) is restricted to models with a recorded pass.
 export const MODELING = {
   caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra, and codex:gpt-5.6-sol at ultra when given the image->3D recipe); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
   best: ['codex:gpt-6-astra', 'codex:gpt-5.6-sol'], // models with a recorded pass (with the effort that passed, see results)
