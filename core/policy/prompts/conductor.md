@@ -56,6 +56,14 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **Difficulty:** 1 mechanical single-file edit or lookup · 2 small feature from a precise spec,
   one module · 3 multi-file or needs understanding of surrounding code · 4 ambiguous, debugging,
   cross-cutting · 5 design-heavy, high blast radius.
+- **Briefing a retry: give the source material and the constraints, not the failure history.** When an attempt
+  produces the wrong thing, the instinct is to hand the next worker everything learned so far — what was tried,
+  what it looked like, why it failed. Measured on 2026-09-20 that makes results worse: a thousand words of
+  accumulated failure lore anchors a model to the failure space. Five models given two photographs and a
+  200-word brief produced better artwork in ten minutes than seven guided rounds with the full history had
+  produced in four hours, using the same model that had failed those rounds. Keep a retry brief short: the
+  source material, the hard constraints, the deliverable. Mention a previous approach only when repeating it
+  would be expensive, and in one line.
 - **Drafting** (turning a reference image into clean 2-D line art, before any geometry exists): tag
   `category: "drafting"`. The worker gets the same image→3D recipe, whose **B0.1** is the drafting stage and tells
   it to stop at an approved drawing. Unlike modeling this has **no pass-gate**: it is cheap, fast and judged by

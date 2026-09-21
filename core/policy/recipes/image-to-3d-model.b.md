@@ -36,11 +36,27 @@ everything below about STLs, meshes and verifiers.** If a reviewer is in the loo
 `artwork.png` before going further, whatever the tag says.
 
 **B0.2 — MODELLING: build the solid.** Only once the drawing reads correctly and the spacing rule holds. Apply wall
-widths and tapers, decide the final size, then follow B1-B4 and the task's own verifier. If clearance forces a
+widths and tapers, decide the final size, then follow B2-B5 and the task's own verifier. If clearance forces a
 change to the artwork at this point, go back to B0.1 with the specific line that has to move — do not quietly
 redraw geometry that was already approved.
 
-## B1. The model never hand-writes coordinates
+## B1. Rectify the photograph before you trace it
+A reference photo is taken at an angle. Every proportion you read off it is then wrong by a perspective
+transform, and every downstream measurement inherits that error: a circular design traces as an ellipse, a
+symmetrical feature comes out lopsided, and scaling to mm mis-sizes the whole part.
+
+Do this first, before masks, thresholds or tracing:
+1. Find four points whose true geometry you know — the corners of a rectangular frame, or (easiest) the design's
+   own outer boundary when it is a known shape such as a circle.
+2. Solve the homography (`cv2.findHomography` / `cv2.getPerspectiveTransform`) that maps them to their true
+   positions, and warp the image (`cv2.warpPerspective`).
+3. Save the rectified image and **look at it**. A circular design should now be a true circle. Trace only this.
+
+On the alpine cutter (2026-09-20) the one model that rectified first produced visibly better line work in the
+peaks and slopes than four models that traced the raw photo, and the rectified image was good enough to keep as
+the benchmark's reference. It costs one extra step and improves everything after it.
+
+## B2. The model never hand-writes coordinates
 Hand-fitting Bézier control points is where most tokens went. Instead:
 1. Trace to SVG with **vtracer** (`pip` package, deterministic, one call) or potrace; keep the raw trace.
    ```python
@@ -53,7 +69,7 @@ Hand-fitting Bézier control points is where most tokens went. Instead:
    (join nearest endpoints), `close: [ids]`, `outline: id`. Re-render, look, adjust. Three or four rounds.
 4. Level the baseline and scale to mm once, from the outline's width and the spec's numbers.
 
-## B2. Geometry in Python with shapely + manifold3d, no OpenSCAD
+## B3. Geometry in Python with shapely + manifold3d, no OpenSCAD
 Offsets and unions in shapely (GEOS) are the robust part; extrusion and booleans in manifold3d
 (guaranteed manifold output). Build per band, union the 2-D profiles *before* extruding:
 ```python
@@ -69,7 +85,7 @@ flange = outline.buffer(grip).difference(outline.buffer(-0.75))
 Export with trimesh (`Trimesh(vertices, faces).export('cutter.stl')`). If a boolean fails, simplify the 2-D
 input (`.simplify(0.05)`, `.buffer(0)`), never widen walls to force it.
 
-## B3. Judge yourself before exporting
+## B4. Judge yourself before exporting
 Two numeric checks against the cleaned trace, both on the installed libraries:
 - **Hausdorff** (`scipy.spatial.distance.directed_hausdorff`) between the sampled artwork points and the
   cleaned trace points, both in trace pixels: report the value; if any path's directed distance is > 3% of the
@@ -79,13 +95,13 @@ Two numeric checks against the cleaned trace, both on the installed libraries:
 Write both numbers into NOTES.md for every iteration. They are your early fail signal; do not export a mesh
 while they are bad.
 
-## B4. Repair and printability
+## B5. Repair and printability
 After export: `pymeshfix.MeshFix(v, f).repair()` and compare face counts before/after (a large change
 means your CSG was sloppy: fix the input, do not ship the repaired mesh silently). Then the usual: watertight,
 one body, section loop counts at flange / mid / just below inner-wall top / cutting edge, extents in the box,
 then the task's own verifier.
 
-## B5. Deliverables
+## B6. Deliverables
 `out/artwork.png` (the approved 2-D draft from B0), STL, `build.py` (trace → paths.json → edits.json → geometry → STL, reproducible), `paths.json`, `edits.json`,
 top-view preview, NOTES.md with Hausdorff/SSIM per iteration, verifier output, tool versions, doubts.
 
