@@ -35,7 +35,11 @@ decided here.
 everything below about STLs, meshes and verifiers.** If a reviewer is in the loop, stop and show them
 `artwork.png` before going further, whatever the tag says.
 
-**B0.2 — MODELLING: build the solid.** Only once the drawing reads correctly and the spacing rule holds. Apply wall
+**B0.2 — MODELLING: build the solid.** First, **handedness**: artwork drawn from a cookie or a picture is in the orientation
+the eater sees. A cutter is printed cutting-edge-up and flipped onto the dough, which mirrors it, so the STL must be
+the artwork **mirrored in X**. Name one asymmetric feature and say which side it lands on in the STL, the cutting face
+and the stamped cookie. (On 2026-09-21 three of four builds skipped this and would have stamped a backwards cookie.)
+Then, only once the drawing reads correctly and the spacing rule holds: apply wall
 widths and tapers, decide the final size, then follow B2-B5 and the task's own verifier. If clearance forces a
 change to the artwork at this point, go back to B0.1 with the specific line that has to move — do not quietly
 redraw geometry that was already approved.
