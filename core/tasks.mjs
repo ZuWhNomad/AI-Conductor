@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, isAbsolute, relative } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
@@ -180,7 +180,7 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
 export function schedule() {
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
   const cfg = loadConfig();
-  const max = cfg.conductor.maxWorkerConcurrency || 3;
+  const max = cfg.conductor.maxWorkerConcurrency || DEFAULTS.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
   const queued = [...tasks.values()].filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   if (!queued.length || running.size >= max) return;

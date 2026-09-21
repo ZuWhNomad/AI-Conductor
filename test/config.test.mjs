@@ -37,7 +37,7 @@ test('settings reject nonobjects, preserve subtrees and normalize positive numbe
 test('turn budgets default high and reject non-positive values', () => {
   assert.equal(DEFAULTS.conductor.maxTurns, 9999);
   assert.equal(DEFAULTS.worker.maxTurns, 500);
-  assert.equal(DEFAULTS.conductor.maxWorkerConcurrency, 8);
+  assert.equal(DEFAULTS.conductor.maxWorkerConcurrency, 100);
   saveConfig({ conductor: { maxTurns: 0 }, worker: { maxTurns: -5 } });
   assert.equal(loadConfig().conductor.maxTurns, 9999);
   assert.equal(loadConfig().worker.maxTurns, 500);

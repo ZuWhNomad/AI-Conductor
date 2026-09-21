@@ -16,7 +16,8 @@ export const DEFAULTS = {
     effort: 'high',
     permissionMode: 'acceptEdits',    // 'acceptEdits' (ask for the rest) | 'bypassPermissions'
     overflowApi: false,               // new chats: may the router spend pay-per-token APIs once subscriptions are capped?
-    maxWorkerConcurrency: 8,          // parallel worker tasks; provider limits, not this cap, are the real budget
+    maxWorkerConcurrency: 100,        // effectively uncapped: provider limits and the budget gate are the real budget,
+                                      // and a low cap silently starves a fan-out (a cap of 3 left a queued model never run)
     budgetGate: true,                 // gate ALL task dispatch on per-window budget targets (session 95% / weekly 100%); park until reset when a provider is tapped out
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
