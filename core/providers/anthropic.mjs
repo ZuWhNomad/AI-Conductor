@@ -145,25 +145,57 @@ export async function pollLimits() {
   return normalizeUsage(u);
 }
 
-// Claude model families; any window whose key or a scoped model's name names a family is scoped to that family,
-// so a maxed per-model window (Opus, Sonnet, …) never blocks the other models. Add a family here if Anthropic ships one.
+// Claude model families used for label scoping in windowFromEvent and WINDOW_LABELS.
+// A window key of the form five_hour_<suffix> or seven_day_<suffix> is scoped to <suffix> when the suffix is not
+// a known non-model suffix (overage_included, overage). Global keys (five_hour, seven_day) remain unscoped.
+// model_scoped rows are ALWAYS scoped to their own display_name (familyRe, else a regex-escaped name), never left
+// unscoped, so a novel model window (e.g. "Nimbus Quill") never blocks the entire provider.
 const CLAUDE_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
 const familyRe = (s) => CLAUDE_FAMILIES.find((f) => String(s || '').toLowerCase().includes(f)) || null;
+// Vendor display names / key suffixes become models: regexes. Escape metacharacters and treat
+// runs of [-_ ] as interchangeable so "Nimbus Quill" matches claude-nimbus-quill-1.
+function escapeScope(s) {
+  return String(s || '').toLowerCase().replace(/[-_ ]+/g, '\0').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\0/g, '[-_ ]');
+}
 const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_haiku: 'weekly Haiku', seven_day_fable: 'weekly Fable', seven_day_overage_included: 'weekly (overage)', overage: 'overage' };
+// Non-model suffixes in composite rate_limit keys — a suffix on this list is never used as a model scope.
+const NON_MODEL_SUFFIXES = new Set(['overage_included', 'overage']);
+// Global (unscoped) base keys; a composite key of the form <base>_<suffix> is scoped to its suffix.
+const GLOBAL_BASE_KEYS = new Set(['five_hour', 'seven_day']);
+
+/**
+ * Derive a `models` scope for a rate_limits key. Returns the suffix for composite keys whose base is
+ * a known global key and whose suffix is not a known non-model suffix. familyRe is tried first so
+ * known families remain recognised; for unknown suffixes the suffix is regex-escaped as the scope.
+ */
+function modelsForKey(key) {
+  for (const base of GLOBAL_BASE_KEYS) {
+    if (key === base) return null; // global key — no scope
+    if (key.startsWith(base + '_')) {
+      const suffix = key.slice(base.length + 1);
+      if (NON_MODEL_SUFFIXES.has(suffix)) return null;
+      // Known family? Return it (for providerWindows regex matching). Otherwise a regex-escaped suffix.
+      return familyRe(suffix) || escapeScope(suffix);
+    }
+  }
+  return null; // unrecognised key format — no scope (treat as global)
+}
 
 export function normalizeUsage(u) {
   const rl = u?.rate_limits || {};
   const windows = [];
   // Emit EVERY reported rate-limit window (so a newly-added five_hour_opus / seven_day_haiku appears on its own),
-  // each auto-scoped to its model family when the key names one; global windows (five_hour, seven_day) stay unscoped.
+  // each auto-scoped by modelsForKey; global windows (five_hour, seven_day) stay unscoped.
   for (const [key, val] of Object.entries(rl)) {
     if (key === 'model_scoped' || key === 'extra_usage' || !val || typeof val !== 'object' || val.utilization == null) continue;
-    const models = familyRe(key);
+    const models = modelsForKey(key);
     windows.push({ id: key, label: WINDOW_LABELS[key] || key.replace(/_/g, ' '), usedPercent: val.utilization, resetsAt: val.resets_at ? Date.parse(val.resets_at) : null, ...(models ? { models } : {}) });
   }
+  // model_scoped rows: ALWAYS scope to display_name. familyRe extracts a known family for matching
+  // breadth (e.g. "Opus 4.8" → "opus" so any opus model id is matched), else a regex-escaped name.
   for (const m of rl.model_scoped || []) {
-    const models = familyRe(m.display_name);
-    windows.push({ id: `model:${m.display_name}`, label: `weekly ${m.display_name}`, usedPercent: m.utilization, resetsAt: m.resets_at ? Date.parse(m.resets_at) : null, ...(models ? { models } : {}) });
+    const models = familyRe(m.display_name) || escapeScope(m.display_name);
+    windows.push({ id: `model:${m.display_name}`, label: `weekly ${m.display_name}`, usedPercent: m.utilization, resetsAt: m.resets_at ? Date.parse(m.resets_at) : null, models });
   }
   return {
     provider: id, plan: u?.subscription_type || null, available: !!u?.rate_limits_available,

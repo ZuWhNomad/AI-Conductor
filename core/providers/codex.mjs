@@ -52,6 +52,10 @@ export function detect() {
   return { installed: !!codexCommand() };
 }
 
+function escapeScope(s) {
+  return String(s || '').toLowerCase().replace(/[-_ ]+/g, '\0').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\0/g, '[-_ ]');
+}
+
 /** Normalized limit windows for this account. */
 export async function pollLimits() {
   return withAppServer(async (s) => {
@@ -59,6 +63,15 @@ export async function pollLimits() {
     const buckets = r.rateLimitsByLimitId ? Object.values(r.rateLimitsByLimitId) : [r.rateLimits].filter(Boolean);
     const windows = [];
     for (const b of buckets) {
+      // The primary 'codex' bucket is unscoped (applies to all Codex models).
+      // Any other bucket (e.g. 'codex_bengalfox' for a specific model) is scoped to the model it names,
+      // derived from limitName (display name, e.g. 'GPT-5.3-Codex-Spark') or limitId as a fallback.
+      // If neither can be mapped to anything specific, we scope to limitId rather than leaving it unscoped
+      // (an unscoped 100% window would block the whole provider); this may affect nothing if the limitId
+      // string doesn't match any real model id, but is safer than a false global block.
+      const isGlobal = b.limitId === 'codex';
+      // Escape metacharacters; runs of [-_ ] match any of those so "GPT-5.3-Codex-Spark" matches gpt-5.3-codex-spark.
+      const modelScope = isGlobal ? null : escapeScope(b.limitName || b.limitId);
       for (const [k, w] of [['primary', b.primary], ['secondary', b.secondary]]) {
         if (!w) continue;
         windows.push({
@@ -67,6 +80,7 @@ export async function pollLimits() {
           usedPercent: w.usedPercent ?? null,
           windowMinutes: w.windowDurationMins ?? null,
           resetsAt: w.resetsAt ? w.resetsAt * 1000 : null,
+          ...(modelScope ? { models: modelScope } : {}),
         });
       }
     }

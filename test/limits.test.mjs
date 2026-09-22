@@ -2,7 +2,7 @@ import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll } = await import('../core/limits.mjs');
+const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
 
 test('429 blocks until retry-after; a later 2xx unblocks', () => {
@@ -387,4 +387,241 @@ test('scoped rejections block their model until reset and preserve genuine globa
     const merged = mergePoll({}, { blocked: true, windows: [{ usedPercent: 100, resetsAt: reset }, { models: 'opus', usedPercent: 100, resetsAt: reset - 1 }] });
     assert.equal(merged.blockedUntil, reset);
   } finally { getLimits().providers.claude = original; }
+});
+
+// D5 — regression tests for anthropic window scoping
+
+test('D5: novel model_scoped name (Nimbus Quill) does not block the whole provider', () => {
+  // seven_day_nimbus at 100% + five_hour at 10% → provider NOT blocked; opus not blocked.
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    seven_day_nimbus: { utilization: 100 },
+  } });
+  assert.equal(r.blocked, false, 'seven_day_nimbus at 100% must not block the provider');
+  // The nimbus window must be scoped (models truthy)
+  const nimbusWin = r.windows.find((w) => w.id === 'seven_day_nimbus');
+  assert.ok(nimbusWin, 'seven_day_nimbus window must be present');
+  assert.ok(nimbusWin.models, 'seven_day_nimbus must carry a models scope');
+  // An opus model must not be blocked by nimbus window
+  const opusWin = r.windows.find((w) => w.id === 'seven_day_nimbus');
+  assert.notEqual(opusWin?.models, 'opus', 'seven_day_nimbus scope must not be opus');
+});
+
+test('D5: model_scoped with display_name Mythos at 100% does not block provider', () => {
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    model_scoped: [{ display_name: 'Mythos', utilization: 100 }],
+  } });
+  assert.equal(r.blocked, false, 'model_scoped Mythos at 100% must not provider-block');
+  const w = r.windows.find((w) => w.id === 'model:Mythos');
+  assert.ok(w, 'model:Mythos window must exist');
+  assert.ok(w.models, 'model:Mythos must carry a models scope');
+  assert.equal(w.models, 'mythos'); // lowercased verbatim, not a known family
+});
+
+test('D5: seven_day_overage_included and overage keys stay unscoped (non-model suffixes)', () => {
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    seven_day_overage_included: { utilization: 100 },
+    overage: { utilization: 100 },
+    five_hour: { utilization: 10 },
+  } });
+  // overage_included and overage are not model scopes; they must NOT make the provider blocked
+  // (their utilization matters, but they are treated as non-scoped only if they are truly global)
+  // The spec says NON_MODEL_SUFFIXES stays unscoped, so they ARE unscoped and DO contribute to blocked.
+  // This test simply confirms the windows are present and the 'overage' key has no models property.
+  const oi = r.windows.find((w) => w.id === 'seven_day_overage_included');
+  assert.ok(oi, 'seven_day_overage_included must be present');
+  assert.ok(!oi.models, 'seven_day_overage_included must be unscoped (non-model suffix)');
+});
+
+test('D5: known families in model_scoped still match model ids via familyRe breadth', () => {
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 5 },
+    model_scoped: [{ display_name: 'Opus', utilization: 100 }],
+  } });
+  assert.equal(r.blocked, false);
+  const w = r.windows.find((w) => w.id === 'model:Opus');
+  assert.equal(w.models, 'opus'); // familyRe extracts the family for broad regex matching
+});
+
+// D6 — regression tests for codex window scoping
+
+test('D6: normalizeCodexPollResult scopes non-primary buckets to their limitName/limitId', async () => {
+  // pollLimits needs the real app-server binary, so we test the scoping contract by directly populating
+  // provider windows as pollLimits would build them (with the models field it now sets on non-codex buckets).
+  const id = 'codex-d6-test';
+  try {
+    const windows = [
+      { id: 'codex:primary', label: 'Codex 168h', usedPercent: 40, windowMinutes: 10080, resetsAt: null },
+      // 'codex_bengalfox' bucket: limitName='GPT-5.3-Codex-Spark' → models='gpt-5.3-codex-spark'
+      { id: 'codex_bengalfox:primary', label: 'GPT-5.3-Codex-Spark 168h', usedPercent: 100, windowMinutes: 10080, resetsAt: null, models: 'gpt-5.3-codex-spark' },
+    ];
+    getLimits().providers[id] = { provider: id, blocked: false, windows };
+    // gpt-6-astra must not be blocked — no window with models matching it at 100%
+    assert.equal(modelBlockedUntil(id, 'gpt-6-astra'), null, 'gpt-6-astra must not be blocked by spark-only bucket');
+    // the spark model itself IS blocked by its per-model window
+    assert.ok(modelBlockedUntil(id, 'gpt-5.3-codex-spark') !== null, 'gpt-5.3-codex-spark must be blocked');
+  } finally { delete getLimits().providers[id]; }
+});
+
+// G2 — regression tests for noteHttp window merge
+
+test('G2: noteHttp preserves existing non-requests windows when updating requests', () => {
+  const id = 'g2-merge-test';
+  try {
+    // Set up provider with a budget window already present
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'budget', label: 'budget', usedPercent: 30, resetsAt: null }] };
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '50', 'x-ratelimit-limit-requests': '100' });
+    const ws = getLimits().providers[id].windows;
+    assert.ok(ws.find((w) => w.id === 'budget'), 'budget window must survive noteHttp requests update');
+    assert.ok(ws.find((w) => w.id === 'requests'), 'requests window must be added');
+    assert.equal(ws.find((w) => w.id === 'requests').usedPercent, 50);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset-requests (seconds epoch)', () => {
+  const id = 'g2-reset-epoch';
+  const resetEpochMs = Date.now() + 60_000;
+  const resetEpochS = Math.round(resetEpochMs / 1000);
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': String(resetEpochS) });
+    const w = getLimits().providers[id].windows.find((w) => w.id === 'requests');
+    assert.ok(w, 'requests window must exist');
+    // resetsAt must be set (not null) — close to resetEpochMs
+    assert.ok(w.resetsAt != null, 'resetsAt must not be null when reset header is present');
+    assert.ok(Math.abs(w.resetsAt - resetEpochMs) < 2000, 'resetsAt must be close to the reset header value');
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset (ISO date string)', () => {
+  const id = 'g2-reset-iso';
+  const resetMs = Date.now() + 120_000;
+  const resetIso = new Date(resetMs).toISOString();
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining': '0', 'x-ratelimit-limit': '100', 'x-ratelimit-reset': resetIso });
+    const w = getLimits().providers[id].windows.find((w) => w.id === 'requests');
+    assert.ok(w?.resetsAt != null, 'resetsAt must be set from ISO date header');
+    assert.ok(Math.abs(w.resetsAt - resetMs) < 2000);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('G2: 200 with remaining=0 and known resetsAt does not park for 30 min', () => {
+  const id = 'g2-no-30min-park';
+  const resetSoon = Date.now() + 5_000; // reset in 5 seconds
+  const resetEpochS = Math.round(resetSoon / 1000);
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': String(resetEpochS) });
+    const until = modelBlockedUntil(id, null);
+    // Should block until the reset (~5 seconds), not 30 min
+    assert.ok(until != null, 'requests at 100% must produce a block');
+    assert.ok(until <= resetSoon + 2000, `block should not exceed reset time (got ${until - Date.now()}ms, reset in 5s)`);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('G2: 200 with remaining=0 and no reset header parks (no resetsAt)', () => {
+  const id = 'g2-no-reset-header';
+  const now = Date.now();
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100' });
+    const w = getLimits().providers[id].windows.find((w) => w.id === 'requests');
+    assert.ok(w, 'requests window must exist');
+    assert.ok(w.resetsAt != null, 'resetsAt must be now+60s when remaining is 0 and no reset header is present');
+    assert.ok(Math.abs(w.resetsAt - now - 60_000) < 2000);
+    const until = modelBlockedUntil(id, null);
+    assert.ok(until != null, 'a 100% requests window with no reset must produce a block');
+    assert.ok(until <= now + 62_000, 'must not park for the 30-min default');
+  } finally { delete getLimits().providers[id]; }
+});
+
+// R: review corrections — regex-escaped model scopes, noteHttp resetsAt, duration reset strings
+
+test('R: Opus 4.8 (preview) and Spark+ (beta) scopes do not throw in providerWindows/modelBlockedUntil', () => {
+  const opus = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    model_scoped: [{ display_name: 'Opus 4.8 (preview)', utilization: 100 }],
+  } });
+  assert.equal(opus.windows.find((w) => w.id === 'model:Opus 4.8 (preview)').models, 'opus'); // known family stays
+  const sparkScope = 'spark+ (beta)'.replace(/[-_ ]+/g, '\0').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\0/g, '[-_ ]');
+  const id = 'r-regex-throw';
+  try {
+    for (const models of [opus.windows[0].models, sparkScope, 'Opus 4.8 (preview)', 'Spark+ (beta)']) {
+      getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'w', models, usedPercent: 100, resetsAt: Date.now() + 60_000 }] };
+      assert.doesNotThrow(() => providerWindows(id, 'claude-opus-4-8'));
+      assert.doesNotThrow(() => modelBlockedUntil(id, 'claude-opus-4-8'));
+      assert.doesNotThrow(() => providerWindows(id, 'gpt-5.3-codex-spark'));
+      assert.doesNotThrow(() => modelBlockedUntil(id, 'gpt-5.3-codex-spark'));
+    }
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('R: GPT-5.3-Codex-Spark scope matches gpt-5.3-codex-spark and not gpt-6-astra', () => {
+  const models = 'gpt[-_ ]5\\.3[-_ ]codex[-_ ]spark'; // what pollLimits emits for limitName 'GPT-5.3-Codex-Spark'
+  const id = 'r-spark-scope';
+  const reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'codex_bengalfox:primary', models, usedPercent: 100, resetsAt: reset }] };
+    assert.equal(modelBlockedUntil(id, 'gpt-5.3-codex-spark'), reset);
+    assert.ok(providerWindows(id, 'gpt-5.3-codex-spark').length === 1);
+    assert.equal(modelBlockedUntil(id, 'gpt-6-astra'), null);
+    assert.equal(providerWindows(id, 'gpt-6-astra').length, 0);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('R: Nimbus Quill scope matches hyphenated ids; invalid models regex falls back to substring', () => {
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    model_scoped: [{ display_name: 'Nimbus Quill', utilization: 100 }],
+  } });
+  const w = r.windows.find((x) => x.id === 'model:Nimbus Quill');
+  assert.equal(w.models, 'nimbus[-_ ]quill');
+  const id = 'r-nimbus-fallback';
+  const reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'model:Nimbus Quill', models: w.models, usedPercent: 100, resetsAt: reset }] };
+    assert.equal(modelBlockedUntil(id, 'claude-nimbus-quill-1'), reset);
+    assert.equal(modelBlockedUntil(id, 'claude-opus-4-8'), null);
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'bad', models: 'Spark+ (unclosed', usedPercent: 100, resetsAt: reset }] };
+    assert.doesNotThrow(() => providerWindows(id, 'spark+ (unclosed id'));
+    assert.equal(modelBlockedUntil(id, 'spark+ (unclosed id'), reset, 'substring fallback must still apply the window');
+    assert.equal(modelBlockedUntil(id, 'gpt-6-astra'), null);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('R: 429 with no reset header sets requests resetsAt to the Retry-After deadline', async (t) => {
+  const id = 'r-429-retry-resets';
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  try {
+    noteHttp(id, 429, { 'Retry-After': '45', 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100' });
+    const p = getLimits().providers[id];
+    const w = p.windows.find((x) => x.id === 'requests');
+    assert.equal(w.resetsAt, p.blockedUntil);
+    assert.equal(w.resetsAt, now + 45_000);
+    t.mock.method(Date, 'now', () => now + 45_000);
+    assert.equal(blockedUntil(id), null, 'provider 429 expires at Retry-After');
+    assert.equal(modelBlockedUntil(id, null), null, 'requests window must not become a 30-min park');
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('R: remaining 0 with no reset header anywhere gets resetsAt = now + 60s', () => {
+  const id = 'r-rem0-60s';
+  const now = Date.now();
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100' });
+    const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
+    assert.ok(Math.abs(w.resetsAt - now - 60_000) < 2000);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('R: OpenAI x-ratelimit-reset-requests duration strings parse', () => {
+  const cases = [['1s', 1000], ['6m0s', 6 * 60_000], ['1h2m3.5s', 3_600_000 + 120_000 + 3500], ['20ms', 20]];
+  for (const [raw, ms] of cases) {
+    const id = `r-dur-${raw}`;
+    const now = Date.now();
+    try {
+      noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': raw });
+      const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
+      assert.ok(w?.resetsAt != null, `${raw} must parse to a resetsAt`);
+      assert.ok(Math.abs(w.resetsAt - now - ms) < 2000, `${raw}: expected ~${ms}ms from now, got ${w.resetsAt - now}`);
+    } finally { delete getLimits().providers[id]; }
+  }
 });

@@ -108,13 +108,42 @@ export function noteRateLimitEvent(providerId, info) {
   save();
 }
 
+/** OpenAI x-ratelimit-reset-* duration: "1s", "6m0s", "1h2m3.5s", "20ms". */
+function parseDurationMs(s) {
+  let rest = String(s), total = 0, any = false;
+  const tok = /^(\d+(?:\.\d+)?)(ms|s|m|h)/;
+  const mul = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  while (rest) {
+    const m = tok.exec(rest);
+    if (!m) return null;
+    total += Number(m[1]) * mul[m[2]];
+    rest = rest.slice(m[0].length);
+    any = true;
+  }
+  return any ? total : null;
+}
+
+function parseResetAt(rawReset, now) {
+  if (rawReset == null) return null;
+  const asNum = Number(rawReset);
+  if (Number.isFinite(asNum) && asNum > 0) {
+    // Values > 1e9 are Unix epoch seconds (current epoch ~1.758e9); smaller values are seconds-from-now.
+    return asNum > 1e9 ? asNum * 1000 : now + asNum * 1000;
+  }
+  const parsed = Date.parse(rawReset);
+  if (Number.isFinite(parsed) && parsed > now) return parsed;
+  const dur = parseDurationMs(rawReset);
+  return dur != null ? now + dur : null;
+}
+
 /** Learn from HTTP responses of API-key providers (429 + retry-after, x-ratelimit-* headers). */
 export function noteHttp(providerId, status, headers = {}) {
   getLimits();
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   const h = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+  const now = Date.now();
   if (status === 429) {
-    const raw = h['retry-after']; const seconds = Number(raw); const now = Date.now();
+    const raw = h['retry-after']; const seconds = Number(raw);
     const dateMs = Date.parse(raw) - now;
     const retry = raw != null && String(raw).trim() && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : dateMs > 0 ? dateMs : 60_000;  // a 429 with no retry-after backs off briefly (60s), deliberately shorter than the 30-min hard-block default
     p.blocked = true; p.blockedUntil = now + retry; p.blockedReason = '429'; p.last429At = nowIso();
@@ -126,7 +155,17 @@ export function noteHttp(providerId, status, headers = {}) {
   const rem = h['x-ratelimit-remaining-requests'] ?? h['x-ratelimit-remaining'];
   const lim = h['x-ratelimit-limit-requests'] ?? h['x-ratelimit-limit'];
   if (rem != null && lim != null && Number(lim) > 0) {
-    p.windows = [{ id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt: null }];
+    // Read a reset timestamp from the response so the requests window self-expires when the server said it would.
+    // x-ratelimit-reset-requests is the preferred header; x-ratelimit-reset is a common alternative.
+    const rawReset = h['x-ratelimit-reset-requests'] ?? h['x-ratelimit-reset'];
+    let resetsAt = parseResetAt(rawReset, now);
+    if (resetsAt == null) {
+      if (status === 429) resetsAt = p.blockedUntil; // Retry-After deadline, so the window does not become a 30-min park
+      else if (Number(rem) === 0) resetsAt = now + 60_000; // same brief backoff as a header-less 429
+    }
+    const reqWindow = { id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt };
+    // Merge by id — other windows (e.g. DeepSeek budget) must not be discarded.
+    p.windows = [...(p.windows || []).filter((w) => w.id !== 'requests'), reqWindow];
   }
   p.source = 'http'; p.updatedAt = nowIso();
   cache.providers[providerId] = p;
@@ -145,7 +184,12 @@ export function blockedUntil(providerId) {
 /** Windows metered by this model; no model means all groups. */
 export function providerWindows(provider, model = null) {
   const scope = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
-  return (getLimits().providers[provider]?.windows || []).filter((w) => !scope(w) || !model || new RegExp(scope(w), 'i').test(model));
+  return (getLimits().providers[provider]?.windows || []).filter((w) => {
+    const s = scope(w);
+    if (!s || !model) return true;
+    try { return new RegExp(s, 'i').test(model); }
+    catch { return String(model).toLowerCase().includes(String(s).toLowerCase()); }
+  });
 }
 
 /** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
