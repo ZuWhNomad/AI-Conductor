@@ -518,3 +518,131 @@ test('short view: best pick + runner-up per category, levels collapsed, same top
   assert.match(csv.split('\n')[0], /^sel,category,difficulty,/);
   assert.equal(csv.trim().split('\n').length, sc.summarize().length + 1);
 });
+
+test('B1: a winning observed ladder dispatches its exact first worker, including tagged model IDs', () => {
+  for (const effort of [null, 'high']) {
+    const source = `B1-${effort}`;
+    for (const i of [1, 2, 3]) {
+      const id = `${source}-${i}`;
+      run({ id, source, provider: 'ollama', model: 'qwen3.8:latest', effort, category: 'edit' });
+      sc.rateTask(id, 'fail');
+      run({ id: `${id}-retry`, source, retryOf: id, model: 'gpt-5.6-terra', effort: 'medium', category: 'edit' });
+      sc.rateTask(`${id}-retry`, 'pass');
+    }
+    const r = sc.recommend({ category: 'edit', difficulty: 2, source });
+    assert.equal(r.plan.estimated, false);
+    assert.deepEqual(r.plan.steps, [`ollama:qwen3.8:latest:${effort || 'default'}`, 'codex:gpt-5.6-terra:medium']);
+    assert.deepEqual({ provider: r.provider, model: r.model, effort: r.effort }, { provider: 'ollama', model: 'qwen3.8:latest', effort });
+    assert.deepEqual(r.fallback, { provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium' });
+  }
+});
+
+test('B6: observed mixed-provider costs are weighted per step, including paid then local and pooled levels', async (t) => {
+  const cfg = loadConfig().scorecard;
+  const { getLimits } = await import('../core/limits.mjs');
+  const limits = getLimits();
+  const previous = { ...limits.providers };
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  try {
+    saveConfig({ scorecard: { classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, ollama: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'ollama:local:latest': { in: 1, out: 0, cached: 0 } } } });
+    limits.providers.claude = { windows: [] };
+    limits.providers.ollama = { windows: [] };
+    limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: now + 6 * 3600e3 }] };
+    for (const provider of ['ollama', 'codex']) {
+      const source = `B6-${provider}`, model = provider === 'ollama' ? 'local:latest' : 'fallback';
+      for (const i of [1, 2, 3]) {
+        const id = `${source}-${i}`, difficulty = i === 1 ? 2 : 3;
+        run({ id, source, provider: 'claude', model: 'paid', effort: null, category: 'edit', difficulty, result: { usage: { input_tokens: i * 1e6 }, durationMs: i * 1000 } });
+        sc.rateTask(id, 'fail');
+        run({ id: `${id}-retry`, source, retryOf: id, provider, model, effort: null, category: 'edit', difficulty, result: { usage: { input_tokens: i * 2e6 }, durationMs: i * 2000 } });
+        sc.rateTask(`${id}-retry`, 'pass');
+        run({ id: `${id}-ceiling`, source, provider: 'claude', model: 'paid', effort: null, category: 'read', difficulty: 5 });
+        sc.rateTask(`${id}-ceiling`, 'pass');
+      }
+      const summary = sc.summarize({ source });
+      const r = sc.recommend({ category: 'edit', difficulty: 2, summary });
+      assert.deepEqual(r.plan.steps, ['claude:paid:default', `${provider}:${model}:default`]);
+      assert.equal(r.plan.estimated, false);
+      const paid = (2 + 0.002) * 0.5 * (1 + 0.5 * 0.5 * (5 - 2));
+      const fallback = provider === 'ollama' ? 0 : (4 + 0.004) * 0.2 * (1 - (1 - 6 / 48) * 0.8 * 0.9); // thin cells do not establish a provider ceiling
+      assert.ok(Math.abs(r.plan.usd - paid - fallback) < 1e-9, `${provider}: ${r.plan.usd} vs ${paid + fallback}`);
+      assert.deepEqual(summary.filter((g) => g.steps === 2).map((g) => g.avgUsd), [3, 7.5], 'display keeps raw shadow dollars');
+    }
+  } finally {
+    saveConfig({ scorecard: cfg });
+    limits.providers = previous;
+  }
+});
+
+test('B4: requested-level failures survive extrapolation and prior fallback', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'B4-sole';
+  try {
+    saveConfig({ scorecard: { usePriors: false } });
+    for (const difficulty of [2, 3]) for (const i of [1, 2, 3]) {
+      const id = `${source}-${difficulty}-${i}`;
+      run({ id, source, effort: 'medium', category: 'edit', difficulty });
+      sc.rateTask(id, difficulty === 2 ? 'pass' : 'fail');
+    }
+    const request = { category: 'edit', difficulty: 3, source, providers: ['codex'] };
+    assert.equal(sc.recommend(request), null, 'three level-2 passes cannot override three level-3 failures');
+    saveConfig({ scorecard: { usePriors: true } });
+    assert.equal(sc.recommend({ ...request, exclude: ['codex:gpt-5.6-terra', 'codex:gpt-6-astra'] }), null, 'priors cannot revive the failed selection');
+    const prior = sc.recommend(request);
+    assert.equal(prior.model, 'gpt-5.6-terra', 'an unfailed prior candidate remains eligible');
+    assert.equal(prior.plan, null);
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('B4: extrapolated cheap-first ladders require an unfailed final worker', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: false } });
+    for (const observed of [false, true]) {
+      const source = `B4-ladder-${observed}`;
+      for (const i of [1, 2, 3]) {
+        const id = `${source}-${i}`;
+        run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'edit', difficulty: 2 });
+        sc.rateTask(id, observed ? 'fail' : 'pass');
+        run({ id: `${id}-fallback`, source, retryOf: observed ? id : null, model: 'gpt-5.6-terra', effort: 'medium', category: 'edit', difficulty: 2 });
+        sc.rateTask(`${id}-fallback`, 'pass');
+        run({ id: `${id}-fail`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'edit', difficulty: 3 });
+        sc.rateTask(`${id}-fail`, 'fail');
+      }
+      const request = { category: 'edit', difficulty: 3, source };
+      const ladder = sc.recommend(request);
+      assert.deepEqual(ladder.plan.steps, ['ollama:qwen:default', 'codex:gpt-5.6-terra:medium']);
+      assert.equal(ladder.plan.estimated, !observed);
+      assert.match(ladder.reason, /extrapolated from level 2/);
+      for (const i of [1, 2, 3]) {
+        const id = `${source}-failed-final-${i}`;
+        run({ id, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'edit', difficulty: 3 });
+        sc.rateTask(id, 'fail');
+      }
+      assert.equal(sc.recommend(request), null, 'a ladder cannot end with a worker proven to fail the requested level');
+    }
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('B5: prior fallback honors exact-effort and whole-model exclusions', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: true } });
+    const request = { category: 'edit', difficulty: 3, summary: [], providers: ['codex'] };
+    assert.equal(sc.selOf(sc.recommend(request)), 'codex:gpt-5.6-luna:medium');
+    for (const excluded of ['codex:gpt-5.6-luna:medium', 'codex:gpt-5.6-luna']) {
+      assert.equal(sc.selOf(sc.recommend({ ...request, exclude: [excluded] })), 'codex:gpt-5.6-terra:medium');
+    }
+    assert.equal(sc.selOf(sc.recommend({ ...request, exclude: ['codex:gpt-5.6-luna:low'] })), 'codex:gpt-5.6-luna:medium', 'another effort is not excluded');
+    const local = { ...request, difficulty: 1, providers: ['ollama'] };
+    assert.equal(sc.selOf(sc.recommend(local)), 'ollama:qwen:default');
+    assert.equal(sc.recommend({ ...local, exclude: ['ollama:qwen:default'] }), null, 'models without effort use the canonical default selection');
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
+});

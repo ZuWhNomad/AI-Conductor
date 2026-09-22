@@ -232,14 +232,19 @@ export function summarize({ source = null } = {}) {
   for (const c of rootRuns({ source })) {
     if (!c.category || !c.difficulty) continue;
     for (const a of c.attempts) { const g = add(a.sel, 1, c.category, c.difficulty, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort; }
-    if (c.attempts.length > 1) add(c.path.join('>'), c.attempts.length, c.category, c.difficulty, c);
+    if (c.attempts.length > 1) {
+      const g = add(c.path.join('>'), c.attempts.length, c.category, c.difficulty, c);
+      g._stepCosts ||= c.attempts.map(() => []);
+      c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
+    }
   }
-  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _unpriced, ...g }) => {
+  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _unpriced, _stepCosts, ...g }) => {
     const cost = g.steps === 1 ? findModel(g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
     return {
       ...g, cost, priorTier: prior?.tier || null, quality, accept: g.rated ? (g.pass + g.fixable) / g.rated : null,
+      ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: costs.some((c) => c.avgUsd == null) ? null : mean(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
       avgTokens: mean(_tok), avgUsd: _unpriced ? null : mean(_usd), avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
     };
@@ -264,7 +269,7 @@ export function errorRates({ source = null } = {}) {
  * quality bar, observed ladders, and estimated ladders (cheap first step, qualified fallback; assumes
  * independent failures). Returns null when nothing measured qualifies (then the prior fallback, if enabled).
  */
-export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, _noExtrap = false } = {}) {
+export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, _noExtrap = false, _failedBelow = null } = {}) {
   const cfg = loadConfig().scorecard;
   // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
@@ -280,18 +285,26 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
   const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + (cfg.reservePct ?? 0) * w * gap; };
-  const costOf = (g) => { if (g.avgUsd == null) return null; const [p, m] = g.sel.split('>').pop().split(':'); const model = m === 'default' ? null : m; return (g.avgUsd + hourly * (g.avgDurationMs || 0) / 3.6e6) * weight(p, model) * reserve(p) * wasteDiscount(p, cfg, model); };
+  const costOf = (g) => {
+    if (g.avgUsd == null) return null;
+    const costs = g.stepCosts || [g];
+    return costs.reduce((sum, c) => {
+      const { provider, model } = parseSel(c.sel.split('>').at(-1));
+      return sum + (c.avgUsd + hourly * (c.avgDurationMs || 0) / 3.6e6) * weight(provider, model) * reserve(provider) * wasteDiscount(provider, cfg, model);
+    }, 0);
+  };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
+  // Keep the original request's disqualifications when extrapolating; priors cannot override them either.
+  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.minSamples && g.quality < cfg.quality).map((g) => g.sel));
   const bySel = new Map();
   for (const g of rows) {
-    const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [], failedBelow: false };
-    if (g.difficulty <= difficulty && g.rated >= cfg.minSamples && g.quality < cfg.quality) m.failedBelow = true;
+    const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [] };
     if (g.difficulty >= difficulty) m.cells.push(g);
     bySel.set(g.sel, m);
   }
   const evidence = [...bySel.values()].filter((m) => m.cells.length).map((m) => ({ ...m, ref: pool(m.cells.sort((a, b) => a.difficulty - b.difficulty), cfg.minSamples) })).filter((m) => m.ref.rated >= cfg.minSamples);
-  const finals = evidence.filter((m) => m.ref.quality >= cfg.quality && !m.failedBelow);
+  const finals = evidence.filter((m) => m.ref.quality >= cfg.quality && !failedBelow.has(m.sel) && !failedBelow.has(m.sel.split('>').at(-1)));
   const plans = [];
   for (const m of finals) plans.push({ steps: m.ref.sel.split('>'), quality: m.ref.quality, usd: costOf(m.ref), estimated: false, ref: m.ref });
   for (const a of evidence.filter((m) => m.steps === 1 && costOf(m.ref) != null)) {
@@ -337,12 +350,12 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, _noExtrap: true });
+      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, _noExtrap: true, _failedBelow: failedBelow });
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
-    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers });
+    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, failedBelow });
   }
-  const first = best.ref;
+  const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'unpriced' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
   const describe = (p) => { const prov = p.steps[p.steps.length - 1].split(':')[0]; const rs = reserve(prov); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
   const single = plans.find((p) => p.steps.length === 1);
@@ -456,15 +469,24 @@ function scheduledReset(provider, cfg, now, dir) {
   return dir > 0 ? (next <= now ? next + period : next) : (next <= now ? next : next - period);
 }
 
-const parseSel = (s) => { const [provider, model, effort] = s.split(':'); return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort }; };
+const parseSel = (s) => {
+  const [provider, ...parts] = s.split(':');
+  const effort = parts.length > 1 && (parts.at(-1) === 'default' || EFFORTS.includes(parts.at(-1))) ? parts.pop() : null;
+  const model = parts.join(':');
+  return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort };
+};
 
 /** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
 function pool(cells, floor) {
   const used = []; let rated = 0;
   for (const c of cells) { used.push(c); rated += c.rated; if (rated >= floor) break; }
-  const w = (k, by) => { let num = 0, den = 0; for (const c of used) { if (c[k] == null) continue; num += c[k] * c[by]; den += c[by]; } return den ? num / den : null; };
+  const w = (k, by, cells = used) => { let num = 0, den = 0; for (const c of cells) { if (c[k] == null) continue; num += c[k] * c[by]; den += c[by]; } return den ? num / den : null; };
   const base = used[0];
-  return { ...base, cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: used.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
+  const stepCosts = base.stepCosts?.map((s, i) => {
+    const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
+    return { sel: s.sel, avgUsd: costs.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n', costs), avgDurationMs: w('avgDurationMs', 'n', costs) };
+  });
+  return { ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: used.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
 }
 
 // Single source of truth for effort ordering (low -> ultra). Everything that ranks effort imports this;
@@ -497,7 +519,7 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
 }
 
 /** Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level). */
-function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null }) {
+function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, failedBelow }) {
   if (!cfg.usePriors) return null;
   const reg = getModels();
   const cands = [];
@@ -508,7 +530,10 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
     const price = priceFor(m.provider, m.id, { scorecard: cfg });
     if (!price) continue;
-    cands.push({ provider: m.provider, model: m.id, effort: (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty), tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
+    const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
+    const sel = selOf({ provider: m.provider, model: m.id, effort });
+    if (exclude.includes(sel) || failedBelow.has(sel)) continue;
+    cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
   }
   cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
   const best = cands[0];
