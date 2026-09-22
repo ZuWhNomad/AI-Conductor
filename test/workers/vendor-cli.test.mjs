@@ -17,9 +17,9 @@ const AGY = [
 ];
 
 /** A spec whose "binary" is node printing the given lines — exercises the runner end to end. */
-function fakeSpec(lines, { exitCode = 0, parse = VENDORS.antigravity.parse } = {}) {
-  const script = `const L=${JSON.stringify(lines)};for(const l of L)console.log(typeof l==='string'?l:JSON.stringify(l));process.exit(${exitCode})`;
-  return { id: 'fake', label: 'Fake CLI', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], threadId: null }), parse, loginHint: 'fake login' };
+function fakeSpec(lines, { exitCode = 0, parse = VENDORS.antigravity.parse, parseText, stderr = '' } = {}) {
+  const script = `const L=${JSON.stringify(lines)};for(const l of L)console.log(typeof l==='string'?l:JSON.stringify(l));${stderr ? `console.error(${JSON.stringify(stderr)});` : ''}process.exit(${exitCode})`;
+  return { id: 'fake', label: 'Fake CLI', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], threadId: null }), parse, parseText, loginHint: 'fake login' };
 }
 
 test('vendor runner folds agy stream-json into the common result', async () => {
@@ -41,6 +41,13 @@ test('vendor runner classifies auth and limit failures and non-zero exits', asyn
   assert.equal(limited.limitHit, true);
   const silent = await runVendorCli(fakeSpec([]), { id: 't', cwd: tmpDir('v4'), prompt: 'x' });
   assert.match(silent.error, /no output/);
+});
+
+test('a successful run with a 429 retry on stderr is not a limit hit', async () => {
+  const r = await runVendorCli(fakeSpec(AGY, { exitCode: 0, stderr: 'Attempt 1 failed with status 429. Retrying...' }), { id: 't', cwd: tmpDir('v429'), prompt: 'x' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.limitHit, false);
+  assert.equal(r.authFailed, false);
 });
 
 test('grok and antigravity model lists parse', () => {
@@ -82,12 +89,34 @@ test('grok: streaming-messages-json shapes recorded 2026-09-10 parse to text, us
   assert.equal(spec.usageInputExclusive, true);
 });
 
+const KIMI_QUOTA = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
+
 test('a quota error printed on stdout (kimi 1.50, 403 access_terminated_error) counts as a limit hit', async () => {
   const { VENDORS } = await import('../../core/providers/vendors.mjs');
   const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0 };
-  VENDORS.kimi.parseText(`Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`, st);
+  VENDORS.kimi.parseText(KIMI_QUOTA, st);
   const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
   assert.match(st.text, LIMIT_RE);
+});
+
+test('kimi monthly usage limit on stdout is a limit hit at exit 1 and at exit 0 with only that line', async () => {
+  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText };
+  const failed = await runVendorCli(fakeSpec([KIMI_QUOTA], { ...opts, exitCode: 1 }), { id: 't', cwd: tmpDir('kimi-lim1'), prompt: 'x' });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.limitHit, true);
+  const zero = await runVendorCli(fakeSpec([KIMI_QUOTA], { ...opts, exitCode: 0 }), { id: 't', cwd: tmpDir('kimi-lim0'), prompt: 'x' });
+  assert.equal(zero.ok, false);
+  assert.equal(zero.limitHit, true);
+});
+
+test('a 2000-char kimi report containing rate limit at exit 0 is not a quota failure', async () => {
+  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText };
+  const needle = 'rate limit';
+  const report = needle + ' ' + 'a'.repeat(2000 - needle.length - 1);
+  assert.equal(report.length, 2000);
+  const r = await runVendorCli(fakeSpec([report], { ...opts, exitCode: 0 }), { id: 't', cwd: tmpDir('kimi-long'), prompt: 'x' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.limitHit, false);
 });
 
 test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09-11) parses into model-group windows', async () => {
@@ -166,4 +195,24 @@ test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a s
   const pf = big.args[big.args.indexOf('--prompt-file') + 1];
   assert.ok(/grok-prompt-.*\.txt$/.test(pf) && !pf.includes('F:/ws')); // outside the workspace
   assert.equal((await import('node:fs')).readFileSync(pf, 'utf8').length, 20000);
+});
+
+test('antigravity, qwen-code and kimi: a 40k prompt is not passed as a long argv argument', () => {
+  const prompt = 'x'.repeat(40_000);
+  const t = { prompt, cwd: 'F:/ws', timeoutMs: 60_000 };
+  for (const id of ['antigravity', 'qwen-code', 'kimi']) {
+    const { args, cleanup } = VENDORS[id].headlessArgs(t);
+    try {
+      const long = (args || []).filter((a) => typeof a === 'string' && a.length > 8000);
+      assert.equal(long.length, 0, `${id} put a ${long[0]?.length} char argument on argv`);
+    } finally { try { cleanup?.(); } catch {} }
+  }
+});
+
+test('vendor runner sends the prompt on stdin when headlessArgs sets stdinPrompt', async () => {
+  const script = `let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:s}}));});`;
+  const spec = { id: 'fake', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], stdinPrompt: true }), parse: VENDORS.antigravity.parse };
+  const r = await runVendorCli(spec, { id: 't', cwd: tmpDir('stdin'), prompt: 'hello-stdin' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.finalMessage, 'hello-stdin');
 });

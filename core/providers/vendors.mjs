@@ -134,13 +134,21 @@ export const VENDORS = {
     },
     efforts: [], // effort lives in the model id (gemini-*-low/medium/high); listModels collapses those into families with real efforts
     collapseEfforts: true, // Method C: listModels folds …-low/-medium/-high into one family model exposing efforts:[low,medium,high]
+    // Long prompts: `-p` is print-mode (boolean); `--input-format text` reads stdin (agy 1.2.8 --help; binary:
+    // "reads prompts from stdin, so a prompt given on the command line would be ignored"). No --prompt-file.
+    // Threshold is grok's 8000 (same file) — Windows CreateProcess argv cap is 32767.
     headlessArgs: (t) => {
-      const args = ['-p', t.prompt, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`];
+      const long = !!(t.prompt && t.prompt.length > 8000);
+      const args = [];
+      if (long) args.push('--input-format', 'text');
+      args.push('-p');
+      if (!long) args.push(t.prompt);
+      args.push('--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
       // Effort is encoded in the id (Method C): translate (family, effort) → concrete id here. Never pass --effort:
       // agy rejects it, and the id already carries the level. A model with no effort dimension dispatches its id as-is.
       if (t.model) args.push('--model', agyModelArg(t.model, t.effort));
-      return { args };
+      return { args, stdinPrompt: long };
     },
     parse: (obj, st, emit) => {
       const ev = obj.event; const body = (ev && obj[ev]) || obj;
@@ -210,11 +218,15 @@ export const VENDORS = {
     parseModels: () => ['qwen3-coder-plus', 'qwen3-coder-flash'].map((id) => ({ id, label: id })),
     efforts: [],
     // Qwen Code 0.23 has no --resume <id>; --continue resumes the most recent session of the project.
+    // Long prompts: omit the positional query; `--input-format text` (default) consumes stdin (qwen 0.23.3 --help:
+    // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: grok's 8000.
     headlessArgs: (t) => {
-      const args = [t.prompt, '-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd];
+      const long = !!(t.prompt && t.prompt.length > 8000);
+      const args = long ? ['-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd]
+        : [t.prompt, '-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd];
       if (t.resumeThreadId) args.push('--continue');
       if (t.model) args.push('-m', t.model);
-      return { args };
+      return { args, stdinPrompt: long };
     },
     // Gemini-CLI-family stream-json: {type:'init'|'message'|'tool_use'|'tool_result'|'result', ...}
     parse: (obj, st, emit) => {
@@ -239,11 +251,16 @@ export const VENDORS = {
     efforts: [],
     // kimi 1.50: `--print` = non-interactive with auto-approval; output is plain text unless the CLI
     // emits JSON lines (both are handled). Session resume via --session <id> (ids come from `kimi export`).
+    // Long prompts: drop `-p` (valued flag) and pipe stdin; `--input-format` "must be piped in via stdin"
+    // (kimi 1.50 --help; Print.run reads stdin when `-p` is omitted). No --prompt-file. Threshold: grok's 8000.
     headlessArgs: (t) => {
-      const args = ['--print', '--yolo', '-w', t.cwd, '-p', t.prompt];
+      const long = !!(t.prompt && t.prompt.length > 8000);
+      const args = ['--print', '--yolo', '-w', t.cwd];
+      if (long) args.push('--input-format', 'text');
+      else args.push('-p', t.prompt);
       if (t.resumeThreadId) args.push('--session', t.resumeThreadId);
       if (t.model) args.push('--model', t.model);
-      return { args };
+      return { args, stdinPrompt: long };
     },
     parse: (obj, st, emit) => {
       const type = obj.type || obj.event;

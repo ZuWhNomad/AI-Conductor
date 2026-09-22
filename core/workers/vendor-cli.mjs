@@ -8,7 +8,7 @@ const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage lim
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|unauthorized|authentication (?:required|failed)/i;
 
 /**
- * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t), stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env? }
+ * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env? }
  * @param {object} t     { id, cwd, prompt, model, effort, resumeThreadId, signal, timeoutMs }
  */
 const TRANSIENT_RE = /stream was interrupted|please continue the task|connection reset|temporarily unavailable|\b5\d\d\b.*(?:gateway|unavailable)/i;
@@ -31,10 +31,12 @@ function runVendorCliOnce(spec, t) {
   return new Promise((resolve) => {
     const bin = spec.bin();
     if (!bin) { res.error = `${spec.label || spec.id} CLI not found${spec.install ? ` (install: ${spec.install.win || spec.install.posix})` : ''}`; return resolve(res); }
-    const { args, threadId, cleanup } = spec.headlessArgs(t);
+    const ha = spec.headlessArgs(t);
+    const { args, threadId, cleanup } = ha;
+    const useStdin = !!(spec.stdinPrompt || ha.stdinPrompt);
     if (threadId) st.threadId = threadId; // some CLIs let us mint the session id up front
     let child;
-    try { child = spawnCli(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [spec.stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } }); }
+    try { child = spawnCli(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } }); }
     catch (e) { try { cleanup?.(); } catch {} res.error = e.message; return resolve(res); }
     emit('thread', { threadId: st.threadId });
     onLines(child.stdout, (line) => {
@@ -59,15 +61,19 @@ function runVendorCliOnce(spec, t) {
       res.items = st.items.slice(-60);
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;
-      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}`;
-      res.limitHit = LIMIT_RE.test(haystack);
-      res.authFailed = AUTH_RE.test(haystack);
+      // Quota-only stdout (kimi prints the limit line as the whole report, sometimes with exit 0) is a failed limit, not a success.
+      // Only a short message: the real Kimi quota line is one line. A long report that merely mentions "rate limit" is not a hit.
+      const quotaText = (st.text || '').trim();
+      if (!res.error && !st.items.length && quotaText.length <= 300 && LIMIT_RE.test(quotaText)) res.error = quotaText.slice(-400) || 'usage limit';
+      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${res.error ? `\n${st.text || ''}` : ''}`;
+      res.limitHit = !!res.error && LIMIT_RE.test(haystack);
+      res.authFailed = !!res.error && AUTH_RE.test(haystack);
       if (res.authFailed && res.error) res.error += ` — sign in with: ${spec.loginHint || spec.id}`;
       res.ok = !res.error;
       res.durationMs = Date.now() - started;
       resolve(res);
     });
-    if (spec.stdinPrompt) { child.stdin.on('error', () => {}); child.stdin.end(t.prompt); }
+    if (useStdin) { child.stdin.on('error', () => {}); child.stdin.end(t.prompt); }
   });
 }
 
