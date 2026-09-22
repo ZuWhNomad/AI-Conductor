@@ -371,7 +371,7 @@ async function gitStatus(cwd) {
 function diffStatus(before, after) {
   if (!after) return [];
   if (!before) return [...after.keys()];
-  return [...after.keys()].filter((f) => !before.has(f) || before.get(f) !== after.get(f));
+  return [...new Set([...before.keys(), ...after.keys()])].filter((f) => before.get(f) !== after.get(f));
 }
 async function changedSince(cwd, before) { return diffStatus(before, await gitStatus(cwd)); }
 async function gitDiffStat(cwd, status = null) {

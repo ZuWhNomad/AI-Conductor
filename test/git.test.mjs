@@ -7,7 +7,36 @@ import { execFileSync } from 'node:child_process';
 
 const { findCli } = await import('../core/proc.mjs');
 const { _git } = await import('../core/tasks.mjs');
+const { isPhantomCompletion } = await import('../core/scorecard.mjs');
 const git = findCli('git');
+
+test('git observes a dirty tracked file restored to HEAD without classifying it as phantom', { skip: !git }, async () => {
+  const cwd = tmpDir('git-restored');
+  const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  const name = 'restored.txt';
+  const file = join(cwd, name);
+  writeFileSync(file, 'base');
+  run('add', '--', name);
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  writeFileSync(file, 'dirty');
+  const before = await _git.gitStatus(cwd);
+  assert.ok(before.has(name));
+  assert.deepEqual(await _git.changedSince(cwd, before), [], 'unchanged dirty content is not a worker edit');
+  run('restore', '--source=HEAD', '--', name);
+  const after = await _git.gitStatus(cwd);
+  assert.equal(after.size, 0, 'restoring to HEAD removes the path from porcelain');
+  const observed = _git.diffStatus(before, after);
+  assert.deepEqual(observed, [name]);
+  assert.equal(isPhantomCompletion({ ok: true, claimed: [name], canVerify: before !== null, observedCount: observed.length }), false);
+});
+
+test('git status comparison preserves unavailable snapshot handling', () => {
+  const dirty = new Map([['dirty.txt', ' M']]);
+  assert.deepEqual(_git.diffStatus(dirty, null), []);
+  assert.deepEqual(_git.diffStatus(null, dirty), ['dirty.txt']);
+  assert.deepEqual(_git.diffStatus(null, null), []);
+});
 
 test('git observes content edits to already-dirty tracked files with unchanged status, size and mtime', { skip: !git }, async () => {
   const cwd = tmpDir('git-dirty');
