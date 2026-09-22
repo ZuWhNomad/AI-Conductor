@@ -6,7 +6,7 @@ const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll } = awa
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
 
 test('429 blocks until retry-after; a later 2xx unblocks', () => {
-  noteHttp('deepseek', 429, { 'Retry-After': '2' });
+  noteHttp('deepseek', 429, { 'Retry-After': '60' });
   assert.ok(blockedUntil('deepseek') > Date.now());
   noteHttp('deepseek', 200, { 'x-ratelimit-remaining-requests': '50', 'x-ratelimit-limit-requests': '100' });
   assert.equal(blockedUntil('deepseek'), null);

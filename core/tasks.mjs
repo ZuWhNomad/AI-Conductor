@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, isAbsolute, relative } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig, DEFAULTS } from './config.mjs';
+import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
@@ -99,6 +99,8 @@ export function createTask(i) {
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
+  // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
+  if (!t.sandbox && !i.followUpOf && t.provider === 'codex') t.sandbox = codexSandboxFor(t.model, cfg);
   if (t.followUpOf) {
     const parent = tasks.get(t.followUpOf);
     if (!parent) throw Object.assign(new Error(`unknown task ${t.followUpOf}`), { status: 404 });

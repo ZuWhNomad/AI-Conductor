@@ -33,6 +33,12 @@ export const DEFAULTS = {
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
     specAppendChars: 3000,            // budget shared by the recipe and the capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
+    // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
+    // gpt-6-astra: under workspace-write the Codex sandbox is denied the geometry libraries' DLLs (manifold3d "Access
+    // is denied", shapely.geometry missing) and Astra correctly stops and reports it, so every modelling or drafting
+    // task on the one model with a recorded modelling pass fails. Full access trades away the OS sandbox for Astra
+    // only; the real fix is FIXES_BACKLOG-v2 item 17. An explicit sandbox on a task always wins.
+    codexSandboxByModel: { 'gpt-6-astra': 'danger-full-access' },
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
     // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
     // tool spawns a host shell in the workspace, so an injected third-party model could otherwise read the plaintext
@@ -141,6 +147,15 @@ function overrides() {
   try { const s = statSync(FILE()); key = `${s.size}:${s.mtimeMs}`; } catch {}
   if (key !== fileCache.key) fileCache = { key, value: key === 'none' ? {} : readJson(FILE(), {}) };
   return fileCache.value;
+}
+
+const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+
+/** The Codex sandbox a task or session gets when it does not name one: the model's exception, else the default. */
+export function codexSandboxFor(model, cfg = loadConfig()) {
+  const byModel = cfg.worker?.codexSandboxByModel || {};
+  const s = model && byModel[model];
+  return SANDBOXES.includes(s) ? s : cfg.worker?.codexSandbox || 'workspace-write';
 }
 
 export function loadConfig() {

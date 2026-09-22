@@ -6,7 +6,7 @@ import { query, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { mcpServers, forClaudeSdk } from './mcp.mjs';
 import { setSessionFlags, sessionFlags } from './session-flags.mjs';
@@ -317,7 +317,7 @@ async function runTurn(s, text) {
     if (s.runtime === 'codex') {
       const first = !s.threadId;
       const promptText = first ? `${PROMPT}\n\n${PROMPT_CODEX}\n\n# User request\n${text}` : text;
-      r = await runCodex({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: promptText, model: s.model, effort: s.effort || undefined, sandbox: cfg.worker.codexSandbox, network: cfg.worker.codexNetwork, resumeThreadId: s.threadId || undefined, mcp: { ...mcpServers(cfg), conductor: { url: `${serverUrl}/mcp/${s.id}` } }, signal: ac.signal, onEvent, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes || 120) * 60_000 });
+      r = await runCodex({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: promptText, model: s.model, effort: s.effort || undefined, sandbox: codexSandboxFor(s.model, cfg), network: cfg.worker.codexNetwork, resumeThreadId: s.threadId || undefined, mcp: { ...mcpServers(cfg), conductor: { url: `${serverUrl}/mcp/${s.id}` } }, signal: ac.signal, onEvent, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes || 120) * 60_000 });
       if (mine()) s.threadId = r.threadId || s.threadId;
     } else {
       const p = PROVIDERS[s.provider];
