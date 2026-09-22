@@ -211,7 +211,11 @@ export function saveConfig(patch) {
   const clean = structuredClone(patch);
   // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
   for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;
-  for (const s of Object.values(clean.mcpServers || {})) if (s?.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
+  for (const s of Object.values(clean.mcpServers || {})) {
+    if (!s || typeof s !== 'object') continue;
+    if (typeof s.url === 'string' && (s.url.includes(SECRET_MASK) || s.url.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()))) delete s.url;
+    if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
+  }
   // Merge the patch onto the RAW file (the user's overrides), not onto loadConfig() (which already has DEFAULTS
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
