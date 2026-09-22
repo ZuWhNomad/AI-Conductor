@@ -41,8 +41,8 @@ USING IT
 --------
 
 1. Pick a project folder and the conductor as provider : model : effort (e.g.
-   claude:claude-fable-5-1[1m]:high, the shipped default; "Claude Code default" means whatever the
-   CLI picks, currently Opus 5). The model list shows every model from every provider; narrow it
+   claude:claude-opus-5-5[1m]:high, the shipped default; "Claude Code default" means whatever the
+   CLI picks, which moves when the CLI updates). The model list shows every model from every provider; narrow it
    with the provider dropdown. Your last choice becomes the default. Model switches live; effort
    applies from the next message. Any agent model can conduct: Claude models run in the Claude Code
    harness (built-in tools, subagents, skills); Codex models run through "codex exec" with the
@@ -101,9 +101,10 @@ MODELS AND LIMITS (NEVER ASSUMED STATIC)
 
 The sidebar polls every provider every 15 minutes (configurable) and on Refresh:
 
-  - Claude: the SDK's aliases (opus, sonnet, haiku, claude-fable-5-1[1m], ...) merged with the live
-    Models API list (Opus 4.8/4.7/4.6, Sonnet 4.6, ...) read with your Claude login; 5-hour /
-    weekly windows from the SDK's control channel plus live rate-limit events during sessions. Any
+  - Claude: exact model ids only (claude-opus-5-5, claude-sonnet-5, ...): the SDK's aliases (opus[1m],
+    sonnet, haiku, default) are listed as the model they resolve to, merged with the live Models API
+    list read with your Claude login. An alias moves when the CLI updates, so nothing is keyed by one.
+    5-hour / weekly windows come from the SDK's control channel plus live rate-limit events. Any
     picker also has "Other..." for a model id that is not listed yet.
   - Codex: "codex app-server" (account/rateLimits/read, model/list): plan, windows, resets.
   - Ollama: /api/tags. API-key providers: /models, with 429 / retry-after learned on the fly.
