@@ -28,6 +28,7 @@ let boundPort = null;              // the port this server actually bound — th
 const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding while the outgoing process releases the port
 
 export function stopBackgroundWork() {
+  stopUpdateChecks();
   try { clearInterval(lagTimer); loopLag.disable(); } catch {}
   try { stopModelPolling(); } catch {}
   try { stopLimitPolling(); } catch {}
@@ -75,7 +76,7 @@ let detectTimer = null;
 function applyDetectSweep(cfg) {
   if (detectTimer) { clearInterval(detectTimer); detectTimer = null; }
   if (process.env.CONDUCTOR_NO_POLL) return;
-  const minutes = Number(cfg.ui?.detectMinutes ?? 5);
+  const minutes = cfg.ui.detectMinutes;
   if (!(minutes > 0)) return;
   detectTimer = setInterval(() => {
     const stale = staleAuthProviders();
@@ -103,7 +104,7 @@ function startLagMonitor() {
   lagTimer = setInterval(() => {
     const { p99Ms } = lagStats(); loopLag.reset();
     const tasks = listTasks({ limit: 10000 });
-    const v = lagVerdict(p99Ms, Number(loadConfig().server?.lagWarnMs ?? 500), { running: tasks.filter((t) => t.status === 'running').length, queued: tasks.filter((t) => t.status === 'queued').length, sessions: conductor.listSessions().filter((s) => s.status === 'running').length });
+    const v = lagVerdict(p99Ms, loadConfig().server.lagWarnMs, { running: tasks.filter((t) => t.status === 'running').length, queued: tasks.filter((t) => t.status === 'queued').length, sessions: conductor.listSessions().filter((s) => s.status === 'running').length });
     if (v) { try { logImprovement('friction', 'server', v.message, v.context); } catch {} }
   }, 60_000).unref();
 }
@@ -214,7 +215,7 @@ async function route(req, res, url) {
     if (m === 'GET' && !seg[2]) return json(res, 200, listTasks({ sessionId: url.searchParams.get('session') || null }));
     if (m === 'POST' && !seg[2]) { // direct-to-worker (no conductor tokens): the UI's "/worker …" shortcut
       const b = await readBody(req);
-      if (typeof b.cwd !== 'string' || typeof b.spec !== 'string' || !b.cwd || !b.spec) return json(res, 400, { error: 'cwd and spec must be nonempty strings' });
+      if ((!b.followUpOf && (typeof b.cwd !== 'string' || !b.cwd)) || typeof b.spec !== 'string' || !b.spec) return json(res, 400, { error: 'spec must be a nonempty string; cwd is required for new tasks' });
       return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover, parallelOverride: b.parallelOverride })));
     }
     if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
@@ -223,7 +224,7 @@ async function route(req, res, url) {
 
   if (p === '/api/settings') {
     if (m === 'GET') return json(res, 200, publicConfig());
-    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); applyPolling(next); applyDetectSweep(next); /* the "auto" control governs the server poll */ schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
+    if (m === 'POST') { const b = await readBody(req); const next = saveConfig(b); applyPolling(next); applyDetectSweep(next); startUpdateChecks({ initial: false }); /* the "auto" control governs the server poll */ schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next)); }
   }
 
   if (seg[1] === 'improvements') {
@@ -398,21 +399,28 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
 /** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). On 'auto' it pulls AND
  *  self-restarts — but only while the server is IDLE (no chat turn running, no worker task active), so an update never
  *  interrupts in-flight work; while busy it defers and re-checks on a short cadence, applying as soon as work settles. */
-function startUpdateChecks() {
-  let recheck = null; // a short re-check armed while an update is pending but the server is busy
+let updateInterval = null, updateStartup = null, recheck = null;
+function stopUpdateChecks() {
+  clearInterval(updateInterval); clearTimeout(updateStartup); clearTimeout(recheck);
+  updateInterval = updateStartup = recheck = null;
+}
+function startUpdateChecks({ initial = true } = {}) {
+  clearInterval(updateInterval); updateInterval = null;
+  if (process.env.CONDUCTOR_NO_POLL || loadConfig().conductor.autoUpdate === 'off') return stopUpdateChecks();
+  // A settings save changes the cadence without dropping a startup check or an update waiting for idle.
   const idle = () => {
     try {
       return isIdle({
         runningSessions: conductor.listSessions().filter((s) => s.status === 'running').length,
         openTasks: listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status)).length,
-        lastActivity, quietMs: Number(loadConfig().conductor?.updateQuietMinutes ?? 15) * 60_000,
+        lastActivity, quietMs: loadConfig().conductor.updateQuietMinutes * 60_000,
       });
     } catch { return false; } // can't tell → defer rather than risk interrupting work
   };
   const run = () => {
     try {
       const cfg = loadConfig();
-      const policy = cfg.conductor?.autoUpdate ?? 'ask';
+      const policy = cfg.conductor.autoUpdate;
       if (policy === 'off') return;
       const st = checkForUpdates(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
       if (policy !== 'auto' || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
@@ -429,9 +437,11 @@ function startUpdateChecks() {
       else if (moved) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restart to apply (relaunch unavailable)`, {});
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };
-  setTimeout(run, 3000).unref();
-  const hours = Number(loadConfig().conductor?.updateCheckHours ?? 6);
-  if (hours > 0) setInterval(run, hours * 3_600_000).unref();
+  if (initial) updateStartup = setTimeout(run, 3000).unref();
+  // updateCheckHours 0 turns the periodic check off (the startup check above still runs). Never setInterval(run, 0):
+  // that would be a hot loop against GitHub, not "off".
+  const hours = loadConfig().conductor.updateCheckHours;
+  if (hours > 0) updateInterval = setInterval(run, hours * 3_600_000).unref();
 }
 
 function serveStatic(req, res, url) {

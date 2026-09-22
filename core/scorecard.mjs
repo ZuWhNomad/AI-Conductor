@@ -7,7 +7,7 @@ import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
 import { getLimits, modelBlockedUntil, providerWindows } from './limits.mjs';
 export { providerWindows } from './limits.mjs';
 import { findModel, getModels } from './models.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
 import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
@@ -280,7 +280,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
   const avail = memo((provider, model) => providerAvailable(provider, { overflowApi, cfg, model }));
   const weight = memo((provider, model) => providerWeight(provider, cfg, model));
-  const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd || 0;
+  const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd;
   const excluded = (sel) => sel.split('>').some((s) => { const { provider, model } = parseSel(s); return exclude.includes(s) || exclude.includes(`${provider}:${model || 'default'}`); });
   const reg = getModels();
   const blockedSel = (sel) => sel.split('>').some((s) => {
@@ -294,7 +294,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
-  const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + (cfg.reservePct ?? 0) * w * gap; };
+  const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + cfg.reservePct * w * gap; };
   const costOf = (g) => {
     if (g.avgUsd == null) return null;
     const costs = g.stepCosts || [g];
@@ -327,7 +327,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   for (const p of plans) p.utility = p.usd == null ? -Infinity : lambda * p.quality - p.usd;
   // Effort dominance: a higher effort of the same model that costs within effortSlackUsd and is at least as good
   // makes the lower effort pointless (Luna's efforts differ by fractions of a cent; the higher one held up on real work).
-  const slackOf = (usd) => Math.max(cfg.effortSlackUsd ?? 0.01, usd * ((cfg.effortSlackPct ?? 10) / 100)); // absolute floor for cheap models, relative for dear ones
+  const slackOf = (usd) => Math.max(cfg.effortSlackUsd, usd * (cfg.effortSlackPct / 100)); // absolute floor for cheap models, relative for dear ones
   const dominated = new Set();
   for (const a of plans) for (const b of plans) {
     if (a === b || a.steps.length !== 1 || b.steps.length !== 1 || a.usd == null || b.usd == null) continue;
@@ -408,9 +408,10 @@ export function providerAvailable(provider, { overflowApi = false, cfg = loadCon
 
 /** What a list-price dollar really costs on this provider: 0 local, ~0.2 on an included subscription with room left, 1 once its window is past quotaPressurePct or for pay-per-token APIs. */
 export function providerWeight(provider, cfg = loadConfig().scorecard, model = null) {
+  // These exported helpers also accept partial configs, so their missing-key fallbacks remain reachable.
   const base = cfg.providerWeight?.[provider] ?? 1;
   const used = providerUsedPct(provider, { model });
-  return used >= (cfg.quotaPressurePct ?? 80) ? 1 : base;
+  return used >= (cfg.quotaPressurePct ?? DEFAULTS.scorecard.quotaPressurePct) ? 1 : base;
 }
 
 /**
@@ -422,8 +423,8 @@ export function providerWeight(provider, cfg = loadConfig().scorecard, model = n
 export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = null, now = Date.now()) {
   const cls = providerClass(provider, cfg);
   if (cls !== 'subscription' && cls !== 'included') return 1;
-  const horizon = Math.max(1, cfg.wasteHorizonHours ?? 48) * 3600e3;
-  const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? 0.9));
+  const horizon = Math.max(1, cfg.wasteHorizonHours ?? DEFAULTS.scorecard.wasteHorizonHours) * 3600e3;
+  const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? DEFAULTS.scorecard.wasteStrength));
   const discount = (ms, headroom) => (ms > 0 && ms <= horizon ? 1 - (1 - ms / horizon) * headroom * strength : 1); // proximity × unused headroom × strength
   let factor = 1;
   for (const w of providerWindows(provider, model)) {

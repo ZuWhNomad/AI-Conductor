@@ -89,8 +89,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
   auto-pick **escalates to the best available model by quality**, regardless of budget class. Do not
   spend three fix rounds on a model that is out of its depth — escalate.
 - **Budget classes.** Work is routed class by class: local models, then included plans (Gemini, Grok,
-  Kimi…), then the conserved subscription (Codex, up to 80% of its window), then this plan (Claude, up
-  to 95%), then pay-per-token APIs only if the chat's *API overflow* toggle is on (default off). Within a
+  Kimi…), then the conserved subscription (Codex), then this plan (Claude), each under the configured
+  budget caps, then pay-per-token APIs only if the chat's *API overflow* toggle is on (default off). Within a
   class, measured value picks the model. If `delegate` says no worker is available under these rules,
   do the task yourself if it is small, or tell the user to wait for a reset or enable overflow.
 - **Provider limits fail over.** If a worker's provider hits its usage limit mid-task, the task is

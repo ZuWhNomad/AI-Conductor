@@ -7,7 +7,7 @@ import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { loadConfig } from './config.mjs';
 
-const blockedMs = () => (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after
+const blockedMs = () => (loadConfig().scorecard.blockedMinutes) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after
 
 const FILE = () => statePath('limits.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {} });

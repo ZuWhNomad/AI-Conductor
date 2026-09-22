@@ -40,7 +40,7 @@ export function recoverTasks() {
   // Never replace objects owned by this process's in-flight workers.
   if (running.size) return;
   try {
-    const hours = loadConfig().worker.resumeMaxAgeHours ?? 6; let stale = 0;
+    const hours = loadConfig().worker.resumeMaxAgeHours ?? DEFAULTS.worker.resumeMaxAgeHours; let stale = 0;
     for (const f of readdirSync(DIR())) {
       if (!f.endsWith('.json')) continue;
       const t = readJson(join(DIR(), f));
@@ -115,7 +115,7 @@ export function createTask(i) {
     if (!parent.threadId) throw Object.assign(new Error(`task ${parent.id} has no resumable thread (provider ${parent.provider})`), { status: 400 });
     if (!TERMINAL.has(parent.status)) throw Object.assign(new Error(`task ${parent.id} is still ${parent.status}; wait for it before following up`), { status: 400 });
     Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
-    if (t.rounds > (cfg.worker.maxRounds || 3)) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds ?? 2} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
+    if (t.rounds > cfg.worker.maxRounds) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
   }
   // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
   // (agy passthrough, kimi / qwen-code / codex-spark) must carry none. An effort-in-id family (agy: it has an
@@ -147,11 +147,15 @@ let shuttingDown = false;
 /** Abort every active worker. With `requeue`, in-flight tasks are journaled as queued+resume (graceful shutdown) instead of failed. */
 export function abortRunning({ requeue = false } = {}) { shuttingDown = requeue; for (const ac of running.values()) ac.abort(); }
 
-/** Resolve when the task reaches a terminal state, or with `timedOut: true` after timeoutMs. */
-export function awaitTask(id, timeoutMs = 45 * 60_000) {
+/** Resolve at a terminal state, or time out after the explicit wait or the task's configured worker timeout. */
+export function awaitTask(id, timeoutMs) {
   const t = tasks.get(id);
   if (!t) return Promise.resolve(null);
   if (TERMINAL.has(t.status)) return Promise.resolve(publicTask(t));
+  if (timeoutMs == null) {
+    const wcfg = loadConfig().worker;
+    timeoutMs = (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000;
+  }
   return new Promise((resolve) => {
     const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== done)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, timeoutMs);
     const done = (task) => { clearTimeout(timer); resolve(publicTask(task)); };
@@ -180,8 +184,8 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   // recipe longer than the cap silently drove capabilityLines to maxChars:0 — the worker lost every tool line while
   // the recipe was appended unclipped. A long recipe must never be able to starve the tool index.
   const wcfg = loadConfig().worker;
-  const recipeCap = wcfg.recipeChars ?? 6000;
-  const toolsCap = wcfg.toolLineChars ?? 1500;
+  const recipeCap = wcfg.recipeChars;
+  const toolsCap = wcfg.toolLineChars;
   if (recipe && recipe.length > recipeCap) logImprovement('friction', 'recipes', `recipe for '${t.category}'${t.variant ? ` (variant ${t.variant})` : ''} is ${recipe.length} chars, over the ${recipeCap} budget`, { taskId: t.id, title: t.title });
   const tools = capabilityLines(t.category, { maxChars: toolsCap });
   return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
@@ -190,7 +194,7 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
 export function schedule() {
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
   const cfg = loadConfig();
-  const max = cfg.conductor.maxWorkerConcurrency || DEFAULTS.conductor.maxWorkerConcurrency;
+  const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
   const queued = [...tasks.values()].filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   if (!queued.length || running.size >= max) return;
@@ -260,8 +264,8 @@ async function run(t) {
     const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
     Object.assign(t, await repoSize(t.cwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
     const wcfg = loadConfig().worker;
-    const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory?.[t.category] || wcfg.timeoutMinutes || 45) * 60_000 }, { signal: ac.signal });
-    if ((r.durationMs || 0) > (wcfg.longRunMinutes || 60) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
+    const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000 }, { signal: ac.signal });
+    if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
     const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };
@@ -282,7 +286,7 @@ async function run(t) {
       const next = failover(t);
       if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
       else {
-        const until = modelBlockedUntil(t.provider, t.model) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000);
+        const until = modelBlockedUntil(t.provider, t.model) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard.blockedMinutes) * 60_000);
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }

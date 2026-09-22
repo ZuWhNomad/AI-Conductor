@@ -54,6 +54,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .budget .b { margin: 2px 0; }
 .budget .bl { display: flex; justify-content: space-between; font-size: 11px; }
 .budget .bl .k { color: var(--fg); } .budget .bl .v { color: var(--muted); }
+.budget .bl .v { font-weight: 600; }
+.budget .bl .v.warn { color: var(--warn); } .budget .bl .v.bad { color: var(--bad); }
 .budget .others { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .budget .others .warn { color: var(--warn); } .budget .others .bad { color: var(--bad); }
 .budget.stale .b, .budget.stale .others { opacity: .55; }
@@ -99,7 +101,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .wl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 
 /* main */
-#main { grid-area: main; display: grid; grid-template-rows: auto 1fr auto; height: 100vh; overflow: hidden; min-width: 0; }
+#main { grid-area: main; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto; height: 100vh; overflow: hidden; min-width: 0; }
 #chat-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); gap: 10px; }
 #chat-header .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #chat-header .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; justify-content: flex-end; }
@@ -215,7 +217,7 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
   #status { display: none; }
 }
 @media (max-width: 900px) {
-  body { grid-template-columns: 1fr; grid-template-areas: "main" "fleet"; }
+  body, body.fleet-collapsed { grid-template-columns: 1fr; grid-template-areas: "main" "fleet"; }
   /* sidebar becomes an off-canvas drawer so narrow screens keep navigation */
   .nav-toggle { display: inline-flex; }
   #sidebar { position: fixed; top: 0; left: 0; height: 100vh; width: min(300px, 85vw); z-index: 40; transform: translateX(-100%); transition: transform .2s ease; box-shadow: 2px 0 20px rgba(0,0,0,.4); }

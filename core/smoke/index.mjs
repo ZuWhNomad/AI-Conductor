@@ -14,10 +14,10 @@ import { bus } from '../bus.mjs';
 export const SMOKE_TASKS = BATTERY.map(({ id, category, difficulty, title }) => ({ id, category, difficulty, title }));
 
 /**
- * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), sessionId?, keep?, execute?, onResult? }
- * `execute(spec)` runs one task and returns the finished task; tests inject a stub.
+ * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, sessionId?, keep?, execute?, onResult? }
+ * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub.
  */
-export async function runSmoke({ models, tasks = null, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
+export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
   if (!Array.isArray(models) || !models.length) throw Object.assign(new Error('models must be a non-empty array of {provider, model, effort}'), { status: 400 });
   const battery = BATTERY.filter((b) => !tasks || tasks.includes(b.id));
   if (!battery.length) throw Object.assign(new Error(`no matching smoke tasks (have: ${BATTERY.map((b) => b.id).join(', ')})`), { status: 400 });
@@ -32,7 +32,7 @@ export async function runSmoke({ models, tasks = null, sessionId = 'smoke', keep
       try {
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
-        const t = await execute({ cwd: dir, title: `smoke ${b.id}`, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', variant });
+        const t = await execute({ cwd: dir, title: `smoke ${b.id}`, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', variant }, timeoutMinutes);
         const check = t.status === 'done' ? await b.check(dir, t) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
         if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
@@ -76,9 +76,9 @@ export function envFailure(t) {
   return hit ? hit.match(ENV_FAIL)[0] : null;
 }
 
-async function executeTask(spec) {
+async function executeTask(spec, timeoutMinutes) {
   const t = createTask(spec);
-  const r = await awaitTask(t.id, loadConfig().smoke.timeoutMinutes * 60_000);
+  const r = await awaitTask(t.id, timeoutMinutes * 60_000);
   if (r?.timedOut) { cancelTask(t.id); await awaitTask(t.id, 10_000); }
   await flushRecords();
   return { ...getTask(t.id), timedOut: !!r?.timedOut };

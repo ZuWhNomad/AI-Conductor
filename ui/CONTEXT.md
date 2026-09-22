@@ -40,5 +40,8 @@ banner and read only that section.
 - Files stay `.js`: the server's MIME map has no `.mjs`.
 - Every `id` that `app.js` looks up with `$('#…')` must exist in `index.html`.
 
-**How to test.** There are no UI unit tests. `npm test` covers serving (`test/server/server.test.mjs`: `/` and `/app.js`).
-For a UI change: `node bin/conductor.mjs`, reload the page, exercise the changed section, and check the browser console.
+**How to test.** `npm test` covers serving (`test/server/server.test.mjs`: `/` and `/app.js`), settings rendering and
+saving with a DOM stub (`test/ui-settings.test.mjs`), and browser regressions (`test/ui/layout.test.mjs`: responsive
+geometry, quit icon, budget freshness and emphasis). Browser cases use a local Edge/Chrome installation or
+`CONDUCTOR_TEST_BROWSER`; they explicitly skip when no browser is available. For a UI change: `node bin/conductor.mjs`,
+reload the page, exercise the changed section, and check the browser console.

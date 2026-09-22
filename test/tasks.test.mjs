@@ -1,10 +1,11 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
 
 const { PROVIDERS } = await import('../core/providers/index.mjs');
 const originalProviders = { ...PROVIDERS };
@@ -73,12 +74,72 @@ test('tasks are journaled, default to the configured worker, and follow-ups need
   assert.equal(await awaitTask('missing'), null);
 });
 
+test('task ID collisions regenerate without overwriting existing journals', async (ctx) => {
+  const { writeJson } = await import('../core/paths.mjs');
+  const samples = [0.125, 0.125, 0.25, 0.375];
+  const random = ctx.mock.method(Math, 'random', () => {
+    assert.ok(samples.length, 'must stop regenerating once an unused ID is found');
+    return samples.shift();
+  });
+  const cwd = tmpDir('task-collision');
+  const first = createTask({ cwd, spec: 'keep this task' });
+  const file = join(HOME, 'tasks', `${first.id}.json`);
+  const original = readFileSync(file, 'utf8');
+  // A journal can exist on disk without having been loaded into the task map.
+  const diskId = (0.25).toString(36).slice(2, 10);
+  const diskFile = join(HOME, 'tasks', `${diskId}.json`);
+  const diskTask = { id: diskId, spec: 'keep this journal too' };
+  writeJson(diskFile, diskTask);
+  const second = createTask({ cwd, spec: 'new task' });
+  assert.equal(second.id, (0.375).toString(36).slice(2, 10));
+  assert.equal(random.mock.callCount(), 4);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  assert.deepEqual(JSON.parse(readFileSync(diskFile, 'utf8')), diskTask);
+  assert.equal(getTask(first.id), first);
+  assert.equal(JSON.parse(readFileSync(join(HOME, 'tasks', `${second.id}.json`), 'utf8')).spec, 'new task');
+});
+
 test('awaitTask times out with a snapshot', async () => {
   const t = createTask({ cwd: tmpDir('t2'), title: 'slow', spec: 'x', provider: 'ollama', model: 'qwen3.8' });
   const r = await awaitTask(t.id, 50);
   assert.equal(r.timedOut, true);
   assert.equal(r.status, 'queued');
   cancelTask(t.id);
+});
+
+test('all task waits use the category timeout or worker timeout unless explicitly overridden', async (ctx) => {
+  const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
+  const { conductorToolDefs } = await import('../core/tools.mjs');
+  const previous = loadConfig().worker;
+  const waits = [];
+  ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => { waits.push(ms); queueMicrotask(fn); return {}; });
+  const cwd = tmpDir('wait-defaults');
+  const defs = conductorToolDefs({ sessionId: 'waits', cwd });
+  const call = (name, args) => defs.find((d) => d.name === name).handler(args);
+  try {
+    const modeling = createTask({ cwd, category: 'modeling' });
+    assert.equal((await awaitTask(modeling.id)).timedOut, true);
+    assert.equal(waits.pop(), DEFAULTS.worker.timeoutByCategory.modeling * 60_000);
+    // Change settings after constructing the tools: wait defaults must come from the current config.
+    saveConfig({ worker: { timeoutMinutes: 7, timeoutByCategory: { modeling: 11 } } });
+    for (const [category, minutes] of [['modeling', 11], ['read', 7], [undefined, 7]]) {
+      const t = createTask({ cwd, category });
+      await awaitTask(t.id); assert.equal(waits.pop(), minutes * 60_000);
+      await call('await_task', { task_id: t.id }); assert.equal(waits.pop(), minutes * 60_000);
+      await call('delegate', { title: 'wait', spec: 'wait', provider: 'codex', category }); assert.equal(waits.pop(), minutes * 60_000);
+      Object.assign(t, { status: 'done', threadId: 'wait-thread' });
+      await call('follow_up', { task_id: t.id, comments: 'wait' }); assert.equal(waits.pop(), minutes * 60_000);
+    }
+    await awaitTask(modeling.id, 123); assert.equal(waits.pop(), 123);
+    for (const minutes of [0, 2]) {
+      await call('await_task', { task_id: modeling.id, timeout_minutes: minutes }); assert.equal(waits.pop(), minutes * 60_000);
+      await call('delegate', { title: 'wait', spec: 'wait', provider: 'codex', category: 'modeling', timeout_minutes: minutes }); assert.equal(waits.pop(), minutes * 60_000);
+    }
+    assert.equal(await call('await_task', { task_id: 'missing' }), 'unknown task missing');
+  } finally {
+    for (const t of listTasks()) cancelTask(t.id);
+    saveConfig({ worker: previous });
+  }
 });
 
 test('task inputs are validated and normalized before journaling', () => {
@@ -341,31 +402,63 @@ test('createTask strips an effort a model cannot honor (Method C guard D)', asyn
   for (const t of [stripped, kept, clamped, unknown]) cancelTask(t.id);
 });
 
+// A fresh task module captures the controlled execFile promise, without adding a production test hook.
+async function tasksWithGit(ctx, exec) {
+  const original = childProcess.execFile;
+  const originalSync = childProcess.execFileSync;
+  const syncCalls = [];
+  childProcess.execFile = Object.assign(() => { throw new Error('expected promisified execFile'); }, { [promisify.custom]: exec });
+  childProcess.execFileSync = (...args) => { syncCalls.push(args); throw new Error('synchronous git on the task path'); };
+  syncBuiltinESMExports();
+  ctx.after(() => {
+    childProcess.execFile = original;
+    childProcess.execFileSync = originalSync;
+    syncBuiltinESMExports();
+    assert.deepEqual(syncCalls, [], 'task creation, dispatch and completion must not run synchronous git');
+  });
+  const tk = await import(`../core/tasks.mjs?${encodeURIComponent(ctx.name)}`);
+  for (const t of tk.listTasks()) tk.cancelTask(t.id); // isolate this scheduler from earlier journal entries
+  return tk;
+}
+
 test('dispatch is not serialized on git: two tasks are running before the first git read resolves', async (ctx) => {
   const { findCli } = await import('../core/proc.mjs');
-  const { execFileSync } = await import('node:child_process');
-  const git = findCli('git'); if (!git) return;
+  if (!findCli('git')) { ctx.skip('git is not installed'); return; }
   const dirs = [tmpDir('inter-a'), tmpDir('inter-b')];
-  for (const d of dirs) execFileSync(git, ['init', '--quiet'], { cwd: d, windowsHide: true });
-  const starts = [];
-  mockCompletions(ctx, async (_url, { signal }) => new Promise((_resolve, reject) => { starts.push(Date.now()); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  for (const d of dirs) mkdirSync(join(d, '.git'));
+  const reads = new Map();
+  const calls = [];
+  const tk = await tasksWithGit(ctx, async (_bin, args, { cwd }) => {
+    calls.push({ cwd, args });
+    if (args[0] === 'status' && !reads.has(cwd)) {
+      const read = Promise.withResolvers();
+      reads.set(cwd, read);
+      await read.promise;
+    }
+    return { stdout: '' };
+  });
+  const worker = ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
   const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek; // an earlier test may have left it blocked
-  const batch = dirs.map((cwd) => createTask({ cwd, provider: 'deepseek', spec: 'x' }));
+  const batch = [];
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
-    schedule();
-    assert.deepEqual(batch.map((t) => getTask(t.id).status), ['running', 'running']); // both flipped synchronously; neither waited for the other's git status
-    for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
-    assert.equal(starts.length, 2);
+    for (const cwd of dirs) batch.push(tk.createTask({ cwd, provider: 'deepseek', spec: 'x' }));
+    assert.deepEqual(batch.map((t) => t.status), ['running', 'running']);
+    assert.equal(reads.size, dirs.length, 'both git reads started while neither had resolved');
+    await new Promise(setImmediate); // the event loop progresses with both git reads still pending
+    assert.equal(worker.mock.callCount(), 0, 'workers wait for their git snapshots');
+    for (const read of reads.values()) read.resolve();
+    for (const t of await Promise.all(batch.map((t) => tk.awaitTask(t.id)))) assert.equal(t.status, 'done');
+    assert.equal(worker.mock.calls.filter((c) => String(c.arguments[0]).endsWith('/chat/completions')).length, dirs.length);
+    for (const cwd of dirs) assert.deepEqual(calls.filter((c) => c.cwd === cwd).map((c) => c.args[0]), ['status', 'ls-tree', 'status', 'diff', 'diff']);
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    abortRunning();
-    await Promise.all(batch.map((t) => awaitTask(t.id)));
-    await flushRecords();
+    for (const read of reads.values()) read.resolve();
+    tk.abortRunning();
+    await Promise.all(batch.filter((t) => t.status === 'running').map((t) => tk.awaitTask(t.id)));
+    for (const t of batch) tk.cancelTask(t.id);
+    await tk.flushRecords();
   }
-  const { runRows } = await import('../core/scorecard.mjs');
-  for (const t of batch) assert.ok(runRows().some((r) => r.taskId === t.id), 'aborted worker scoring is drained');
-  assert.ok(PROVIDERS.deepseek.pollLimits.mock.callCount() > 0, 'scoring uses the offline limit stub');
 });
 
 for (const scenario of ['exhausted', 'rejected', 'budget-disabled', 'expired', 'soft-sequential', 'soft-parallel']) {
@@ -468,5 +561,30 @@ test('recorded concurrency divides global and model-exclusive window costs indep
     await flushRecords();
     PROVIDERS.claude = provider;
     getLimits().providers.claude = previous;
+  }
+});
+
+test('non-repository task creation, dispatch and completion never invoke git', async (ctx) => {
+  const calls = [];
+  const tk = await tasksWithGit(ctx, async (...args) => { calls.push(args); return { stdout: '' }; });
+  ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
+  const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek;
+  let task;
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    task = tk.createTask({ cwd: tmpDir('no-git'), provider: 'deepseek', spec: 'x' });
+    const done = await tk.awaitTask(task.id);
+    assert.equal(done.status, 'done');
+    assert.deepEqual(calls, []);
+    assert.deepEqual(done.changedFiles, []);
+    assert.equal(done.diffStat, '');
+    assert.equal(done.repoFiles, null);
+    assert.equal(done.repoBytes, null);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.abortRunning();
+    if (task?.status === 'running') await tk.awaitTask(task.id);
+    if (task) tk.cancelTask(task.id);
+    await tk.flushRecords();
   }
 });

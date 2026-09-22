@@ -70,6 +70,58 @@ test("feedback bundle redacts home path, user name, e-mails and key-shaped strin
   assert.ok(!JSON.stringify(j).includes(HOME), "state dir path redacted");
 });
 
+test('feedback redacts every known key shape and long mixed-class tokens', async () => {
+  const { redact } = await import('../core/feedback.mjs');
+  const options = { home: '', user: '' };
+  for (const prefix of ['sk', 'sk-ant', 'xai', 'ghp', 'gho', 'ghu', 'ghs', 'ghr', 'github_pat', 'gsk', 'key', 'token']) {
+    for (const separator of ['-', '_']) {
+      assert.equal(redact(`${prefix}${separator}${'a'.repeat(16)}`, options), '<secret>', `${prefix}${separator}`);
+    }
+  }
+  for (const key of [`AIza${'a'.repeat(35)}`, `AKIA${'A'.repeat(16)}`]) assert.equal(redact(key, options), '<secret>');
+  for (const label of ['authorization', 'apiKey', 'api_key', 'api-key', 'token', 'secret', 'password']) {
+    for (const value of ['abcdefgh', 'Bearer abcdefgh']) {
+      assert.equal(redact(`${label}=${value}`, options), `${label}=<secret>`);
+      assert.equal(redact(JSON.stringify({ [label]: value }), options), JSON.stringify({ [label]: '<secret>' }));
+    }
+  }
+  // Boundary and class pairs: lower/upper/digit/token punctuation, including unprefixed hex and base64.
+  for (const token of [
+    `${'a'.repeat(23)}A`, `${'a'.repeat(23)}1`, `${'A'.repeat(23)}1`,
+    `${'a'.repeat(23)}_`, `${'A'.repeat(23)}-`, `${'1'.repeat(23)}=`,
+    'abcdef0123456789abcdef0123456789', 'mQ8v+Z2r/L7x=K9n-P4s_T6u',
+  ]) assert.equal(redact(`value "${token}"`, options), 'value "<secret>"', token);
+  for (const token of [`${'a'.repeat(22)}A`, 'a'.repeat(24), 'A'.repeat(24), '1'.repeat(24), '_'.repeat(24)]) {
+    assert.equal(redact(token, options), token, 'short or single-class tokens are retained');
+  }
+});
+
+test('feedback worker metadata excludes settings outside its allow-list', async () => {
+  const { feedbackBundle, writeFeedback } = await import('../core/feedback.mjs');
+  const { saveConfig } = await import('../core/config.mjs');
+  saveConfig({ worker: { provider: 'codex', model: 'gpt-6-astra', effort: 'medium', apiKey: 'private-worker-key', custom: { note: 'private-worker-note' } } });
+  const worker = { provider: 'codex', model: 'gpt-6-astra', effort: 'medium' };
+  assert.deepEqual(feedbackBundle().worker, worker);
+  const output = readFileSync(writeFeedback(HOME), 'utf8');
+  assert.deepEqual(JSON.parse(output).worker, worker);
+  assert.ok(!output.includes('private-worker-'));
+});
+
+test('feedback email redaction stays below the server lag threshold on long non-email text', async () => {
+  const { redact } = await import('../core/feedback.mjs');
+  const { DEFAULTS } = await import('../core/config.mjs');
+  const options = { home: '', user: '' };
+  // Reproduce the reported 100k-character input; the project's lag policy supplies the timing bound.
+  for (const input of ['a'.repeat(100_000), `a@${'b'.repeat(100_000)}.`]) {
+    const start = performance.now();
+    const output = redact(input, options);
+    const elapsed = performance.now() - start;
+    assert.equal(output, input);
+    assert.ok(elapsed < DEFAULTS.server.lagWarnMs, `redact took ${elapsed}ms`);
+  }
+  assert.equal(redact(`${'a'.repeat(64)}@example.com`, options), '<email>');
+});
+
 test('a category recipe is registered for modeling and reaches the worker spec', async () => {
   const { recipeFor, listRecipes } = await import('../core/recipes.mjs');
   assert.match(recipeFor('modeling'), /trace the reference|potrace/i);
@@ -130,6 +182,14 @@ test('worker timeout can be raised per category; long runs are logged', async ()
   saveConfig({ worker: { timeoutByCategory: { modeling: 300 } } });
   assert.equal(loadConfig().worker.timeoutByCategory.modeling, 300);
   saveConfig({ worker: { timeoutByCategory: { modeling: 240 } } });
+});
+
+test('the conductor prompt defers budget percentages to configuration', async () => {
+  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const prompt = readFileSync(join(REPO_ROOT, 'core/policy/prompts/conductor.md'), 'utf8');
+  const policy = prompt.split('**Budget classes.**')[1].split('\n- **')[0];
+  assert.match(policy, /configured\s+budget caps/);
+  assert.doesNotMatch(policy, /\d+%/);
 });
 
 // Guards for folder moves: REPO_ROOT is computed from where core/paths.mjs sits, and a test that forgets _env.mjs

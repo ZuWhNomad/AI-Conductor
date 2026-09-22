@@ -9,6 +9,8 @@ file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… 
 **Layout mirrors the source folders that have tests:** `test/workers/` (`core/workers/*`), `test/smoke/` (`core/smoke/`),
 `test/server/` (`server/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `git`,
 `selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
+`ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
+must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.
 
 `_env.mjs` isolates state (`CONDUCTOR_HOME` = a temp dir, scheduling and polling off) and supplies `HOME` and
 `tmpDir()`. Every test file still imports it first (`./_env.mjs` or `../_env.mjs`) — `test/hygiene.test.mjs` fails

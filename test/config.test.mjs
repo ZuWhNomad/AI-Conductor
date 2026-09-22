@@ -18,6 +18,42 @@ test('defaults load, patches deep-merge, secrets redact', () => {
   assert.equal(publicConfig(c2).providers.xai.apiKey, null);
 });
 
+test('masked MCP URLs round-trip without replacing the real URLs', () => {
+  const mcpServers = {
+    query: { url: 'https://example.test/mcp?token=query-secret', env: { TOKEN: 'env-secret' } },
+    userinfo: { url: 'https://operator:password@example.test/mcp' },
+    both: { url: 'https://operator:password@example.test/mcp?key=query-secret' },
+    malformed: { url: 'not-a-url?key=query-secret' },
+    disabled: null,
+  };
+  saveConfig({ mcpServers });
+  const patch = { mcpServers: publicConfig().mcpServers };
+  for (const name of ['query', 'userinfo', 'both', 'malformed']) {
+    assert.notEqual(patch.mcpServers[name].url, mcpServers[name].url, name);
+    assert.ok(!patch.mcpServers[name].url.includes('secret'), name);
+  }
+  patch.mcpServers.query.categories = ['search'];
+  const originalPatch = structuredClone(patch);
+  saveConfig(patch);
+  assert.deepEqual(patch, originalPatch, 'save does not mutate its caller');
+  const stored = loadConfig().mcpServers;
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (server) assert.equal(stored[name].url, server.url, name);
+  }
+  assert.equal(stored.query.env.TOKEN, 'env-secret');
+  assert.deepEqual(stored.query.categories, ['search']);
+  assert.equal(stored.disabled, null);
+  for (const mask of ['••••', encodeURIComponent('••••').toLowerCase()]) {
+    saveConfig({ mcpServers: { query: { url: `https://example.test/mcp?token=${mask}` } } });
+    assert.equal(loadConfig().mcpServers.query.url, mcpServers.query.url);
+  }
+  const replacement = 'https://example.test/new?token=replacement-secret';
+  saveConfig({ mcpServers: { query: { url: replacement } } });
+  assert.equal(loadConfig().mcpServers.query.url, replacement, 'unmasked edits still save');
+  saveConfig({ mcpServers: { query: { url: '' } } });
+  assert.equal(loadConfig().mcpServers.query.url, '', 'an explicit empty URL still saves');
+});
+
 test('settings reject nonobjects, preserve subtrees and normalize positive numbers', () => {
   for (const patch of ['x', null, [], 42]) assert.throws(() => saveConfig(patch), { status: 400 });
   saveConfig({ conductor: null });
@@ -66,6 +102,40 @@ test('turn budgets default high and reject non-positive values', () => {
   saveConfig({ conductor: { maxTurns: 20000 } });
   assert.equal(loadConfig().conductor.maxTurns, 20000);
   saveConfig({ conductor: { maxTurns: 9999 } });
+});
+
+test('timer and loop settings accept positive finite numbers and otherwise use DEFAULTS', () => {
+  const keys = {
+    conductor: ['turnTimeoutMinutes', 'updateQuietMinutes'], // updateCheckHours and detectMinutes: 0 means off, tested below
+    worker: ['maxIterations', 'maxTurnsLocal', 'longRunMinutes'],
+    scorecard: ['blockedMinutes'], server: ['lagWarnMs'],
+  };
+  for (const value of [0, -1, '3', null, Infinity, -Infinity, NaN, 1.5]) {
+    const patch = Object.fromEntries(Object.entries(keys).map(([group, names]) => [group, Object.fromEntries(names.map((key) => [key, value]))]));
+    patch.scorecard.windowTargets = { session: value, other: value };
+    const saved = saveConfig(patch);
+    for (const cfg of [saved, loadConfig()]) {
+      for (const [group, names] of Object.entries(keys)) for (const key of names) {
+        assert.equal(cfg[group][key], value === 1.5 ? value : DEFAULTS[group][key], `${group}.${key}`);
+      }
+      for (const key of ['session', 'other']) assert.equal(cfg.scorecard.windowTargets[key], value === 1.5 ? value : DEFAULTS.scorecard.windowTargets[key]);
+    }
+  }
+  for (const value of ['bad', []]) {
+    saveConfig({ scorecard: { windowTargets: value } });
+    assert.deepEqual(loadConfig().scorecard.windowTargets, DEFAULTS.scorecard.windowTargets);
+  }
+  saveConfig(Object.fromEntries(Object.keys(keys).map((group) => [group, DEFAULTS[group]])));
+});
+
+test('the live prompt budgets are settings; the retired shared budget is absent', () => {
+  assert.equal(DEFAULTS.worker.recipeChars, 6000);
+  assert.equal(DEFAULTS.worker.toolLineChars, 1500);
+  assert.ok(!('specAppendChars' in DEFAULTS.worker));
+  saveConfig({ worker: { recipeChars: 7000, toolLineChars: 2000 } });
+  assert.equal(loadConfig().worker.recipeChars, 7000);
+  assert.equal(loadConfig().worker.toolLineChars, 2000);
+  saveConfig({ worker: { recipeChars: DEFAULTS.worker.recipeChars, toolLineChars: DEFAULTS.worker.toolLineChars } });
 });
 
 test('worker.escalationRounds defaults to 2, allows 0 (disable), rejects negatives and non-integers', () => {
@@ -118,4 +188,15 @@ test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code
   const saved = process.env.CONDUCTOR_HOME; delete process.env.CONDUCTOR_HOME;
   try { assert.equal(resolveStateDir(), existsSync(join(REPO_ROOT, '.state')) ? join(REPO_ROOT, '.state') : join(homedir(), '.conductor2')); }
   finally { process.env.CONDUCTOR_HOME = saved; }
+});
+
+test('0 is a documented off switch for updateCheckHours and detectMinutes, so validation must keep it', async () => {
+  const { saveConfig, loadConfig, DEFAULTS } = await import('../core/config.mjs');
+  saveConfig({ conductor: { updateCheckHours: 0 }, ui: { detectMinutes: 0 } });
+  assert.equal(loadConfig().conductor.updateCheckHours, 0, 'the periodic update check stays off');
+  assert.equal(loadConfig().ui.detectMinutes, 0, 'the signed-out provider sweep stays off');
+  saveConfig({ conductor: { updateCheckHours: -4 }, ui: { detectMinutes: 'soon' } });
+  assert.equal(loadConfig().conductor.updateCheckHours, DEFAULTS.conductor.updateCheckHours, 'garbage still resets');
+  assert.equal(loadConfig().ui.detectMinutes, DEFAULTS.ui.detectMinutes);
+  saveConfig({ conductor: { updateCheckHours: DEFAULTS.conductor.updateCheckHours }, ui: { detectMinutes: DEFAULTS.ui.detectMinutes } });
 });

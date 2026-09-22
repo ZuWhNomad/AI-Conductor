@@ -25,14 +25,14 @@ export async function runWorker(t, { signal } = {}) {
       r = await runCodex({ ...base, sandbox: t.sandbox || cfg.worker.codexSandbox, network: cfg.worker.codexNetwork, resumeThreadId: t.threadId || undefined });
       break;
     case 'claude':
-      r = await runClaude({ ...base, permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurns || 500 });
+      r = await runClaude({ ...base, permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurns });
       r.threadId = r.sessionId;
       break;
     case 'ollama': {
       await ollama.ensureRunning();
       if (cfg.providers.ollama?.harness === 'claude') {
         // Opt-in: run the local model through the Claude Code harness (needs Ollama's Anthropic API compat).
-        r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurnsLocal || 60 });
+        r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurnsLocal });
         r.threadId = r.sessionId;
       } else {
         r = await withLoopHistory(t, (history) => runOpenAICompat({ ...base, baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama', system: t.system, history }));

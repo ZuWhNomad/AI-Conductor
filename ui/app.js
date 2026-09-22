@@ -122,7 +122,7 @@ function renderProviders() {
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
     box.append(d);
   }
-  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes || 15}m · panel auto ${S.config?.ui?.autoRefresh ? (S.config.ui.autoRefreshMinutes || 15) + 'm' : 'off'}`;
+  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes}m · panel auto ${S.config?.ui?.autoRefresh ? (S.config.ui.autoRefreshMinutes) + 'm' : 'off'}`;
 }
 
 // ---------- budget headline ----------
@@ -147,7 +147,7 @@ function budgetBar(label, w) {
   const b = el('div', 'b');
   const pct = w ? Math.max(0, Math.min(100, Number(w.usedPercent) || 0)) : 0;
   const line = el('div', 'bl');
-  line.append(el('span', 'k', label), el('span', 'v', w && w.usedPercent != null ? `${Math.round(pct)}%${w.estimated ? ' est' : ''}` : '—'));
+  line.append(el('span', 'k', label), el('span', 'v ' + meterClass(pct), w && w.usedPercent != null ? `${Math.round(pct)}%${w.estimated ? ' est' : ''}` : '—'));
   const m = el('div', 'meter'); const i = el('i', meterClass(pct)); i.style.width = pct + '%'; m.append(i);
   b.append(line, m);
   return b;
@@ -158,9 +158,10 @@ function renderBudget() {
   const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
   const pst = S.models.providers[prov] || {};
   if (pst.status && pst.status !== 'ok') box.append(el('div', 'empty', `${prov}: ${pst.loggedIn === false ? 'not signed in' : pst.configured === false ? 'no key' : pst.installed === false ? 'not installed' : pst.error ? 'error' : pst.status}`));
-  // Numbers older than this boot are last run's: show them dimmed with their time until the first refresh lands.
-  const asOf = S.limits.updatedAt ? new Date(S.limits.updatedAt).getTime() : 0;
-  box.classList.toggle('stale', !!S.boot && asOf < S.boot);
+  // A different provider's refresh (or a failed poll) cannot make these cached windows current.
+  const lim = S.limits.providers[prov] || {};
+  const asOf = lim.updatedAt ? new Date(lim.updatedAt).getTime() : 0;
+  box.classList.toggle('stale', !!lim.error || (!!S.boot && asOf < S.boot));
   const session = planWindow(prov, 'session');
   const weekly = planWindow(prov, 'weekly');
   if (session) box.append(budgetBar(`${prov} · session`, session));
@@ -175,7 +176,8 @@ function renderBudget() {
     else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
   }
   if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
-  if (box.classList.contains('stale') && asOf) box.append(el('div', 'empty', `as of ${new Date(asOf).toLocaleTimeString()} (refreshing)`));
+  if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
+  else if (box.classList.contains('stale')) box.append(el('div', 'empty', `${asOf ? `as of ${new Date(asOf).toLocaleTimeString()}` : 'Age unknown'} · refresh limits`));
   if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
 }
 
@@ -567,7 +569,7 @@ let autoRefreshTimer = null;
 function applyAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
   const on = !!S.config?.ui?.autoRefresh;
-  const min = Math.max(1, Number(S.config?.ui?.autoRefreshMinutes) || 15);
+  const min = S.config.ui.autoRefreshMinutes;
   const cb = $('#auto-refresh'); if (cb) cb.checked = on;
   if (on) autoRefreshTimer = setInterval(() => { api.post('/api/models/refresh').catch(() => {}); api.post('/api/limits/refresh').catch(() => {}); }, min * 60_000);
 }
@@ -647,7 +649,7 @@ function openSettings() {
   pickerRow('Worker', 'wk-', { provider: c.worker.provider, model: c.worker.model, effort: c.worker.effort }, { conductOnly: false, all: true });
   body.append(el('h4', null, 'Conductor default — provider : model : effort'));
   pickerRow('Conductor', 'cd-', { provider: c.conductor.provider || 'claude', model: c.conductor.model || '', effort: c.conductor.effort }, { conductOnly: true, all: true });
-  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate || 'ask', ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
+  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
   body.append(el('h4', null, 'Worker behaviour'));
@@ -660,11 +662,11 @@ function openSettings() {
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
-  field('Providers panel auto-refresh every (min)', 'ui.autoRefreshMinutes', c.ui?.autoRefreshMinutes ?? 15, 'number', 'When the "auto" box next to ↻ Refresh is checked, the browser panel re-fetches models+limits this often. Separate from the server registry poll above. Minimum 1 minute.');
+  field('Providers panel auto-refresh every (min)', 'ui.autoRefreshMinutes', c.ui.autoRefreshMinutes, 'number', 'When the "auto" box next to ↻ Refresh is checked, the browser panel re-fetches models+limits this often. Separate from the server registry poll above. Minimum 1 minute.');
   // Grok reset: "not set" is the default and means Conductor assumes NO reset (no "resets …" on the bar, no
   // use-it-or-lose-it discount) — a guessed reset time is worse than none. Set it once you know yours.
   { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok weekly reset day')); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
-  const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour ?? 18, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
+  const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
   body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
@@ -689,8 +691,10 @@ function openSettings() {
       let o = patch; for (const k of path.slice(0, -1)) o = o[k] = o[k] || {}; o[path.at(-1)] = v;
     }
     // Grok reset: day -1 = not set -> periodHours 0, which every reader treats as "no schedule" (nothing is assumed).
-    const rday = Number($('#cfg-grok-reset-day').value); const rawHour = $('#cfg-grok-reset-hour').value.trim(); const rhour = rawHour === '' ? (c.scorecard?.usageResets?.grok?.resetHour ?? 18) : Number(rawHour);
-    patch.scorecard = { ...(patch.scorecard || {}), usageResets: { grok: rday < 0 ? { periodHours: 0 } : { periodHours: 168, resetDay: rday, resetHour: Number.isFinite(rhour) ? rhour : 18 } } };
+    const rday = Number($('#cfg-grok-reset-day').value); const rawHour = grokHour.value.trim(); const rhour = Number(rawHour);
+    grokHour.setCustomValidity(rday >= 0 && (rawHour === '' || !Number.isInteger(rhour) || rhour < 0 || rhour > 23) ? 'Enter your reset hour (0–23) or choose “not set”.' : '');
+    if (rday >= 0 && !grokHour.reportValidity()) return;
+    patch.scorecard = { ...(patch.scorecard || {}), usageResets: { grok: rday < 0 ? { periodHours: 0 } : { periodHours: 168, resetDay: rday, resetHour: rhour } } };
     const wk = pickerValue('wk-'); const cd = pickerValue('cd-');
     patch.worker = { ...(patch.worker || {}), provider: wk.provider, model: wk.model || null, effort: wk.effort };
     patch.conductor = { ...(patch.conductor || {}), provider: cd.provider, model: cd.model || null, effort: cd.effort };
