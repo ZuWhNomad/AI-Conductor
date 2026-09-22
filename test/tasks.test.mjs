@@ -34,6 +34,41 @@ test('awaitTask times out with a snapshot', async () => {
   cancelTask(t.id);
 });
 
+test('all task waits use the category timeout or worker timeout unless explicitly overridden', async (ctx) => {
+  const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
+  const { conductorToolDefs } = await import('../core/tools.mjs');
+  const previous = loadConfig().worker;
+  const waits = [];
+  ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => { waits.push(ms); queueMicrotask(fn); return {}; });
+  const cwd = tmpDir('wait-defaults');
+  const defs = conductorToolDefs({ sessionId: 'waits', cwd });
+  const call = (name, args) => defs.find((d) => d.name === name).handler(args);
+  try {
+    const modeling = createTask({ cwd, category: 'modeling' });
+    assert.equal((await awaitTask(modeling.id)).timedOut, true);
+    assert.equal(waits.pop(), DEFAULTS.worker.timeoutByCategory.modeling * 60_000);
+    // Change settings after constructing the tools: wait defaults must come from the current config.
+    saveConfig({ worker: { timeoutMinutes: 7, timeoutByCategory: { modeling: 11 } } });
+    for (const [category, minutes] of [['modeling', 11], ['read', 7], [undefined, 7]]) {
+      const t = createTask({ cwd, category });
+      await awaitTask(t.id); assert.equal(waits.pop(), minutes * 60_000);
+      await call('await_task', { task_id: t.id }); assert.equal(waits.pop(), minutes * 60_000);
+      await call('delegate', { title: 'wait', spec: 'wait', provider: 'codex', category }); assert.equal(waits.pop(), minutes * 60_000);
+      Object.assign(t, { status: 'done', threadId: 'wait-thread' });
+      await call('follow_up', { task_id: t.id, comments: 'wait' }); assert.equal(waits.pop(), minutes * 60_000);
+    }
+    await awaitTask(modeling.id, 123); assert.equal(waits.pop(), 123);
+    for (const minutes of [0, 2]) {
+      await call('await_task', { task_id: modeling.id, timeout_minutes: minutes }); assert.equal(waits.pop(), minutes * 60_000);
+      await call('delegate', { title: 'wait', spec: 'wait', provider: 'codex', category: 'modeling', timeout_minutes: minutes }); assert.equal(waits.pop(), minutes * 60_000);
+    }
+    assert.equal(await call('await_task', { task_id: 'missing' }), 'unknown task missing');
+  } finally {
+    for (const t of listTasks()) cancelTask(t.id);
+    saveConfig({ worker: previous });
+  }
+});
+
 test('task inputs are validated and normalized before journaling', () => {
   const cwd = tmpDir('inputs');
   for (const bad of [123, '', join(cwd, 'missing')]) assert.throws(() => createTask({ cwd: bad, spec: 'x' }), { status: 400, message: 'cwd must be an existing directory' });

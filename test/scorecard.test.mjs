@@ -307,9 +307,9 @@ test('provider weight: included subscriptions are near-free until their window f
   saveConfig({ scorecard: { providerWeight: { ollama: 0, codex: 0.2, antigravity: 0.2, grok: 0.2, kimi: 0.2, 'qwen-code': 0.2, claude: 1 }, classes: { codex: 'subscription', deepseek: 'api' } } });
 });
 
-test('reservation: capacity proven at high levels is held back for high levels; the cheap tier does the grunt work', () => {
+test('default reservation holds capacity proven at high levels back for high levels; the cheap tier does the grunt work', () => {
   // Two providers with identical list cost and quality at level 1: antigravity (weight 0.1, ceiling 1) vs codex Terra (weight 0.6, ceiling 4).
-  saveConfig({ scorecard: { prices: { 'antigravity:flash': { in: 2, out: 12, cached: 0.2 } }, providerWeight: { antigravity: 0.1, codex: 0.6, claude: 1, ollama: 0 }, reservePct: 0.5 } });
+  saveConfig({ scorecard: { prices: { 'antigravity:flash': { in: 2, out: 12, cached: 0.2 } }, providerWeight: { antigravity: 0.1, codex: 0.6, claude: 1, ollama: 0 }, reservePct: null } });
   seed('antigravity', 'flash', null, 'docs', 1, ['pass', 'pass', 'pass']);
   seed('codex', 'gpt-5.6-terra', 'low', 'docs', 1, ['pass', 'pass', 'pass']);
   seed('codex', 'gpt-5.6-terra', 'low', 'docs', 4, ['pass', 'pass', 'pass']);

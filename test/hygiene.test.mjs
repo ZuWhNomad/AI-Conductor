@@ -132,6 +132,14 @@ test('worker timeout can be raised per category; long runs are logged', async ()
   saveConfig({ worker: { timeoutByCategory: { modeling: 240 } } });
 });
 
+test('the conductor prompt defers budget percentages to configuration', async () => {
+  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const prompt = readFileSync(join(REPO_ROOT, 'core/policy/prompts/conductor.md'), 'utf8');
+  const policy = prompt.split('**Budget classes.**')[1].split('\n- **')[0];
+  assert.match(policy, /configured\s+budget caps/);
+  assert.doesNotMatch(policy, /\d+%/);
+});
+
 // Guards for folder moves: REPO_ROOT is computed from where core/paths.mjs sits, and a test that forgets _env.mjs
 // touches the real ~/.conductor2.
 test('REPO_ROOT points at the repo (package.json is there)', async () => {

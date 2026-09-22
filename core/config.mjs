@@ -8,7 +8,7 @@ export const DEFAULTS = {
   pollMinutes: 15,                    // model + limit registry refresh cadence
   // Providers-panel client-side auto-refresh; separate from pollMinutes (server registry poll). `detectMinutes` is a
   // third, much cheaper thing: how often an INSTALLED BUT SIGNED-OUT provider is re-probed so a sign-in done outside
-  // the app is noticed without pressing Refresh (0 = off).
+  // the app is noticed without pressing Refresh.
   ui: { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
     provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
@@ -22,7 +22,7 @@ export const DEFAULTS = {
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
-    updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
+    updateCheckHours: 19,             // how often to check GitHub for updates (autoUpdate 'off' disables checks)
     loopToolsSkip: [],                // tool names a LOOP conductor (Ollama / API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
     updateQuietMinutes: 15,           // an auto-update restart needs this long without any API write or task change: an external driver between two passes is not idle
   },
@@ -31,7 +31,8 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
-    specAppendChars: 3000,            // budget shared by the recipe and the capability lines appended to a worker spec
+    recipeChars: 6000,                // log recipes over this character budget (the full recipe is still appended)
+    toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
     // gpt-6-astra: under workspace-write the Codex sandbox is denied the geometry libraries' DLLs (manifold3d "Access
@@ -167,7 +168,16 @@ function normalize(cfg) {
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
   if (!Number.isFinite(cfg.ui.autoRefreshMinutes) || cfg.ui.autoRefreshMinutes < 1) cfg.ui.autoRefreshMinutes = DEFAULTS.ui.autoRefreshMinutes;
   else cfg.ui.autoRefreshMinutes = Math.min(1440, Math.floor(cfg.ui.autoRefreshMinutes));
-  for (const [obj, defaults, key] of [[cfg, DEFAULTS, 'pollMinutes'], [cfg.conductor, DEFAULTS.conductor, 'maxWorkerConcurrency'], [cfg.conductor, DEFAULTS.conductor, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'maxTurns'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'maxRounds'], [cfg.scorecard, DEFAULTS.scorecard, 'minSamples'], [cfg.scorecard, DEFAULTS.scorecard, 'quality'], [cfg.scorecard, DEFAULTS.scorecard, 'qualityValueUsd'], [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes']]) {
+  if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
+  if (!plain(cfg.scorecard.windowTargets)) cfg.scorecard.windowTargets = { ...DEFAULTS.scorecard.windowTargets };
+  for (const [obj, defaults, key] of [
+    [cfg, DEFAULTS, 'pollMinutes'],
+    ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes', 'updateCheckHours'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
+    ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
+    ...['minSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
+    ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
+    [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'], [cfg.ui, DEFAULTS.ui, 'detectMinutes'],
+  ]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset

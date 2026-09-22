@@ -10,7 +10,7 @@ import { logImprovement, resolveImprovement } from './improve.mjs';
 import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
-import { loadConfig, saveConfig } from './config.mjs';
+import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
 import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
@@ -28,7 +28,7 @@ const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '?');
  * only prior BEST-AVAILABLE attempts: when the root was not reviewed to exhaustion the first retry was a value
  * fallback and is not counted, so `escalationRounds` grants that many genuine escalations (not one fewer).
  */
-export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, failedRounds = 0, maxRounds = 3, escRounds = 2 } = {}) {
+export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, failedRounds = 0, maxRounds = DEFAULTS.worker.maxRounds, escRounds = DEFAULTS.worker.escalationRounds } = {}) {
   const reviewExhausted = hasFailed && failedRounds >= maxRounds;
   const escalate = hasFailed && (reviewExhausted || depth >= 2);
   const rootReviewed = rootRounds >= maxRounds;
@@ -81,7 +81,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
   const cfg = loadConfig();
   const effortDesc = 'Reasoning effort: low|medium|high|xhigh|max (Codex also: ultra). Default from settings.';
   const finish = async (t, minutes) => {
-    const done = await awaitTask(t.id, (minutes || 45) * 60_000);
+    const done = await awaitTask(t.id, minutes == null ? undefined : minutes * 60_000);
     return describeTask(getTask(t.id)) + (done?.timedOut ? '\n(still running — call await_task again)' : '');
   };
   return [
@@ -100,7 +100,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
         effort: z.string().optional().describe(effortDesc),
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
-        timeout_minutes: z.number().optional().describe('Max wait when blocking (default 45)'),
+        timeout_minutes: z.number().optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
         sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
@@ -117,8 +117,8 @@ export function conductorToolDefs({ sessionId, cwd }) {
         // Review → escalation ladder (see escalationState). First delegate: best VALUE. Once the worker's review
         // rounds are spent — or after a prior model switch — a retry_of escalates to the best AVAILABLE model by
         // quality (`escalate` flips recommend() from value to best-available), bounded to worker.escalationRounds.
-        const escRounds = cfg.worker.escalationRounds ?? 2;
-        const { escalate, escalationsUsed, blocked, remaining } = escalationState({ hasFailed: !!failed, depth, rootRounds: root?.rounds || 0, failedRounds: failed?.rounds || 0, maxRounds: cfg.worker.maxRounds || 3, escRounds });
+        const escRounds = cfg.worker.escalationRounds;
+        const { escalate, escalationsUsed, blocked, remaining } = escalationState({ hasFailed: !!failed, depth, rootRounds: root?.rounds || 0, failedRounds: failed?.rounds || 0, maxRounds: cfg.worker.maxRounds, escRounds });
         if (!provider && !model && category) {
           if (blocked) return `Escalation budget spent: the best-available model was already tried ${escalationsUsed} time(s) (worker.escalationRounds=${escRounds}) after the review rounds, and the task still failed. Per the ladder, the conductor is the final fallback — finish this one yourself now (or name a provider/model explicitly to override).`;
           const gate = accessProviders(`${a.title}\n${a.spec}`);
@@ -126,7 +126,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
           // from the auto-pick, so a worker that is already the ceiling would be "escalated" to a weaker model.
           if (escalate && failed) {
             const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || [])], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
-            if (atCeiling(top, failed)) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(failed)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds || 3} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
+            if (atCeiling(top, failed)) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(failed)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
           }
           pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
           if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
@@ -165,7 +165,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
       name: 'await_task',
       description: 'Wait for a background task to finish and return its report.',
       schema: z.object({ task_id: z.string(), timeout_minutes: z.number().optional() }),
-      handler: async (a) => { const r = await awaitTask(a.task_id, (a.timeout_minutes || 30) * 60_000); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? '\n(still running)' : '') : `unknown task ${a.task_id}`; },
+      handler: async (a) => { const r = await awaitTask(a.task_id, a.timeout_minutes == null ? undefined : a.timeout_minutes * 60_000); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? '\n(still running)' : '') : `unknown task ${a.task_id}`; },
     },
     {
       name: 'task_status',
