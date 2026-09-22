@@ -147,7 +147,7 @@ export async function pollLimits() {
 
 // Claude model families used for label scoping in windowFromEvent and WINDOW_LABELS.
 // A window key of the form five_hour_<suffix> or seven_day_<suffix> is scoped to <suffix> when the suffix is not
-// a known non-model suffix (overage_included, overage). Global keys (five_hour, seven_day) remain unscoped.
+// a known non-model suffix (overage_included, overage, oauth_apps). Global keys (five_hour, seven_day) remain unscoped.
 // model_scoped rows are ALWAYS scoped to their own display_name (familyRe, else a regex-escaped name), never left
 // unscoped, so a novel model window (e.g. "Nimbus Quill") never blocks the entire provider.
 const CLAUDE_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
@@ -159,7 +159,7 @@ function escapeScope(s) {
 }
 const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_haiku: 'weekly Haiku', seven_day_fable: 'weekly Fable', seven_day_overage_included: 'weekly (overage)', overage: 'overage' };
 // Non-model suffixes in composite rate_limit keys — a suffix on this list is never used as a model scope.
-const NON_MODEL_SUFFIXES = new Set(['overage_included', 'overage']);
+const NON_MODEL_SUFFIXES = new Set(['overage_included', 'overage', 'oauth_apps']);
 // Global (unscoped) base keys; a composite key of the form <base>_<suffix> is scoped to its suffix.
 const GLOBAL_BASE_KEYS = new Set(['five_hour', 'seven_day']);
 

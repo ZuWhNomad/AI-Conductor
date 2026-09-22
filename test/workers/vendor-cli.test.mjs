@@ -119,6 +119,23 @@ test('a 2000-char kimi report containing rate limit at exit 0 is not a quota fai
   assert.equal(r.limitHit, false);
 });
 
+test('a failed run whose narration mentions 429 is not a limit hit', async () => {
+  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 1 };
+  const narration = 'Implementing retry on 429 rate limit as specified.\n' + 'x'.repeat(400);
+  const r = await runVendorCli(fakeSpec([narration], opts), { id: 't', cwd: tmpDir('fail-429-narr'), prompt: 'x' });
+  assert.equal(r.ok, false);
+  assert.equal(r.limitHit, false);
+});
+
+test('a short kimi success mentioning 429 is not a quota failure', async () => {
+  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 0 };
+  for (const line of ['no 429 today', 'Added 429 retry with backoff; tests pass.']) {
+    const r = await runVendorCli(fakeSpec([line], opts), { id: 't', cwd: tmpDir('kimi-429-ok'), prompt: 'x' });
+    assert.equal(r.ok, true, `${line}: ${r.error}`);
+    assert.equal(r.limitHit, false, line);
+  }
+});
+
 test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09-11) parses into model-group windows', async () => {
   const { parseAgyUsage } = await import('../../core/providers/vendors.mjs');
   const rec = '{"conversation_id":"","status":"SUCCESS","response":"Gemini Models\\tWeekly Limit Remaining\\t83%\\t2026-09-17T20:44:33Z\\n","duration_seconds":0,"num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8341392278671265,"reset_time":"2026-09-17T20:44:33Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.9859520792961121,"reset_time":"2026-09-11T12:06:03Z"}]},{"name":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.6587018370628357,"reset_time":"2026-09-17T20:46:25Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0,"reset_time":"2026-09-11T12:08:32Z"}]}]}}}';
@@ -140,6 +157,14 @@ test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09
   assert.equal(sc.providerAvailable('antigravity', { model: 'gpt-oss-120b-medium' }), false);
   assert.equal(sc.providerUsedPct('antigravity'), 100); // no model: busiest window, as before
   delete lim.getLimits().providers.antigravity;
+});
+
+test('parseAgyUsage escapes regex metacharacters in group names (C++ Models)', async () => {
+  const { parseAgyUsage } = await import('../../core/providers/vendors.mjs');
+  const rec = '{"command":{"data":{"groups":[{"name":"C++ Models","description":"Models within this group: C++ Models","buckets":[{"id":"cpp-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.5,"reset_time":"2026-09-17T20:44:33Z"}]}]}}}';
+  const u = parseAgyUsage(rec);
+  assert.equal(u.windows[0].models, '^(c\\+\\+)');
+  assert.doesNotThrow(() => new RegExp(u.windows[0].models));
 });
 
 test('the Claude "weekly Fable" window applies to Fable models only', async () => {
@@ -207,6 +232,18 @@ test('antigravity, qwen-code and kimi: a 40k prompt is not passed as a long argv
       assert.equal(long.length, 0, `${id} put a ${long[0]?.length} char argument on argv`);
     } finally { try { cleanup?.(); } catch {} }
   }
+});
+
+test('antigravity: a 40k prompt uses --input-format text and does not pass -p; short prompts still pass -p', () => {
+  const long = VENDORS.antigravity.headlessArgs({ prompt: 'x'.repeat(40_000), cwd: 'F:/ws', timeoutMs: 60_000 });
+  const i = long.args.indexOf('--input-format');
+  assert.ok(i >= 0 && long.args[i + 1] === 'text', 'long prompt must set --input-format text');
+  assert.ok(!long.args.includes('-p'), 'agy 1.2.8 -p takes a prompt value; omit it when piping stdin');
+  assert.equal(long.stdinPrompt, true);
+  const short = VENDORS.antigravity.headlessArgs({ prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000 });
+  assert.ok(short.args.includes('-p'));
+  assert.equal(short.args[short.args.indexOf('-p') + 1], 'hi');
+  assert.ok(!short.stdinPrompt);
 });
 
 test('vendor runner sends the prompt on stdin when headlessArgs sets stdinPrompt', async () => {

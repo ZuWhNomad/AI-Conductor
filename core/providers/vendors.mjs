@@ -85,7 +85,7 @@ export function parseAgyUsage(text) {
   for (const g of groups) {
     // "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS" → ^(claude|gpt); falls back to the group name.
     const names = (String(g.description || '').split(':')[1] || g.name || '').split(',').map((s) => s.trim().split(/[\s-]/)[0].toLowerCase()).filter(Boolean);
-    const models = names.length ? `^(${[...new Set(names)].join('|')})` : null;
+    const models = names.length ? `^(${[...new Set(names)].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})` : null;
     const short = String(g.name || '').replace(/ models?$/i, '');
     for (const b of g.buckets || []) {
       const rem = Number(b.remaining_fraction);
@@ -134,15 +134,14 @@ export const VENDORS = {
     },
     efforts: [], // effort lives in the model id (gemini-*-low/medium/high); listModels collapses those into families with real efforts
     collapseEfforts: true, // Method C: listModels folds …-low/-medium/-high into one family model exposing efforts:[low,medium,high]
-    // Long prompts: `-p` is print-mode (boolean); `--input-format text` reads stdin (agy 1.2.8 --help; binary:
-    // "reads prompts from stdin, so a prompt given on the command line would be ignored"). No --prompt-file.
+    // Long prompts: omit `-p`. agy 1.2.8's `-p` (alias of --print) takes the prompt as its value, so
+    // `-p --output-format` swallows `--output-format`. `--input-format text` reads stdin. No --prompt-file.
     // Threshold is grok's 8000 (same file) — Windows CreateProcess argv cap is 32767.
     headlessArgs: (t) => {
       const long = !!(t.prompt && t.prompt.length > 8000);
       const args = [];
       if (long) args.push('--input-format', 'text');
-      args.push('-p');
-      if (!long) args.push(t.prompt);
+      else args.push('-p', t.prompt);
       args.push('--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
       // Effort is encoded in the id (Method C): translate (family, effort) → concrete id here. Never pass --effort:

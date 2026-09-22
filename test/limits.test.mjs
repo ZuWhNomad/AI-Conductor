@@ -419,6 +419,22 @@ test('D5: model_scoped with display_name Mythos at 100% does not block provider'
   assert.equal(w.models, 'mythos'); // lowercased verbatim, not a known family
 });
 
+test('GP4: seven_day_oauth_apps at 100% blocks the provider; seven_day_nimbus does not', () => {
+  const oauth = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    seven_day_oauth_apps: { utilization: 100 },
+  } });
+  assert.equal(oauth.blocked, true, 'seven_day_oauth_apps is an account-wide bucket');
+  const oa = oauth.windows.find((w) => w.id === 'seven_day_oauth_apps');
+  assert.ok(oa && !oa.models, 'oauth_apps must stay unscoped');
+  const nimbus = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    seven_day_nimbus: { utilization: 100 },
+  } });
+  assert.equal(nimbus.blocked, false, 'seven_day_nimbus at 100% must not block the provider');
+  assert.ok(nimbus.windows.find((w) => w.id === 'seven_day_nimbus')?.models, 'nimbus stays model-scoped');
+});
+
 test('D5: seven_day_overage_included and overage keys stay unscoped (non-model suffixes)', () => {
   const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
     seven_day_overage_included: { utilization: 100 },

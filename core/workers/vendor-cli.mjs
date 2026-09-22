@@ -6,6 +6,8 @@ import { bus } from '../bus.mjs';
 
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|unauthorized|authentication (?:required|failed)/i;
+// Quota-only stdout: phrases that appear in a provider quota/limit refusal, not bare "429" or "rate limit".
+const QUOTA_MSG_RE = /(?:monthly|daily) usage limit|usage limit (?:reached|exceeded)|quota (?:exceeded|exhausted|reached)|insufficient (?:quota|balance)|rate[_ -]?limit (?:reached|exceeded)|too many requests/i;
 
 /**
  * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env? }
@@ -62,10 +64,12 @@ function runVendorCliOnce(spec, t) {
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;
       // Quota-only stdout (kimi prints the limit line as the whole report, sometimes with exit 0) is a failed limit, not a success.
-      // Only a short message: the real Kimi quota line is one line. A long report that merely mentions "rate limit" is not a hit.
+      // Shape: no items, short text, a quota-refusal phrase — independent of exit code. A success that merely mentions "429" is not a hit.
       const quotaText = (st.text || '').trim();
-      if (!res.error && !st.items.length && quotaText.length <= 300 && LIMIT_RE.test(quotaText)) res.error = quotaText.slice(-400) || 'usage limit';
-      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${res.error ? `\n${st.text || ''}` : ''}`;
+      const quotaOnly = !st.items.length && quotaText.length <= 300 && QUOTA_MSG_RE.test(quotaText);
+      if (quotaOnly && !res.error) res.error = quotaText.slice(-400) || 'usage limit';
+      // st.text joins the haystack only for quota-only stdout — a failed run whose narration mentions "429" is not a limit hit.
+      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${quotaOnly ? `\n${st.text || ''}` : ''}`;
       res.limitHit = !!res.error && LIMIT_RE.test(haystack);
       res.authFailed = !!res.error && AUTH_RE.test(haystack);
       if (res.authFailed && res.error) res.error += ` — sign in with: ${spec.loginHint || spec.id}`;
