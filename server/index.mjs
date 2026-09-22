@@ -214,7 +214,7 @@ async function route(req, res, url) {
     if (m === 'GET' && !seg[2]) return json(res, 200, listTasks({ sessionId: url.searchParams.get('session') || null }));
     if (m === 'POST' && !seg[2]) { // direct-to-worker (no conductor tokens): the UI's "/worker …" shortcut
       const b = await readBody(req);
-      if (typeof b.cwd !== 'string' || typeof b.spec !== 'string' || !b.cwd || !b.spec) return json(res, 400, { error: 'cwd and spec must be nonempty strings' });
+      if ((!b.followUpOf && (typeof b.cwd !== 'string' || !b.cwd)) || typeof b.spec !== 'string' || !b.spec) return json(res, 400, { error: 'spec must be a nonempty string; cwd is required for new tasks' });
       return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover, parallelOverride: b.parallelOverride })));
     }
     if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
