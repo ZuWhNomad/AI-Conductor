@@ -240,7 +240,8 @@ model all obey the same budget. Two rules matter:
 - **Over a per-window target we do NOT park — we degrade to sequential.** The scheduler keeps issuing, one task at a
   time per provider; a task that runs into the *real* provider limit then hands off via failover so another agent
   takes over. This replaced an earlier park-until-reset that could leave a lone task queued forever. A provider is
-  only hard-parked on its real reported block (`blockedUntil`), not on a budget target.
+  only hard-parked on a real provider block or an applicable live window at 100% / rejected (`modelBlockedUntil`),
+  including model-scoped windows. Reset windows no longer block; parallel overrides bypass pacing only.
 - **A fresh window with no measured cost is a probe:** exactly one task of that provider runs at a time until its
   cost is measured, so a batch can't flood an unmetered window.
 

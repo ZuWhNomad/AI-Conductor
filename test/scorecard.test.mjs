@@ -376,13 +376,41 @@ test("the conductor's plan is capped on its session window only; weekly (Fable w
   const lim = await import('../core/limits.mjs');
   lim.getLimits().providers.claude = { provider: 'claude', windows: [{ id: 'claude:5h', label: '5-hour', usedPercent: 50 }, { id: 'claude:w', label: 'weekly', usedPercent: 99 }, { id: 'claude:wf', label: 'weekly Fable', usedPercent: 100 }] };
   assert.equal(sc.providerClass('claude'), 'conductor');
-  assert.equal(sc.providerAvailable('claude'), true);
+  assert.equal(sc.providerAvailable('claude', { model: 'opus' }), true);
+  assert.equal(sc.providerAvailable('claude', { model: 'fable' }), false);
   lim.getLimits().providers.claude.windows[0].usedPercent = 96;
   assert.equal(sc.providerAvailable('claude'), false);
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent: 99, resetsAt: 1000 }] };
   assert.equal(sc.providerAvailable('codex'), true);   // subscriptions run to 100%
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] };
   delete lim.getLimits().providers.claude;
+});
+
+test('conductor selection rejects exhausted or rejected scoped weekly windows, but allows other groups and expired windows', async () => {
+  const { getLimits, noteRateLimitEvent } = await import('../core/limits.mjs');
+  const previous = getLimits().providers.claude;
+  const scorecard = loadConfig().scorecard;
+  const pick = (model) => sc.recommend({ category: 'other', difficulty: 2, providers: ['claude'], exclude: [model === 'opus' ? 'claude:sonnet' : 'claude:opus'] });
+  try {
+    saveConfig({ scorecard: { usePriors: false, classes: { claude: 'conductor' }, classCap: { conductor: 95 } } });
+    seed('claude', 'opus', null, 'other', 2, ['pass', 'pass', 'pass']);
+    seed('claude', 'sonnet', null, 'other', 2, ['pass', 'pass', 'pass']);
+    getLimits().providers.claude = { provider: 'claude', blocked: false, windows: [
+      { id: 'five_hour', label: '5-hour', usedPercent: 40 },
+      { id: 'seven_day_opus', label: 'weekly Opus', models: 'opus', usedPercent: 100, resetsAt: Date.now() + 60_000 },
+    ] };
+    assert.equal(pick('opus'), null);
+    assert.equal(pick('sonnet').model, 'sonnet');
+    getLimits().providers.claude.windows[1].usedPercent = 99;
+    assert.equal(pick('opus').model, 'opus');
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: Date.now() + 60_000 });
+    assert.equal(pick('opus'), null);
+    assert.equal(pick('sonnet').model, 'sonnet');
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', utilization: 1, resetsAt: Date.now() - 1 });
+    assert.equal(pick('opus').model, 'opus');
+    getLimits().providers.claude.windows[0] = { id: 'five_hour', label: '5-hour', usedPercent: 100, resetsAt: Date.now() - 1 };
+    assert.equal(pick('opus').model, 'opus');
+  } finally { getLimits().providers.claude = previous; saveConfig({ scorecard }); }
 });
 
 test('modeling is a first-class category (journaled and scored as itself, not as other)', () => {

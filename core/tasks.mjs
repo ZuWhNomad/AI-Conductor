@@ -11,7 +11,7 @@ import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { blockedUntil, refreshLimits } from './limits.mjs';
+import { modelBlockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
@@ -210,7 +210,7 @@ export function schedule() {
   for (const t of queued) {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (running.size >= max) break;
-    const until = blockedUntil(t.provider);
+    const until = modelBlockedUntil(t.provider, t.model);
     if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
     if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
       if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
@@ -281,7 +281,7 @@ async function run(t) {
       const next = failover(t);
       if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
       else {
-        const until = blockedUntil(t.provider) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000);
+        const until = modelBlockedUntil(t.provider, t.model) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard?.blockedMinutes ?? 30) * 60_000);
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }

@@ -71,7 +71,7 @@ function earliestReset(windows = []) {
 }
 
 export function mergePoll(prev, r) {
-  const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows) : null };
+  const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !w.models)) : null };
   if (!r.windows?.length && !r.blocked && prev.blockedReason === '429' && prev.blockedUntil > Date.now()) {
     Object.assign(merged, { blocked: prev.blocked, blockedUntil: prev.blockedUntil, blockedReason: prev.blockedReason });
   }
@@ -84,10 +84,11 @@ export function noteRateLimitEvent(providerId, info) {
   const w = windowFromEvent(info);
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   if (w) {
+    if (info.status === 'rejected' && !w.resetsAt) w.resetsAt = Date.now() + blockedMs();
     p.windows = [...(p.windows || []).filter((x) => x.id !== w.id), w];
   }
-  if (info?.status === 'rejected') { p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + blockedMs(); p.blockedReason = info.rateLimitType || 'rate_limit'; }
-  else if (info?.status === 'allowed' && p.blockedReason === info.rateLimitType) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
+  if (info?.status === 'rejected' && !w?.models) { p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + blockedMs(); p.blockedReason = info.rateLimitType || 'rate_limit'; }
+  else if (info?.status === 'allowed' && !w?.models && p.blockedReason === info.rateLimitType) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
   p.source = 'event'; p.updatedAt = nowIso();
   cache.providers[providerId] = p;
   save();
@@ -119,8 +120,23 @@ export function blockedUntil(providerId) {
   getLimits();
   const p = cache.providers[providerId];
   if (!p?.blocked) return null;
-  if (p.blockedUntil && p.blockedUntil < Date.now()) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; save(false); return null; }
+  if (p.blockedUntil && p.blockedUntil <= Date.now()) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; save(false); return null; }
   return p.blockedUntil || Date.now() + blockedMs();
+}
+
+/** Windows metered by this model; no model means all groups. */
+export function providerWindows(provider, model = null) {
+  const scope = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
+  return (getLimits().providers[provider]?.windows || []).filter((w) => !scope(w) || !model || new RegExp(scope(w), 'i').test(model));
+}
+
+/** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
+export function modelBlockedUntil(provider, model = null) {
+  const global = blockedUntil(provider);
+  if (global) return global;
+  const now = Date.now();
+  const full = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > now) && (w.status === 'rejected' || w.usedPercent >= 100));
+  return full.length ? Math.min(...full.map((w) => w.resetsAt || now + blockedMs())) : null;
 }
 
 bus.on('event', (e) => {

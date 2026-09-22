@@ -354,3 +354,51 @@ test('dispatch is not serialized on git: two tasks are running before the first 
   for (const t of batch) assert.ok(runRows().some((r) => r.taskId === t.id), 'aborted worker scoring is drained');
   assert.ok(PROVIDERS.deepseek.pollLimits.mock.callCount() > 0, 'scoring uses the offline limit stub');
 });
+
+for (const scenario of ['exhausted', 'rejected', 'budget-disabled', 'expired', 'soft-sequential', 'soft-parallel']) {
+  test(`scoped quotas on pinned tasks: ${scenario}`, async (ctx) => {
+    const { getLimits, noteRateLimitEvent } = await import('../core/limits.mjs');
+    const { loadConfig, saveConfig } = await import('../core/config.mjs');
+    const original = getLimits().providers.claude;
+    const conductor = loadConfig().conductor;
+    const provider = PROVIDERS.claude;
+    const finish = Promise.withResolvers();
+    const calls = [];
+    mockCompletions(ctx, async (_url, { body }) => {
+      calls.push(JSON.parse(body).model);
+      await finish.promise;
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] }), { status: 200 });
+    });
+    const soft = scenario.startsWith('soft');
+    const reset = Date.now() + (scenario === 'expired' ? -1 : 60_000);
+    getLimits().providers.claude = { provider: 'claude', blocked: false, windows: [
+      { id: 'five_hour', label: '5-hour', usedPercent: soft ? 96 : 40 },
+      { id: 'seven_day_opus', label: 'weekly Opus', models: 'opus', usedPercent: soft ? 99 : 100, resetsAt: reset },
+    ] };
+    if (scenario === 'rejected') noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: reset });
+    PROVIDERS.claude = { ...provider, kind: 'openai-compat', workerConfig: () => ({ baseUrl: 'https://offline.example/v1', apiKey: 'test-only' }), pollLimits: async () => getLimits().providers.claude };
+    saveConfig({ conductor: { budgetGate: scenario !== 'budget-disabled' } });
+    const batch = ['opus', 'opus', 'sonnet'].map((model) => createTask({ cwd: tmpDir('scoped-pinned'), provider: 'claude', model, spec: 'x', parallelOverride: scenario !== 'soft-sequential' }));
+    try {
+      delete process.env.CONDUCTOR_NO_SCHEDULE;
+      schedule();
+      const expected = scenario === 'soft-sequential' ? ['running', 'queued', 'queued'] : soft || scenario === 'expired' ? ['running', 'running', 'running'] : ['parked', 'parked', 'running'];
+      assert.deepEqual(batch.map((t) => t.status), expected);
+      for (const t of batch.filter((t) => t.status === 'parked')) { assert.equal(t.resumeAt, reset); assert.equal(t.attempts, 0); }
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      const active = batch.filter((t) => t.status === 'running');
+      finish.resolve();
+      for (const t of await Promise.all(active.map((t) => awaitTask(t.id)))) assert.equal(t.status, 'done');
+      assert.deepEqual(calls.sort(), active.map((t) => t.model).sort());
+    } finally {
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      finish.resolve();
+      for (const t of batch) if (t.status === 'queued' || t.status === 'parked') cancelTask(t.id);
+      await Promise.all(batch.map((t) => awaitTask(t.id)));
+      await flushRecords();
+      PROVIDERS.claude = provider;
+      getLimits().providers.claude = original;
+      saveConfig({ conductor });
+    }
+  });
+}

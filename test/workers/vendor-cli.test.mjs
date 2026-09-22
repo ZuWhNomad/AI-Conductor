@@ -103,7 +103,7 @@ test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09
   // The router applies a window only to the models it meters: Claude on the Google plan is full, Gemini is not.
   const lim = await import('../../core/limits.mjs');
   const sc = await import('../../core/scorecard.mjs');
-  lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: u.windows };
+  lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: u.windows.map((w) => ({ ...w, resetsAt: Date.now() + 60_000 })) };
   assert.equal(sc.providerUsedPct('antigravity', { model: 'gemini-3.8-flash-low' }), 16.59);
   assert.equal(sc.providerUsedPct('antigravity', { model: 'claude-sonnet-4-6' }), 100);
   assert.equal(sc.providerAvailable('antigravity', { model: 'gemini-3.8-flash-low' }), true);

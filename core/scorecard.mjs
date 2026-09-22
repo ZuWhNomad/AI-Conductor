@@ -4,7 +4,8 @@
 // (cheap model first, stronger model on fail), chosen by utility = value-of-quality - expected cost.
 import { statSync } from 'node:fs';
 import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
-import { getLimits, blockedUntil } from './limits.mjs';
+import { getLimits, modelBlockedUntil, providerWindows } from './limits.mjs';
+export { providerWindows } from './limits.mjs';
 import { findModel, getModels } from './models.mjs';
 import { loadConfig } from './config.mjs';
 import { bus } from './bus.mjs';
@@ -383,20 +384,13 @@ export function providerClass(provider, cfg = loadConfig().scorecard) {
 
 /** Busiest window % of a provider (0 when unknown). `sessionOnly` looks at short (session/5-hour) windows only. */
 export function providerUsedPct(provider, { sessionOnly = false, model = null } = {}) {
-  const ws = providerWindows(provider, model).filter((w) => !sessionOnly || /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600));
+  const ws = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > Date.now()) && (!sessionOnly || /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)));
   return Math.max(0, ...ws.map((w) => Number(w.usedPercent) || 0));
-}
-
-/** A provider's windows that apply to a model: windows carry an optional `models` regex (Antigravity meters Gemini and Claude/GPT separately). */
-export function providerWindows(provider, model = null) {
-  // A window may name the models it meters (Antigravity groups); Claude's "weekly Fable" window meters Fable only.
-  const scope = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
-  return (getLimits().providers[provider]?.windows || []).filter((w) => !scope(w) || !model || new RegExp(scope(w), 'i').test(model));
 }
 
 /** May the router hand new work to this provider right now? Blocked, or past its class cap, means no. */
 export function providerAvailable(provider, { overflowApi = false, cfg = loadConfig().scorecard, model = null } = {}) {
-  if (blockedUntil(provider)) return false;
+  if (modelBlockedUntil(provider, model)) return false;
   const cls = providerClass(provider, cfg);
   if (cls === 'api' && !overflowApi) return false;
   // The conductor's plan is capped on its session window only (its weekly may run to 100%); other classes on their busiest window.

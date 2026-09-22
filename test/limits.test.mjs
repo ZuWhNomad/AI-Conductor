@@ -251,3 +251,33 @@ test('DeepSeek balance polling stays on the configured vendor origin', async (t)
     }
   } finally { saveConfig({ providers: { deepseek: original || { apiKey: '', baseUrl: '' } } }); }
 });
+
+test('scoped rejections block their model until reset and preserve genuine global blocks', async () => {
+  const { modelBlockedUntil } = await import('../core/limits.mjs');
+  const { loadConfig } = await import('../core/config.mjs');
+  const original = getLimits().providers.claude;
+  const reset = Date.now() + 60_000;
+  try {
+    getLimits().providers.claude = { provider: 'claude', blocked: false, windows: [] };
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: reset });
+    assert.equal(blockedUntil('claude'), null);
+    assert.equal(modelBlockedUntil('claude', 'claude-opus-4-8'), reset);
+    assert.equal(modelBlockedUntil('claude', 'claude-sonnet-4-6'), null);
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: Date.now() - 1 });
+    assert.equal(modelBlockedUntil('claude', 'claude-opus-4-8'), null);
+    const before = Date.now();
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus' });
+    const expiry = modelBlockedUntil('claude', 'opus');
+    const duration = loadConfig().scorecard.blockedMinutes * 60_000;
+    assert.ok(expiry >= before + duration && expiry <= Date.now() + duration);
+    noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'seven_day_opus', utilization: 0.5 });
+    assert.equal(modelBlockedUntil('claude', 'opus'), null);
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'five_hour', resetsAt: reset });
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: reset + 60_000 });
+    assert.equal(blockedUntil('claude'), reset);
+    noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'seven_day_opus' });
+    assert.equal(modelBlockedUntil('claude', 'sonnet'), reset);
+    const merged = mergePoll({}, { blocked: true, windows: [{ usedPercent: 100, resetsAt: reset }, { models: 'opus', usedPercent: 100, resetsAt: reset - 1 }] });
+    assert.equal(merged.blockedUntil, reset);
+  } finally { getLimits().providers.claude = original; }
+});
