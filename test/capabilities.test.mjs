@@ -1,7 +1,10 @@
 import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import fs, { readFileSync, writeFileSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 
 const cap = await import('../core/capabilities.mjs');
@@ -85,9 +88,49 @@ test('research on a miss is opt-in, once per category per 30 days; reports parse
   assert.equal(cap.capabilitiesFor('docs').find((e) => e.name === 'mkdocs').approved, false);
 });
 
-test('detection runs the catalogue windowless and records availability in the state dir', async () => {
-  const st = await cap.detectCapabilities({ tools: { index: { git: { kind: 'cli', categories: ['other'], purpose: 'version control', invoke: 'git', detect: { command: 'git', args: ['--version'] } }, nope: { kind: 'cli', categories: ['other'], purpose: 'x', invoke: 'x', detect: { command: 'definitely-not-installed-xyz' } } } } });
-  assert.equal(st.nope.available, false);
-  if (st.git.available) assert.match(st.git.version, /^git version/);
-  assert.equal(cap.detectionStatus().nope.available, false);
+test('detection skips parsed unapproved proposals before probing and permits approved and curated entries', async (t) => {
+  const [proposal] = cap.parseResearched('```json\n' + JSON.stringify([{
+    name: 'fixture', kind: 'cli', purpose: 'fixture detector',
+    detect: { command: 'fixture-detector', args: ['--run', 'arbitrary code'] },
+    install: { url: 'https://example.com/fixture' },
+  }]) + '\n```', 'other');
+  assert.equal(proposal.approved, false);
+  const curated = cap.loadIndex({ tools: { index: {} } });
+  const cfg = { tools: { index: { ...Object.fromEntries(curated.map((e) => [e.name, null])), fixture: proposal } } };
+  const probe = t.mock.method(fs, 'existsSync', (file) => /(?:^|[\\/])(fixture-detector|tesseract)(?:\.exe)?$/.test(file));
+  const launch = t.mock.method(childProcess, 'spawn', () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    queueMicrotask(() => { child.stdout.emit('data', 'fixture version 1\n'); child.emit('close', 0); });
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(await cap.detectCapabilities(cfg), {});
+    assert.equal(probe.mock.callCount(), 0, 'unapproved detectors must not even look up the command');
+    assert.equal(launch.mock.callCount(), 0, 'unapproved detectors must not launch');
+
+    proposal.approved = true;
+    const approved = await cap.detectCapabilities(cfg);
+    assert.equal(approved.fixture.available, true);
+    assert.equal(approved.fixture.version, 'fixture version 1');
+    assert.equal(launch.mock.callCount(), 1);
+    assert.deepEqual(launch.mock.calls[0].arguments[1], proposal.detect.args);
+    assert.equal(launch.mock.calls[0].arguments[2].windowsHide, true);
+    assert.deepEqual(JSON.parse(readFileSync(join(HOME, 'capabilities.json'), 'utf8')), approved);
+
+    proposal.approved = false;
+    delete cfg.tools.index.tesseract; // Restore the curated entry with approval unset.
+    cfg.tools.index.nope = { kind: 'cli', detect: { command: 'definitely-not-installed-xyz' } };
+    assert.equal(cap.loadIndex(cfg).find((e) => e.name === 'tesseract').approved, undefined);
+    const st = await cap.detectCapabilities(cfg);
+    assert.equal(st.fixture, undefined, 'revoking approval also clears previous detection status');
+    assert.equal(st.tesseract.available, true);
+    assert.equal(st.nope.available, false);
+    assert.equal(cap.detectionStatus().nope.available, false);
+    assert.equal(launch.mock.callCount(), 2);
+    assert.match(launch.mock.calls[1].arguments[0], /tesseract(?:\.exe)?$/);
+  } finally {
+    t.mock.restoreAll(); syncBuiltinESMExports();
+  }
 });

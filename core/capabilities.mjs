@@ -46,6 +46,7 @@ function capture(bin, args) {
 export async function detectCapabilities(cfg = loadConfig()) {
   const next = {};
   await Promise.all(loadIndex(cfg).map(async (e) => {
+    if (e.approved === false) return; // Research proposals cannot run detectors before approval.
     let available = false, version = null;
     if (e.kind === 'cli' && e.detect?.command) { const bin = findCli(e.detect.command); if (bin) { version = await capture(bin, e.detect.args || ['--version']); available = version != null; } }
     else if (e.kind === 'mcp') available = !!mcpServers(cfg)[e.detect?.server || e.name];
