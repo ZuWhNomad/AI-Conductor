@@ -67,9 +67,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **Drafting** (turning a reference image into clean 2-D line art, before any geometry exists): tag
   `category: "drafting"`. The worker gets the same image→3D recipe, whose **B0.1** is the drafting stage and tells
   it to stop at an approved drawing. Judged pass / close / fail like modeling: the auto-pick routes only a model
-  with a recorded drafting PASS (currently `codex:gpt-6-astra` at **xhigh**, `claude:claude-fable-5-1` at
-  **high**). A drawing is cheap and judged by eye, so to try other models, pin them explicitly and report the
-  verdicts. Split an image→3D job this way whenever the artwork is the risky part — a
+  with a recorded drafting PASS (currently `codex:gpt-6-astra` at **xhigh**). A drawing is cheap and judged by
+  eye, so to try other models, pin them explicitly and report the verdicts. Split an image→3D job this way
+  whenever the artwork is the risky part — a
   drafting round costs minutes, a modeling round costs half an hour, and a drawing that does not read wastes the
   geometry built on top of it.
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag

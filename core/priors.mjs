@@ -45,16 +45,16 @@ export const MODELING = {
   ],
 };
 // 2-D line art from the reference photos (cookie-cutter drafting rounds, benchmarks repo runs/2026-09-20-drafting and
-// runs/2026-09-21-drafting-panel). Judged by eye there as good / weak / unusable = pass / close / fail here.
+// runs/2026-09-21-drafting-panel), judged by eye there as good / weak / unusable. Verdicts below are the operator's.
 export const DRAFTING = {
-  caveat: 'Only a model with a recorded drafting PASS may be auto-picked for line art (currently codex:gpt-6-astra at xhigh, claude:claude-fable-5-1 at high); "close" drawings waste the geometry built on them. To try other models, pin them explicitly.',
+  caveat: 'Only a model with a recorded drafting PASS may be auto-picked for line art (currently codex:gpt-6-astra at xhigh); "close" drawings waste the geometry built on them. To try other models, pin them explicitly.',
   results: [
-    { re: /^codex:gpt-6-astra/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'xhigh' },           // good x3: mountain, pine trees, penguin
-    { re: /^claude:claude-fable-5-1/, model: 'claude:claude-fable-5-1', verdict: 'pass', effort: 'high' }, // good: most faithful (fine detail needs thinning at 100 mm)
-    { re: /^codex:gpt-5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'close', effort: 'xhigh' },         // good x1, weak x2: stiff, crude shapes
-    { re: /^claude:claude-opus-5$/, model: 'claude:claude-opus-5', verdict: 'close', effort: 'max' },      // weak: sawtooth treeline (ran as opus[1m], then Opus 5)
-    { re: /^grok:grok-4\.7/, model: 'grok:grok-4.7', verdict: 'close', effort: 'high' },                   // weak
-    { re: /^grok:grok-4\.6/, model: 'grok:grok-4.6', verdict: 'fail', effort: 'high' },                    // unusable: broken hairline fragments
+    { re: /^codex:gpt-6-astra/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'xhigh' },            // good x3: mountain, pine trees, penguin
+    { re: /^claude:claude-fable-5-1/, model: 'claude:claude-fable-5-1', verdict: 'close', effort: 'high' }, // faithful, but detail finer than a 1.4 mm wall holds at 100 mm
+    { re: /^codex:gpt-5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'close', effort: 'xhigh' },          // good x1, weak x2: stiff, crude shapes
+    { re: /^claude:claude-opus-5$/, model: 'claude:claude-opus-5', verdict: 'close', effort: 'max' },       // weak: sawtooth treeline (ran as opus[1m], then Opus 5)
+    { re: /^grok:grok-4\.7/, model: 'grok:grok-4.7', verdict: 'fail', effort: 'high' },
+    { re: /^grok:grok-4\.6/, model: 'grok:grok-4.6', verdict: 'fail', effort: 'high' },                     // broken hairline fragments
   ],
 };
 

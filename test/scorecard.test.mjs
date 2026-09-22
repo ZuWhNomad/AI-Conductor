@@ -462,8 +462,7 @@ test('modeling: only a recorded pass is routable, at the effort that passed', as
   assert.equal(p.priorFor('codex', 'gpt-6-sol', 'modeling').tier, null);    // a newer gpt-6 model does not inherit Astra's verdict
   // Drafting has its own verdicts (good / weak / unusable recorded as pass / close / fail), not modeling's.
   assert.deepEqual([p.priorFor('codex', 'gpt-6-astra', 'drafting').tier, p.priorFor('codex', 'gpt-6-astra', 'drafting').effort], ['A', 'xhigh']);
-  assert.deepEqual([p.priorFor('claude', 'claude-fable-5-1[1m]', 'drafting').tier, p.priorFor('claude', 'claude-fable-5-1[1m]', 'drafting').effort], ['A', 'high']);
-  for (const [provider, model] of [['codex', 'gpt-5.6-sol'], ['grok', 'grok-4.7'], ['grok', 'grok-4.6'], ['claude', 'opus-5']]) {
+  for (const [provider, model] of [['claude', 'claude-fable-5-1[1m]'], ['codex', 'gpt-5.6-sol'], ['grok', 'grok-4.7'], ['grok', 'grok-4.6'], ['claude', 'opus-5']]) {
     assert.equal(p.priorFor(provider, model, 'drafting').tier, null, `${provider}:${model} has no drafting pass`);
   }
 });
