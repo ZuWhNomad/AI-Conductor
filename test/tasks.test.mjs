@@ -1,7 +1,10 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 
 const { createTask, cancelTask, awaitTask, getTask, listTasks, describeTask, publicTask, schedule, abortRunning } = await import('../core/tasks.mjs');
@@ -192,21 +195,86 @@ test('createTask strips an effort a model cannot honor (Method C guard D)', asyn
   for (const t of [stripped, kept, clamped, unknown]) cancelTask(t.id);
 });
 
+// A fresh task module captures the controlled execFile promise, without adding a production test hook.
+async function tasksWithGit(ctx, exec) {
+  const original = childProcess.execFile;
+  const originalSync = childProcess.execFileSync;
+  const syncCalls = [];
+  childProcess.execFile = Object.assign(() => { throw new Error('expected promisified execFile'); }, { [promisify.custom]: exec });
+  childProcess.execFileSync = (...args) => { syncCalls.push(args); throw new Error('synchronous git on the task path'); };
+  syncBuiltinESMExports();
+  ctx.after(() => {
+    childProcess.execFile = original;
+    childProcess.execFileSync = originalSync;
+    syncBuiltinESMExports();
+    assert.deepEqual(syncCalls, [], 'task creation, dispatch and completion must not run synchronous git');
+  });
+  const tk = await import(`../core/tasks.mjs?${encodeURIComponent(ctx.name)}`);
+  for (const t of tk.listTasks()) tk.cancelTask(t.id); // isolate this scheduler from earlier journal entries
+  return tk;
+}
+
 test('dispatch is not serialized on git: two tasks are running before the first git read resolves', async (ctx) => {
   const { findCli } = await import('../core/proc.mjs');
-  const { execFileSync } = await import('node:child_process');
-  const git = findCli('git'); if (!git) return;
+  if (!findCli('git')) { ctx.skip('git is not installed'); return; }
   const dirs = [tmpDir('inter-a'), tmpDir('inter-b')];
-  for (const d of dirs) execFileSync(git, ['init', '--quiet'], { cwd: d, windowsHide: true });
-  const starts = [];
-  ctx.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => { starts.push(Date.now()); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  for (const d of dirs) mkdirSync(join(d, '.git'));
+  const reads = new Map();
+  const calls = [];
+  const tk = await tasksWithGit(ctx, async (_bin, args, { cwd }) => {
+    calls.push({ cwd, args });
+    if (args[0] === 'status' && !reads.has(cwd)) {
+      const read = Promise.withResolvers();
+      reads.set(cwd, read);
+      await read.promise;
+    }
+    return { stdout: '' };
+  });
+  const worker = ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
   const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek; // an earlier test may have left it blocked
-  const batch = dirs.map((cwd) => createTask({ cwd, provider: 'deepseek', spec: 'x' }));
+  const batch = [];
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
-    schedule();
-    assert.deepEqual(batch.map((t) => getTask(t.id).status), ['running', 'running']); // both flipped synchronously; neither waited for the other's git status
-    for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
-    assert.equal(starts.length, 2);
-  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); for (const t of batch) cancelTask(t.id); }
+    for (const cwd of dirs) batch.push(tk.createTask({ cwd, provider: 'deepseek', spec: 'x' }));
+    assert.deepEqual(batch.map((t) => t.status), ['running', 'running']);
+    assert.equal(reads.size, dirs.length, 'both git reads started while neither had resolved');
+    await new Promise(setImmediate); // the event loop progresses with both git reads still pending
+    assert.equal(worker.mock.callCount(), 0, 'workers wait for their git snapshots');
+    for (const read of reads.values()) read.resolve();
+    for (const t of await Promise.all(batch.map((t) => tk.awaitTask(t.id)))) assert.equal(t.status, 'done');
+    assert.equal(worker.mock.calls.filter((c) => String(c.arguments[0]).endsWith('/chat/completions')).length, dirs.length);
+    for (const cwd of dirs) assert.deepEqual(calls.filter((c) => c.cwd === cwd).map((c) => c.args[0]), ['status', 'ls-tree', 'status', 'diff', 'diff']);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    for (const read of reads.values()) read.resolve();
+    tk.abortRunning();
+    await Promise.all(batch.filter((t) => t.status === 'running').map((t) => tk.awaitTask(t.id)));
+    for (const t of batch) tk.cancelTask(t.id);
+    await tk.flushRecords();
+  }
+});
+
+test('non-repository task creation, dispatch and completion never invoke git', async (ctx) => {
+  const calls = [];
+  const tk = await tasksWithGit(ctx, async (...args) => { calls.push(args); return { stdout: '' }; });
+  ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
+  const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek;
+  let task;
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    task = tk.createTask({ cwd: tmpDir('no-git'), provider: 'deepseek', spec: 'x' });
+    const done = await tk.awaitTask(task.id);
+    assert.equal(done.status, 'done');
+    assert.deepEqual(calls, []);
+    assert.deepEqual(done.changedFiles, []);
+    assert.equal(done.diffStat, '');
+    assert.equal(done.repoFiles, null);
+    assert.equal(done.repoBytes, null);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.abortRunning();
+    if (task?.status === 'running') await tk.awaitTask(task.id);
+    if (task) tk.cancelTask(task.id);
+    await tk.flushRecords();
+  }
 });
