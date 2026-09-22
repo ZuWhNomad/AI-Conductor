@@ -180,7 +180,7 @@ async function route(req, res, url) {
 
   if (seg[1] === 'sessions') {
     if (m === 'GET' && !seg[2]) return json(res, 200, conductor.listSessions());
-    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, conductor.createSession({ ...b, overflowApi: b.overflowApi == null ? null : !!b.overflowApi })); }
+    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, conductor.createSession({ ...b, overflowApi: b.overflowApi == null ? null : !!b.overflowApi, parallelOverride: !!b.parallelOverride })); }
     const id = seg[2];
     if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, s) : json(res, 404, { error: 'not found' }); }
     if (m === 'DELETE' && !seg[3]) return json(res, 200, { ok: conductor.deleteSession(id) });
@@ -194,6 +194,7 @@ async function route(req, res, url) {
     if (m === 'POST' && seg[3] === 'effort') { conductor.setEffort(id, b.effort || null); return json(res, 200, { ok: true }); }
     if (m === 'POST' && seg[3] === 'mode') { await conductor.setPermissionMode(id, b.permissionMode); return json(res, 200, { ok: true }); }
     if (m === 'POST' && seg[3] === 'overflow') { conductor.setOverflow(id, !!b.overflowApi); return json(res, 200, { ok: true }); }
+    if (m === 'POST' && seg[3] === 'parallel') { conductor.setParallel(id, !!b.parallelOverride); return json(res, 200, { ok: true }); }
   }
 
   if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
@@ -214,7 +215,7 @@ async function route(req, res, url) {
     if (m === 'POST' && !seg[2]) { // direct-to-worker (no conductor tokens): the UI's "/worker …" shortcut
       const b = await readBody(req);
       if (typeof b.cwd !== 'string' || typeof b.spec !== 'string' || !b.cwd || !b.spec) return json(res, 400, { error: 'cwd and spec must be nonempty strings' });
-      return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover })));
+      return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover, parallelOverride: b.parallelOverride })));
     }
     if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
     if (m === 'POST' && seg[3] === 'cancel') return json(res, 200, { ok: !!cancelTask(seg[2]) });

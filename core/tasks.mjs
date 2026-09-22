@@ -96,6 +96,7 @@ export function createTask(i) {
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain
     variant: typeof i.variant === 'string' && i.variant ? i.variant.slice(0, 40) : null, // A/B label (e.g. a policy file under test); rows keep it
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it
+    parallelOverride: !!i.parallelOverride, // the chat's parallel toggle at delegation time: skip the budget gate
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
@@ -106,7 +107,7 @@ export function createTask(i) {
     if (!parent) throw Object.assign(new Error(`unknown task ${t.followUpOf}`), { status: 404 });
     if (!parent.threadId) throw Object.assign(new Error(`task ${parent.id} has no resumable thread (provider ${parent.provider})`), { status: 400 });
     if (!TERMINAL.has(parent.status)) throw Object.assign(new Error(`task ${parent.id} is still ${parent.status}; wait for it before following up`), { status: 400 });
-    Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
+    Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
     if (t.rounds > (cfg.worker.maxRounds || 3)) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds ?? 2} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
   }
   // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
@@ -204,7 +205,7 @@ export function schedule() {
     if (running.size >= max) break;
     const until = blockedUntil(t.provider);
     if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
-    if (budget) {
+    if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
       if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
       const windows = providerWindows(t.provider, t.model);
       const costs = costByWindow(t);
@@ -307,7 +308,7 @@ function failover(t) {
     const sel = `${t.provider}:${t.model || 'default'}:${t.effort || 'default'}`;
     const alt = recommend({ category: t.category, difficulty: t.difficulty, exclude: [sel, `${t.provider}:${t.model || 'default'}`], overflowApi: !!t.overflowApi });
     if (!alt || alt.provider === t.provider) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride });
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
   } catch { return null; }

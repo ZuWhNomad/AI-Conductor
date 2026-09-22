@@ -29,6 +29,10 @@ let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
 
 for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null });
+// The routing flags the delegate tools read live in a side map (no import cycle). Seed it from every session, not only
+// when a toggle is clicked: a chat created with API overflow on, or any chat after a restart, used to read it as off.
+const syncFlags = (s) => setSessionFlags(s.id, { overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride });
+for (const s of sessions.values()) syncFlags(s);
 
 /** Which runtime conducts for a provider; throws for worker-only providers (images). */
 export function runtimeFor(provider) {
@@ -45,7 +49,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0 };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0 };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -103,7 +107,7 @@ class Inbox {
   }
 }
 
-export function createSession({ cwd, provider = null, model = null, effort = null, permissionMode = null, title = null, overflowApi = null } = {}) {
+export function createSession({ cwd, provider = null, model = null, effort = null, permissionMode = null, title = null, overflowApi = null, parallelOverride = false } = {}) {
   try { if (typeof cwd !== 'string' || !statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw Object.assign(new Error('cwd must be an existing directory'), { status: 400 }); }
   if (permissionMode !== null && !['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'].includes(permissionMode)) throw Object.assign(new Error('invalid permissionMode'), { status: 400 });
@@ -122,10 +126,10 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
   } catch (e) { throw Object.assign(e, { status: 400 }); }
   const s = {
     id: shortId(), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: honoredEffort(sel.provider, sel.model, sel.effort),
-    permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
+    permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
     costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null,
   };
-  sessions.set(s.id, s);
+  sessions.set(s.id, s); syncFlags(s);
   persistAll();
   bus.publish('session', { sessionId: s.id, kind: 'created', session: publicSession(s) });
   return publicSession(s);
@@ -394,10 +398,21 @@ export function setTitle(sessionId, title) {
   return publicSession(s);
 }
 
+/**
+ * Per-chat: skip Conductor's budget gate for the tasks this chat delegates, so they run in parallel instead of being
+ * held to one-at-a-time when a provider's window is over its target or a task's cost is not yet measured. Hard limits
+ * still apply: a provider that is actually rate-limited parks its tasks, and failover still hands them on.
+ */
+export function setParallel(sessionId, on) {
+  const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
+  s.parallelOverride = !!on; syncFlags(s); persistAll();
+  emit(s, 'updated', { session: publicSession(s) });
+}
+
 /** Per-chat: may the router spend pay-per-token APIs once the subscription classes are capped? */
 export function setOverflow(sessionId, on) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
-  s.overflowApi = !!on; setSessionFlags(sessionId, { overflowApi: s.overflowApi }); persistAll();
+  s.overflowApi = !!on; syncFlags(s); persistAll();
   emit(s, 'updated', { session: publicSession(s) });
 }
 

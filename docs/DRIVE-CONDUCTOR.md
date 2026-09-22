@@ -117,6 +117,7 @@ curl -s "$BASE/api/sessions/$SID" | node -e "let s='';process.stdin.on('data',d=
 | `/permission` | `{requestId, allow, message}` | answer a permission prompt (only when **not** in bypass) |
 | `/title` | `{title}` | rename |
 | `/overflow` | `{overflowApi}` | allow paid-API overflow when subscription classes are capped |
+| `/parallel` | `{parallelOverride}` | run this chat's workers in parallel: skip the budget gate (real provider limits still apply) |
 
 `DELETE /api/sessions/:id` removes a chat.
 

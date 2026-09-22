@@ -30,7 +30,7 @@
         <select id="new-model" title="Model"></select>
         <select id="new-effort" title="Effort"></select>
       </div>
-      <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label></div>
+      <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label><label class="chk" title="Run this chat’s workers in parallel: skip the budget gate that holds a provider to one task at a time. Real provider limits still apply."><input id="new-parallel" type="checkbox"> parallel</label></div>
       <button id="btn-new" class="primary wide">Start chat</button>
     </div>
   </section>
@@ -76,6 +76,7 @@
           <div class="row wrap chips-toggles">
             <label class="chk" title="Bypass permission prompts"><input id="bypass" type="checkbox"> auto-approve</label>
             <label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="overflow" type="checkbox"> API overflow</label>
+            <label class="chk" title="Run this chat’s workers in parallel: skip the budget gate that holds a provider to one task at a time. Real provider limits still apply."><input id="parallel" type="checkbox"> parallel</label>
           </div>
           <div class="tiny muted scope-note">Model switches live · effort applies from the next message · provider is fixed for an existing chat.</div>
         </div>

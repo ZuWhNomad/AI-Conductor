@@ -134,7 +134,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
           if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; }
         }
         if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
-        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi });
+        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
@@ -156,7 +156,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
       description: 'Send review comments to the same worker thread of a finished task (cheaper than a new task; keeps its context). Numbered, concrete points work best.',
       schema: z.object({ task_id: z.string(), comments: z.string(), background: z.boolean().optional(), timeout_minutes: z.number().optional(), sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Override the inherited Codex sandbox, e.g. workspace-write to turn a read-only review thread into a fix round') }),
       handler: async (a) => {
-        const t = createTask({ sessionId, cwd, spec: a.comments, followUpOf: a.task_id, sandbox: a.sandbox });
+        const t = createTask({ sessionId, cwd, spec: a.comments, followUpOf: a.task_id, sandbox: a.sandbox, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         if (a.background) return `Follow-up task ${t.id} queued on thread of ${a.task_id}${t.warning ? `\nWarning: ${t.warning}` : ''}.`;
         return finish(t, a.timeout_minutes);
       },

@@ -77,7 +77,7 @@ core/
   capabilities.mjs       capability index: policy/capabilities.json + config tools.index; detect (async), spec lines per category, access gates, research on a miss
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
   bench.mjs              re-benchmark scheduler + new-model detection
-  session-flags.mjs      per-session toggles (e.g. API overflow)
+  session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs)
@@ -143,7 +143,9 @@ authenticates (`free` local · `included` subscription CLIs such as Antigravity/
 `recommend` walks `scorecard.classOrder` taking the first class that holds a plan proven at the task's
 level and under its cap (`classCap`: subscriptions to 100%; the conductor's plan 95% of its *session*
 window, weekly to 100%). APIs join the walk only when the chat's **API overflow** toggle is on
-(`conductor.overflowApi` sets the default for new chats). A capable provider that is capped or blocked
+(`conductor.overflowApi` sets the default for new chats). A chat's **parallel** toggle copies onto every task it
+delegates and makes the scheduler skip the budget gate for those tasks, so they run at once instead of one at a time
+per provider; a provider that is actually blocked still parks them. A capable provider that is capped or blocked
 does not trigger extrapolation to a weaker class: the tool returns no worker and the conductor does the
 task itself or waits. Adding or dropping a subscription changes the walk by itself; nothing names a model.
 A key-based provider whose account holds *granted* (promotional) credit is in the `free` class until that

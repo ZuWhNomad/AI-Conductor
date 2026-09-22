@@ -442,7 +442,7 @@ async function openSession(id) {
   const s = await api.get(`/api/sessions/${id}`);
   S.current = s; localStorage.setItem('lastSession', id);
   $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = `${s.cwd} · ${s.selection || ''}`;
-  refreshHeaderPicker(); renderChip(); renderBudget(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi;
+  refreshHeaderPicker(); renderChip(); renderBudget(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi; if ($('#parallel')) $('#parallel').checked = !!s.parallelOverride;
   setStatus(s.status);
   renderHistory(s.messages || []);
   for (const p of s.pending || []) addPermission(p);
@@ -462,7 +462,7 @@ async function newSession() {
   localStorage.setItem('conductorSel', JSON.stringify(sel));
   api.post('/api/settings', { conductor: { provider: sel.provider, model: sel.model || null, effort: sel.effort } }).catch(() => {}); // remember as default
   let s;
-  try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked }); }
+  try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked, parallelOverride: !!$('#new-parallel')?.checked }); }
   catch (e) { $('#stt-hint').textContent = e.message; return; }
   $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
   await refreshSessions(); await openSession(s.id);
@@ -816,6 +816,7 @@ async function boot() {
   $('#new-bypass').onchange = () => { S.bypassTouched = true; };
   $('#new-overflow').onchange = () => { S.overflowTouched = true; };
   $('#overflow').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/overflow`, { overflowApi: e.target.checked });
+  $('#parallel').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/parallel`, { parallelOverride: e.target.checked });
   $('#bypass').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/mode`, { permissionMode: e.target.checked ? 'bypassPermissions' : 'acceptEdits' });
   $('#cwd').onchange = (e) => localStorage.setItem('cwd', e.target.value.trim());
   const ta = $('#input');
