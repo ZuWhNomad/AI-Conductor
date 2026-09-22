@@ -48,9 +48,9 @@ test('turn budgets default high and reject non-positive values', () => {
 
 test('timer and loop settings accept positive finite numbers and otherwise use DEFAULTS', () => {
   const keys = {
-    conductor: ['turnTimeoutMinutes', 'updateQuietMinutes', 'updateCheckHours'],
+    conductor: ['turnTimeoutMinutes', 'updateQuietMinutes'], // updateCheckHours and detectMinutes: 0 means off, tested below
     worker: ['maxIterations', 'maxTurnsLocal', 'longRunMinutes'],
-    scorecard: ['blockedMinutes'], server: ['lagWarnMs'], ui: ['detectMinutes'],
+    scorecard: ['blockedMinutes'], server: ['lagWarnMs'],
   };
   for (const value of [0, -1, '3', null, Infinity, -Infinity, NaN, 1.5]) {
     const patch = Object.fromEntries(Object.entries(keys).map(([group, names]) => [group, Object.fromEntries(names.map((key) => [key, value]))]));
@@ -130,4 +130,15 @@ test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code
   const saved = process.env.CONDUCTOR_HOME; delete process.env.CONDUCTOR_HOME;
   try { assert.equal(resolveStateDir(), existsSync(join(REPO_ROOT, '.state')) ? join(REPO_ROOT, '.state') : join(homedir(), '.conductor2')); }
   finally { process.env.CONDUCTOR_HOME = saved; }
+});
+
+test('0 is a documented off switch for updateCheckHours and detectMinutes, so validation must keep it', async () => {
+  const { saveConfig, loadConfig, DEFAULTS } = await import('../core/config.mjs');
+  saveConfig({ conductor: { updateCheckHours: 0 }, ui: { detectMinutes: 0 } });
+  assert.equal(loadConfig().conductor.updateCheckHours, 0, 'the periodic update check stays off');
+  assert.equal(loadConfig().ui.detectMinutes, 0, 'the signed-out provider sweep stays off');
+  saveConfig({ conductor: { updateCheckHours: -4 }, ui: { detectMinutes: 'soon' } });
+  assert.equal(loadConfig().conductor.updateCheckHours, DEFAULTS.conductor.updateCheckHours, 'garbage still resets');
+  assert.equal(loadConfig().ui.detectMinutes, DEFAULTS.ui.detectMinutes);
+  saveConfig({ conductor: { updateCheckHours: DEFAULTS.conductor.updateCheckHours }, ui: { detectMinutes: DEFAULTS.ui.detectMinutes } });
 });

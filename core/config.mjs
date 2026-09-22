@@ -22,7 +22,7 @@ export const DEFAULTS = {
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
-    updateCheckHours: 19,             // how often to check GitHub for updates (autoUpdate 'off' disables checks)
+    updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
     loopToolsSkip: [],                // tool names a LOOP conductor (Ollama / API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
     updateQuietMinutes: 15,           // an auto-update restart needs this long without any API write or task change: an external driver between two passes is not idle
   },
@@ -170,13 +170,17 @@ function normalize(cfg) {
   else cfg.ui.autoRefreshMinutes = Math.min(1440, Math.floor(cfg.ui.autoRefreshMinutes));
   if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
   if (!plain(cfg.scorecard.windowTargets)) cfg.scorecard.windowTargets = { ...DEFAULTS.scorecard.windowTargets };
+  // 0 is a documented OFF switch for these two, so it must survive: only garbage (negative, NaN) resets.
+  for (const [obj, defaults, key] of [[cfg.conductor, DEFAULTS.conductor, 'updateCheckHours'], [cfg.ui, DEFAULTS.ui, 'detectMinutes']]) {
+    if (!Number.isFinite(obj[key]) || obj[key] < 0) obj[key] = defaults[key];
+  }
   for (const [obj, defaults, key] of [
     [cfg, DEFAULTS, 'pollMinutes'],
-    ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes', 'updateCheckHours'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
+    ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
     ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
     ...['minSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
-    [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'], [cfg.ui, DEFAULTS.ui, 'detectMinutes'],
+    [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
   ]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }

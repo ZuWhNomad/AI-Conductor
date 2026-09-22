@@ -438,7 +438,10 @@ function startUpdateChecks({ initial = true } = {}) {
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };
   if (initial) updateStartup = setTimeout(run, 3000).unref();
-  updateInterval = setInterval(run, loadConfig().conductor.updateCheckHours * 3_600_000).unref();
+  // updateCheckHours 0 turns the periodic check off (the startup check above still runs). Never setInterval(run, 0):
+  // that would be a hot loop against GitHub, not "off".
+  const hours = loadConfig().conductor.updateCheckHours;
+  if (hours > 0) updateInterval = setInterval(run, hours * 3_600_000).unref();
 }
 
 function serveStatic(req, res, url) {
