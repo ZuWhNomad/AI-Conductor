@@ -38,11 +38,14 @@ export function readClaudeJson(file = join(homedir(), '.claude.json')) {
   } catch { return {}; }
 }
 
+function readCodexServers() {
+  try { return parseCodexToml(readFileSync(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml'), 'utf8')); } catch { return {}; }
+}
+
 /** The merged registry: { name: { url } | { command, args, env }, source: 'codex'|'claude'|'conductor' } */
 export function mcpServers(cfg = loadConfig()) {
   const out = {};
-  let codex = {}; try { codex = parseCodexToml(readFileSync(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml'), 'utf8')); } catch {}
-  for (const [n, s] of Object.entries(codex)) out[n] = { ...s, source: 'codex' };
+  for (const [n, s] of Object.entries(readCodexServers())) out[n] = { ...s, source: 'codex' };
   for (const [n, s] of Object.entries(readClaudeJson())) out[n] = { ...s, source: 'claude' };
   for (const [n, s] of Object.entries(cfg.mcpServers || {})) {
     if (s === null || s === false) delete out[n];
@@ -69,9 +72,14 @@ export const forClaudeSdk = (servers, { skip = [] } = {}) => Object.fromEntries(
 /**
  * `codex exec -c` overrides. Servers Codex already knows (source 'codex') only get the approval mode
  * (exec runs with approval_policy=never, which otherwise rejects MCP calls); others are defined in full.
+ * A supplied registry is authoritative: disable inherited servers absent after config removal/category scoping.
  */
 export function codexMcpArgs(servers) {
   const args = [];
+  if (servers == null) return args;
+  for (const name of Object.keys(readCodexServers())) {
+    if (!Object.hasOwn(servers, name)) args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
   const q = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   for (const [name, s] of Object.entries(servers || {})) {
     if (s.source !== 'codex') {

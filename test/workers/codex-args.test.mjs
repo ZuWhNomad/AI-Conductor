@@ -3,6 +3,8 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 
 const previous = process.env.CONDUCTOR_CODEX;
 process.env.CONDUCTOR_CODEX = process.platform === 'win32' ? 'C:\\definitely\\missing\\codex.exe' : '/definitely/missing/codex';
@@ -11,6 +13,53 @@ const { runCodex } = await import('../../core/workers/codex.mjs');
 const { runClaude } = await import('../../core/workers/claude.mjs');
 const { assertShellSafe, codexCommand } = await import('../../core/proc.mjs');
 const cwd = tmpDir('codex-args');
+
+test('Codex argv disables inherited MCP servers excluded by category or removed in config', async (ctx) => {
+  const { mcpServers, mcpServersFor, forClaudeSdk } = await import('../../core/mcp.mjs');
+  const previousHome = process.env.CODEX_HOME;
+  const fixture = tmpDir('codex-mcp');
+  writeFileSync(join(fixture, 'config.toml'), `
+[mcp_servers.node_repl]
+command = "node"
+[mcp_servers.warehouse]
+url = "https://example.test/mcp?token=fixture-secret"
+[mcp_servers.removed]
+command = "removed-tool"
+[mcp_servers.removed.env]
+TOKEN = "fixture-secret"
+`);
+  let argv;
+  const spawn = ctx.mock.method(childProcess, 'spawn', (_command, args) => {
+    argv = args;
+    throw new Error('fixture: captured spawn');
+  });
+  syncBuiltinESMExports();
+  process.env.CODEX_HOME = fixture;
+  try {
+    for (const removal of [null, false]) {
+      const cfg = { mcpServers: { warehouse: { categories: ['research'] }, removed: removal, extra: { url: 'https://extra.test/mcp' } } };
+      for (const category of ['implement', 'research', null]) {
+        const servers = category ? mcpServersFor(category, cfg) : { ...mcpServers(cfg), conductor: { url: 'http://127.0.0.1:1/mcp/test' } };
+        const result = await runCodex({ cwd, prompt: 'fixture', mcp: servers });
+        assert.equal(result.error, 'fixture: captured spawn');
+        const overrides = argv.filter((_, i) => argv[i - 1] === '-c');
+        assert.ok(overrides.includes('mcp_servers.removed.enabled=false'));
+        assert.equal(overrides.includes('mcp_servers.warehouse.enabled=false'), category === 'implement');
+        assert.equal(overrides.includes('mcp_servers.warehouse.default_tools_approval_mode="approve"'), category !== 'implement');
+        assert.ok(overrides.includes('mcp_servers.node_repl.default_tools_approval_mode="approve"'));
+        assert.ok(!overrides.includes('mcp_servers.node_repl.enabled=false'));
+        assert.ok(overrides.includes('mcp_servers.extra.url="https://extra.test/mcp"'));
+        if (!category) assert.ok(overrides.includes('mcp_servers.conductor.url="http://127.0.0.1:1/mcp/test"'));
+        assert.doesNotMatch(argv.join(' '), /fixture-secret|removed-tool/);
+        assert.equal(forClaudeSdk(servers).removed, undefined);
+        assert.equal(!!forClaudeSdk(servers).warehouse, category !== 'implement');
+      }
+    }
+  } finally {
+    spawn.mock.restore(); syncBuiltinESMExports();
+    if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome;
+  }
+});
 
 test('invalid Codex model and effort are rejected before spawning', async () => {
   for (const selection of [{ model: 'bad"model' }, { model: 'gpt-6-astra', effort: 'lo w' }, { effort: 'low"\nsandbox_mode="danger-full-access' }]) {
