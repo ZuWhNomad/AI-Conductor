@@ -44,6 +44,32 @@ test('access rules restrict the providers for a matching task text; an empty pro
   assert.equal(cap.accessProviders('refactor the scheduler', cfg), null);
 });
 
+test('unknown programs and MCP entries are absent until detected; access notes remain descriptive', () => {
+  const cfg = { tools: { index: {
+    fixture_cli: { kind: 'cli', categories: ['fixture'], purpose: 'local program', invoke: 'fixture-cli' },
+    fixture_mcp: { kind: 'mcp', categories: ['fixture'], purpose: 'data service', invoke: 'fixture MCP' },
+    fixture_access: { kind: 'access', categories: ['fixture'], purpose: 'Use the approved provider for private links', providers: ['fixture'], match: ['private.test/'] },
+  } } };
+  const status = cap.detectionStatus();
+  try {
+    assert.ok(cap.capabilitiesFor('fixture', cfg).every((e) => e.available === null));
+    let text = cap.capabilityLines('fixture', { cfg });
+    assert.doesNotMatch(text, /fixture_cli|fixture_mcp|installed here|Invoke:/);
+    assert.match(text, /fixture_access: Use the approved provider for private links/);
+    for (const name of ['fixture_cli', 'fixture_mcp']) status[name] = { available: true };
+    text = cap.capabilityLines('fixture', { cfg });
+    assert.match(text, /fixture_cli: local program\. Invoke: fixture-cli/);
+    assert.match(text, /fixture_mcp: data service\. Invoke: fixture MCP/);
+    status.fixture_access = { available: false };
+    assert.match(cap.capabilityLines('fixture', { cfg }), /fixture_access: Use the approved provider/);
+    assert.deepEqual(cap.accessProviders('read private.test/link', cfg), { providers: ['fixture'], names: ['fixture_access'] });
+    cfg.tools.index.fixture_access.approved = false;
+    assert.doesNotMatch(cap.capabilityLines('fixture', { cfg }), /fixture_access/);
+  } finally {
+    for (const name of Object.keys(cfg.tools.index)) delete status[name];
+  }
+});
+
 test('research on a miss is opt-in, once per category per 30 days; reports parse into unapproved proposals', () => {
   assert.equal(cap.shouldResearch('docs', { tools: { researchOnMiss: false, index: {} } }), false);
   const cfg = { tools: { researchOnMiss: true, index: {} } };

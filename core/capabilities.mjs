@@ -73,12 +73,12 @@ export function capabilitiesFor(category, cfg = loadConfig()) {
 export function capabilityLines(category, { maxChars = 1500, cfg = loadConfig() } = {}) {
   const lines = [];
   for (const e of capabilitiesFor(category, cfg)) {
-    if (e.available === false || e.approved === false) continue;
+    if ((e.kind !== 'access' && e.available !== true) || e.approved === false) continue;
     const l = e.kind === 'access' ? `- ${e.name}: ${e.purpose}` : `- ${e.name}${e.version ? ` (${e.version})` : ''}: ${e.purpose}. Invoke: ${e.invoke}`;
     if (lines.join('\n').length + l.length + 1 > maxChars) break;
     lines.push(l);
   }
-  return lines.length ? `# Programs and services for this kind of work (installed here; prefer them over doing the same by hand)\n${lines.join('\n')}` : '';
+  return lines.length ? `# Programs and services for this kind of work (detected installations and descriptive access rules)\n${lines.join('\n')}` : '';
 }
 
 /** Known-but-missing entries for a category: offered to the user once per chat, never installed by Conductor. */
