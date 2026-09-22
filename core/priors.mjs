@@ -17,14 +17,13 @@ export const TIER_CEILING = { A: 5, B: 3, C: 2, D: 1 };
 export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', ui: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', drafting: 'visual', modeling: 'visual', other: 'reason' };
 
 // 3D-modeling / visual-output tasks (STL, CAD, mesh, parametric geometry). No public benchmark covers these,
-// so the only evidence is our own — the cookie-cutter benchmark. **No model passes yet**: the best result is
-// "close but no cigar", so the conductor should set expectations and prefer the recorded best models. This is
+// so the only evidence is our own — the cookie-cutter benchmark, judged pass / close / fail. Few models pass, so
+// the conductor should set expectations; the auto-pick routes only a recorded PASS (scorecard.mjs passGate). This is
 // Conductor's distilled copy of the results (for model selection); the full run + assets live in the separate
 // conductor-benchmarks repo: https://github.com/ZuWhNomad/conductor-benchmarks
-// `drafting` is the 2-D half of the same work: turn a reference image into clean line art. It is visual, but it
-// is cheap, fast and reviewable at a glance, so it deliberately carries NO pass-gate — the point is to let many
-// models attempt it and to collect the evidence the scorecard does not have yet. Only `modeling` (which commits a
-// worker to geometry, meshes and long runs) is restricted to models with a recorded pass.
+// `drafting` is the 2-D half of the same work: turn a reference image into clean line art. It is judged the same
+// way (pass / close / fail, table DRAFTING below), and the auto-pick routes only a recorded PASS for either
+// category. Explicit pins are not gated, so several models can still be tried on a drawing to collect evidence.
 export const MODELING = {
   caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra, and codex:gpt-5.6-sol at ultra when given the image->3D recipe); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
   best: ['codex:gpt-6-astra', 'codex:gpt-5.6-sol'], // models with a recorded pass (with the effort that passed, see results)
@@ -33,7 +32,8 @@ export const MODELING = {
   results: [
     { re: /^claude:(opus|.*opus-5)/, model: 'claude:opus-5', verdict: 'close', effort: 'medium' },
     // 2026-09-12: ultra PASSED (operator verdict). Near-final in one pass from a traced outline; three follow-up revisions touched only the centre loop (off-SPEC 100 mm brief). One-shot medium was 'close'.
-    { re: /^codex:.*(astra|gpt-6)/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'ultra' },
+    // Astra only: a verdict is a model's own, and the gate routes on it — gpt-6-sol / gpt-6-luna are unbenchmarked.
+    { re: /^codex:gpt-6-astra/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'ultra' },
     { re: /^antigravity:gemini-3\.1-pro/, model: 'antigravity:gemini-3.1-pro', verdict: 'fail', effort: 'high' },
     { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
     { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
@@ -44,6 +44,20 @@ export const MODELING = {
     { re: /^antigravity:gemini-3\.8-flash/, model: 'antigravity:gemini-3.8-flash', verdict: 'fail', effort: 'high' }, // no output — quota, not quality
   ],
 };
+// 2-D line art from the reference photos (cookie-cutter drafting rounds, benchmarks repo runs/2026-09-20-drafting and
+// runs/2026-09-21-drafting-panel). Judged by eye there as good / weak / unusable = pass / close / fail here.
+export const DRAFTING = {
+  caveat: 'Only a model with a recorded drafting PASS may be auto-picked for line art (currently codex:gpt-6-astra at xhigh, claude:claude-fable-5-1 at high); "close" drawings waste the geometry built on them. To try other models, pin them explicitly.',
+  results: [
+    { re: /^codex:gpt-6-astra/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'xhigh' },           // good x3: mountain, pine trees, penguin
+    { re: /^claude:claude-fable-5-1/, model: 'claude:claude-fable-5-1', verdict: 'pass', effort: 'high' }, // good: most faithful (fine detail needs thinning at 100 mm)
+    { re: /^codex:gpt-5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'close', effort: 'xhigh' },         // good x1, weak x2: stiff, crude shapes
+    { re: /^claude:claude-opus-5$/, model: 'claude:claude-opus-5', verdict: 'close', effort: 'max' },      // weak: sawtooth treeline (ran as opus[1m], then Opus 5)
+    { re: /^grok:grok-4\.7/, model: 'grok:grok-4.7', verdict: 'close', effort: 'high' },                   // weak
+    { re: /^grok:grok-4\.6/, model: 'grok:grok-4.6', verdict: 'fail', effort: 'high' },                    // unusable: broken hairline fragments
+  ],
+};
+
 // Verdict → prior tier for the visual kind. `fail` and unknown collapse to null so they are not routed on a
 // public-code prior they never earned; `close` stays modest (ceiling 2) so nothing is trusted at high difficulty.
 // Until models get better at this, only a recorded PASS is routable: 'close' wastes tokens just like 'fail'.
@@ -93,8 +107,9 @@ export function priorFor(provider, model, category = null) {
   const p = PRIORS.find((r) => r.re.test(k));
   const kind = category ? KIND[category] || 'reason' : null;
   if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
-    const r = MODELING.results.find((x) => x.re.test(k));
-    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: MODELING.caveat };
+    const table = category === 'drafting' ? DRAFTING : MODELING;
+    const r = table.results.find((x) => x.re.test(k));
+    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: table.caveat };
   }
   if (!p) return null;
   const tier = (kind && p.tiers?.[kind]) || p.tier || null;

@@ -172,7 +172,11 @@ ladder; or an estimated ladder (any measured first step, qualified fallback; exp
 q₁ + (1−p₁)q₂, cost c₁ + (1−p₁)c₂, assuming independent failures — flagged "est." until observed
 chains replace it). `delegate` without provider/model runs the first step and tells the conductor
 the fallback to use with `retry_of`. With `scorecard.usePriors`, the public tier routes before any
-data exists; otherwise the configured default worker does. `smoke_test` / `conductor smoke` run
+data exists; otherwise the configured default worker does. `modeling` and `drafting` are gated on
+every automatic route (measured plans, both ladder steps, extrapolation, cold start with or without
+priors): only a selection with a recorded PASS at the effort that passed (pass / close / fail
+verdicts in `core/priors.mjs` `MODELING` / `DRAFTING`) is routable, and with none available
+`recommend` returns null; explicit pins are not gated. `smoke_test` / `conductor smoke` run
 `core/smoke/` to seed a model; `conductor smoke --all-models` orders by prior price.
 
 ## MCP (conductor-wide)

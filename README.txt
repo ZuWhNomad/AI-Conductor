@@ -88,7 +88,8 @@ BENCHMARKS
 Fixed benchmarks (and their heavy assets + recorded runs) live in a separate repo,
 conductor-benchmarks (https://github.com/ZuWhNomad/conductor-benchmarks), so they evolve on their
 own cadence without churning the core. Conductor keeps only a distilled copy of the results for
-model selection: see MODELING in core/priors.mjs and the "modeling" category. Pull the benchmarks
+model selection: see MODELING and DRAFTING in core/priors.mjs (pass / close / fail; the auto-pick
+routes only a recorded pass) and the "modeling" and "drafting" categories. Pull the benchmarks
 repo when you want to run or inspect a full benchmark. Current status: 3D-modeling is NOT YET
 RELIABLE (best result is "close but no cigar"); the conductor warns you before taking such a task.
 Design notes: docs/ROADMAP-capabilities.md.

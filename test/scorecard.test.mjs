@@ -459,6 +459,57 @@ test('modeling: only a recorded pass is routable, at the effort that passed', as
   assert.equal(p.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, 'A');   // passed with the recipe (2026-09-12)
   assert.equal(p.priorFor('codex', 'gpt-5.6-luna', 'modeling').tier, null); // fail
   assert.equal(p.priorFor('kimi', 'kimi-k3', 'modeling').tier, null);       // never benchmarked: no code prior leaks in
+  assert.equal(p.priorFor('codex', 'gpt-6-sol', 'modeling').tier, null);    // a newer gpt-6 model does not inherit Astra's verdict
+  // Drafting has its own verdicts (good / weak / unusable recorded as pass / close / fail), not modeling's.
+  assert.deepEqual([p.priorFor('codex', 'gpt-6-astra', 'drafting').tier, p.priorFor('codex', 'gpt-6-astra', 'drafting').effort], ['A', 'xhigh']);
+  assert.deepEqual([p.priorFor('claude', 'claude-fable-5-1[1m]', 'drafting').tier, p.priorFor('claude', 'claude-fable-5-1[1m]', 'drafting').effort], ['A', 'high']);
+  for (const [provider, model] of [['codex', 'gpt-5.6-sol'], ['grok', 'grok-4.7'], ['grok', 'grok-4.6'], ['claude', 'opus-5']]) {
+    assert.equal(p.priorFor(provider, model, 'drafting').tier, null, `${provider}:${model} has no drafting pass`);
+  }
+});
+
+test('visual work: every automatic route honors the recorded-pass gate; nothing weaker when no pass is available', (t) => {
+  const cfg = loadConfig().scorecard;
+  const reg = getModels(), previous = reg.models;
+  // The shared registry lists low/medium only: give the Codex models the efforts that passed, plus the live gpt-6-sol.
+  const efforts = ['low', 'medium', 'high', 'xhigh', 'ultra'];
+  reg.models = [...previous.map((m) => (m.provider === 'codex' ? { ...m, efforts } : m)), { provider: 'codex', id: 'gpt-6-sol', kind: 'agent', efforts }];
+  t.after(() => { reg.models = previous; saveConfig({ scorecard: cfg }); });
+  saveConfig({ scorecard: { usePriors: false, reservePct: 0 } });
+  const pick = (r) => r && sc.selOf(r);
+
+  // Cold start with priors off: the recorded pass at its effort, and nothing when it is unavailable.
+  assert.equal(pick(sc.recommend({ category: 'modeling', difficulty: 4, summary: [] })), 'codex:gpt-6-astra:ultra');
+  assert.equal(pick(sc.recommend({ category: 'drafting', difficulty: 4, summary: [] })), 'codex:gpt-6-astra:xhigh');
+  for (const category of ['modeling', 'drafting']) assert.equal(sc.recommend({ category, difficulty: 4, summary: [], exclude: ['codex:gpt-6-astra'] }), null);
+  assert.equal(sc.recommend({ category: 'design', difficulty: 4, summary: [] }), null, 'other categories keep the priors switch');
+
+  // Measured: a cheap unbenchmarked model, a cheaper effort of Astra and a benched ladder candidate, all rated,
+  // lose to Astra at ultra. `design` gets the same data ungated, as the control.
+  const source = 'modeling-gate';
+  const small = { input_tokens: 10_000, cached_input_tokens: 5_000, output_tokens: 1_000 };
+  const rated = (model, effort, category, verdict, usage = USAGE) => {
+    for (let i = 0; i < 3; i++) { const id = `${source}-${++n}`; run({ id, source, model, effort, category, difficulty: 2, result: { usage, durationMs: 1000 } }); sc.rateTask(id, verdict); }
+  };
+  for (const category of ['modeling', 'design']) {
+    rated('gpt-5.6-luna', 'medium', category, 'pass', small);
+    rated('gpt-6-astra', 'medium', category, 'pass', small);
+    rated('gpt-5.6-terra', 'medium', category, 'fixable', small);
+    rated('gpt-6-astra', 'ultra', category, 'pass');
+  }
+  assert.notEqual(pick(sc.recommend({ category: 'design', difficulty: 2, source })), 'codex:gpt-6-astra:ultra', 'control: ungated value picks a cheaper plan');
+  const measured = sc.recommend({ category: 'modeling', difficulty: 2, source });
+  assert.equal(pick(measured), 'codex:gpt-6-astra:ultra');
+  assert.deepEqual(measured.plan.steps, ['codex:gpt-6-astra:ultra'], 'no cheap-first ladder');
+  const extrapolated = sc.recommend({ category: 'modeling', difficulty: 4, source });
+  assert.equal(pick(extrapolated), 'codex:gpt-6-astra:ultra');
+  assert.match(extrapolated.reason, /extrapolated from level 2/);
+  assert.equal(sc.recommend({ category: 'modeling', difficulty: 2, source, exclude: ['codex:gpt-6-astra'] }), null, 'rated passes of other models do not make them routable');
+  // Drafting routes on its own verdict: Astra at xhigh, not at the modeling effort, and not a cheaper rated model.
+  rated('gpt-5.6-luna', 'medium', 'drafting', 'pass', small);
+  rated('gpt-6-astra', 'ultra', 'drafting', 'pass', small);
+  rated('gpt-6-astra', 'xhigh', 'drafting', 'pass');
+  assert.equal(pick(sc.recommend({ category: 'drafting', difficulty: 2, source })), 'codex:gpt-6-astra:xhigh');
 });
 
 test('wasteDiscount: a soon-resetting subscription window with unused quota is discounted', async () => {

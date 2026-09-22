@@ -290,7 +290,8 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   });
   const all = summary || summarize({ source });
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
-  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel));
+  const gate = passGate(category);
+  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
@@ -356,7 +357,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   if (!best) {
     // A provider proven at this level exists but is capped/blocked/excluded: hand the task back (the conductor does it or
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
-    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && blockedSel(g.sel));
+    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && gate(g.sel) && blockedSel(g.sel));
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
@@ -479,6 +480,14 @@ const parseSel = (s) => {
   const model = parts.join(':');
   return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort };
 };
+// Visual work (modeling, drafting): the auto-pick may route only a selection with a recorded cookie-cutter PASS, at
+// the effort that passed (priors.mjs MODELING / DRAFTING; 'close' and 'fail' are not routable), on every path and
+// every ladder step. An explicit provider/model pin is the caller's call and is not gated (benchmark runs need that).
+const passGate = (category) => (KIND[category] !== 'visual' ? () => true : (sel) => sel.split('>').every((s) => {
+  const { provider, model, effort } = parseSel(s);
+  const p = priorFor(provider, model, category);
+  return !!p?.tier && !!effort && p.effort === effort;
+}));
 
 /** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
 function pool(cells, floor) {
@@ -522,9 +531,13 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
   return want || base || null;
 }
 
-/** Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level). */
+/**
+ * Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level).
+ * Visual work always takes this path, restricted by the pass gate: its benchmark verdicts are our own evidence, not a public prior.
+ */
 function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, failedBelow }) {
-  if (!cfg.usePriors) return null;
+  if (!cfg.usePriors && KIND[category] !== 'visual') return null;
+  const gate = passGate(category);
   const reg = getModels();
   const cands = [];
   for (const m of reg.models) {
@@ -536,13 +549,13 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!price) continue;
     const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
     const sel = selOf({ provider: m.provider, model: m.id, effort });
-    if (exclude.includes(sel) || failedBelow.has(sel)) continue;
+    if (exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;
     cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
   }
   cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
   const best = cands[0];
   if (!best) return null;
-  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
+  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): ${KIND[category] === 'visual' ? `cheapest model with a recorded ${category} PASS, at the effort that passed (${best.effort})` : `cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`}`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
 }
 
 /**
