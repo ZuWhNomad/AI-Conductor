@@ -83,13 +83,20 @@ export function expandStage(stage, ctx) {
 async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime }) {
   const created = inputs.map((inp) => {
     let { provider, model, effort } = inp;
-    if (!provider && !model && inp.category && recommend) { try { const pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [] }); if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; } } catch {} }
+    if (!provider && !model && inp.category && recommend) {
+      let pick, noWorker = 'No worker available for this input.';
+      try { pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [] }); }
+      catch { noWorker = 'Worker recommendation failed.'; }
+      if (!pick) return { input: inp, id: null, noWorker };
+      provider = pick.provider; model = pick.model; effort = effort || pick.effort;
+    }
     const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty });
     return { input: inp, id: t.id };
   });
   // One stage deadline: a failover continues the wait; it does not get a fresh timeout.
   const deadline = Date.now() + timeoutMs;
   return Promise.all(created.map(async (c) => {
+    if (c.noWorker) return { ...c, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false };
     const taskIds = [c.id];
     let t;
     for (;;) {
@@ -119,17 +126,18 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
   const publish = (kind, data) => bus.publish('plan', { planId: id, sessionId, kind, ...data });
   publish('started', { goal: plan.goal, stages: plan.stages.map((s) => s.id) });
 
-  const runStage = async (stage, round = 0) => {
+  const runStage = async (stage, outputKeys, round = 0) => {
     const inputs = expandStage(stage, ctx);
     if (!inputs.length) return { tasks: [], findings: [], confirmed: [], rejected: [], summary: '(no inputs)' };
     total += inputs.length;
     if (total > MAX_TASKS) throw new Error(`plan exceeds ${MAX_TASKS} tasks`);
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
     const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime });
-    const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), title: d.input.title, status: d.task?.status, model: `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
+    const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
     if (done.some((d) => !d.complete)) {
       result.incomplete = true;
-      result.summary = done.some((d) => d.task?.timedOut) ? 'Incomplete: stage deadline reached; tasks may still be active.' : 'Incomplete: tasks have not reached a terminal status.';
+      result.summary = done.some((d) => d.noWorker) ? 'Incomplete: no worker available for one or more inputs.' : 'Incomplete: tasks have not reached a terminal status.';
+      if (done.some((d) => d.task?.timedOut)) result.summary = `${done.some((d) => d.noWorker) ? result.summary + '\n' : ''}Incomplete: stage deadline reached; tasks may still be active.`;
       return result;
     }
     if (stage.for_each) {
@@ -140,7 +148,12 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
       result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''} (${f.tally})`).join('\n');
     } else {
       let fresh = 0;
-      for (const d of done) for (const f of findingsOf(d.report, d.id)) { const k = findingKey(f); if (seenKeys.has(k)) continue; seenKeys.add(k); ctx.seen.push(f); result.findings.push(f); fresh++; }
+      for (const d of done) for (const f of findingsOf(d.report, d.id)) {
+        const k = findingKey(f);
+        // Stage outputs survive handoffs; global novelty only feeds context and dry convergence.
+        if (!seenKeys.has(k)) { seenKeys.add(k); ctx.seen.push(f); fresh++; }
+        if (!outputKeys.has(k)) { outputKeys.add(k); result.findings.push(f); }
+      }
       result.fresh = fresh;
       result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
       if (done.length === 1 && !extractJson(done[0].report)) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
@@ -149,11 +162,12 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
   };
 
   for (const stage of plan.stages) {
-    let res = await runStage(stage);
+    const outputKeys = new Set();
+    let res = await runStage(stage, outputKeys);
     if (!res.incomplete && plan.until_dry?.stage === stage.id) {
       let dry = res.fresh ? 0 : 1; const max = Math.max(1, Number(plan.until_dry.max_rounds) || 3); const k = Math.max(1, Number(plan.until_dry.dry_rounds) || 1);
       for (let round = 1; round < max && dry < k; round++) {
-        const again = await runStage(stage, round);
+        const again = await runStage(stage, outputKeys, round);
         res.tasks.push(...again.tasks);
         if (again.incomplete) { res.incomplete = true; res.summary += `\n${again.summary}`; break; }
         res.findings.push(...again.findings);

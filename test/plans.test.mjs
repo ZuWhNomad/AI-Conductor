@@ -180,3 +180,142 @@ test('timeout during an until_dry repeat preserves finalized findings and stops 
   assert.match(out.report, /Incomplete/);
   assert.doesNotMatch(out.report, /Partial/);
 });
+
+test('refused automatic selections stop the plan without dispatch or dependent stages', async (t) => {
+  for (const throws of [false, true]) await t.test(throws ? 'throwing recommender' : 'null recommendation', async () => {
+    let recommendations = 0;
+    const seq = bus.seq;
+    const out = await runPlan({ stages: [
+      { id: 'find', tasks: [{ spec: 'find', category: 'code' }] },
+      { id: 'later', tasks: [{ spec: 'must not start' }] },
+    ], until_dry: { stage: 'find', max_rounds: 3, dry_rounds: 2 } }, {
+      recommend() { recommendations++; if (throws) throw new Error('unavailable'); return null; },
+      taskRuntime: {
+        createTask() { assert.fail('a refused selection must not dispatch the default worker'); },
+        awaitTask() { assert.fail('no task was created'); },
+        getTask() { assert.fail('no task was created'); },
+      },
+    });
+    assert.equal(recommendations, 1);
+    assert.equal(out.status, 'incomplete');
+    assert.equal(out.stages.find.incomplete, true);
+    assert.equal(out.stages.find.tasks[0].id, null);
+    assert.equal(out.stages.find.tasks[0].status, 'no_worker');
+    assert.match(out.stages.find.tasks[0].error, throws ? /recommendation failed/i : /no worker/i);
+    assert.deepEqual(out.stages.find.findings, []);
+    assert.equal(out.stages.later, undefined);
+    assert.match(out.report, /Incomplete: no worker/);
+    assert.equal(readJson(statePath('plans', `${out.id}.json`)).status, 'incomplete');
+    const events = bus.since(seq).filter((e) => e.planId === out.id);
+    assert.equal(events.at(-1).kind, 'incomplete');
+    assert.equal(events.some((e) => ['stage_done', 'done'].includes(e.kind)), false);
+  });
+});
+
+test('a mixed stage awaits eligible inputs and preserves explicit and recommended selections', async () => {
+  const created = [], waited = [], recommendations = [];
+  const terminal = Promise.withResolvers();
+  const pending = runPlan({ stages: [
+    { id: 'find', tasks: [
+      { spec: 'explicit', category: 'explicit', provider: 'pinned', model: 'chosen', effort: 'high' },
+      { spec: 'refused', category: 'refused' },
+      { spec: 'automatic', category: 'auto', difficulty: 4, exclude: ['excluded'] },
+      { spec: 'automatic with effort', category: 'auto', effort: 'low' },
+    ] },
+    { id: 'later', tasks: [{ spec: 'must not start' }] },
+  ] }, {
+    recommend(input) {
+      recommendations.push(input);
+      return input.category === 'refused' ? null : { provider: 'recommended', model: 'qualified', effort: 'medium' };
+    },
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
+      async awaitTask(id) { waited.push(id); await terminal.promise; return { id, ...created[Number(id.slice(5)) - 1], status: 'done', result: { finalMessage: 'Finished' } }; },
+      getTask() { assert.fail('use the awaitTask snapshot'); },
+    },
+  });
+  let settled = false;
+  pending.then(() => { settled = true; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(settled, false);
+    assert.deepEqual(created.map(({ provider, model, effort }) => ({ provider, model, effort })), [
+      { provider: 'pinned', model: 'chosen', effort: 'high' },
+      { provider: 'recommended', model: 'qualified', effort: 'medium' },
+      { provider: 'recommended', model: 'qualified', effort: 'low' },
+    ]);
+    assert.deepEqual(waited, ['task-1', 'task-2', 'task-3']);
+    assert.deepEqual(recommendations, [
+      { category: 'refused', difficulty: 2, exclude: [] },
+      { category: 'auto', difficulty: 4, exclude: ['excluded'] },
+      { category: 'auto', difficulty: 2, exclude: [] },
+    ]);
+  } finally { terminal.resolve(); }
+  const out = await pending;
+  assert.equal(out.status, 'incomplete');
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['done', 'no_worker', 'done', 'done']);
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.id), ['task-1', null, 'task-2', 'task-3']);
+  assert.deepEqual(out.stages.find.findings, []);
+  assert.equal(out.stages.later, undefined);
+});
+
+test('finder rounds accumulate unique findings that survive dedupe and receive every refuter vote', async () => {
+  const a = { id: 'a', title: 'Bug A', file: 'a.mjs' }, b = { id: 'b', title: 'Bug B', file: 'b.mjs' };
+  const created = [];
+  let rounds = 0;
+  const out = await runPlan({ defaults: { provider: 'stub', model: 'selected' }, stages: [
+    { id: 'find', tasks: [{ spec: 'find; seen: {{seen}}' }] },
+    { id: 'dedupe', tasks: [{ spec: 'dedupe {{results:find}}; seen: {{seen}}' }, { spec: 'dedupe again' }] },
+    { id: 'vote', for_each: 'dedupe', votes: 3, task: { spec: 'vote {{item}}' } },
+  ], until_dry: { stage: 'find', max_rounds: 5, dry_rounds: 2 } }, {
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
+      async awaitTask(id) {
+        const input = created[Number(id.slice(5)) - 1];
+        const output = input.spec.startsWith('vote') ? { real: true, reason: 'verified' }
+          : { findings: input.spec.startsWith('find') && ++rounds === 1 ? [a, a] : [a, b, a, b] };
+        return { id, status: 'done', result: { finalMessage: '```json\n' + JSON.stringify(output) + '\n```' } };
+      },
+      getTask() { assert.fail('use the awaitTask snapshot'); },
+    },
+  });
+  assert.equal(out.status, 'done');
+  assert.equal(rounds, 4); // Two novel rounds, then the two requested dry rounds.
+  assert.equal(out.stages.find.tasks.length, 4);
+  assert.equal(out.stages.dedupe.tasks.length, 2);
+  for (const stage of ['find', 'dedupe', 'vote']) assert.deepEqual(out.stages[stage].findings.map((f) => f.id), ['a', 'b']);
+  assert.equal(out.stages.dedupe.fresh, 0);
+  assert.equal(out.stages.vote.tasks.length, 6);
+  assert.deepEqual(out.stages.vote.confirmed.map((f) => f.tally), ['3/3', '3/3']);
+  assert.deepEqual(out.stages.vote.rejected, []);
+  assert.match(created[0].spec, /seen: \(nothing yet\)/);
+  assert.match(created[1].spec, /seen: - Bug A \(a.mjs\)$/);
+  assert.match(created[4].spec, /seen: - Bug A \(a.mjs\)\n- Bug B \(b.mjs\)$/);
+});
+
+test('dedupe repeats keep unchanged findings once while global novelty controls dry convergence', async () => {
+  const finding = { id: 'a', title: 'Bug A', file: 'a.mjs' };
+  const created = [];
+  const out = await runPlan({ stages: [
+    { id: 'find', tasks: [{ spec: 'find' }] },
+    { id: 'dedupe', tasks: [{ spec: 'dedupe; seen: {{seen}}' }] },
+    { id: 'vote', for_each: 'dedupe', votes: 2, task: { spec: 'vote {{item}}; seen: {{seen}}' } },
+  ], until_dry: { stage: 'dedupe', max_rounds: 3, dry_rounds: 2 } }, {
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
+      async awaitTask(id) {
+        const input = created[Number(id.slice(5)) - 1];
+        const output = input.spec.startsWith('vote') ? { real: true } : { findings: [finding, finding] };
+        return { id, status: 'done', result: { finalMessage: '```json\n' + JSON.stringify(output) + '\n```' } };
+      },
+      getTask() { assert.fail('use the awaitTask snapshot'); },
+    },
+  });
+  assert.equal(out.status, 'done');
+  assert.equal(out.stages.dedupe.tasks.length, 2);
+  assert.deepEqual(out.stages.dedupe.findings.map((f) => f.id), ['a']);
+  assert.equal(out.stages.dedupe.fresh, 0);
+  assert.equal(out.stages.vote.tasks.length, 2);
+  assert.equal(out.stages.vote.confirmed[0].tally, '2/2');
+  for (const input of created.slice(1)) assert.match(input.spec, /seen: - Bug A \(a.mjs\)$/);
+});
