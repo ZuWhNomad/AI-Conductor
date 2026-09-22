@@ -414,6 +414,21 @@ test('live seven_day_nimbus rejection does not park every Claude model', () => {
   } finally { getLimits().providers.claude = original; }
 });
 
+test('allowed scoped event clears a provider block stored under the same rateLimitType', () => {
+  const original = getLimits().providers.claude;
+  const until = Date.now() + 60_000;
+  try {
+    getLimits().providers.claude = { provider: 'claude', blocked: true, blockedUntil: until, blockedReason: 'seven_day_nimbus', windows: [] };
+    noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'seven_day_nimbus' });
+    assert.equal(blockedUntil('claude'), null);
+
+    getLimits().providers.claude = { provider: 'claude', blocked: true, blockedUntil: until, blockedReason: 'five_hour', windows: [] };
+    noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'seven_day_nimbus' });
+    assert.equal(blockedUntil('claude'), until);
+    assert.equal(getLimits().providers.claude.blockedReason, 'five_hour');
+  } finally { getLimits().providers.claude = original; }
+});
+
 test('D5: novel model_scoped name (Nimbus Quill) does not block the whole provider', () => {
   // seven_day_nimbus at 100% + five_hour at 10% → provider NOT blocked; opus not blocked.
   const r = normalizeUsage({ rate_limits_available: true, rate_limits: {

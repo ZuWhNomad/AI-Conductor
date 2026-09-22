@@ -925,6 +925,21 @@ test('OB7: unknown-cost plans stay eligible but rank after every priced eligible
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
+test('escalate: priced plan wins a quality tie against an unknown-cost plan', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, hourlyUsd: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const cell = (model, effort, avgUsd) => ({
+      sel: `codex:${model}:${effort}`, steps: 1, provider: 'codex', model, effort,
+      category: 'search', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd, avgDurationMs: 0,
+    });
+    const priced = cell('gpt-5.6-luna', 'low', 0.05);
+    const unknown = cell('gpt-5.6-terra', 'medium', null);
+    const r = sc.recommend({ category: 'search', difficulty: 2, summary: [unknown, priced], escalate: true });
+    assert.equal(r.model, 'gpt-5.6-luna', 'priced luna wins the quality tie over unknown-cost terra');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
 test('B5: provenButCapped honors the caller providers allow-list so a blocked excluded provider does not block extrapolation', async () => {
   const { getLimits } = await import('../core/limits.mjs');
   const cfg = loadConfig().scorecard;

@@ -349,7 +349,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // OB7: sort — priced eligible plans before unknown-cost ones; within each group, value ordering applies.
   const eligible = (p) => p.utility > -Infinity;
   const sortCmp = escalate
-    ? (x, y) => (y.quality - x.quality) || (y.utility - x.utility)
+    ? (x, y) => (y.quality - x.quality) || (x.costUnknown !== y.costUnknown ? (x.costUnknown ? 1 : -1) : 0) || (y.utility - x.utility)
     : (x, y) => {
         if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
         if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
