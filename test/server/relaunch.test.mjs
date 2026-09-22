@@ -5,6 +5,8 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 const OK = join(process.env.CONDUCTOR_HOME, 'relaunch-ok');
 
 const { scheduleRelaunch, startServer } = await import('../../server/index.mjs');
@@ -68,6 +70,85 @@ test('startServer fails fast on a busy port when no relaunch flag is set (unchan
   delete process.env.CONDUCTOR_RELAUNCH_WAIT;
   await assert.rejects(startServer({ port: blocker.address().port }), (e) => e.code === 'EADDRINUSE');
   blocker.close();
+});
+
+test('relaunch refreshes the outgoing journal after binding without replaying completed tasks', () => {
+  const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+    import { join } from 'node:path';
+    import childProcess from 'node:child_process';
+    import { registerHooks, syncBuiltinESMExports } from 'node:module';
+    const home = process.env.CONDUCTOR_HOME, dir = join(home, 'tasks');
+    mkdirSync(dir);
+    const fixture = id => ({ id, cwd: home, title: id, spec: 'read only', provider: 'ollama',
+      model: 'fixture', status: 'running', attempts: 1, updatedAt: new Date().toISOString() });
+    const write = task => writeFileSync(join(dir, task.id + '.json'), JSON.stringify(task));
+    for (const id of ['completed', 'canceled', 'interrupted', 'shutdown', 'aged']) write(fixture(id));
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ conductor: { budgetGate: false } }));
+    const calls = [], release = Promise.withResolvers();
+    globalThis.fixtureWorker = async task => {
+      calls.push(task.id);
+      assert.equal(task.resume, true);
+      await release.promise;
+      return { ok: true, finalMessage: 'Recovered', items: [] };
+    };
+    registerHooks({ load(url, context, nextLoad) {
+      if (url === new URL('./core/workers/index.mjs', import.meta.url).href) return {
+        format: 'module', shortCircuit: true,
+        source: 'export const runWorker = (...args) => globalThis.fixtureWorker(...args);',
+      };
+      return nextLoad(url, context);
+    } });
+    const unexpectedIO = [];
+    const rejectIO = () => { unexpectedIO.push('external I/O'); throw new Error('unexpected external I/O'); };
+    globalThis.fetch = rejectIO;
+    for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) childProcess[method] = rejectIO;
+    // Stub task Git observations too: this regression needs no external processes.
+    childProcess.execFile = (command, args, options, callback) => {
+      assert.match(command, /git(?:\.exe)?$/i);
+      callback(null, '', '');
+    };
+    syncBuiltinESMExports();
+    process.env.CONDUCTOR_RELAUNCH_WAIT = '20000'; // production handover allowance
+    const { getTask, recoverTasks, awaitTask, flushRecords } = await import('./core/tasks.mjs');
+    const { startServer, stopBackgroundWork } = await import('./server/index.mjs');
+    for (const id of ['completed', 'canceled', 'interrupted', 'shutdown', 'aged']) assert.equal(getTask(id).status, 'queued');
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    const starting = startServer({ port: 0 });
+    assert.ok(existsSync(join(home, 'relaunch-ok')));
+    // Same turn, before the asynchronous listen callback: the outgoing process persists its final records.
+    write({ ...fixture('completed'), status: 'done', result: { finalMessage: 'Outgoing result' } });
+    write({ ...fixture('canceled'), status: 'canceled' });
+    write({ ...fixture('shutdown'), status: 'queued', resume: true });
+    // Six hours is the configured default recovery age; make the final record older than it.
+    write({ ...fixture('aged'), updatedAt: new Date(Date.now() - 7 * 3_600_000).toISOString() });
+    assert.equal(getTask('completed').status, 'queued');
+    const { server } = await starting;
+    try {
+      assert.equal(getTask('completed').status, 'done');
+      assert.equal(getTask('completed').result.finalMessage, 'Outgoing result');
+      assert.equal(getTask('canceled').status, 'canceled');
+      assert.equal(getTask('aged').status, 'canceled');
+      const active = getTask('interrupted');
+      assert.equal(active.status, 'running');
+      recoverTasks();
+      assert.equal(getTask('interrupted'), active, 'recovery must not replace live worker objects');
+      assert.equal(active.status, 'running');
+      release.resolve();
+      for (const id of ['interrupted', 'shutdown']) assert.equal((await awaitTask(id)).status, 'done');
+      await flushRecords();
+      assert.deepEqual(calls.sort(), ['interrupted', 'shutdown']); // completed dispatch count is ZERO
+      assert.deepEqual(unexpectedIO, []);
+    } finally {
+      release.resolve();
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      stopBackgroundWork();
+      await new Promise(resolve => server.close(resolve));
+    }
+  `], { cwd: fileURLToPath(new URL('../..', import.meta.url)), encoding: 'utf8' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('scheduleRelaunch keeps the old server when the child exits before it can bind, or never signals', async () => {

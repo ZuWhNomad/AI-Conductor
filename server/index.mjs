@@ -14,7 +14,7 @@ import { killProbes } from '../core/proc.mjs';
 import { estimateUsage, recordUsage } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import * as ollama from '../core/providers/ollama.mjs';
-import { listTasks, cancelTask, getTask, publicTask, schedule, createTask, abortRunning } from '../core/tasks.mjs';
+import { listTasks, cancelTask, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
@@ -474,6 +474,8 @@ export function startServer({ port = null } = {}) {
     const onListen = () => {
       settled = true;
       boundPort = server.address().port;
+      // The outgoing process could finish tasks after our import, before releasing the port.
+      if (process.env.CONDUCTOR_RELAUNCH_WAIT) recoverTasks();
       delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);
