@@ -80,22 +80,36 @@ export function expandStage(stage, ctx) {
   return out;
 }
 
-async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend }) {
+async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime }) {
   const created = inputs.map((inp) => {
     let { provider, model, effort } = inp;
     if (!provider && !model && inp.category && recommend) { try { const pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [] }); if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; } } catch {} }
-    const t = createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty });
+    const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty });
     return { input: inp, id: t.id };
   });
-  await Promise.all(created.map((c) => awaitTask(c.id, timeoutMs)));
-  return created.map((c) => { const t = getTask(c.id); return { ...c, task: t, report: t?.result?.finalMessage || '', ok: t?.status === 'done' }; });
+  // One stage deadline: a failover continues the wait; it does not get a fresh timeout.
+  const deadline = Date.now() + timeoutMs;
+  return Promise.all(created.map(async (c) => {
+    const taskIds = [c.id];
+    let t;
+    for (;;) {
+      const taskId = taskIds.at(-1), remaining = deadline - Date.now();
+      t = remaining > 0 ? await taskRuntime.awaitTask(taskId, remaining) : { ...taskRuntime.getTask(taskId), timedOut: true };
+      if (t?.timedOut || !t?.failedOverTo) break;
+      taskIds.push(t.failedOverTo);
+    }
+    const complete = !t?.timedOut && ['done', 'failed', 'canceled'].includes(t?.status);
+    return { ...c, taskIds, task: t, complete, report: complete ? t?.result?.finalMessage || '' : '', ok: complete && t.status === 'done' };
+  }));
 }
 
 /**
  * Execute a plan. Stages run in order; tasks within a stage run in parallel on the scheduler.
- * Returns { id, stages: {id: {tasks, findings, confirmed, rejected, summary}}, report }.
+ * Returns { id, status, stages: {id: {tasks, findings, confirmed, rejected, summary}}, report }.
+ * An incomplete stage stops the plan; its active tasks remain on the scheduler.
+ * taskRuntime is injectable so stage ordering can be tested without launching workers.
  */
-export async function runPlan(plan, { sessionId, cwd, recommend = null } = {}) {
+export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask } } = {}) {
   validatePlan(plan);
   const id = shortId();
   const timeoutMs = Math.max(1, Number(plan.timeout_minutes) || 45) * 60_000;
@@ -111,8 +125,13 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null } = {}) {
     total += inputs.length;
     if (total > MAX_TASKS) throw new Error(`plan exceeds ${MAX_TASKS} tasks`);
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
-    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend });
-    const result = { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status, model: `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
+    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime });
+    const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), title: d.input.title, status: d.task?.status, model: `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
+    if (done.some((d) => !d.complete)) {
+      result.incomplete = true;
+      result.summary = done.some((d) => d.task?.timedOut) ? 'Incomplete: stage deadline reached; tasks may still be active.' : 'Incomplete: tasks have not reached a terminal status.';
+      return result;
+    }
     if (stage.for_each) {
       const groups = new Map();
       for (const d of done) { const k = d.input.item.id || findingKey(d.input.item); if (!groups.has(k)) groups.set(k, { item: d.input.item, votes: [] }); groups.get(k).votes.push({ ...parseVerdict(d.report), taskId: d.id, ok: d.ok }); }
@@ -131,17 +150,26 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null } = {}) {
 
   for (const stage of plan.stages) {
     let res = await runStage(stage);
-    if (plan.until_dry?.stage === stage.id) {
+    if (!res.incomplete && plan.until_dry?.stage === stage.id) {
       let dry = res.fresh ? 0 : 1; const max = Math.max(1, Number(plan.until_dry.max_rounds) || 3); const k = Math.max(1, Number(plan.until_dry.dry_rounds) || 1);
-      for (let round = 1; round < max && dry < k; round++) { const again = await runStage(stage, round); res.tasks.push(...again.tasks); res.findings.push(...again.findings); res.summary = `${res.findings.length} findings after ${round + 1} rounds\n` + res.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n'); dry = again.fresh ? 0 : dry + 1; }
+      for (let round = 1; round < max && dry < k; round++) {
+        const again = await runStage(stage, round);
+        res.tasks.push(...again.tasks);
+        if (again.incomplete) { res.incomplete = true; res.summary += `\n${again.summary}`; break; }
+        res.findings.push(...again.findings);
+        res.summary = `${res.findings.length} findings after ${round + 1} rounds\n` + res.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n');
+        dry = again.fresh ? 0 : dry + 1;
+      }
     }
     ctx.results[stage.id] = res;
+    if (res.incomplete) { publish('stage_incomplete', { stage: stage.id, tasks: res.tasks.length }); break; }
     publish('stage_done', { stage: stage.id, tasks: res.tasks.length, findings: res.findings.length });
   }
 
-  const report = plan.stages.map((s) => `## ${s.title || s.id}\ntasks: ${ctx.results[s.id].tasks.map((t) => `${t.id}[${t.status}] ${t.model}`).join(', ')}\n${ctx.results[s.id].summary}`).join('\n\n');
-  const out = { id, goal: plan.goal, startedAt: nowIso(), stages: ctx.results, report };
+  const report = plan.stages.filter((s) => ctx.results[s.id]).map((s) => `## ${s.title || s.id}\ntasks: ${ctx.results[s.id].tasks.map((t) => `${t.taskIds?.join(' -> ') || t.id}[${t.status}]${t.timedOut ? ' (timed out)' : ''} ${t.model}`).join(', ')}\n${ctx.results[s.id].summary}`).join('\n\n');
+  const status = Object.values(ctx.results).some((r) => r.incomplete) ? 'incomplete' : 'done';
+  const out = { id, status, goal: plan.goal, startedAt: nowIso(), stages: ctx.results, report };
   writeJson(statePath('plans', `${id}.json`), { ...out, plan });
-  publish('done', { report: report.slice(0, 2000) });
+  publish(status, { report: report.slice(0, 2000) });
   return out;
 }
