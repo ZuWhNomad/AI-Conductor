@@ -103,7 +103,7 @@ if (cmd === 'start') {
   console.log(formatBench(dueForBench({ days })));
   if (flags.run) {
     const { abortRunning, flushRecords, listTasks } = await import('../core/tasks.mjs');
-    const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+    const open = listTasks({ limit: Infinity }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
     if (open.length) { console.error(`refusing to run: ${open.length} open task(s) in the journal (a running server owns them).`); process.exit(2); }
     process.on('SIGINT', () => { abortRunning(); setTimeout(() => process.exit(130), 1000); });
     const results = await runBench({ days, onResult: (r) => console.log(`${r.verdict.padEnd(7)} ${r.provider}:${r.model || 'default'}:${r.effort || 'default'}  ${r.task}${r.notes ? `  ${r.notes.split('\n')[0].slice(0, 100)}` : ''}`) });
@@ -135,7 +135,7 @@ if (cmd === 'start') {
   const { getModels, refreshModels } = await import('../core/models.mjs');
   const { abortRunning, flushRecords, listTasks } = await import('../core/tasks.mjs');
   // This process runs its own scheduler over the shared journal; a live server's open tasks would be run twice.
-  const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+  const open = listTasks({ limit: Infinity }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
   if (open.length) { console.error(`refusing to run: ${open.length} task(s) are queued/running/parked in ${stateDir()} (a running server owns them). Wait for them or stop the server first.`); process.exit(2); }
   let models;
   if (flags['all-models']) {
@@ -163,7 +163,7 @@ if (cmd === 'start') {
   const { listTasks } = await import('../core/tasks.mjs');
   // This process runs its own scheduler over the shared journal; a live server's open tasks would be run twice
   // (module load requeues parked/running -> queued). Refuse, like `smoke` and `bench --run` do.
-  const open = listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
+  const open = listTasks({ limit: Infinity }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status));
   if (open.length) { console.error(`refusing to run: ${open.length} open task(s) in ${stateDir()} (a running server owns them). Wait for them or stop the server first.`); process.exit(2); }
   let server, r;
   if (parseSelection(flags.model, loadConfig().conductor).provider !== 'claude') {
