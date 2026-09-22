@@ -34,6 +34,14 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
 });
 
 const { createTask, cancelTask, awaitTask, getTask, listTasks, describeTask, publicTask, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
+const { getModels } = await import('../core/models.mjs');
+const registryModels = (ctx, models) => {
+  const reg = getModels(), previous = { models: reg.models, providers: reg.providers };
+  // Selection reads the imported registry cache, not later writes to models.json.
+  reg.models = models;
+  reg.providers = Object.fromEntries(models.map((m) => [m.provider, { status: 'ok' }]));
+  ctx.after(() => Object.assign(reg, previous));
+};
 afterEach(async () => {
   await flushRecords(); // scoring outlives awaitTask; finish it before the next test installs its fetch spy
   assert.deepEqual(unexpectedIO, [], 'caught worker/poll errors must still fail the test');
@@ -184,8 +192,7 @@ test('abortRunning aborts every active worker', async (ctx) => {
 test('a provider limit mid-task fails over to the next qualified provider as a retry chain and is not scored', async (ctx) => {
   const { saveConfig } = await import('../core/config.mjs');
   const { recordRun, rateTask, rootRuns } = await import('../core/scorecard.mjs');
-  const { writeJson } = await import('../core/paths.mjs');
-  writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }] });
+  registryModels(ctx, [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }]);
   saveConfig({ providers: { deepseek: { apiKey: 'test-key' } }, scorecard: { minSamples: 1 } });
   for (let i = 0; i < 2; i++) { const id = `fo${i}`; recordRun({ id, title: 't', status: 'done', provider: 'ollama', model: 'qwen', effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }); rateTask(id, 'pass'); }
   mockCompletions(ctx, async () => {
@@ -204,6 +211,7 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
     const next = getTask(done.failedOverTo);
     assert.equal(next.status, 'queued');
     assert.equal(next.provider, 'ollama');
+    assert.equal(next.model, 'qwen');
     assert.equal(next.retryOf, t.id);
     assert.equal(next.sandbox, 'read-only');
     assert.equal(next.parallelOverride, true);
@@ -223,6 +231,10 @@ test('failover excludes the whole current provider before choosing an eligible a
   const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
   const { bus } = await import('../core/bus.mjs');
+  registryModels(ctx, [
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+    { provider: 'deepseek', id: 'deepseek-reasoner', kind: 'agent' },
+  ]);
   const scorecard = loadConfig().scorecard;
   saveConfig({ scorecard: { minSamples: 1, classOrder: ['api', 'free'] } });
   delete getLimits().providers.deepseek;
@@ -246,6 +258,7 @@ test('failover excludes the whole current provider before choosing an eligible a
     const done = await finished.promise;
     assert.equal(done.status, 'failed');
     assert.equal(getTask(done.failedOverTo)?.provider, 'ollama');
+    assert.equal(getTask(done.failedOverTo)?.model, 'qwen');
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     bus.off('event', onEvent);
