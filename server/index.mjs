@@ -492,10 +492,11 @@ export function startServer({ port = null } = {}) {
     };
     const onError = (e) => {
       if (settled) return;
-      if (e?.code === 'EADDRINUSE' && Date.now() < relaunchDeadline) { setTimeout(() => server.listen(listenPort, '127.0.0.1', onListen), 250); return; }
+      if (e?.code === 'EADDRINUSE' && Date.now() < relaunchDeadline) { setTimeout(() => server.listen(listenPort, '127.0.0.1'), 250); return; }
       settled = true; reject(e);
     };
     server.on('error', onError);
-    server.listen(listenPort, '127.0.0.1', onListen);
+    server.once('listening', onListen); // Bind retries must not register initialization again.
+    server.listen(listenPort, '127.0.0.1');
   });
 }

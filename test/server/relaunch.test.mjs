@@ -72,6 +72,77 @@ test('startServer fails fast on a busy port when no relaunch flag is set (unchan
   blocker.close();
 });
 
+test('startServer initializes once after two failed binds, and does not initialize on a normal bind failure', () => {
+  const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    import { Server } from 'node:net';
+    import perfHooks from 'node:perf_hooks';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { existsSync } from 'node:fs';
+    import { join } from 'node:path';
+    try {
+    let initialized = 0;
+    const monitor = perfHooks.monitorEventLoopDelay;
+    mock.method(perfHooks, 'monitorEventLoopDelay', options => {
+      const histogram = monitor(options), enable = histogram.enable.bind(histogram);
+      histogram.enable = () => { initialized++; return enable(); };
+      return histogram;
+    });
+    syncBuiltinESMExports();
+    const { startServer, stopBackgroundWork } = await import('./server/index.mjs');
+    const listen = Server.prototype._listen2, interval = globalThis.setInterval;
+    const timers = [], retries = [];
+    let binds = 0;
+    mock.method(Server.prototype, '_listen2', function (...args) {
+      binds++;
+      if (binds <= 2) {
+        process.nextTick(() => this.emit('error', Object.assign(new Error('busy'), { code: 'EADDRINUSE' })));
+      } else listen.apply(this, args);
+    });
+    mock.method(globalThis, 'setTimeout', (callback, delay) => {
+      retries.push(delay);
+      queueMicrotask(callback);
+      return { unref() {} };
+    });
+    mock.method(globalThis, 'setInterval', (...args) => {
+      const timer = interval(...args);
+      timers.push(timer);
+      return timer;
+    });
+    let server;
+    try {
+      // Ordinary startup rejects the original error without retrying or initializing.
+      await assert.rejects(startServer({ port: 0 }), { code: 'EADDRINUSE' });
+      assert.equal(binds, 1);
+      assert.equal(initialized, 0);
+      assert.deepEqual(retries, []);
+      assert.equal(timers.length, 0);
+      binds = 0;
+      process.env.CONDUCTOR_RELAUNCH_WAIT = '20000'; // production handover allowance
+      const starting = startServer({ port: 0 });
+      assert.ok(existsSync(join(process.env.CONDUCTOR_HOME, 'relaunch-ok')));
+      ({ server } = await starting);
+      assert.equal(binds, 3);
+      assert.deepEqual(retries, [250, 250]); // existing production bind-retry interval
+      assert.equal(initialized, 1);
+      assert.equal(timers.length, 1, 'one reachable lag-monitor timer');
+      assert.equal(process.env.CONDUCTOR_RELAUNCH_WAIT, undefined);
+      stopBackgroundWork();
+      assert.equal(timers[0]._destroyed, true, 'shutdown clears the lag-monitor timer');
+    } finally {
+      stopBackgroundWork();
+      for (const timer of timers) clearInterval(timer);
+      mock.restoreAll();
+      syncBuiltinESMExports();
+      if (server) await new Promise(resolve => server.close(resolve));
+    }
+    } catch (error) { console.error(error); process.exitCode = 1; }
+  `], { cwd: fileURLToPath(new URL('../..', import.meta.url)), encoding: 'utf8' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 test('relaunch refreshes the outgoing journal after binding without replaying completed tasks', () => {
   const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
     import assert from 'node:assert/strict';
