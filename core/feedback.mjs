@@ -19,7 +19,8 @@ function safeUser() { try { return userInfo().username; } catch { return null; }
 export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   let s = String(text);
   for (const h of new Set([home, home.replace(/\\/g, '/'), home.replace(/\\/g, '\\\\')])) if (h) s = s.split(h).join('~');
-  s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>'); // before the user name, which is often the local part
+  // RFC 5321 limits the local part to 64 and the domain to 255 octets. Bound each scan to avoid quadratic retries.
+  s = s.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,255}/g, '<email>'); // before the user name, which is often the local part
   if (user) s = s.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRe(user)}(?![A-Za-z0-9])`, 'g'), '<user>');
   s = s.replace(/\b(?:sk|sk-ant|xai|ghp|gho|ghu|ghs|ghr|github_pat|gsk|key|token)[-_][A-Za-z0-9_-]{16,}/gi, '<secret>'); // GitHub server/user/refresh (ghs_/ghu_/ghr_), Groq (gsk_)
   s = s.replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '<secret>');   // Google / Gemini API keys (no separator after the AIza prefix)

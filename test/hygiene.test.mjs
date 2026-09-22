@@ -70,6 +70,21 @@ test("feedback bundle redacts home path, user name, e-mails and key-shaped strin
   assert.ok(!JSON.stringify(j).includes(HOME), "state dir path redacted");
 });
 
+test('feedback email redaction stays below the server lag threshold on long non-email text', async () => {
+  const { redact } = await import('../core/feedback.mjs');
+  const { DEFAULTS } = await import('../core/config.mjs');
+  const options = { home: '', user: '' };
+  // Reproduce the reported 100k-character input; the project's lag policy supplies the timing bound.
+  for (const input of ['a'.repeat(100_000), `a@${'b'.repeat(100_000)}.`]) {
+    const start = performance.now();
+    const output = redact(input, options);
+    const elapsed = performance.now() - start;
+    assert.equal(output, input);
+    assert.ok(elapsed < DEFAULTS.server.lagWarnMs, `redact took ${elapsed}ms`);
+  }
+  assert.equal(redact(`${'a'.repeat(64)}@example.com`, options), '<email>');
+});
+
 test('a category recipe is registered for modeling and reaches the worker spec', async () => {
   const { recipeFor, listRecipes } = await import('../core/recipes.mjs');
   assert.match(recipeFor('modeling'), /trace the reference|potrace/i);
