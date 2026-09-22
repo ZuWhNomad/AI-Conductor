@@ -147,7 +147,7 @@ function budgetBar(label, w) {
   const b = el('div', 'b');
   const pct = w ? Math.max(0, Math.min(100, Number(w.usedPercent) || 0)) : 0;
   const line = el('div', 'bl');
-  line.append(el('span', 'k', label), el('span', 'v', w && w.usedPercent != null ? `${Math.round(pct)}%${w.estimated ? ' est' : ''}` : '—'));
+  line.append(el('span', 'k', label), el('span', 'v ' + meterClass(pct), w && w.usedPercent != null ? `${Math.round(pct)}%${w.estimated ? ' est' : ''}` : '—'));
   const m = el('div', 'meter'); const i = el('i', meterClass(pct)); i.style.width = pct + '%'; m.append(i);
   b.append(line, m);
   return b;
@@ -158,9 +158,10 @@ function renderBudget() {
   const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
   const pst = S.models.providers[prov] || {};
   if (pst.status && pst.status !== 'ok') box.append(el('div', 'empty', `${prov}: ${pst.loggedIn === false ? 'not signed in' : pst.configured === false ? 'no key' : pst.installed === false ? 'not installed' : pst.error ? 'error' : pst.status}`));
-  // Numbers older than this boot are last run's: show them dimmed with their time until the first refresh lands.
-  const asOf = S.limits.updatedAt ? new Date(S.limits.updatedAt).getTime() : 0;
-  box.classList.toggle('stale', !!S.boot && asOf < S.boot);
+  // A different provider's refresh (or a failed poll) cannot make these cached windows current.
+  const lim = S.limits.providers[prov] || {};
+  const asOf = lim.updatedAt ? new Date(lim.updatedAt).getTime() : 0;
+  box.classList.toggle('stale', !!lim.error || (!!S.boot && asOf < S.boot));
   const session = planWindow(prov, 'session');
   const weekly = planWindow(prov, 'weekly');
   if (session) box.append(budgetBar(`${prov} · session`, session));
@@ -175,7 +176,8 @@ function renderBudget() {
     else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
   }
   if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
-  if (box.classList.contains('stale') && asOf) box.append(el('div', 'empty', `as of ${new Date(asOf).toLocaleTimeString()} (refreshing)`));
+  if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
+  else if (box.classList.contains('stale')) box.append(el('div', 'empty', `${asOf ? `as of ${new Date(asOf).toLocaleTimeString()}` : 'Age unknown'} · refresh limits`));
   if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
 }
 
