@@ -112,31 +112,30 @@ export async function listApiModels() {
 }
 
 export async function listModels() {
-  const [aliases, api] = await Promise.all([
+  const [sdk, api] = await Promise.all([
     withControl((q) => q.supportedModels()),
     listApiModels().catch(() => []),
   ]);
-  // The CLI's alias names ("Default (recommended)", "Opus (1M context)") read nothing like the Models API's
-  // "Claude Opus 4.8", so one selector mixes two conventions. Name every alias after the model it resolves to,
-  // and keep what the alias itself means as a suffix.
+  return exactModels(sdk, api);
+}
+
+/**
+ * Exact model ids only. The CLI's aliases (default, opus[1m], sonnet, haiku) move to a newer model when the CLI
+ * updates, so anything keyed by an alias (scorecard rows, benchmarks) silently changes meaning: opus[1m] was Opus 5,
+ * then Opus 5.5. Each alias is listed as the exact id it resolves to today; an entry that already names a model
+ * (claude-fable-5-1[1m]) stays as it is. Labels follow the Models API's naming, plus "(1M context)".
+ */
+export function exactModels(sdk = [], api = []) {
   const apiName = new Map(api.map((m) => [m.id, m.label]));
-  const aliasLabel = (m) => {
-    const resolved = m.resolvedModel || m.value;
-    const base = resolved.replace(/\[1m\]$/, '');
-    const name = apiName.get(base) || prettyName(base);
-    if (!name) return m.displayName;
-    const oneM = resolved.endsWith('[1m]') || m.value.endsWith('[1m]'); // fable-5-1[1m] resolves to an id without the marker
-    return name + (oneM ? ' (1M context)' : '') + (m.value === 'default' ? ' · default' : '');
-  };
-  const out = (aliases || []).map((m) => ({
-    provider: id, id: m.value, resolved: m.resolvedModel || null, label: aliasLabel(m), description: m.description || '',
-    efforts: m.supportedEffortLevels || (m.supportsEffort ? ['low', 'medium', 'high'] : []), kind: 'agent', cost: 'subscription',
-  }));
-  const covered = new Set(out.flatMap((m) => [m.id, m.resolved, (m.resolved || '').replace(/\[1m\]$/, '')]).filter(Boolean));
-  for (const m of api) {
-    if (covered.has(m.id)) continue;
-    out.push({ provider: id, id: m.id, resolved: null, label: m.label, description: 'from the Models API', efforts: effortsFor(m.id), kind: 'agent', cost: 'subscription' });
+  const label = (exact) => { const base = exact.replace(/\[1m\]$/, ''); return (apiName.get(base) || prettyName(base) || base) + (exact.endsWith('[1m]') ? ' (1M context)' : ''); };
+  const out = [];
+  const add = (m) => { if (!out.some((x) => x.id === m.id)) out.push(m); };
+  for (const m of sdk || []) {
+    const exact = m.value.startsWith('claude-') ? m.value : m.resolvedModel; // fable-5-1[1m] resolves to an id without the marker
+    if (!exact) continue; // an alias the CLI cannot resolve names no model
+    add({ provider: id, id: exact, label: label(exact), description: '', efforts: m.supportedEffortLevels || (m.supportsEffort ? ['low', 'medium', 'high'] : effortsFor(exact)), kind: 'agent', cost: 'subscription' });
   }
+  for (const m of api) add({ provider: id, id: m.id, label: m.label, description: 'from the Models API', efforts: effortsFor(m.id), kind: 'agent', cost: 'subscription' });
   return out;
 }
 
