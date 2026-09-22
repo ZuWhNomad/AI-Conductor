@@ -227,7 +227,8 @@ launcher. Friends log in to their own Claude / ChatGPT accounts once (`claude au
 ## The budget gate (`core/sweep.mjs`)
 
 Every run's cost is measured in % of each provider window (the scorecard records the window deltas, divided by how
-many tasks ran concurrently: `measuredCostByWindow`) and charged against a **target per window**: a session window
+many other tasks shared that particular window at dispatch: `concurrentByWindow`, with the legacy `concurrent`
+scalar as fallback in `measuredCostByWindow`) and charged against a **target per window**: a session window
 (5-hour and the like) is used to 95%, everything else (weekly, monthly, a budget) to 100% (`targetFor`,
 `scorecard.windowTargets`); so Codex with only a weekly window is planned against 100% of it.
 

@@ -72,13 +72,13 @@ export function normalizeUsage(u) {
 const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.tokens, in: r.provider === 'claude' ? r.tokens.in : Math.max(0, (r.tokens.in || 0) - (r.tokens.cached || 0)) });
 
 /** Record one terminal worker run. tasks.mjs calls this after refreshing the provider's limits. */
-export function recordRun(t, { before = null, concurrent = 0 } = {}) {
+export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
   if (t.imageOptions) return null;
   const row = {
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
-    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, title: t.title, failKind: t.failKind || null, rounds: t.rounds ?? null,
+    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, failKind: t.failKind || null, rounds: t.rounds ?? null,
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
   };
   appendNdjson(FILE(), row);

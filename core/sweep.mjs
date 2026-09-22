@@ -19,7 +19,7 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
     for (const [id, d] of Object.entries(r.pct)) {
       const w = windows.find((x) => x.id === id);
       if (w?.models && r.model && !new RegExp(w.models, 'i').test(r.model)) continue;
-      const per = d / ((r.concurrent || 0) + 1); // the window moved for every task running at the time, not just this one
+      const per = d / ((r.concurrentByWindow?.[id] ?? r.concurrent ?? 0) + 1); // legacy rows have only the scalar
       if (per > (cost[id] || 0)) cost[id] = per;
     }
   }

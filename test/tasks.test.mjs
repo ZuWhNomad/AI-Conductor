@@ -402,3 +402,58 @@ for (const scenario of ['exhausted', 'rejected', 'budget-disabled', 'expired', '
     }
   });
 }
+
+test('recorded concurrency divides global and model-exclusive window costs independently', async (ctx) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const { runRows } = await import('../core/scorecard.mjs');
+  const { measuredCostByWindow } = await import('../core/sweep.mjs');
+  const previous = getLimits().providers.claude;
+  const provider = PROVIDERS.claude;
+  const entered = Promise.withResolvers(), finish = Promise.withResolvers();
+  let calls = 0;
+  mockCompletions(ctx, async () => {
+    if (++calls === batch.length) entered.resolve();
+    await finish.promise;
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] }), { status: 200 });
+  });
+  getLimits().providers.claude = { provider: 'claude', blocked: false, windows: [
+    { id: 'five_hour', label: '5-hour', usedPercent: 10 },
+    { id: 'seven_day', label: 'weekly', usedPercent: 10 },
+    { id: 'seven_day_sonnet', label: 'weekly Sonnet', models: 'sonnet', usedPercent: 10 },
+  ] };
+  PROVIDERS.claude = { ...provider, kind: 'openai-compat', workerConfig: () => ({ baseUrl: 'https://offline.example/v1', apiKey: 'test-only' }), pollLimits: async () => getLimits().providers.claude };
+  const batch = ['opus', 'sonnet', 'sonnet'].map((model) => createTask({ cwd: tmpDir('window-concurrency'), provider: 'claude', model, spec: 'x', parallelOverride: true }));
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    assert.deepEqual(batch.map((t) => t.status), ['running', 'running', 'running']);
+    await entered.promise;
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    const windows = getLimits().providers.claude.windows;
+    windows[0].usedPercent += 12; windows[1].usedPercent += 6; windows[2].usedPercent += 8;
+    finish.resolve();
+    for (const t of await Promise.all(batch.map((t) => awaitTask(t.id)))) assert.equal(t.status, 'done');
+    await flushRecords();
+    const rows = batch.map((t) => runRows().find((r) => r.taskId === t.id));
+    assert.deepEqual(rows.map((r) => r.concurrentByWindow), [
+      { five_hour: 0, seven_day: 0 },
+      { five_hour: 1, seven_day: 1, seven_day_sonnet: 0 },
+      { five_hour: 2, seven_day: 2, seven_day_sonnet: 1 },
+    ]);
+    assert.deepEqual(rows.map((r) => r.concurrent), [0, 1, 2]);
+    assert.deepEqual(rows[1].pct, { five_hour: 12, seven_day: 6, seven_day_sonnet: 8 });
+    assert.deepEqual(measuredCostByWindow([rows[0]], 'claude'), { five_hour: 12, seven_day: 6 });
+    assert.deepEqual(measuredCostByWindow([rows[1]], 'claude'), { five_hour: 6, seven_day: 3, seven_day_sonnet: 8 });
+    assert.deepEqual(measuredCostByWindow([rows[2]], 'claude'), { five_hour: 4, seven_day: 2, seven_day_sonnet: 4 });
+    assert.deepEqual(measuredCostByWindow(rows, 'claude', { model: 'sonnet' }), { five_hour: 6, seven_day: 3, seven_day_sonnet: 8 });
+    const { concurrentByWindow, ...legacy } = rows[1];
+    assert.deepEqual(measuredCostByWindow([legacy], 'claude'), { five_hour: 6, seven_day: 3, seven_day_sonnet: 4 });
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    finish.resolve();
+    await Promise.all(batch.map((t) => awaitTask(t.id)));
+    await flushRecords();
+    PROVIDERS.claude = provider;
+    getLimits().providers.claude = previous;
+  }
+});

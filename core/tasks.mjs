@@ -247,13 +247,14 @@ async function run(t) {
     t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null;
     persist(t);
     const limitsBefore = snapshotWindows(t.provider);
-    // Concurrency for the cost divisor: co-running tasks that actually share one of THIS task's windows. For a
-    // model-group provider (Antigravity: Gemini vs Claude+GPT) a run in the other group doesn't move this window,
-    // so it must not divide this window's delta — counting all same-provider tasks understated grouped costs.
+    // Each window needs its own divisor: Opus and Sonnet share global windows, but only Sonnet consumes its
+    // exclusive weekly window. Keep the scalar for older ledger readers; new accounting uses the per-window map.
     const myWins = new Set(providerWindows(t.provider, t.model).map((w) => w.id));
+    const concurrentByWindow = Object.fromEntries([...myWins].map((id) => [id, 0]));
     const concurrent = [...running.keys()].filter((id) => {
       if (id === t.id) return false; const rt = tasks.get(id); if (rt?.provider !== t.provider) return false;
       const rw = providerWindows(rt.provider, rt.model).map((w) => w.id);
+      for (const wid of rw) if (myWins.has(wid)) concurrentByWindow[wid]++;
       return rw.length === 0 || rw.some((wid) => myWins.has(wid));
     }).length;
     const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
@@ -295,7 +296,7 @@ async function run(t) {
     } else { t.status = 'done'; }
     t.finishedAt = nowIso();
     persist(t);
-    if (TERMINAL.has(t.status) && !t.limitHit && t.status !== 'canceled') score(t, limitsBefore, concurrent); // a canceled/aborted run's ~0 tokens must not drag the model's cost means down (like limitHit, it isn't representative)
+    if (TERMINAL.has(t.status) && !t.limitHit && t.status !== 'canceled') score(t, limitsBefore, concurrent, concurrentByWindow); // a canceled/aborted run's ~0 tokens must not drag the model's cost means down (like limitHit, it isn't representative)
     if (t.failKind === 'phantom') { try { rateTask(t.id, 'phantom', 'auto: reported file writes that never landed on disk'); } catch {} }
   } catch (e) {
     t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso();
@@ -326,12 +327,12 @@ function failover(t) {
 // Scorecard row after the provider's limits are re-polled (so the window delta is fresh). Waiters are
 // not held up; `flushRecords` lets the CLI/smoke runner wait for the rows before reading them.
 const pendingRecords = new Set();
-function score(t, limitsBefore, concurrent) {
+function score(t, limitsBefore, concurrent, concurrentByWindow) {
   const p = refreshLimits({ only: [t.provider] }).catch(() => {}).then(() => { try {
     // Per-task % of the provider window this run burned (max across its windows) — surfaced on the Fleet card.
     const d = windowDelta(limitsBefore, snapshotWindows(t.provider));
     if (d) { const max = Math.max(...Object.values(d)); t.pctWindow = Math.round(max * 10) / 10; persist(t); }
-    recordRun(t, { before: limitsBefore, concurrent });
+    recordRun(t, { before: limitsBefore, concurrent, concurrentByWindow });
   } catch {} });
   pendingRecords.add(p);
   p.finally(() => pendingRecords.delete(p));
