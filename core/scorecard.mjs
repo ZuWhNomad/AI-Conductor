@@ -131,18 +131,22 @@ const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] 
  * attempts linked by retryOf (a new model after a fail). Each chain: { taskId, category, difficulty,
  * source, attempts[], path[], verdict (last attempt), tokens, usd, durationMs, rounds }.
  */
-/** Raw run rows from the ledger (for the budget planner: measuredCost needs pct + concurrent per run). */
+/** Non-voided run rows from the ledger (for the budget planner: measuredCost needs pct + concurrent per run). */
 // runRows() is hit on every schedule() pass (and by the estimator); the scorecard ndjson grows unbounded, so cache
 // the parse and reuse it until the file's size/mtime changes (any appendNdjson bumps both, invalidating the cache).
 let _runRowsCache = null;
+const activeRunRows = (all) => {
+  const voided = new Set(all.filter((r) => r.op === 'void').map((r) => r.taskId));
+  return all.filter((r) => r.op === 'run' && !voided.has(r.taskId));
+};
 export function runRows() {
   try {
     const st = statSync(FILE());
     if (_runRowsCache && _runRowsCache.mtimeMs === st.mtimeMs && _runRowsCache.size === st.size) return _runRowsCache.rows;
-    const rows = readNdjson(FILE()).filter((r) => r.op === 'run');
+    const rows = activeRunRows(readNdjson(FILE()));
     _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, rows };
     return rows;
-  } catch { return readNdjson(FILE()).filter((r) => r.op === 'run'); }
+  } catch { return activeRunRows(readNdjson(FILE())); }
 }
 
 export function rootRuns({ source = null } = {}) {
@@ -197,8 +201,8 @@ export function rootRuns({ source = null } = {}) {
     c.attempts.forEach((a, i) => { if (i < c.attempts.length - 1 && !a.verdict) a.verdict = 'fail'; }); // retried => it did not do
     const last = c.attempts[c.attempts.length - 1];
     c.path = c.attempts.map((a) => a.sel);
-    // A rating on any id in the chain (including a voided original the conductor was told to rate) settles the last attempt.
-    const chainRate = last.verdict ? null : [...c.ids].map((id) => rates.get(id)).find(Boolean);
+    // Only a voided original's rating can settle a replacement; ordinary predecessors rate their own attempts.
+    const chainRate = last.verdict ? null : [...c.ids].filter((id) => voided.has(id)).map((id) => rates.get(id)).find(Boolean);
     if (chainRate) { last.verdict = chainRate.verdict; last.notes = chainRate.notes || null; }
     c.verdict = last.verdict; c.notes = last.notes;
     c.tokens = { in: 0, out: 0, cached: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
@@ -277,8 +281,13 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const avail = memo((provider, model) => providerAvailable(provider, { overflowApi, cfg, model }));
   const weight = memo((provider, model) => providerWeight(provider, cfg, model));
   const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd || 0;
-  const excluded = (sel) => sel.split('>').some((s) => exclude.includes(s) || exclude.includes(s.split(':').slice(0, 2).join(':')));
-  const blockedSel = (sel) => sel.split('>').some((s) => { const [p, m] = s.split(':'); return !avail(p, m === 'default' ? null : m); });
+  const excluded = (sel) => sel.split('>').some((s) => { const { provider, model } = parseSel(s); return exclude.includes(s) || exclude.includes(`${provider}:${model || 'default'}`); });
+  const reg = getModels();
+  const blockedSel = (sel) => sel.split('>').some((s) => {
+    const { provider, model } = parseSel(s);
+    // A transient registry error retains cached models; explicit unavailability or removal does not.
+    return reg.providers[provider]?.status === 'unavailable' || findModel(provider, model)?.kind !== 'agent' || !avail(provider, model);
+  });
   const all = summary || summarize({ source });
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel));

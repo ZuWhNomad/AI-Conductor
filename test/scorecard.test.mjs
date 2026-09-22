@@ -2,7 +2,7 @@ import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeJson } from '../core/paths.mjs';
+import { appendNdjson, statePath, writeJson } from '../core/paths.mjs';
 
 // Registries are loaded at import time: seed them before importing the scorecard.
 writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' }, ollama: { status: 'ok' } }, models: [
@@ -11,6 +11,10 @@ writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { sta
   { provider: 'codex', id: 'gpt-5.6-terra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
   { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
   { provider: 'claude', id: 'haiku', kind: 'agent', cost: 'subscription' },
+  ...[
+    ['claude', 'opus'], ['claude', 'sonnet'],
+    ['deepseek', 'deepseek-flash'], ['antigravity', 'flash'],
+  ].map(([provider, id]) => ({ provider, id, kind: 'agent' })),
 ] });
 writeJson(join(HOME, 'limits.json'), { updatedAt: 'x', providers: {
   codex: { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] },
@@ -19,6 +23,12 @@ writeJson(join(HOME, 'limits.json'), { updatedAt: 'x', providers: {
 const sc = await import('../core/scorecard.mjs');
 const pr = await import('../core/priors.mjs');
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
+const { getModels } = await import('../core/models.mjs');
+const registryModels = (t, models) => {
+  const reg = getModels(), previous = reg.models;
+  reg.models = [...previous, ...models.map(([provider, id]) => ({ provider, id, kind: 'agent' }))];
+  t.after(() => { reg.models = previous; });
+};
 
 let n = 0;
 const USAGE = { input_tokens: 100_000, cached_input_tokens: 50_000, output_tokens: 10_000 }; // 50k uncached in, 50k cached, 10k out
@@ -198,7 +208,8 @@ test('escalation returns the best AVAILABLE model by quality across classes — 
   assert.notEqual(esc.provider, value.provider);                                     // the two picks are genuinely distinct
 });
 
-test('a higher effort within the cost slack dominates the lower effort of the same model', () => {
+test('a higher effort within the cost slack dominates the lower effort of the same model', (t) => {
+  registryModels(t, [['codex', 'gpt-5.6-sol']]);
   // docs@2: Luna low and Luna max both 3/3 pass at ~$0.023 -> max wins despite equal utility; with slack 0 the cheaper (low) wins again.
   seed('codex', 'gpt-5.6-luna', 'low', 'docs', 2, ['pass', 'pass', 'pass']);
   seed('codex', 'gpt-5.6-luna', 'max', 'docs', 2, ['pass', 'pass', 'pass'], { usage: { input_tokens: 100_100, cached_input_tokens: 50_000, output_tokens: 10_000 } });
@@ -547,7 +558,8 @@ test('short view: best pick + runner-up per category, levels collapsed, same top
   assert.equal(csv.trim().split('\n').length, sc.summarize().length + 1);
 });
 
-test('B1: a winning observed ladder dispatches its exact first worker, including tagged model IDs', () => {
+test('B1: a winning observed ladder dispatches its exact first worker, including tagged model IDs', (t) => {
+  registryModels(t, [['ollama', 'qwen3.8:latest']]);
   for (const effort of [null, 'high']) {
     const source = `B1-${effort}`;
     for (const i of [1, 2, 3]) {
@@ -566,6 +578,7 @@ test('B1: a winning observed ladder dispatches its exact first worker, including
 });
 
 test('B6: observed mixed-provider costs are weighted per step, including paid then local and pooled levels', async (t) => {
+  registryModels(t, [['claude', 'paid'], ['codex', 'fallback'], ['ollama', 'local:latest']]);
   const cfg = loadConfig().scorecard;
   const { getLimits } = await import('../core/limits.mjs');
   const limits = getLimits();
@@ -673,4 +686,124 @@ test('B5: prior fallback honors exact-effort and whole-model exclusions', () => 
   } finally {
     saveConfig({ scorecard: cfg });
   }
+});
+
+test('R2H1: tagged measured selections honor whole-model exclusions and scoped quotas', async (t) => {
+  registryModels(t, [['ollama', 'qwen3.8:latest']]);
+  const { getLimits } = await import('../core/limits.mjs');
+  const limits = getLimits(), previous = limits.providers.ollama;
+  const cfg = loadConfig().scorecard;
+  const source = 'R2H1';
+  try {
+    saveConfig({ scorecard: { usePriors: false } });
+    limits.providers.ollama = { windows: [] };
+    for (const i of [1, 2, 3]) {
+      run({ id: `${source}-${i}`, source, provider: 'ollama', model: 'qwen3.8:latest', effort: 'high' });
+      sc.rateTask(`${source}-${i}`, 'pass');
+      run({ id: `${source}-other-${i}`, source, provider: 'ollama', model: 'qwen', effort: null });
+      sc.rateTask(`${source}-other-${i}`, 'pass');
+    }
+    const request = { category: 'implement', difficulty: 2, source, exclude: ['ollama:qwen'] };
+    assert.equal(sc.recommend(request).model, 'qwen3.8:latest');
+    for (const excluded of ['ollama:qwen3.8:latest', 'ollama:qwen3.8:latest:high']) {
+      assert.equal(sc.recommend({ ...request, exclude: [...request.exclude, excluded] }), null);
+    }
+    assert.equal(sc.recommend({ ...request, exclude: [...request.exclude, 'ollama:qwen3.8:latest:low'] }).model, 'qwen3.8:latest');
+    limits.providers.ollama.windows = [{ id: 'tagged', models: ':latest$', usedPercent: 100, resetsAt: Date.now() + 60_000 }];
+    assert.equal(sc.recommend(request), null, 'full tagged-model window blocks the measured selection');
+    assert.equal(sc.recommend({ ...request, exclude: [] }).model, 'qwen', 'unmetered model stays usable');
+    limits.providers.ollama.windows[0].usedPercent = 0;
+    limits.providers.ollama.windows[0].status = 'rejected';
+    assert.equal(sc.recommend(request), null, 'rejected scoped window also blocks');
+    limits.providers.ollama.windows[0].resetsAt = Date.now() - 1;
+    assert.equal(sc.recommend(request).model, 'qwen3.8:latest', 'expired scoped windows do not block');
+  } finally { limits.providers.ollama = previous; saveConfig({ scorecard: cfg }); }
+});
+
+test('R2B2: every measured plan step must remain usable in the registry, including aliases', async () => {
+  const { getModels } = await import('../core/models.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const reg = getModels(), limits = getLimits();
+  const previous = { models: reg.models, providers: reg.providers, limits: limits.providers };
+  const cfg = loadConfig().scorecard;
+  const local = 'ollama:qwen:default', remote = 'codex:gpt-5.6-terra:medium';
+  const cell = (steps) => ({ sel: steps.join('>'), steps: steps.length, provider: steps.length === 1 ? steps[0].split(':')[0] : undefined,
+    category: 'edit', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 });
+  try {
+    saveConfig({ scorecard: { usePriors: false } });
+    reg.models = [{ provider: 'ollama', id: 'qwen', kind: 'agent' }, { provider: 'codex', id: 'terra-alias', resolved: 'gpt-5.6-terra', kind: 'agent' }];
+    reg.providers = { ollama: { status: 'ok' }, codex: { status: 'ok' } };
+    limits.providers = {};
+    const pick = (summary) => sc.recommend({ category: 'edit', difficulty: 2, summary });
+    assert.equal(pick([cell([remote])]).model, 'gpt-5.6-terra', 'resolved registry aliases are usable');
+    for (const steps of [[local], [local, remote], [remote, local]]) {
+      const summary = [cell(steps)];
+      assert.ok(pick(summary), `available plan ${steps}`);
+      reg.providers.ollama.status = 'unavailable';
+      assert.equal(pick(summary), null, `unavailable provider anywhere in ${steps}`);
+      reg.providers.ollama.status = 'error';
+      assert.ok(pick(summary), 'transient errors retain cached measured models');
+      delete reg.providers.ollama;
+      assert.ok(pick(summary), 'unknown provider status does not reject a listed measured model');
+      reg.providers.ollama = { status: 'ok' };
+      const model = reg.models.shift();
+      assert.equal(pick(summary), null, `removed model anywhere in ${steps}`);
+      reg.models.unshift(model);
+      model.kind = 'image';
+      assert.equal(pick(summary), null, 'non-agent entries cannot execute a measured worker plan');
+      model.kind = 'agent';
+    }
+    reg.providers.ollama.status = 'unavailable';
+    assert.equal(pick([cell([local]), cell([remote])]).provider, 'codex', 'qualified available alternative wins');
+  } finally { reg.models = previous.models; reg.providers = previous.providers; limits.providers = previous.limits; saveConfig({ scorecard: cfg }); }
+});
+
+test('R2B4: a predecessor failure does not rate its unreviewed replacement', () => {
+  const source = 'R2B4';
+  run({ id: `${source}-original`, source });
+  sc.rateTask(`${source}-original`, 'fail', 'reviewed before replacement');
+  run({ id: `${source}-replacement`, source, retryOf: `${source}-original`, model: 'gpt-5.6-terra' });
+  const summary = sc.summarize({ source });
+  const original = summary.find((g) => g.steps === 1 && g.model === 'gpt-5.6-luna');
+  const replacement = summary.find((g) => g.steps === 1 && g.model === 'gpt-5.6-terra');
+  assert.equal(original.fail, 1);
+  assert.equal(replacement.rated, 0);
+  assert.equal(replacement.fail, 0);
+  assert.equal(summary.find((g) => g.steps === 2).rated, 0);
+  run({ id: `${source}-followup`, source, followUpOf: `${source}-replacement`, model: 'gpt-5.6-terra' });
+  sc.rateTask(`${source}-replacement`, 'pass', 'reviewed attempt including its follow-up');
+  assert.equal(sc.rootRuns({ source })[0].verdict, 'pass');
+  sc.voidTask(`${source}-original`, 'harness failure');
+  assert.equal(sc.rootRuns({ source })[0].verdict, 'pass', 'an explicit replacement verdict beats a voided ancestor verdict');
+});
+
+test('R2B6: voids invalidate cached admission costs and are filtered on stat fallback', async (t) => {
+  const { measuredCostByWindow, admit } = await import('../core/sweep.mjs');
+  const fs = (await import('node:fs')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const provider = 'r2b6-fixture';
+  for (const [taskId, delta] of [['R2B6-valid', 3], ['R2B6-void', 90]]) {
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'run', taskId, provider, pct: { weekly: delta } });
+  }
+  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 50 }];
+  const cost = () => measuredCostByWindow(sc.runRows(), provider);
+  assert.deepEqual(cost(), { weekly: 90 });
+  const cached = sc.runRows();
+  assert.equal(sc.runRows(), cached, 'unchanged ledger uses the cache');
+  assert.equal(admit(windows, [{ costs: cost() }]).n, 0);
+  sc.voidTask('R2B6-void', 'invalid measurement');
+  assert.notEqual(sc.runRows(), cached, 'void append invalidates cached rows');
+  assert.deepEqual(cost(), { weekly: 3 });
+  assert.equal(admit(windows, [{ costs: cost() }]).n, 1);
+  const stat = fs.statSync;
+  let fallbacks = 0;
+  const mock = t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (file === statePath('scorecard.ndjson')) { fallbacks++; throw new Error('fixture stat failure'); }
+    return stat(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(cost(), { weekly: 3 });
+    assert.equal(fallbacks, 1, 'readable ledger takes the stat-failure fallback');
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
