@@ -1,6 +1,11 @@
 import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
+import { loadConfig, saveConfig } from '../../core/config.mjs';
 
 const { runOpenAICompat } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
@@ -138,6 +143,122 @@ test('runWorker persists and replays conversation history for API worker follow-
 
 const reply = (message) => Response.json({ choices: [{ message: { role: 'assistant', ...message } }] });
 const toolCall = (name, args, id = 'c1') => ({ tool_calls: [{ id, function: { name, arguments: args } }] });
+
+// A deliberately noncompliant model: definitions do not constrain its returned calls.
+function returnCalls(ctx, calls) {
+  let n = 0;
+  ctx.mock.method(globalThis, 'fetch', async () => (++n === 1
+    ? reply({ tool_calls: calls.map(([name, args], i) => ({ id: 'c' + i, function: { name, arguments: JSON.stringify(args) } })) })
+    : reply({ content: 'done' })));
+}
+
+test('S1: read-only dispatch refuses hidden and unknown tools without file changes or process creation', async (ctx) => {
+  const cwd = tmpDir('readonly');
+  fs.writeFileSync(join(cwd, 'existing.txt'), 'original');
+  const shell = loadConfig().worker.shell;
+  saveConfig({ worker: { shell: true } }); // prove read-only authorization, independently of the shell policy
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => { throw new Error('must not spawn'); });
+  syncBuiltinESMExports();
+  const calls = [
+    ['write_file', { path: 'created.txt', content: 'changed' }],
+    ['edit_file', { path: 'existing.txt', old: 'original', new: 'changed' }],
+    ['run', { command: 'node --version' }],
+    ['unknown', {}], ['toString', {}],
+    ['probe', { value: 'permitted' }],
+  ];
+  returnCalls(ctx, calls);
+  const ran = [];
+  try {
+    const r = await runOpenAICompat({ ...base, cwd, sandbox: 'read-only', extraTools: [{ def: { name: 'probe', parameters: { type: 'object' } }, impl: (args) => { ran.push(args); return 'extra tool ran'; } }] });
+    assert.equal(r.ok, true);
+    const results = r.messages.filter((m) => m.role === 'tool');
+    for (const result of results.slice(0, -1)) assert.match(result.content, /^error: tool not allowed:/);
+    assert.equal(results.at(-1).content, 'extra tool ran');
+    assert.deepEqual(ran, [{ value: 'permitted' }]);
+    assert.equal(fs.existsSync(join(cwd, 'created.txt')), false);
+    assert.equal(fs.readFileSync(join(cwd, 'existing.txt'), 'utf8'), 'original');
+    assert.equal(spawn.mock.callCount(), 0);
+  } finally { saveConfig({ worker: { shell } }); spawn.mock.restore(); syncBuiltinESMExports(); }
+});
+
+for (const kind of ['junction', 'file']) test('S3: ' + kind + ' escapes cannot read, write, edit, search or list outside the workspace', async (ctx) => {
+  const cwd = tmpDir('links'); const external = tmpDir('external');
+  const secret = join(external, 'secret.txt');
+  fs.writeFileSync(secret, 'external-secret');
+  const link = join(cwd, 'escape');
+  try { fs.symlinkSync(kind === 'junction' ? external : secret, link, kind === 'junction' ? 'junction' : 'file'); }
+  catch (e) {
+    if (kind === 'file' && process.platform === 'win32' && e.code === 'EPERM') return ctx.skip('Windows denies file symlinks without the required privilege');
+    throw e;
+  }
+  const target = kind === 'junction' ? 'escape/secret.txt' : 'escape';
+  const calls = [
+    ['read_file', { path: target }],
+    ['write_file', { path: target, content: 'overwritten' }],
+    ['edit_file', { path: target, old: 'external-secret', new: 'edited' }],
+    ['search', { path: '.', pattern: 'external-secret' }],
+    ['list_dir', { path: '.' }],
+    ['search', { path: 'escape', pattern: 'external-secret' }],
+    ['list_dir', { path: 'escape' }],
+  ];
+  if (kind === 'junction') calls.push(['write_file', { path: 'escape/new/nested.txt', content: 'created' }]);
+  returnCalls(ctx, calls);
+  const accessed = [];
+  const realExternal = fs.realpathSync(external);
+  const spies = ['readFileSync', 'readdirSync'].map((name) => {
+    const original = fs[name];
+    return ctx.mock.method(fs, name, (path, ...args) => {
+      const canonical = fs.realpathSync(path);
+      if (canonical === realExternal || canonical.startsWith(realExternal + '/')
+        || canonical.startsWith(realExternal + '\\')) accessed.push(canonical);
+      return original(path, ...args);
+    });
+  });
+  syncBuiltinESMExports();
+  try {
+    const r = await runOpenAICompat({ ...base, cwd });
+    assert.equal(r.ok, true);
+    const results = r.messages.filter((m) => m.role === 'tool');
+    assert.equal(results.length, calls.length);
+    for (const result of results) assert.match(result.content, /^error: path outside project:/);
+    assert.deepEqual(accessed, [], 'no external file read or directory traversal');
+  } finally { for (const spy of spies) spy.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(fs.readFileSync(secret, 'utf8'), 'external-secret');
+  assert.deepEqual(fs.readdirSync(external), ['secret.txt']);
+});
+
+test('S3: canonical cwd and inward links permit file tools and new nested files', async (ctx) => {
+  const parent = tmpDir('canonical'); const root = join(parent, 'workspace');
+  fs.mkdirSync(root); fs.mkdirSync(join(root, 'inside'));
+  fs.symlinkSync(root, join(parent, 'alias'), 'junction');
+  fs.symlinkSync(join(root, 'inside'), join(root, 'link'), 'junction');
+  const calls = [
+    ['write_file', { path: 'link/new/file.txt', content: 'original' }],
+    ['edit_file', { path: 'link/new/file.txt', old: 'original', new: 'updated' }],
+    ['read_file', { path: 'link/new/file.txt' }],
+    ['search', { path: 'link', pattern: 'updated' }],
+    ['list_dir', { path: 'link' }],
+  ];
+  returnCalls(ctx, calls);
+  const r = await runOpenAICompat({ ...base, cwd: join(parent, 'alias') });
+  assert.equal(r.ok, true);
+  const results = r.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.ok(results.every((s) => !s.startsWith('error:')), results.join('\n'));
+  assert.equal(results[2], 'updated'); assert.match(results[3], /file.txt:1: updated/);
+  assert.match(results[4], /file.txt/);
+  assert.equal(fs.readFileSync(join(root, 'inside/new/file.txt'), 'utf8'), 'updated');
+});
+
+test('S3: a dangling outward junction cannot create its external target', async (ctx) => {
+  const cwd = tmpDir('dangling'); const external = tmpDir('dangling-external');
+  const target = join(external, 'missing');
+  fs.symlinkSync(target, join(cwd, 'dangling'), 'junction');
+  returnCalls(ctx, [['write_file', { path: 'dangling/file.txt', content: 'created' }]]);
+  const r = await runOpenAICompat({ ...base, cwd });
+  assert.equal(r.ok, true);
+  assert.match(r.messages.find((m) => m.role === 'tool').content, /^error:/);
+  assert.equal(fs.existsSync(target), false);
+});
 
 test('malformed tool arguments are returned as an error to the model instead of running the tool with {}', async (ctx) => {
   let n = 0; const ran = [];

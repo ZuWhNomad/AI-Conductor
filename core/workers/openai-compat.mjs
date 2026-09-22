@@ -1,7 +1,7 @@
 // Generic tool-calling worker for any OpenAI-compatible chat-completions API
 // (DeepSeek, Kimi/Moonshot, Grok/xAI, Qwen/DashScope, Gemini's compat endpoint, Ollama /v1).
 // Small, sandboxed-to-cwd tool set: read/write/edit files, list, search, run a command.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import dns from 'node:dns';
@@ -106,7 +106,20 @@ export function closeDanglingToolCalls(messages, note = 'aborted before executio
 }
 
 function makeTools(cwd, signal) {
-  const safe = (p) => { const a = resolve(cwd, p || '.'); if (!isInside(cwd, a)) throw new Error(`path outside project: ${p}`); return a; };
+  const root = realpathSync(cwd);
+  const safe = (p) => {
+    const a = resolve(cwd, p || '.');
+    if (!isInside(cwd, a)) throw new Error(`path outside project: ${p}`);
+    // For a new file, resolve its nearest existing ancestor. lstat keeps dangling links from
+    // being mistaken for missing paths. These checks cannot prevent concurrent link swaps (TOCTOU).
+    let existing = a;
+    for (;;) {
+      try { lstatSync(existing); break; }
+      catch (e) { if (e.code !== 'ENOENT') throw e; existing = dirname(existing); }
+    }
+    if (!isInside(root, realpathSync(existing))) throw new Error(`path outside project: ${p}`);
+    return a;
+  };
   return {
     read_file: ({ path }) => readFileSync(safe(path), 'utf8').slice(0, 60000),
     write_file: ({ path, content }) => { const f = safe(path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content); return `wrote ${content.length} chars to ${path}`; },
@@ -118,12 +131,12 @@ function makeTools(cwd, signal) {
     },
     list_dir: ({ path }) => {
       const root = safe(path); const out = [];
-      const walk = (d, lvl) => { if (lvl > 2) return; for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = join(d, e.name); out.push(relative(cwd, p) + (e.isDirectory() ? '/' : '')); if (e.isDirectory()) walk(p, lvl + 1); if (out.length > 500) return; } };
+      const walk = (d, lvl) => { if (lvl > 2) return; for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = safe(join(d, e.name)); out.push(relative(cwd, p) + (e.isDirectory() ? '/' : '')); if (e.isDirectory()) walk(p, lvl + 1); if (out.length > 500) return; } };
       walk(root, 0); return out.join('\n');
     },
     search: ({ pattern, path }) => {
       const re = new RegExp(pattern); const root = safe(path); const hits = [];
-      const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = join(d, e.name); if (e.isDirectory()) walk(p); else if (statSync(p).size < 2e6) { const lines = readFileSync(p, 'utf8').split('\n'); lines.forEach((l, i) => { if (re.test(l) && hits.length < 200) hits.push(`${relative(cwd, p)}:${i + 1}: ${l.trim().slice(0, 200)}`); }); } if (hits.length >= 200) return; } };
+      const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = safe(join(d, e.name)); if (e.isDirectory()) walk(p); else if (statSync(p).size < 2e6) { const lines = readFileSync(p, 'utf8').split('\n'); lines.forEach((l, i) => { if (re.test(l) && hits.length < 200) hits.push(`${relative(cwd, p)}:${i + 1}: ${l.trim().slice(0, 200)}`); }); } if (hits.length >= 200) return; } };
       walk(root); return hits.join('\n') || '(no matches)';
     },
     fetch_url: ({ url }) => fetchUrlText(url, { signal }),
@@ -164,6 +177,7 @@ export async function runOpenAICompat(t) {
   // The run tool's description states its real limits, so a model does not burn a turn discovering them.
   const readOnly = t.sandbox === 'read-only';
   const defs = [...TOOLS.filter((d) => !readOnly || !['write_file', 'edit_file', 'run'].includes(d.name)).map((d) => (d.name === 'run' ? { ...d, description: runDescription(loadConfig().worker?.shell) } : d)), ...(t.extraTools || []).map((x) => x.def)];
+  const allowed = new Set(defs.map((d) => d.name));
   let lastKey = null, repeat = 0; // repeated-call guard: the same tool with the same arguments, over and over
   const messages = t.history?.length ? [...t.history] : [{ role: 'system', content: t.system || 'You are a careful software engineer working in the project directory. Use the tools to inspect and change files, run the verification commands, then finish with a short report.' }];
   if (t.prompt) messages.push({ role: 'user', content: t.prompt });
@@ -199,10 +213,11 @@ export async function runOpenAICompat(t) {
         let out; let isError = false;
         const key = c.function.name + '\u0000' + (c.function.arguments || '');
         repeat = key === lastKey ? repeat + 1 : 1; lastKey = key;
-        if (argError) { out = `error: arguments invalid (${argError}); resend the call with valid JSON arguments`; isError = true; } // broken JSON used to run the tool with {} (a directory read, a no-op write) and mislead the model
+        if (!allowed.has(c.function.name)) { out = `error: tool not allowed: ${c.function.name}`; isError = true; }
+        else if (argError) { out = `error: arguments invalid (${argError}); resend the call with valid JSON arguments`; isError = true; } // broken JSON used to run the tool with {} (a directory read, a no-op write) and mislead the model
         else if (repeat >= 3) { out = `error: this exact call (same tool, same arguments) was already made ${repeat - 1} times in a row and its result will not change; do something different or finish`; isError = true; }
         else {
-          try { out = impl[c.function.name] ? String(await impl[c.function.name](args)) : `unknown tool ${c.function.name}`; }
+          try { out = String(await impl[c.function.name](args)); }
           catch (e) { out = `error: ${e.message}`; isError = true; }
         }
         res.items.push({ type: 'tool_use', name: c.function.name, input: args, output: out.slice(0, 2000) });
