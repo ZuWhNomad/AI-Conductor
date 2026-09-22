@@ -14,6 +14,20 @@ test('improvement log appends, lists, resolves and feeds the review prompt', () 
   assert.equal(listImprovements({ includeResolved: true })[0].resolved, true);
 });
 
+test('improvement context uses the message cap while preserving small objects', async () => {
+  const { bus } = await import('../core/bus.mjs');
+  const small = { taskId: 'context-test', nested: { status: 'failed' } };
+  const normal = logImprovement('error', 'context-test', 'small context', small);
+  assert.deepEqual(normal.context, small);
+  const context = { output: 'x'.repeat(100_000), nested: { detail: 'y'.repeat(100_000) } };
+  const entry = logImprovement('error', 'context-test', 'm'.repeat(100_000), context);
+  assert.equal(entry.message.length, 4000);
+  assert.equal(entry.context, JSON.stringify(context).slice(0, entry.message.length));
+  assert.equal(context.output.length, 100_000, 'the caller context is not mutated');
+  assert.deepEqual(listImprovements().find((e) => e.id === entry.id), entry);
+  assert.deepEqual(bus.since(0).find((e) => e.type === 'improvement' && e.entry?.id === entry.id).entry, entry);
+});
+
 test('registry formatting for the conductor', () => {
   const m = formatModels({ updatedAt: 'now', providers: { codex: { status: 'ok', plan: 'prolite' }, claude: { status: 'unavailable', loggedIn: false } }, models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'ultra'], isDefault: true }] });
   assert.match(m, /gpt-6-astra\* \[low\/ultra\]/);

@@ -19,6 +19,8 @@ export function logImprovement(kind, source, message, context = {}) {
   const key = `${kind}\u0000${source}\u0000${msg}`;
   const hit = recent.get(key);
   if (hit) { hit.repeats++; return hit.entry; } // same problem within 10 minutes is one entry, not a flood
+  const contextText = JSON.stringify(context);
+  if (contextText.length > 4000) context = contextText.slice(0, 4000); // same cap as message; keep small contexts structured
   const entry = { id: shortId(), ts: nowIso(), kind, source, message: msg, context, resolved: false };
   recent.set(key, { at: now, entry, repeats: 0 });
   appendNdjson(FILE(), entry);

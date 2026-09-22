@@ -18,6 +18,42 @@ test('defaults load, patches deep-merge, secrets redact', () => {
   assert.equal(publicConfig(c2).providers.xai.apiKey, null);
 });
 
+test('masked MCP URLs round-trip without replacing the real URLs', () => {
+  const mcpServers = {
+    query: { url: 'https://example.test/mcp?token=query-secret', env: { TOKEN: 'env-secret' } },
+    userinfo: { url: 'https://operator:password@example.test/mcp' },
+    both: { url: 'https://operator:password@example.test/mcp?key=query-secret' },
+    malformed: { url: 'not-a-url?key=query-secret' },
+    disabled: null,
+  };
+  saveConfig({ mcpServers });
+  const patch = { mcpServers: publicConfig().mcpServers };
+  for (const name of ['query', 'userinfo', 'both', 'malformed']) {
+    assert.notEqual(patch.mcpServers[name].url, mcpServers[name].url, name);
+    assert.ok(!patch.mcpServers[name].url.includes('secret'), name);
+  }
+  patch.mcpServers.query.categories = ['search'];
+  const originalPatch = structuredClone(patch);
+  saveConfig(patch);
+  assert.deepEqual(patch, originalPatch, 'save does not mutate its caller');
+  const stored = loadConfig().mcpServers;
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (server) assert.equal(stored[name].url, server.url, name);
+  }
+  assert.equal(stored.query.env.TOKEN, 'env-secret');
+  assert.deepEqual(stored.query.categories, ['search']);
+  assert.equal(stored.disabled, null);
+  for (const mask of ['••••', encodeURIComponent('••••').toLowerCase()]) {
+    saveConfig({ mcpServers: { query: { url: `https://example.test/mcp?token=${mask}` } } });
+    assert.equal(loadConfig().mcpServers.query.url, mcpServers.query.url);
+  }
+  const replacement = 'https://example.test/new?token=replacement-secret';
+  saveConfig({ mcpServers: { query: { url: replacement } } });
+  assert.equal(loadConfig().mcpServers.query.url, replacement, 'unmasked edits still save');
+  saveConfig({ mcpServers: { query: { url: '' } } });
+  assert.equal(loadConfig().mcpServers.query.url, '', 'an explicit empty URL still saves');
+});
+
 test('settings reject nonobjects, preserve subtrees and normalize positive numbers', () => {
   for (const patch of ['x', null, [], 42]) assert.throws(() => saveConfig(patch), { status: 400 });
   saveConfig({ conductor: null });

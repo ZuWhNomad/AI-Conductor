@@ -1,7 +1,7 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
@@ -27,6 +27,31 @@ test('tasks are journaled, default to the configured worker, and follow-ups need
   assert.equal(listTasks({ sessionId: 'other' }).length, 0);
   assert.match(describeTask(getTask(t.id)), /\[canceled\] add feature/);
   assert.equal(await awaitTask('missing'), null);
+});
+
+test('task ID collisions regenerate without overwriting existing journals', async (ctx) => {
+  const { writeJson } = await import('../core/paths.mjs');
+  const samples = [0.125, 0.125, 0.25, 0.375];
+  const random = ctx.mock.method(Math, 'random', () => {
+    assert.ok(samples.length, 'must stop regenerating once an unused ID is found');
+    return samples.shift();
+  });
+  const cwd = tmpDir('task-collision');
+  const first = createTask({ cwd, spec: 'keep this task' });
+  const file = join(HOME, 'tasks', `${first.id}.json`);
+  const original = readFileSync(file, 'utf8');
+  // A journal can exist on disk without having been loaded into the task map.
+  const diskId = (0.25).toString(36).slice(2, 10);
+  const diskFile = join(HOME, 'tasks', `${diskId}.json`);
+  const diskTask = { id: diskId, spec: 'keep this journal too' };
+  writeJson(diskFile, diskTask);
+  const second = createTask({ cwd, spec: 'new task' });
+  assert.equal(second.id, (0.375).toString(36).slice(2, 10));
+  assert.equal(random.mock.callCount(), 4);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  assert.deepEqual(JSON.parse(readFileSync(diskFile, 'utf8')), diskTask);
+  assert.equal(getTask(first.id), first);
+  assert.equal(JSON.parse(readFileSync(join(HOME, 'tasks', `${second.id}.json`), 'utf8')).spec, 'new task');
 });
 
 test('awaitTask times out with a snapshot', async () => {

@@ -62,6 +62,26 @@ test('sessions, tasks, browse and SSE replay', async () => {
   assert.equal((await get('/api/sessions')).length, 0);
 });
 
+test('task follow-ups inherit cwd without requiring it in the request', async () => {
+  const { getTask } = await import('../../core/tasks.mjs');
+  const cwd = tmpDir('srv-follow-up');
+  const parent = await post('/api/tasks', { cwd, spec: 'initial task' });
+  Object.assign(getTask(parent.id), { status: 'done', threadId: 'test-thread' });
+  const send = (body) => fetch(url + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await send({ followUpOf: parent.id, spec: 'fix it' });
+  assert.equal(response.status, 200);
+  const follow = await response.json();
+  assert.equal(follow.cwd, cwd);
+  assert.equal(follow.followUpOf, parent.id);
+  assert.equal(follow.threadId, 'test-thread');
+  assert.equal((await get(`/api/tasks/${follow.id}`)).cwd, cwd);
+  assert.equal((await send({ spec: 'new task' })).status, 400);
+  assert.equal((await send({ followUpOf: parent.id, spec: '' })).status, 400);
+  assert.equal((await send({ followUpOf: parent.id, spec: 42 })).status, 400);
+  assert.equal((await send({ followUpOf: 'missing', spec: 'fix it' })).status, 404);
+  await post(`/api/tasks/${follow.id}/cancel`);
+});
+
 test('bad requests are client errors and leave state usable', async () => {
   const cwd = tmpDir('srv-validation');
   const send = (p, body, headers = {}) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
