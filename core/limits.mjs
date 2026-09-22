@@ -36,9 +36,10 @@ export function refreshLimits({ only = null } = {}) {
   const inflight = (async () => {
     const targets = Object.values(PROVIDERS).filter((p) => p.pollLimits && (!only || only.includes(p.id)));
     const outcomes = await Promise.allSettled(targets.map(async (p) => {
+      const before = { ...getLimits().providers[p.id] };
       try {
         const r = await p.pollLimits();
-        return { id: p.id, ok: true, r };
+        return { id: p.id, ok: true, r, before };
       } catch (e) {
         return { id: p.id, ok: false, error: String(e?.message || e) };
       }
@@ -46,11 +47,11 @@ export function refreshLimits({ only = null } = {}) {
     getLimits();
     for (const outcome of outcomes) {
       if (outcome.status !== 'fulfilled') continue;
-      const { id, ok, r, error } = outcome.value;
+      const { id, ok, r, error, before } = outcome.value;
       const prev = cache.providers[id] || {};
       if (ok) {
         try {
-          cache.providers[id] = { ...mergePoll(prev, r), source: 'poll', error: null, updatedAt: nowIso() };
+          cache.providers[id] = { ...mergePoll(prev, r, before), source: 'poll', error: null, updatedAt: nowIso() };
         } catch (e) {
           cache.providers[id] = { ...prev, provider: id, source: prev.source || 'poll', error: String(e?.message || e), updatedAt: nowIso() };
         }
@@ -70,10 +71,23 @@ function earliestReset(windows = []) {
   return full.length ? Math.min(...full) : null;
 }
 
-export function mergePoll(prev, r) {
+export function mergePoll(prev, r, before = prev) {
   const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !w.models)) : null };
-  if (!r.windows?.length && !r.blocked && prev.blockedReason === '429' && prev.blockedUntil > Date.now()) {
-    Object.assign(merged, { blocked: prev.blocked, blockedUntil: prev.blockedUntil, blockedReason: prev.blockedReason });
+  const httpUntil = prev.httpRetryUntil || (prev.blockedReason === '429' ? prev.blockedUntil : null);
+  // Balance or model-scoped usage says nothing about recovery from a global HTTP request limit.
+  // A poll started before a newer 429 cannot establish recovery from that rejection either.
+  const recovered = before.last429At === prev.last429At && before.blockedUntil === prev.blockedUntil
+    && before.httpRetryUntil === prev.httpRetryUntil
+    && r.windows?.some((w) => w.id === 'requests' && !w.models && w.status !== 'rejected'
+      && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100
+      && (!w.resetsAt || w.resetsAt > Date.now()));
+  if (prev.blocked && httpUntil > Date.now() && !recovered) {
+    merged.last429At = prev.last429At;
+    if (!r.blocked || (merged.blockedUntil && merged.blockedUntil < httpUntil)) {
+      Object.assign(merged, { blocked: true, blockedUntil: httpUntil, blockedReason: '429' });
+    } else {
+      merged.httpRetryUntil = httpUntil; // Keep the HTTP deadline even while a stronger poll block takes precedence.
+    }
   }
   return merged;
 }
@@ -104,7 +118,11 @@ export function noteHttp(providerId, status, headers = {}) {
     const dateMs = Date.parse(raw) - now;
     const retry = raw != null && String(raw).trim() && Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : dateMs > 0 ? dateMs : 60_000;  // a 429 with no retry-after backs off briefly (60s), deliberately shorter than the 30-min hard-block default
     p.blocked = true; p.blockedUntil = now + retry; p.blockedReason = '429'; p.last429At = nowIso();
-  } else if (status && status < 400 && p.blockedReason === '429') { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
+    delete p.httpRetryUntil;
+  } else if (status && status < 400) {
+    delete p.httpRetryUntil;
+    if (p.blockedReason === '429') { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; }
+  }
   const rem = h['x-ratelimit-remaining-requests'] ?? h['x-ratelimit-remaining'];
   const lim = h['x-ratelimit-limit-requests'] ?? h['x-ratelimit-limit'];
   if (rem != null && lim != null && Number(lim) > 0) {

@@ -43,7 +43,7 @@ test('retry-after HTTP dates block until the given date', () => {
   }
 });
 
-test('empty polls preserve active HTTP blocks but reported windows can clear them', () => {
+test('only usable unscoped request windows can clear an active HTTP block', () => {
   const prev = { blocked: true, blockedReason: '429', blockedUntil: Date.now() + 3600e3 };
   const empty = { provider: 'deepseek', blocked: false, windows: [] };
   const kept = mergePoll(prev, empty);
@@ -55,6 +55,113 @@ test('empty polls preserve active HTTP blocks but reported windows can clear the
   assert.equal(cleared.blockedUntil, null);
   assert.equal(mergePoll({ ...prev, blockedUntil: Date.now() - 1000 }, empty).blocked, false);
   assert.equal(empty.blocked, false);
+  for (const windows of [
+    [{ id: 'deepseek:budget', usedPercent: 0 }],
+    [{ id: 'requests', usedPercent: 50, models: 'opus' }],
+    [{ id: 'requests', usedPercent: 50, status: 'rejected' }],
+    [{ id: 'requests', usedPercent: 50, resetsAt: Date.now() - 1 }],
+    ...[undefined, null, NaN, -1, 100].map((usedPercent) => [{ id: 'requests', usedPercent }]),
+  ]) {
+    const result = mergePoll(prev, { ...empty, windows });
+    assert.equal(result.blockedUntil, prev.blockedUntil);
+    assert.equal(result.blockedReason, '429');
+    assert.deepEqual(result.windows, windows);
+  }
+});
+
+test('funded balance refresh preserves a 429 deadline until expiration', async (t) => {
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const original = loadConfig().providers.deepseek;
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(url, 'https://api.deepseek.com/user/balance');
+    return { ok: true, json: async () => ({ is_available: true, balance_infos: [{ total_balance: '10', currency: 'USD' }] }) };
+  });
+  try {
+    saveConfig({ providers: { deepseek: { apiKey: 'test-only', baseUrl: '' } } });
+    noteHttp('deepseek', 429, { 'Retry-After': '60' });
+    const until = blockedUntil('deepseek');
+    await refreshLimits({ only: ['deepseek'] });
+    assert.equal(getLimits().providers.deepseek.balance.amount, 10);
+    assert.equal(getLimits().providers.deepseek.windows[0].id, 'deepseek:budget');
+    assert.equal(blockedUntil('deepseek'), until);
+    t.mock.method(Date, 'now', () => until);
+    assert.equal(blockedUntil('deepseek'), null);
+    assert.equal(getLimits().providers.deepseek.blockedReason, null);
+  } finally { saveConfig({ providers: { deepseek: original || { apiKey: '', baseUrl: '' } } }); }
+});
+
+test('empty and failed refreshes preserve the active HTTP retry deadline', async () => {
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const id = 'fake-http-retry';
+  try {
+    noteHttp(id, 429, { 'Retry-After': '60' });
+    const until = blockedUntil(id);
+    for (const pollLimits of [
+      async () => ({ provider: id, blocked: false, windows: [] }),
+      async () => { throw new Error('offline'); },
+    ]) {
+      PROVIDERS[id] = { id, pollLimits };
+      await refreshLimits({ only: [id] });
+      assert.equal(blockedUntil(id), until);
+      assert.equal(getLimits().providers[id].blockedReason, '429');
+    }
+    assert.equal(getLimits().providers[id].error, 'offline');
+  } finally { delete PROVIDERS[id]; }
+});
+
+test('request recovery from an in-flight poll does not clear a newer HTTP block', async () => {
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const id = 'fake-http-recovery';
+  let resolvePoll;
+  const pending = new Promise((resolve) => { resolvePoll = resolve; });
+  try {
+    PROVIDERS[id] = { id, pollLimits: () => pending };
+    noteHttp(id, 429, { 'Retry-After': '60' });
+    const refresh = refreshLimits({ only: [id] });
+    noteHttp(id, 429, { 'Retry-After': '120' });
+    const until = blockedUntil(id);
+    resolvePoll({ provider: id, blocked: false, windows: [{ id: 'requests', usedPercent: 50 }] });
+    await refresh;
+    assert.equal(blockedUntil(id), until);
+    assert.equal(getLimits().providers[id].blockedReason, '429');
+    await refreshLimits({ only: [id] });
+    assert.equal(blockedUntil(id), null, 'a subsequent request-limit poll can establish recovery');
+  } finally { delete PROVIDERS[id]; }
+});
+
+test('poll merging keeps the stronger global block without globalizing model quotas', async () => {
+  const { modelBlockedUntil } = await import('../core/limits.mjs');
+  const until = Date.now() + 60_000;
+  const prev = { blocked: true, blockedReason: '429', blockedUntil: until };
+  const scoped = { id: 'seven_day_opus', models: 'opus', usedPercent: 100, resetsAt: until + 60_000 };
+  for (const reset of [until - 1, until + 1]) {
+    const result = mergePoll(prev, { blocked: true, windows: [{ id: 'requests', usedPercent: 100, resetsAt: reset }, scoped] });
+    assert.equal(result.blockedUntil, Math.max(until, reset));
+    assert.deepEqual(result.windows[1], scoped);
+    assert.equal(mergePoll(result, { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blockedUntil, until);
+  }
+  const indefinite = mergePoll(prev, { blocked: true, blockedReason: 'balance exhausted', windows: [] });
+  assert.equal(indefinite.blocked, true);
+  assert.equal(indefinite.blockedUntil, null);
+  assert.equal(indefinite.blockedReason, 'balance exhausted');
+  assert.equal(mergePoll(indefinite, { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blockedUntil, until);
+  assert.equal(mergePoll(indefinite, { blocked: false, windows: [{ id: 'requests', usedPercent: 50 }] }).blocked, false);
+  const id = 'fake-http-scoped';
+  try {
+    getLimits().providers[id] = indefinite;
+    noteHttp(id, 200);
+    assert.equal(getLimits().providers[id].blockedReason, 'balance exhausted');
+    assert.equal(mergePoll(getLimits().providers[id], { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blocked, false);
+    getLimits().providers[id] = mergePoll(prev, { blocked: false, windows: [{ id: 'requests', usedPercent: 50 }, scoped] });
+    assert.equal(blockedUntil(id), null);
+    assert.equal(modelBlockedUntil(id, 'opus'), scoped.resetsAt);
+    assert.equal(modelBlockedUntil(id, 'sonnet'), null);
+  } finally { delete getLimits().providers[id]; }
 });
 
 test('blockedUntil sees an external block without a prior explicit getLimits call', async () => {
