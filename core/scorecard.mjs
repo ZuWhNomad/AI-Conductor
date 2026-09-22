@@ -170,6 +170,7 @@ export function rootRuns({ source = null } = {}) {
       attempts.set(root.taskId, a);
     }
     a.rounds += 1; a.members.push(r.taskId);
+    if (tokensOf(r)) a._anyUsage = true;
     addTok(a.tokens, tokensOf(r));
     a.durationMs += r.durationMs || 0;
     if (r.pct) { a.pct = a.pct || {}; for (const [k, v] of Object.entries(r.pct)) a.pct[k] = (a.pct[k] || 0) + v; }
@@ -178,7 +179,9 @@ export function rootRuns({ source = null } = {}) {
     const rated = rates.get(a.taskId) || a.members.map((id) => rates.get(id)).find(Boolean);
     a.verdict = rated?.verdict || (a.status === 'failed' ? 'fail' : null);
     a.notes = rated?.notes || null;
-    a.usd = a.unmeasured ? null : usdFor(a.tokens, a.price); // a verdict recorded for a run made outside Conductor counts for quality, never for cost
+    // D7: no run reported usage → cost unknown, EXCEPT when all prices are zero (local model: $0 is real).
+    const priceAllZero = a.price && a.price.in === 0 && a.price.out === 0 && (a.price.cached ?? 0) === 0;
+    a.usd = a.unmeasured ? null : (!a._anyUsage && !priceAllZero ? null : usdFor(a.tokens, a.price)); // a verdict recorded for a run made outside Conductor counts for quality, never for cost
   }
   const chains = new Map();
   const rootIn = (map, id) => { let cur = map.get(id); const seen = new Set(); while (cur && cur.followUpOf && map.has(cur.followUpOf) && !seen.has(cur.taskId)) { seen.add(cur.taskId); cur = map.get(cur.followUpOf); } return cur ? cur.taskId : null; };
@@ -325,20 +328,33 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
       plans.push({ steps: [a.sel, b.sel], quality: a.ref.quality + (1 - pA) * b.ref.quality, usd: costOf(a.ref) + (1 - pA) * costOf(b.ref), estimated: true, ref: a.ref, fallbackRef: b.ref });
     }
   }
-  for (const p of plans) p.utility = p.usd == null ? -Infinity : lambda * p.quality - p.usd;
+  // OB7: unknown-cost plans are eligible but rank after every priced eligible plan. costUnknown marks them.
+  for (const p of plans) {
+    if (p.usd == null) { p.utility = lambda * p.quality; p.costUnknown = true; }
+    else { p.utility = lambda * p.quality - p.usd; }
+  }
   // Effort dominance: a higher effort of the same model that costs within effortSlackUsd and is at least as good
   // makes the lower effort pointless (Luna's efforts differ by fractions of a cent; the higher one held up on real work).
   const slackOf = (usd) => Math.max(cfg.effortSlackUsd, usd * (cfg.effortSlackPct / 100)); // absolute floor for cheap models, relative for dear ones
   const dominated = new Set();
   for (const a of plans) for (const b of plans) {
     if (a === b || a.steps.length !== 1 || b.steps.length !== 1 || a.usd == null || b.usd == null) continue;
-    const [pa, ma, ea] = a.steps[0].split(':'), [pb, mb, eb] = b.steps[0].split(':');
+    // B1: use parseSel so model ids containing ':' (e.g. qwen3.8:latest) parse correctly.
+    const { provider: pa, model: ma, effort: ea } = parseSel(a.steps[0]), { provider: pb, model: mb, effort: eb } = parseSel(b.steps[0]);
     if (pa !== pb || ma !== mb || EFFORTS.indexOf(eb) <= EFFORTS.indexOf(ea)) continue;
     if (b.usd <= a.usd + slackOf(a.usd) && b.quality >= a.quality) dominated.add(a);
   }
   for (const p of plans) if (dominated.has(p) || p.steps.some((st) => dominated.has(plans.find((x) => x.steps.length === 1 && x.steps[0] === st)))) p.utility = -Infinity;
-  // escalate (two fails already in this chain): quality first, cost only as a tie-break — no more cheap rungs
-  plans.sort(escalate ? (x, y) => (y.quality - x.quality) || (y.utility - x.utility) : (x, y) => y.utility - x.utility || (y.quality - x.quality) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0)));
+  // OB7: sort — priced eligible plans before unknown-cost ones; within each group, value ordering applies.
+  const eligible = (p) => p.utility > -Infinity;
+  const sortCmp = escalate
+    ? (x, y) => (y.quality - x.quality) || (y.utility - x.utility)
+    : (x, y) => {
+        if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
+        if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
+        return y.utility - x.utility || (y.quality - x.quality) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
+      };
+  plans.sort(sortCmp);
   // Class walk: the first budget class (in configured order) that holds a viable plan wins; value already ordered the plans.
   const classOf = (p) => providerClass(p.steps[0].split(':')[0], cfg);
   let best = null, bestClass = null;
@@ -357,7 +373,8 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   if (!best) {
     // A provider proven at this level exists but is capped/blocked/excluded: hand the task back (the conductor does it or
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
-    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && gate(g.sel) && blockedSel(g.sel));
+    // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
+    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && blockedSel(g.sel));
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
@@ -367,7 +384,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, failedBelow });
   }
   const first = parseSel(best.steps[0]);
-  const money = (v) => (v == null ? 'unpriced' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
+  const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
   const describe = (p) => { const prov = p.steps[p.steps.length - 1].split(':')[0]; const rs = reserve(prov); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
   const single = plans.find((p) => p.steps.length === 1);
   const alt = plans.slice(1, 4).map(describe);
@@ -376,7 +393,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
     class: bestClass,
-    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: best available model by measured quality (any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}`,
+    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: best available model by measured quality (any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}`,
     alternatives: alt,
   };
 }

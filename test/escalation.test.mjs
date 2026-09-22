@@ -1,8 +1,8 @@
-import './_env.mjs';
+import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { escalationState } = await import('../core/tools.mjs');
+const { escalationState, conductorToolDefs } = await import('../core/tools.mjs');
 
 // maxRounds 3, escalationRounds 2 (the defaults) unless noted.
 const S = (o) => escalationState({ maxRounds: 3, escRounds: 2, ...o });
@@ -64,4 +64,21 @@ test('not at the ceiling: a better model, or the same model at a higher effort, 
 test('no pick and no failed task are never "at the ceiling"', () => {
   assert.equal(atCeiling(null, { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }), false);
   assert.equal(atCeiling({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }, null), false);
+});
+
+test('OB8: rate_task follows failedOverTo so the rating reaches the replacement chain', async () => {
+  const { createTask, cancelTask } = await import('../core/tasks.mjs');
+  const sc = await import('../core/scorecard.mjs');
+  const cwd = tmpDir('ob8');
+  const t1 = createTask({ cwd, title: 'T1', spec: 'x', provider: 'codex', model: 'gpt-5.6-luna' });
+  const t2 = createTask({ cwd, title: 'T2', spec: 'x', provider: 'ollama', model: 'qwen' });
+  try {
+    t1.failedOverTo = t2.id;
+    sc.recordRun({ id: t2.id, title: 'T2', status: 'done', provider: 'ollama', model: 'qwen', category: 'edit', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    const rate = conductorToolDefs({ sessionId: 'ob8', cwd }).find((d) => d.name === 'rate_task').handler;
+    const msg = await rate({ task_id: t1.id, verdict: 'pass' });
+    assert.equal(msg, `rated ${t2.id} (followed failedOverTo from ${t1.id}): pass`);
+    assert.equal(sc.rootRuns().find((c) => c.taskId === t2.id)?.verdict, 'pass');
+    assert.equal(sc.rootRuns().find((c) => c.taskId === t1.id), undefined);
+  } finally { cancelTask(t1.id); cancelTask(t2.id); }
 });

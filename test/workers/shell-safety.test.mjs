@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
 import { resolveNpmShim, winArgEscape, spawnCli } from '../../core/proc.mjs';
-import { shellDenied, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
+import { shellDenied, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';
 
@@ -56,6 +56,7 @@ for (const shell of [true, ['node']]) test(`S2: explicit worker.shell ${JSON.str
     assert.equal(spawn.mock.callCount(), 1);
     assert.equal(spawn.mock.calls[0].arguments[0], 'node --version');
     assert.equal(spawn.mock.calls[0].arguments[1].shell, true);
+    assert.equal(spawn.mock.calls[0].arguments[1].env.NoDefaultCurrentDirectoryInExePath, '1');
   } finally { saveConfig({ worker: { shell: previous } }); spawn.mock.restore(); syncBuiltinESMExports(); }
 });
 
@@ -69,8 +70,38 @@ test('worker.shell allow-list blocks operators, chaining and prefix bypasses', (
   assert.match(shellDenied(AL, 'git log | grep x'), /operators/);           // pipe
   assert.match(shellDenied(AL, 'node x && rm -rf /'), /operators/);         // &&
   assert.match(shellDenied(AL, 'git x > /dev/null'), /operators/);          // redirect
-  assert.match(shellDenied(AL, 'C:/tmp/git-unlisted.cmd'), /not in/);       // exact basename, not a prefix of "git"
+  assert.match(shellDenied(AL, 'C:/tmp/git-unlisted.cmd'), /not a path/);   // path-qualified, even if basename looks listed
   assert.match(shellDenied(AL, 'gitfoo --x'), /not in/);
+});
+
+test('D9: allow-list rejects a path or dot-prefixed first token; a bare git is allowed', () => {
+  const AL = ['git'];
+  assert.match(shellDenied(AL, 'tools\\git.cmd status'), /not a path/);
+  assert.match(shellDenied(AL, '.\\git status'), /not a path/);
+  assert.match(shellDenied(AL, './git status'), /not a path/);
+  assert.equal(shellDenied(AL, 'git status'), null);
+});
+
+test('OS2: allow_command refuses interpreters and script hosts, case-insensitive, extension-stripped', async () => {
+  const { conductorToolDefs } = await import('../../core/tools.mjs');
+  const previous = loadConfig().worker.shell;
+  saveConfig({ worker: { shell: ['git'] } });
+  try {
+    const allow = conductorToolDefs({ sessionId: 'os2', cwd: tmpDir('os2') }).find((d) => d.name === 'allow_command').handler;
+    for (const command of ['python', 'python3', 'py', 'PYTHON.EXE', 'node', 'node.cmd', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'cscript', 'wscript', 'mshta', 'rundll32', 'regsvr32', 'npx', 'uvx', 'pipx']) {
+      const msg = await allow({ command });
+      assert.match(msg, /refused: .*shell, interpreter, or script host/, command);
+    }
+    const ok = await allow({ command: 'openscad' });
+    assert.match(ok, /Added "openscad"/);
+  } finally { saveConfig({ worker: { shell: previous } }); }
+});
+
+test('D9: runEnv sets NoDefaultCurrentDirectoryInExePath so a cwd shim cannot shadow a bare name', () => {
+  const env = runEnv({ PATH: 'C:\\Windows', OTHER: 'keep' });
+  assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');
+  assert.equal(env.PATH, 'C:\\Windows');
+  assert.equal(env.OTHER, 'keep');
 });
 
 test('winArgEscape wraps and caret-escapes cmd metacharacters', () => {

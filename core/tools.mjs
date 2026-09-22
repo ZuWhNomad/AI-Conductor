@@ -197,7 +197,11 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const raw = String(a.command || '').trim();
         const base = raw.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
         if (!base || /[^\w.\-]/.test(base)) return `refused: "${raw}" must be a bare command name (letters, digits, . _ -) with no path, arguments, or shell operators.`;
-        if (['bash', 'sh', 'zsh', 'cmd', 'powershell', 'pwsh', 'env', 'wsl', 'ssh'].includes(base.toLowerCase())) return `refused: "${base}" is a shell/interpreter — allowing it would re-enable arbitrary execution and defeat the boundary.`;
+        // OS2: deny shells, interpreters, and script hosts — allowing any of them re-enables arbitrary execution.
+        const DENIED = new Set(['bash', 'sh', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'cmd', 'powershell', 'pwsh', 'env', 'wsl', 'ssh',
+          'python', 'python3', 'python2', 'py', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'wish',
+          'cscript', 'wscript', 'mshta', 'rundll32', 'regsvr32', 'npx', 'uvx', 'pipx', 'pnpx', 'yarn', 'exec']);
+        if (DENIED.has(base.toLowerCase())) return `refused: "${base}" is a shell, interpreter, or script host — allowing it would re-enable arbitrary execution and defeat the boundary.`;
         const shell = loadConfig().worker?.shell;
         if (shell === true) return 'worker.shell is already unrestricted (true); no allow-list to extend.';
         if (shell === false || shell === 'off') return 'worker.shell is off (the run tool is disabled). Turn it into an allow-list in Settings first.';
@@ -212,7 +216,16 @@ export function conductorToolDefs({ sessionId, cwd }) {
       name: 'rate_task',
       description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; fail = abandoned, redone elsewhere or by you. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
       schema: z.object({ task_id: z.string(), verdict: z.enum(VERDICTS), notes: z.string().optional().describe('What was wrong, briefly') }),
-      handler: async (a) => { if (!getTask(a.task_id)) return `unknown task ${a.task_id}`; rateTask(a.task_id, a.verdict, a.notes); return `rated ${a.task_id}: ${a.verdict}`; },
+      handler: async (a) => {
+        let t = getTask(a.task_id);
+        if (!t) return `unknown task ${a.task_id}`;
+        // OB8: a task that failed over to another has no run row (limit hits are not scored); follow the chain
+        // to the final task so the rating reaches the actual recorded attempt.
+        const visited = new Set();
+        while (t.failedOverTo && !visited.has(t.id)) { visited.add(t.id); const next = getTask(t.failedOverTo); if (!next) break; t = next; }
+        rateTask(t.id, a.verdict, a.notes);
+        return t.id === a.task_id ? `rated ${a.task_id}: ${a.verdict}` : `rated ${t.id} (followed failedOverTo from ${a.task_id}): ${a.verdict}`;
+      },
     },
     {
       name: 'model_scores',
@@ -307,7 +320,7 @@ export function conductorTools({ sessionId, cwd }) {
     name: 'conductor',
     version: '2.0.0',
     alwaysLoad: true, // delegation tools are the point; never hide them behind tool search
-    instructions: `Workbench tools. Worker selection is empirical: tag delegate calls with category + difficulty and omit provider/model to let the scorecard pick; fallback default worker ${cfg.worker.provider}/${cfg.worker.model} (${cfg.worker.effort}). Rate finished tasks with rate_task. Tasks run in ${cwd}.`,
+    instructions: `Workbench tools. Worker selection is empirical: tag delegate calls with category + difficulty and omit provider/model to let the scorecard pick; when the scorecard has no qualified plan the delegate is refused — name a provider/model explicitly (which always runs and seeds the scorecard) or do small work yourself. Rate finished tasks with rate_task. Tasks run in ${cwd}.`,
     tools: conductorToolDefs({ sessionId, cwd }).map((d) => tool(d.name, d.description, d.schema.shape, async (args) => ({ content: [{ type: 'text', text: String(await d.handler(args)) }] }))),
   });
 }

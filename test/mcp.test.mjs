@@ -3,6 +3,7 @@ import { test, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 
 // CONDUCTOR_HOME does not change os.homedir(): intercept every default Claude config read.
@@ -81,6 +82,13 @@ test('Agent SDK shape and source skipping', () => {
   const reg = { a: { url: 'https://a/mcp', source: 'claude' }, b: { command: 'b.exe', args: ['1'], env: {}, source: 'codex' } };
   assert.deepEqual(forClaudeSdk(reg), { a: { type: 'http', url: 'https://a/mcp' }, b: { command: 'b.exe', args: ['1'], env: {} } });
   assert.deepEqual(Object.keys(forClaudeSdk(reg, { skip: ['claude'] })), ['b']);
+});
+
+test('D1: MCP instructions refuse a tagged delegate when no plan qualifies instead of naming a fallback default worker', () => {
+  const src = readFile(fileURLToPath(new URL('../core/tools.mjs', import.meta.url)), 'utf8');
+  assert.match(src, /when the scorecard has no qualified plan the delegate is refused/);
+  assert.match(src, /name a provider\/model explicitly \(which always runs and seeds the scorecard\) or do small work yourself/);
+  assert.doesNotMatch(src, /fallback default worker/);
 });
 
 test('a tagged server is attached only to worker tasks of its categories; untagged servers and untagged tasks get everything', () => {

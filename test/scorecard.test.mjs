@@ -857,3 +857,81 @@ test('R2B6: voids invalidate cached admission costs and are filtered on stat fal
     assert.equal(fallbacks, 1, 'readable ledger takes the stat-failure fallback');
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
+
+test('D7: a run with no reported usage is unknown cost, except a zero list price is really $0', () => {
+  run({ id: 'D7-missing', source: 'D7-missing', category: 'read', difficulty: 1, result: { durationMs: 1000 } });
+  sc.rateTask('D7-missing', 'pass');
+  const missing = sc.rootRuns({ source: 'D7-missing' }).find((c) => c.taskId === 'D7-missing');
+  assert.equal(missing.usd, null);
+  assert.equal(missing.attempts[0].usd, null);
+  assert.equal(sc.summarize({ source: 'D7-missing' }).find((g) => g.sel === 'codex:gpt-5.6-luna:low').avgUsd, null);
+
+  run({ id: 'D7-local', source: 'D7-local', provider: 'ollama', model: 'qwen', effort: null, category: 'read', difficulty: 1, result: { durationMs: 1000 } });
+  sc.rateTask('D7-local', 'pass');
+  const local = sc.rootRuns({ source: 'D7-local' }).find((c) => c.taskId === 'D7-local');
+  assert.equal(local.usd, 0);
+  assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'ollama').avgUsd, 0);
+});
+
+test('OB7: unknown-cost plans stay eligible but rank after every priced eligible plan', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, hourlyUsd: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const cell = (model, effort, avgUsd, extra = {}) => ({
+      sel: `codex:${model}:${effort}`, steps: 1, provider: 'codex', model, effort,
+      category: extra.category || 'search', difficulty: extra.difficulty || 2, rated: 3, n: 3,
+      quality: extra.quality ?? 1, accept: extra.accept ?? 1, avgUsd, avgDurationMs: 0,
+    });
+    const priced = cell('gpt-5.6-luna', 'low', 0.05);
+    const unknown = cell('gpt-5.6-terra', 'medium', null);
+    const both = sc.recommend({ category: 'search', difficulty: 2, summary: [unknown, priced] });
+    assert.equal(both.model, 'gpt-5.6-luna', 'priced plan ranks first even when the unknown-cost plan has equal quality');
+    assert.doesNotMatch(both.reason, /cost unknown/);
+    const only = sc.recommend({ category: 'search', difficulty: 2, summary: [unknown] });
+    assert.equal(only.model, 'gpt-5.6-terra');
+    assert.equal(only.plan.usd, null);
+    assert.match(only.reason, /cost unknown/);
+    assert.equal(sc.recommend({ category: 'search', difficulty: 2, summary: [{ ...unknown, quality: 0.5 }] }), null, 'unknown cost does not skip the quality bar');
+    const visual = { ...cell('gpt-5.6-luna', 'low', null), category: 'modeling' };
+    assert.equal(sc.recommend({ category: 'modeling', difficulty: 2, summary: [visual], exclude: ['codex:gpt-6-astra', 'codex:gpt-5.6-sol'] }), null, 'unknown cost does not bypass the visual pass gate');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B5: provenButCapped honors the caller providers allow-list so a blocked excluded provider does not block extrapolation', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits();
+  const previous = limits.providers.codex;
+  const source = 'B5-allow';
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0 } });
+    for (const i of [1, 2, 3]) {
+      run({ id: `${source}-codex-${i}`, source, provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 4 });
+      sc.rateTask(`${source}-codex-${i}`, 'pass');
+      run({ id: `${source}-ollama-${i}`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'implement', difficulty: 2 });
+      sc.rateTask(`${source}-ollama-${i}`, 'pass');
+    }
+    limits.providers.codex = { ...(previous || {}), provider: 'codex', blocked: true, blockedUntil: Date.now() + 3.6e6, windows: previous?.windows || [] };
+    const r = sc.recommend({ category: 'implement', difficulty: 4, source, providers: ['ollama'] });
+    assert.equal(r.provider, 'ollama');
+    assert.match(r.reason, /extrapolated from level 2/);
+  } finally {
+    limits.providers.codex = previous;
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('B1: effort dominance uses parseSel so model ids containing a colon still dominate', (t) => {
+  registryModels(t, [['ollama', 'qwen3.8:latest']]);
+  const cfg = loadConfig().scorecard;
+  saveConfig({ scorecard: { usePriors: false, reservePct: 0, effortSlackUsd: 0.01, effortSlackPct: 10 } });
+  t.after(() => saveConfig({ scorecard: cfg }));
+  const cell = (effort) => ({
+    sel: `ollama:qwen3.8:latest:${effort}`, steps: 1, provider: 'ollama', model: 'qwen3.8:latest', effort,
+    category: 'docs', difficulty: 1, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0, avgDurationMs: 0,
+  });
+  const r = sc.recommend({ category: 'docs', difficulty: 1, summary: [cell('low'), cell('high')] });
+  assert.equal(r.model, 'qwen3.8:latest');
+  assert.equal(r.effort, 'high');
+});
+

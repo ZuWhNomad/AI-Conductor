@@ -20,6 +20,12 @@ test('measuredCostByWindow takes the largest delta per window, honouring model-g
   delete lim.getLimits().providers.antigravity;
 });
 
+test('OB2: a measured 0% delta still records the window so it is not treated as unmeasured', () => {
+  const rows = [{ provider: 'codex', model: 'x', pct: { w1: 5, w2: 0 } }];
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w1: 5, w2: 0 });
+});
+
+
 test('per-window targets: session windows to 95%, weekly and budgets to 100%', () => {
   const t5 = Date.now() + 3600e3, tw = Date.now() + 5 * 86400e3;
   assert.equal(targetFor({ id: 'claude:5h', label: '5-hour' }), 95);
