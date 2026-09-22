@@ -1,13 +1,34 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, utimesSync, mkdirSync } from 'node:fs';
+import { writeFileSync, utimesSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const { findCli } = await import('../core/proc.mjs');
 const { _git } = await import('../core/tasks.mjs');
 const git = findCli('git');
+
+test('git observes content edits to already-dirty tracked files with unchanged status, size and mtime', { skip: !git }, async () => {
+  const cwd = tmpDir('git-dirty');
+  const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  const name = 'space café.txt';
+  const file = join(cwd, name);
+  writeFileSync(file, 'base');
+  run('add', '--', name);
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  writeFileSync(file, 'edit');
+  const before = await _git.gitStatus(cwd);
+  const porcelain = run('status', '--porcelain', '-z');
+  assert.equal(porcelain, ` M ${name}\0`);
+  assert.deepEqual(await _git.changedSince(cwd, before), [], 'unchanged dirty content is not a worker edit');
+  const times = statSync(file);
+  writeFileSync(file, 'real');
+  utimesSync(file, times.atime, times.mtime);
+  assert.equal(run('status', '--porcelain', '-z'), porcelain);
+  assert.deepEqual(await _git.changedSince(cwd, before), [name]);
+});
 
 test('git detects new and modified untracked files and includes them in the summary', { skip: !git }, async () => {
   const cwd = tmpDir('git');

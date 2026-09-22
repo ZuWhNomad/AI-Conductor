@@ -1,7 +1,8 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, isAbsolute, relative } from 'node:path';
@@ -15,6 +16,7 @@ import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
 import { findModel } from './models.mjs';
+import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { capabilityLines } from './capabilities.mjs';
@@ -264,11 +266,13 @@ async function run(t) {
     const claimed = claimedWrites(r.items);
     const phantom = isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
+    if (r.limitHit && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
+      t.limitHit = true; // never scored against the model
+      await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
+    }
     if (t.status === 'canceled') { /* keep */ }
     else if (shuttingDown && ac.signal.aborted) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit) {
-      t.limitHit = true; // never scored against the model
-      await refreshLimits({ only: [t.provider] }).catch(() => {}); // the provider's own quota view (per model group where it has one) drives the next pick
       const next = failover(t);
       if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
       else {
@@ -305,10 +309,10 @@ async function run(t) {
 function failover(t) {
   if (!t.category || !t.difficulty || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
   try {
-    const sel = `${t.provider}:${t.model || 'default'}:${t.effort || 'default'}`;
-    const alt = recommend({ category: t.category, difficulty: t.difficulty, exclude: [sel, `${t.provider}:${t.model || 'default'}`], overflowApi: !!t.overflowApi });
+    const providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
+    const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi });
     if (!alt || alt.provider === t.provider) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox });
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
   } catch { return null; }
@@ -342,16 +346,19 @@ async function git(cwd, args) {
 async function gitStatus(cwd) {
   const out = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
   if (out == null) return null;
-  const entries = out.split('\0'); const statusMap = new Map(); const untracked = [];
+  const entries = out.split('\0'); const statusMap = new Map(); const untracked = [], tracked = [];
   for (let i = 0; i < entries.length; i++) {
     const l = entries[i]; if (!l) continue;
     const name = l.slice(3); const status = l.slice(0, 2);
     if (/[RC]/.test(status)) i++; // -z emits the original name after a rename/copy destination.
     if (status === '??') untracked.push(name);
+    else tracked.push(name);
     statusMap.set(name, status);
   }
   // An untracked file carries its mtime+size, so an edit to it counts as a change too.
   await Promise.all(untracked.map(async (name) => { try { const s = await stat(join(cwd, name)); statusMap.set(name, `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
+  // Porcelain stays " M" when a worker edits an already-dirty file; compare its content too.
+  await Promise.all(tracked.map(async (name) => { try { const hash = createHash('sha256').update(await readFile(join(cwd, name))).digest('hex'); statusMap.set(name, `${statusMap.get(name)} ${hash}`); } catch {} }));
   return statusMap;
 }
 /** Pure: files whose status differs between two snapshots (everything, when there was no before). */

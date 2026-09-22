@@ -194,21 +194,113 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
     return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
   });
   const cwd = tmpDir('failover');
-  const t = createTask({ sessionId: 'fo', cwd, title: 'review it', spec: 'x', provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2 });
+  const t = createTask({ sessionId: 'fo', cwd, title: 'review it', spec: 'x', provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2, sandbox: 'read-only', parallelOverride: true, overflowApi: true });
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   let done;
-  try { schedule(); done = await awaitTask(t.id, 15000); } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; }
-  assert.equal(done.status, 'failed');
-  assert.match(done.error, /failed over to task/);
-  const next = getTask(done.failedOverTo);
-  assert.equal(next.status, 'queued');
-  assert.equal(next.provider, 'ollama');
-  assert.equal(next.retryOf, t.id);
-  assert.match(describeTask(getTask(t.id)), /Failed over to task/);
-  cancelTask(next.id);
-  assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === t.id)), 'the cut-off attempt is not in the ledger');
-  saveConfig({ scorecard: { minSamples: 3 } });
+  try {
+    schedule(); done = await awaitTask(t.id, 15000);
+    assert.equal(done.status, 'failed');
+    assert.match(done.error, /failed over to task/);
+    const next = getTask(done.failedOverTo);
+    assert.equal(next.status, 'queued');
+    assert.equal(next.provider, 'ollama');
+    assert.equal(next.retryOf, t.id);
+    assert.equal(next.sandbox, 'read-only');
+    assert.equal(next.parallelOverride, true);
+    assert.equal(next.overflowApi, true);
+    assert.match(describeTask(getTask(t.id)), /Failed over to task/);
+    assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === t.id)), 'the cut-off attempt is not in the ledger');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) cancelTask(t.failedOverTo);
+    cancelTask(t.id);
+    saveConfig({ scorecard: { minSamples: 3 } });
+  }
 });
+
+test('failover excludes the whole current provider before choosing an eligible alternative', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const { bus } = await import('../core/bus.mjs');
+  const scorecard = loadConfig().scorecard;
+  saveConfig({ scorecard: { minSamples: 1, classOrder: ['api', 'free'] } });
+  delete getLimits().providers.deepseek;
+  const id = 'same-provider-alternative';
+  recordRun({ id, title: 't', status: 'done', provider: 'deepseek', model: 'deepseek-reasoner', effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+  rateTask(id, 'pass');
+  // A fresh model-scoped quota view permits the same-provider model again.
+  ctx.mock.method(PROVIDERS.deepseek, 'pollLimits', async () => ({ provider: 'deepseek', windows: [{ id: 'requests', usedPercent: 0 }], blocked: false }));
+  mockCompletions(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429 });
+  });
+  const t = createTask({ cwd: tmpDir('failover-provider'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, overflowApi: true });
+  const finished = Promise.withResolvers();
+  const onEvent = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.finishedAt) finished.resolve(e.task); };
+  bus.on('event', onEvent);
+  try {
+    assert.equal(recommend({ category: 'review', difficulty: 2, exclude: ['deepseek:deepseek-flash'], overflowApi: true }).provider, 'deepseek', 'the same-provider model would win without provider filtering');
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    const done = await finished.promise;
+    assert.equal(done.status, 'failed');
+    assert.equal(getTask(done.failedOverTo)?.provider, 'ollama');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    bus.off('event', onEvent);
+    if (t.failedOverTo) cancelTask(t.failedOverTo);
+    cancelTask(t.id);
+    saveConfig({ scorecard });
+    delete getLimits().providers.deepseek;
+  }
+});
+
+for (const action of ['cancel', 'shutdown']) for (const noFailover of [false, true]) {
+  test(`${action} during quota refresh prevents ${noFailover ? 'parking' : 'failover'}`, async (ctx) => {
+    const { loadConfig, saveConfig } = await import('../core/config.mjs');
+    const { getLimits } = await import('../core/limits.mjs');
+    const { bus } = await import('../core/bus.mjs');
+    const scorecard = loadConfig().scorecard;
+    saveConfig({ scorecard: { minSamples: 1 } });
+    delete getLimits().providers.deepseek;
+    const entered = Promise.withResolvers(), refresh = Promise.withResolvers(), finished = Promise.withResolvers();
+    ctx.mock.method(PROVIDERS.deepseek, 'pollLimits', () => { entered.resolve(); return refresh.promise; });
+    mockCompletions(ctx, async () => {
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429 });
+    });
+    const cwd = tmpDir('refresh-race');
+    const t = createTask({ sessionId: cwd, cwd, provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2, noFailover });
+    const onEvent = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.finishedAt) finished.resolve(e.task); };
+    bus.on('event', onEvent);
+    try {
+      delete process.env.CONDUCTOR_NO_SCHEDULE;
+      schedule();
+      await entered.promise;
+      assert.equal(t.status, 'running');
+      if (action === 'cancel') cancelTask(t.id);
+      else abortRunning({ requeue: true });
+      refresh.resolve({ provider: 'deepseek', windows: [], blocked: false });
+      const done = await finished.promise; // cancellation wakes awaitTask before run() has actually settled
+      assert.equal(done.status, action === 'cancel' ? 'canceled' : 'queued');
+      assert.equal(done.failedOverTo, undefined);
+      assert.equal(done.resumeAt, null);
+      assert.equal(listTasks({ sessionId: cwd }).length, 1, 'no replacement was created');
+      if (action === 'shutdown') { assert.equal(done.resume, true); assert.match(done.error, /shutdown/); }
+      else assert.equal(done.error, 'canceled');
+    } finally {
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      refresh.resolve({ provider: 'deepseek', windows: [], blocked: false });
+      bus.off('event', onEvent);
+      abortRunning();
+      if (t.failedOverTo) cancelTask(t.failedOverTo);
+      cancelTask(t.id);
+      saveConfig({ scorecard });
+      delete getLimits().providers.deepseek;
+    }
+  });
+}
 
 test('a task created with noFailover is parked on a limit, never handed to another provider', () => {
   const t = createTask({ cwd: tmpDir(), title: 'bench', spec: 'x', provider: 'grok', model: 'grok-4.6', category: 'modeling', difficulty: 2, noFailover: true });
