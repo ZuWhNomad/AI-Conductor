@@ -287,5 +287,6 @@ test('a read-only task sends no write, edit or run tool; the run tool states its
   for (const n of ['write_file', 'edit_file', 'run']) { assert.ok(!names(0).includes(n), n + ' absent for read-only'); assert.ok(names(1).includes(n), n + ' present otherwise'); }
   assert.ok(names(0).includes('read_file') && names(0).includes('search'));
   const run = seen[1].find((f) => f.name === 'run');
-  assert.match(run.description, /Run ONE program.*No shell/); assert.match(run.description, /Only these programs are allowed.*git/);
+  assert.match(run.description, /Disabled in this workspace: every command is refused/);
+  assert.match(run.description, /not sandboxed.*outside the workspace/);
 });

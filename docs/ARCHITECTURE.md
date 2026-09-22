@@ -200,6 +200,14 @@ into a refactor (`mcpServersFor` in `core/mcp.mjs`).
 
 ## Context management
 
+API/Ollama workers using the OpenAI-compatible loop disable host commands by default (`worker.shell: false`).
+Setting `worker.shell` to `true` allows any host shell command; an array of command names enables a command
+filter that rejects shell control operators. Either opt-in trusts host execution: allowed interpreters and package
+managers can access arbitrary host files. The filter does not sandbox those programs. File tools separately check
+canonical workspace containment, including symlinks/junctions and new-file ancestors, but cannot prevent concurrent
+link swaps. Codex uses its own task/config sandbox selection, including per-model defaults; `worker.shell` does not
+change it. Existing explicit `true` and array settings remain effective.
+
 - `CLAUDE.md` at a project root is loaded by the SDK. Subfolders may carry `CONTEXT.md`.
 - Worker specs automatically include the `CONTEXT.md` files closest to the paths in scope.
 - The conductor is instructed to create/update `CONTEXT.md` when it adds a module.

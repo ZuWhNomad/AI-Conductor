@@ -1,6 +1,6 @@
 // Generic tool-calling worker for any OpenAI-compatible chat-completions API
 // (DeepSeek, Kimi/Moonshot, Grok/xAI, Qwen/DashScope, Gemini's compat endpoint, Ollama /v1).
-// Small, sandboxed-to-cwd tool set: read/write/edit files, list, search, run a command.
+// File tools check workspace containment; optional command execution has unsandboxed host access.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -41,10 +41,10 @@ const TOOLS = [
   { name: 'fetch_url', description: 'HTTP GET a public http(s) URL and return its text (HTML tags stripped, max 60k characters, 30s timeout). No search engine: you need the URL. If a site blocks you (403), report that instead of retrying.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
 ];
 
-/** The run tool's description, from the configured boundary: one program, no shell, the allow-list. */
+/** Describe the command filter without claiming it provides a host sandbox. */
 export function runDescription(shell) {
-  const gate = shell === false ? 'Disabled in this workspace: every command is refused' : Array.isArray(shell) ? `Only these programs are allowed (first word of the command): ${shell.join(', ')}; anything else is refused` : 'Any program';
-  return `Run ONE program in the project directory. No shell: no pipes, redirects, && ; or environment expansion; give the program and its arguments only. ${gate}. timeout_s (default 120). Returns exit code and output.`;
+  const gate = shell === false || shell === 'off' ? 'Disabled in this workspace: every command is refused' : Array.isArray(shell) ? `Only these programs are allowed (first word of the command): ${shell.join(', ')}; shell control operators are refused` : 'Any shell command is allowed';
+  return `Run a host shell command in the project directory. ${gate}. Enabled commands are not sandboxed and can access files outside the workspace. timeout_s (default 120). Returns exit code and output.`;
 }
 
 /** True for loopback / private / link-local / metadata / reserved IPs — the SSRF blocklist. */
@@ -143,8 +143,7 @@ function makeTools(cwd, signal) {
     // Shell command with a hard deadline and cancellation. The whole process tree is killed (on Windows
     // `exec`'s timeout only kills cmd.exe and leaves the real command running).
     run: ({ command, timeout_s }) => new Promise((res) => {
-      // API/Ollama workers have no OS sandbox; `worker.shell` is the boundary. false = disabled; an array = allow-list
-      // of command prefixes (the first token of the command). File tools remain workspace-sandboxed via safe().
+      // false disables host execution; an array filters command names, without sandboxing the allowed programs.
       const deny = shellDenied(loadConfig().worker?.shell, command);
       if (deny) return res(deny);
       const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

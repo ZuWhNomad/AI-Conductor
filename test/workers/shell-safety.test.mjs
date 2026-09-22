@@ -1,15 +1,63 @@
 // Regressions for the 2026-09-13 Astra review: the Windows .cmd shell path and the worker.shell allow-list must
 // not let an argument or a chained operator become a second host command.
+import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import '../_env.mjs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
 import { resolveNpmShim, winArgEscape, spawnCli } from '../../core/proc.mjs';
-import { shellDenied } from '../../core/workers/openai-compat.mjs';
+import { shellDenied, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';
+
+function requestCommands(ctx, commands) {
+  let n = 0;
+  ctx.mock.method(globalThis, 'fetch', async () => Response.json({ choices: [{ message: ++n === 1
+    ? { role: 'assistant', tool_calls: commands.map((command, i) => ({ id: 'c' + i, function: { name: 'run', arguments: JSON.stringify({ command }) } })) }
+    : { role: 'assistant', content: 'done' } }] }));
+}
+
+test('S2: default worker config denies interpreter and package-manager execution without spawning', async (ctx) => {
+  assert.equal(DEFAULTS.worker.shell, false);
+  assert.equal(loadConfig().worker.shell, false);
+  requestCommands(ctx, ['node --version', 'python --version', 'npm --version']);
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => { throw new Error('must not spawn'); });
+  syncBuiltinESMExports();
+  try {
+    const r = await runOpenAICompat({ cwd: tmpDir('shell-default'), baseUrl: 'http://unused.test', model: 'test', prompt: 'x' });
+    assert.equal(r.ok, true);
+    const results = r.messages.filter((m) => m.role === 'tool');
+    assert.equal(results.length, 3);
+    for (const result of results) assert.match(result.content, /^run disabled:/);
+    assert.equal(spawn.mock.callCount(), 0);
+  } finally { spawn.mock.restore(); syncBuiltinESMExports(); }
+});
+
+for (const shell of [true, ['node']]) test(`S2: explicit worker.shell ${JSON.stringify(shell)} preserves host execution`, async (ctx) => {
+  const previous = loadConfig().worker.shell;
+  saveConfig({ worker: { shell } });
+  requestCommands(ctx, ['node --version']);
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => {
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    queueMicrotask(() => { child.stdout.emit('data', 'stub process output'); child.emit('close', 0); });
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(loadConfig().worker.shell, shell);
+    const r = await runOpenAICompat({ cwd: tmpDir('shell-opt-in'), baseUrl: 'http://unused.test', model: 'test', prompt: 'x' });
+    assert.equal(r.ok, true);
+    assert.equal(r.messages.find((m) => m.role === 'tool').content, 'exit 0\nstub process output');
+    assert.equal(spawn.mock.callCount(), 1);
+    assert.equal(spawn.mock.calls[0].arguments[0], 'node --version');
+    assert.equal(spawn.mock.calls[0].arguments[1].shell, true);
+  } finally { saveConfig({ worker: { shell: previous } }); spawn.mock.restore(); syncBuiltinESMExports(); }
+});
 
 test('worker.shell allow-list blocks operators, chaining and prefix bypasses', () => {
   const AL = ['git', 'python', 'node'];

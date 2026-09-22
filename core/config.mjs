@@ -40,14 +40,12 @@ export const DEFAULTS = {
     // only; the real fix is FIXES_BACKLOG-v2 item 17. An explicit sandbox on a task always wins.
     codexSandboxByModel: { 'gpt-6-astra': 'danger-full-access' },
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
-    // API / Ollama (openai-compat) workers have no OS sandbox of their own, unlike Codex and Claude. Their `run`
-    // tool spawns a host shell in the workspace, so an injected third-party model could otherwise read the plaintext
-    // key store and exfiltrate it. The boundary: `true` = any command; `false` = the run tool is disabled; an array
-    // = an allow-list of permitted command NAMES (exact basename; a single command with no shell operators). Default
-    // is an allow-list covering the benchmark + common coding tools; the trusted conductor can extend it at runtime
-    // (the `allow_command` tool, logged). Do NOT add a shell (bash/sh/cmd/powershell) — that re-enables arbitrary
-    // execution. File tools stay sandboxed to the workspace regardless of this setting.
-    shell: ['py', 'python', 'python3', 'node', 'npm', 'npx', 'git', 'openscad', 'potrace', 'pip', 'pytest'],
+    // API / Ollama (openai-compat) workers have no OS sandbox. `run` is disabled by default.
+    // Explicit true permits any host shell command; an array permits command names (exact basename, no shell
+    // operators). Either opt-in trusts host execution: interpreters, package managers and other allowed programs
+    // can access files outside the workspace. The allow-list is a command filter, not a filesystem sandbox.
+    // File-tool containment checks do not constrain commands. Codex sandbox settings above are independent.
+    shell: false,
     fetchAllowPrivate: false,         // the worker fetch_url tool blocks private/loopback/metadata IPs (SSRF); set true only if your workers must reach an internal docs server on the LAN
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds on the SAME worker before escalating to a stronger model

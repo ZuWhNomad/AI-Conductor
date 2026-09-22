@@ -8,7 +8,7 @@ every file.
 | `vendor-cli.test.mjs` | The subscription CLIs: model-list parsing, the auth probe, and **recorded** event shapes per vendor. |
 | `codex-args.test.mjs`, `codex-parse.test.mjs` | The Codex argv Conductor builds, and its event stream. |
 | `openai-compat.test.mjs` | The API/Ollama tool loop: tool schemas, malformed arguments, the repeat guard, SSRF. |
-| `shell-safety.test.mjs` | The `run` allow-list and the operator denylist — the boundary for untrusted models. |
+| `shell-safety.test.mjs` | Default `run` denial, explicit host-execution opt-ins, the command allow-list and operator denylist (not a filesystem sandbox). |
 | `dangling.test.mjs` | Tool calls left open when a turn ends. |
 
 **Invariant worth keeping.** A vendor's behaviour is pinned by **recorded** output — real lines from the real CLI,

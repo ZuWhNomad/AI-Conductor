@@ -10,7 +10,7 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - `index.mjs` — `runWorker(task)` picks the runner by the model's `kind` (agent → codex/claude/vendor-cli;
   openai-compat for API + Ollama-via-its-own-endpoint; image). Local Ollama-via-Claude-harness gets
   `worker.maxTurnsLocal`.
-- `codex.mjs` — the Codex CLI (OS-sandboxed; prompt via stdin).
+- `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin).
 - `claude.mjs` — the Claude Agent SDK harness (also runs local models via `ollama.claudeHarnessEnv()`).
 - `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Its `run` tool is the only
   unsandboxed host surface; `fetch_url` has an SSRF guard.
@@ -21,8 +21,11 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, retryAfterMs?, threadId? }`. `limitHit`
   runs are never scored; on a real limit the scheduler fails over or parks (`core/tasks.mjs`).
 - No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
-- The openai-compat `run` tool is the boundary for API/Ollama workers (no OS sandbox): gated by `worker.shell`
-  (`true` | `false` | allow-list) via `shellDenied`; file tools stay sandboxed to the workspace via `safe()`.
+- The openai-compat `run` tool is disabled by default (`worker.shell: false`). Explicit `true` or an allow-list
+  trusts host execution: permitted programs can read/write outside the workspace. `shellDenied` filters commands,
+  not their filesystem access. This setting does not change Codex sandbox defaults or per-model exceptions.
+- File tools check canonical workspace containment via `safe()`, including symlinks/junctions and new-file
+  ancestors. These checks cannot prevent concurrent link swaps (TOCTOU); they are not an OS sandbox.
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 
 **How to test.** `test/workers/`: `openai-compat.test.mjs`, `shell-safety.test.mjs` (spawn/allow-list),
