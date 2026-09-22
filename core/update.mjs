@@ -17,7 +17,8 @@ function git(args, { cwd = REPO_ROOT, timeout = 30_000 } = {}) {
 const lockHash = (cwd) => { try { return createHash('sha1').update(readFileSync(join(cwd, 'package-lock.json'))).digest('hex'); } catch { return null; } };
 
 /** npm without a shell: node + the npm-cli.js beside the running node (npm.cmd is a cmd shim that execFile cannot run
- *  on Node 24: EINVAL); else the npm on PATH, through a shell only when it is a .cmd (the arguments are fixed literals). */
+ *  on Node 24: EINVAL). resolveNpmShim handles literal JS entry paths, but npm.cmd uses SET variables for its entry.
+ *  Else the npm on PATH, through a shell only when it is a .cmd (the arguments are fixed literals). */
 export function npmCommand() {
   const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   if (existsSync(cli)) return { command: process.execPath, args: [cli], shell: false };

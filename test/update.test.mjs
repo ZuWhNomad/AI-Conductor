@@ -1,10 +1,14 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import childProcess, { execFileSync } from 'node:child_process';
+import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { findCli } from '../core/proc.mjs';
+import { REPO_ROOT } from '../core/paths.mjs';
+import { bus } from '../core/bus.mjs';
 const { updateStatus, applyUpdate, formatUpdate, npmCommand } = await import('../core/update.mjs');
 
 const git = findCli('git');
@@ -24,8 +28,9 @@ test('update: status counts commits behind the remote and applyUpdate fast-forwa
   writeFileSync(join(a, 'f.txt'), '2'); run(a, 'commit', '--quiet', '-am', 'two'); run(a, 'push', '--quiet');
   const st = updateStatus({ cwd: b });
   assert.equal(st.behind, 1); assert.equal(st.dirty, 0); assert.match(formatUpdate(st), /1 update\(s\) available/);
-  const r = applyUpdate({ cwd: b, npm: false });
+  const r = applyUpdate({ cwd: b, exec: () => assert.fail('unchanged lockfile must not run npm') });
   assert.equal(r.updated, true); assert.equal(r.commits, 1); assert.equal(r.restartNeeded, true);
+  assert.equal(r.npmInstalled, false); assert.equal(r.npmError, null);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
   assert.equal(applyUpdate({ cwd: b, npm: false }).updated, false);
 });
@@ -59,6 +64,14 @@ test('update: untracked files do NOT block a fast-forward (dirty:0, applyUpdate 
   assert.equal(run(b, 'status', '--porcelain'), '?? note.md\n?? scratch.log'); // untracked files survived the pull
 });
 
+const bundledNpm = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+test('update: bundled npm runs through Node without a shell', { skip: !existsSync(bundledNpm) && 'no npm bundled beside Node' }, () => {
+  const n = npmCommand();
+  assert.deepEqual(n, { command: process.execPath, args: [bundledNpm], shell: false });
+  const version = execFileSync(n.command, [...n.args, '--version'], { encoding: 'utf8', windowsHide: true, shell: n.shell }).trim();
+  assert.equal(version, JSON.parse(readFileSync(join(dirname(bundledNpm), '..', 'package.json'), 'utf8')).version);
+});
+
 test('update: a lockfile change runs npm through the injected exec; a failing install is reported, never thrown', { skip: !git && 'git not installed' }, () => {
   const { a, b } = setup();
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
@@ -66,10 +79,57 @@ test('update: a lockfile change runs npm through the injected exec; a failing in
   const r = applyUpdate({ cwd: b, exec: (cmd, args, opts) => { calls.push({ cmd, args, opts }); } });
   assert.equal(r.updated, true); assert.equal(r.npmInstalled, true); assert.equal(r.npmError, null);
   assert.equal(calls.length, 1); assert.deepEqual(calls[0].args.slice(-3), ['install', '--no-fund', '--no-audit']); assert.equal(calls[0].opts.cwd, b);
+  if (existsSync(bundledNpm)) {
+    assert.equal(calls[0].cmd, process.execPath); assert.equal(calls[0].args[0], bundledNpm); assert.equal(calls[0].opts.shell, false);
+  }
   writeFileSync(join(a, 'package-lock.json'), '{"v":2}'); run(a, 'commit', '--quiet', '-am', 'lock2'); run(a, 'push', '--quiet');
   const bad = applyUpdate({ cwd: b, exec: () => { throw new Error('spawn npm.cmd EINVAL'); } });
   assert.equal(bad.updated, true); assert.equal(bad.npmInstalled, false); assert.match(bad.npmError, /EINVAL/);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD')); // HEAD moved anyway: the caller must not restart blindly
-  const n = npmCommand();
-  assert.ok(n === null || (n.command && Array.isArray(n.args)));
+});
+
+test('update: failed npm install reaches the HTTP response and UI without relaunching', { skip: !git && 'git not installed' }, async (ctx) => {
+  const { a, b } = setup();
+  writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
+  const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
+  const { server, url } = await startServer({ port: 0 });
+  const exec = childProcess.execFileSync, read = fs.readFileSync;
+  const seq = bus.seq;
+  // Exercise the real route and updater, redirecting checkout reads/git to the temporary clone only.
+  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
+  const npmCalls = [];
+  ctx.mock.method(childProcess, 'execFileSync', (cmd, args, opts) => {
+    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd });
+    npmCalls.push({ cmd, args });
+    throw new Error('npm install failed: dependency unavailable');
+  });
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => { throw new Error('unexpected relaunch'); });
+  syncBuiltinESMExports();
+  try {
+    const response = await fetch(url + '/api/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(response.status, 200);
+    const r = await response.json();
+    assert.equal(r.updated, true); assert.equal(r.npmInstalled, false); assert.match(r.npmError, /dependency unavailable/);
+    assert.equal(r.relaunching, false); assert.equal(spawn.mock.callCount(), 0);
+    assert.equal(npmCalls.length, 1); assert.deepEqual(npmCalls[0].args.slice(-3), ['install', '--no-fund', '--no-audit']);
+    assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
+    const event = bus.since(seq).find((e) => e.type === 'update');
+    assert.equal(event.updated, true); assert.equal(event.npmInstalled, false); assert.equal(event.npmError, r.npmError);
+
+    // Run the browser's update handlers with a minimal DOM; both SSE and the response use noteUpdate.
+    const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+    const button = { hidden: false, classList: { remove() {} } }, lines = [];
+    const ui = { S: {}, $: () => button, addSys: (text, cls) => { const line = { textContent: text, className: 'sysline ' + cls, isConnected: true }; lines.push(line); return line; } };
+    runInNewContext(source.slice(source.indexOf('// ---------- update affordance ----------'), source.indexOf('// ---------- SSE ----------')), ui);
+    ui.noteUpdate(event);
+    assert.match(lines[0].textContent, /run "npm install" in the Conductor folder, then restart/);
+    ui.noteUpdate(r);
+    assert.equal(lines.length, 1); assert.equal(lines[0].className, 'sysline warn');
+    assert.match(lines[0].textContent, /dependency unavailable/);
+    assert.equal(button.hidden, true);
+  } finally {
+    ctx.mock.restoreAll(); syncBuiltinESMExports();
+    stopBackgroundWork();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
