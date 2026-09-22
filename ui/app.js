@@ -685,7 +685,6 @@ function openSettings() {
       const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'number' ? Number(i.value) : i.value;
       if (i.type === 'password') { if (!v || v === '••••') continue; }
       if (i.id === 'cfg-conductor.overflowApi') v = v === 'true';
-      if (i.id === 'cfg-conductor.overflowApi') v = v === 'true';
       if (i.id === 'cfg-grok-reset-day' || i.id === 'cfg-grok-reset-hour') continue; // handled below: "not set" must stay not set
       let o = patch; for (const k of path.slice(0, -1)) o = o[k] = o[k] || {}; o[path.at(-1)] = v;
     }
