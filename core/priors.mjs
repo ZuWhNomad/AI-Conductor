@@ -45,7 +45,7 @@ export const MODELING = {
   ],
 };
 // 2-D line art from the reference photos (cookie-cutter drafting rounds, benchmarks repo runs/2026-09-20-drafting and
-// runs/2026-09-21-drafting-panel), judged by eye there as good / weak / unusable. Verdicts below are the operator's.
+// runs/2026-09-21-drafting-panel), judged by eye on the same pass / close / fail scale as the builds.
 export const DRAFTING = {
   caveat: 'Only a model with a recorded drafting PASS may be auto-picked for line art (currently codex:gpt-6-astra at xhigh); "close" drawings waste the geometry built on them. To try other models, pin them explicitly.',
   results: [
@@ -57,6 +57,10 @@ export const DRAFTING = {
     { re: /^grok:grok-4\.6/, model: 'grok:grok-4.6', verdict: 'fail', effort: 'high' },                     // broken hairline fragments
   ],
 };
+
+// One pass / close / fail table per judged (visual) category. A new visual category starts with none, so the auto-pick
+// routes nothing for it until a pass is recorded here.
+const VERDICT_TABLES = { modeling: MODELING, drafting: DRAFTING };
 
 // Verdict → prior tier for the visual kind. `fail` and unknown collapse to null so they are not routed on a
 // public-code prior they never earned; `close` stays modest (ceiling 2) so nothing is trusted at high difficulty.
@@ -107,9 +111,9 @@ export function priorFor(provider, model, category = null) {
   const p = PRIORS.find((r) => r.re.test(k));
   const kind = category ? KIND[category] || 'reason' : null;
   if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
-    const table = category === 'drafting' ? DRAFTING : MODELING;
-    const r = table.results.find((x) => x.re.test(k));
-    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: table.caveat };
+    const table = VERDICT_TABLES[category]; // each judged workload has its own verdicts; none recorded = nothing routable
+    const r = table?.results.find((x) => x.re.test(k));
+    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: table?.caveat || null };
   }
   if (!p) return null;
   const tier = (kind && p.tiers?.[kind]) || p.tier || null;
