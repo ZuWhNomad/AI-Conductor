@@ -59,6 +59,7 @@ export function make(pid) {
       const key = apiKeyFor(pid);
       if (pid === 'deepseek' && key) {
         try {
+          if (new URL(baseUrlFor(pid)).origin !== new URL(c.baseUrl).origin) return base;
           const r = await fetch('https://api.deepseek.com/user/balance', { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
           if (r.ok) { const b = parseDeepseekBalance(await r.json()); if (b) { base.balance = b; base.blocked = !b.available; if (!b.available) base.blockedReason = 'balance exhausted'; base.windows = [budgetWindow(pid, b)]; } }
         } catch {}

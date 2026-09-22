@@ -223,3 +223,31 @@ test('a maxed model-scoped Claude window blocks only that model, not the whole p
   // a global (unscoped) weekly at 100% DOES block the provider.
   assert.equal(normalizeUsage({ rate_limits: { seven_day: { utilization: 100 } }, rate_limits_available: true }).blocked, true);
 });
+
+test('DeepSeek balance polling stays on the configured vendor origin', async (t) => {
+  const { make } = await import('../core/providers/openai-compat.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const original = loadConfig().providers.deepseek;
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ data: [{ id: 'custom-model' }], is_available: true, balance_infos: [{ total_balance: '10', currency: 'USD' }] }) };
+  });
+  const provider = make('deepseek');
+  try {
+    for (const baseUrl of ['https://proxy.example/v1', 'http://api.deepseek.com/v1', 'https://api.deepseek.com:8443/v1']) {
+      saveConfig({ providers: { deepseek: { apiKey: 'test-only', baseUrl } } });
+      requests.length = 0;
+      assert.equal((await provider.listModels())[0].id, 'custom-model');
+      assert.equal(provider.workerConfig().baseUrl, baseUrl);
+      assert.deepEqual((await provider.pollLimits()).windows, []);
+      assert.deepEqual(requests, [`${baseUrl}/models`]);
+    }
+    for (const baseUrl of ['', 'https://api.deepseek.com/custom/v1']) {
+      saveConfig({ providers: { deepseek: { apiKey: 'test-only', baseUrl } } });
+      requests.length = 0;
+      assert.equal((await provider.pollLimits()).balance.amount, 10);
+      assert.deepEqual(requests, ['https://api.deepseek.com/user/balance']);
+    }
+  } finally { saveConfig({ providers: { deepseek: original || { apiKey: '', baseUrl: '' } } }); }
+});
