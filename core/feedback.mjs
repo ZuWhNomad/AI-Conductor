@@ -26,6 +26,9 @@ export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   s = s.replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '<secret>');   // Google / Gemini API keys (no separator after the AIza prefix)
   s = s.replace(/\bAKIA[0-9A-Z]{16}\b/g, '<secret>');        // AWS access key ids
   s = s.replace(/(authorization|api[_-]?key|token|secret|password)(["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s"',}]{8,}/gi, '$1$2<secret>');
+  // Unlabelled tokens: the feedback contract drops 24+ characters spanning multiple character classes.
+  s = s.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) =>
+    [/[a-z]/, /[A-Z]/, /[0-9]/, /[_+/=-]/].filter((re) => re.test(token)).length > 1 ? '<secret>' : token);
   return s;
 }
 
@@ -37,7 +40,7 @@ export function feedbackBundle() {
   return {
     version: pkg().version, node: process.version, os: `${platform()} ${release()} ${arch()}`, at: new Date().toISOString(),
     conductor: { provider: cfg.conductor?.provider, model: cfg.conductor?.model, effort: cfg.conductor?.effort, permissionMode: cfg.conductor?.permissionMode },
-    worker: cfg.worker,
+    worker: { provider: cfg.worker?.provider, model: cfg.worker?.model, effort: cfg.worker?.effort },
     providers: Object.fromEntries(Object.entries(reg.providers || {}).map(([k, v]) => [k, { status: v.status, plan: v.plan, installed: v.installed, loggedIn: v.loggedIn, error: v.error }])),
     limits: Object.fromEntries(Object.entries(lim.providers || {}).map(([k, v]) => [k, { blocked: v.blocked, blockedReason: v.blockedReason, error: v.error, windows: (v.windows || []).map((w) => ({ id: w.id, label: w.label, usedPercent: w.usedPercent })) }])),
     improvements: listImprovements({ includeResolved: true }).slice(-300),
