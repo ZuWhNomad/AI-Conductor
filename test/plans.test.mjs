@@ -420,6 +420,25 @@ const attempt = (input = {}) => {
 };
 const delegate = (failed) => handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, background: true });
 
+test('run_plan auto-pick passes the access-gate provider list to recommend', async () => {
+  const { saveConfig, loadConfig } = await import('../core/config.mjs');
+  const previous = loadConfig().tools;
+  saveConfig({ tools: { index: { og4_plan: { kind: 'access', match: ['og4-plan.test/'], providers: ['grok'] } } } });
+  try {
+    let seen;
+    const out = await runPlan({ stages: [{ id: 'a', tasks: [{ title: 'read', spec: 'open og4-plan.test/page', category: 'search' }] }] }, {
+      recommend(opts) { seen = opts; return { provider: 'grok', model: 'grok-4.6', effort: 'low' }; },
+      taskRuntime: {
+        createTask() { return { id: 'p1' }; },
+        async awaitTask() { return { id: 'p1', status: 'done', result: { finalMessage: 'ok' } }; },
+        getTask() { return { id: 'p1', status: 'done' }; },
+      },
+    });
+    assert.equal(out.status, 'done');
+    assert.deepEqual(seen.providers, ['grok']);
+  } finally { saveConfig({ tools: previous }); }
+});
+
 test('run_plan forwards current session flags to recommendations and every task, and reports its persisted path', async (t) => {
   for (const enabled of [true, false]) await t.test(`flags ${enabled}`, async () => {
     const run = handler('run_plan');

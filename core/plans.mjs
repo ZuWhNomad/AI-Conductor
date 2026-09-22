@@ -4,6 +4,7 @@
 import { createTask, awaitTask, getTask } from './tasks.mjs';
 import { statePath, writeJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
+import { accessProviders } from './capabilities.mjs';
 
 const MAX_TASKS = 200;
 
@@ -85,7 +86,11 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
     let { provider, model, effort } = inp;
     if (!provider && !model && inp.category && recommend) {
       let pick, noWorker = 'No worker available for this input.';
-      try { pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi }); }
+      try {
+        const gate = accessProviders(`${inp.title || ''}\n${inp.spec || ''}`); // OG4: honour the capability access gate
+        const providers = gate?.providers || null;
+        pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi, ...(providers ? { providers } : {}) });
+      }
       catch { noWorker = 'Worker recommendation failed.'; }
       if (!pick) return { input: inp, id: null, noWorker };
       provider = pick.provider; model = pick.model; effort = effort || pick.effort;

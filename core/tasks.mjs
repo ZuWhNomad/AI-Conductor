@@ -5,7 +5,7 @@ import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join, isAbsolute, relative } from 'node:path';
+import { join, isAbsolute, relative, resolve } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
 import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
@@ -14,12 +14,12 @@ import { contextBlock } from './context.mjs';
 import { modelBlockedUntil, refreshLimits } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
 import { findModel } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
-import { capabilityLines } from './capabilities.mjs';
+import { capabilityLines, accessProviders } from './capabilities.mjs';
 import { mcpServersFor } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
@@ -45,10 +45,10 @@ export function recoverTasks() {
       if (!f.endsWith('.json')) continue;
       const t = readJson(join(DIR(), f));
       if (!t?.id) continue;
-      if (t.status === 'running' || t.status === 'parked') {
+      if (t.status === 'running' || t.status === 'parked' || (t.status === 'queued' && t.resume)) {
         const last = Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0;
         if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(join(DIR(), f), t); }
-        else { t.status = 'queued'; t.resume = true; }
+        else if (t.status !== 'queued') { t.status = 'queued'; t.resume = true; } // running/parked → re-queue; already-queued+resume stays as-is
       }
       tasks.set(t.id, t);
     }
@@ -125,7 +125,14 @@ export function createTask(i) {
     const m = findModel(t.provider, t.model);
     if (m && Array.isArray(m.efforts)) {
       if (!m.efforts.length) { t.warning = [t.warning, `dropped effort "${t.effort}": ${t.provider}:${t.model} has no effort levels`].filter(Boolean).join(' '); t.effort = null; }
-      else if (m.effortIds && !m.efforts.includes(t.effort)) { const c = m.efforts[m.efforts.length - 1]; t.warning = [t.warning, `clamped effort "${t.effort}" to "${c}": ${t.provider}:${t.model} offers only ${m.efforts.join('/')}`].filter(Boolean).join(' '); t.effort = c; }
+      else if (!m.efforts.includes(t.effort) && m.efforts.some((e) => EFFORTS.includes(e))) {
+        // H3: clamp to the nearest offered effort by EFFORTS ordering (works for both effortIds families and plain efforts lists like Grok's low/medium/high)
+        const wantIdx = EFFORTS.indexOf(t.effort);
+        const ranked = m.efforts.filter((e) => EFFORTS.includes(e)).sort((a, b) => EFFORTS.indexOf(a) - EFFORTS.indexOf(b));
+        const c = wantIdx < 0 ? ranked[ranked.length - 1] : (ranked.findLast((e) => EFFORTS.indexOf(e) <= wantIdx) ?? ranked[ranked.length - 1]);
+        t.warning = [t.warning, `clamped effort "${t.effort}" to "${c}": ${t.provider}:${t.model} offers only ${m.efforts.join('/')}`].filter(Boolean).join(' ');
+        t.effort = c;
+      }
     }
   }
   tasks.set(t.id, t);
@@ -134,10 +141,10 @@ export function createTask(i) {
   return t;
 }
 
-export function cancelTask(id) {
+export function cancelTask(id, reason) {
   const t = tasks.get(id); if (!t) return null;
   if (TERMINAL.has(t.status)) return t;
-  t.status = 'canceled'; t.error = 'canceled';
+  t.status = 'canceled'; t.error = reason || 'canceled';
   running.get(id)?.abort();
   persist(t); wake(t);
   return t;
@@ -264,7 +271,9 @@ async function run(t) {
     const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
     Object.assign(t, await repoSize(t.cwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
     const wcfg = loadConfig().worker;
-    const r = await runWorker({ ...t, prompt: buildPrompt(t), timeoutMs: (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000 }, { signal: ac.signal });
+    const providerKind = PROVIDERS[t.provider]?.kind;
+    const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
+    const r = await runWorker({ ...t, prompt, timeoutMs: (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000 }, { signal: ac.signal });
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
@@ -274,7 +283,16 @@ async function run(t) {
     t.changedFiles = [...new Set([...observed, ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
     t.diffStat = await gitDiffStat(t.cwd, after);
     const claimed = claimedWrites(r.items);
-    const phantom = isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
+    // G5: a claimed file that is gitignored or outside the repo won't appear in git status; confirm via disk mtime.
+    // Only files that exist AND were modified at or after the task started are enough to disprove a phantom verdict.
+    const taskStartMs = Date.parse(t.startedAt) || 0;
+    const claimedExistsOnDisk = claimed.length > 0 && observed.length === 0 && await (async () => {
+      for (const p of claimed) {
+        try { const s = await stat(resolve(t.cwd, p)); if (s.mtimeMs >= taskStartMs - 1000) return true; } catch {}
+      }
+      return false;
+    })();
+    const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
     if (r.limitHit && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
       t.limitHit = true; // never scored against the model
@@ -300,10 +318,15 @@ async function run(t) {
     } else { t.status = 'done'; }
     t.finishedAt = nowIso();
     persist(t);
-    if (TERMINAL.has(t.status) && !t.limitHit && t.status !== 'canceled') score(t, limitsBefore, concurrent, concurrentByWindow); // a canceled/aborted run's ~0 tokens must not drag the model's cost means down (like limitHit, it isn't representative)
+    // A plain cancel is not scored (its ~0 tokens would drag the model's cost means). A smoke timeout
+    // still needs a run row so rateTask(id, 'fail', 'timeout') has something to attach to (OB6).
+    if (TERMINAL.has(t.status) && !t.limitHit && (t.status !== 'canceled' || t.error === 'timeout')) score(t, limitsBefore, concurrent, concurrentByWindow);
     if (t.failKind === 'phantom') { try { rateTask(t.id, 'phantom', 'auto: reported file writes that never landed on disk'); } catch {} }
   } catch (e) {
-    t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso();
+    // G8: if the outcome was already decided (persist() threw after the status was set), keep the decided status.
+    const alreadyDecided = TERMINAL.has(t.status) || t.status === 'parked' || t.status === 'queued';
+    if (!alreadyDecided) { t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso(); }
+    else { try { logImprovement('error', `worker:${t.provider}`, `journal persist failed after ${t.status}: ${e?.message || e}`, { taskId: t.id }); } catch {} }
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().
   } finally {
     running.delete(t.id);
@@ -319,7 +342,9 @@ async function run(t) {
 function failover(t) {
   if (!t.category || !t.difficulty || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
   try {
-    const providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
+    const gate = accessProviders(`${t.title}\n${t.spec}`); // OG4: honour the capability access gate (same as delegate)
+    let providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
+    if (gate?.providers) providers = providers.filter((id) => gate.providers.includes(id));
     const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi });
     if (!alt || alt.provider === t.provider) return null;
     const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox });

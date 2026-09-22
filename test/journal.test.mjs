@@ -39,6 +39,22 @@ test('journal reload does not replay work interrupted more than resumeMaxAgeHour
   assert.ok(listImprovements().some((i) => i.message.includes('2 interrupted task(s) older than 6 h')));
 });
 
+test('queued resume tasks older than resumeMaxAgeHours are not replayed; never-started queued tasks are', async () => {
+  const dayAgo = new Date(Date.now() - 25 * 3_600_000).toISOString();
+  const now = new Date().toISOString();
+  writeFileSync(join(dir, 'qold.json'), JSON.stringify({ id: 'qold', cwd, status: 'queued', resume: true, updatedAt: dayAgo }));
+  writeFileSync(join(dir, 'qnew.json'), JSON.stringify({ id: 'qnew', cwd, status: 'queued', resume: true, updatedAt: now }));
+  writeFileSync(join(dir, 'qfresh.json'), JSON.stringify({ id: 'qfresh', cwd, status: 'queued', updatedAt: dayAgo }));
+  const { getTask } = await import(`../core/tasks.mjs?og3=${Date.now()}`);
+  assert.equal(getTask('qold').status, 'canceled');
+  assert.match(getTask('qold').error, /not resumed: interrupted more than 6 h/);
+  assert.equal(getTask('qold').resume, false);
+  assert.equal(getTask('qnew').status, 'queued');
+  assert.equal(getTask('qnew').resume, true);
+  assert.equal(getTask('qfresh').status, 'queued');
+  assert.notEqual(getTask('qfresh').resume, true); // never-started queued tasks are left as they were (no resume flag)
+});
+
 for (const [args, refusal] of [
   [['bench', '--run'], 'refusing to run: 1 open task(s) in the journal (a running server owns them).'],
   [['smoke'], 'refusing to run: 1 task(s) are queued/running/parked in'],

@@ -79,7 +79,15 @@ export function envFailure(t) {
 async function executeTask(spec, timeoutMinutes) {
   const t = createTask(spec);
   const r = await awaitTask(t.id, timeoutMinutes * 60_000);
-  if (r?.timedOut) { cancelTask(t.id); await awaitTask(t.id, 10_000); }
+  if (r?.timedOut) {
+    cancelTask(t.id, 'timeout'); // OB6: reason so run() still scores this cancellation
+    // cancelTask already marked the task terminal, so awaitTask would return immediately;
+    // wait for run() to set finishedAt (and register score()) before flushing the ledger.
+    if (getTask(t.id)?.attempts) {
+      const end = Date.now() + 10_000;
+      while (!getTask(t.id)?.finishedAt && Date.now() < end) await new Promise((ok) => setTimeout(ok, 25));
+    }
+  }
   await flushRecords();
   return { ...getTask(t.id), timedOut: !!r?.timedOut };
 }

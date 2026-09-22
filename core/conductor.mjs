@@ -482,5 +482,11 @@ export function trimHistory(messages, max = 160) {
   const sys = messages[0]?.role === 'system' ? [messages[0]] : [];
   let start = messages.length - max;
   while (start < messages.length && messages[start].role !== 'user') start++;
+  if (start >= messages.length) {
+    // G1: no user turn found in the window — keep the most recent messages but skip any leading orphaned
+    // tool reply (a 'tool' message without its preceding assistant tool_call is an API error).
+    start = messages.length - max;
+    while (start < messages.length && messages[start].role === 'tool') start++;
+  }
   return [...sys, ...messages.slice(start)];
 }

@@ -1,9 +1,9 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
+import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 
@@ -586,5 +586,151 @@ test('non-repository task creation, dispatch and completion never invoke git', a
     if (task?.status === 'running') await tk.awaitTask(task.id);
     if (task) tk.cancelTask(task.id);
     await tk.flushRecords();
+  }
+});
+
+test('image-kind tasks send the raw spec as the picture prompt, not the coding-worker preamble', async (ctx) => {
+  let prompt;
+  ctx.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (!String(url).includes('/sdapi/v1/txt2img')) return rejectIO(`fetch ${url}`);
+    prompt = JSON.parse(opts.body).prompt;
+    return new Response(JSON.stringify({ images: [Buffer.from('png').toString('base64')] }), { status: 200 });
+  });
+  const cwd = tmpDir('image-prompt');
+  const spec = 'a red cube on a table, studio lighting';
+  const t = createTask({ cwd, provider: 'sd', title: 'draw cube', spec });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    schedule();
+    const done = await awaitTask(t.id, 15000);
+    assert.equal(done.status, 'done', done.error);
+    assert.equal(prompt, spec);
+    assert.doesNotMatch(prompt, /# Task:/);
+    assert.doesNotMatch(prompt, /MSW/);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    cancelTask(t.id);
+  }
+});
+
+test('createTask clamps an unknown effort to the nearest listed effort even without effortIds', () => {
+  const cwd = tmpDir('h3-effort');
+  getModels().models.push({ provider: 'grok', id: 'h3-grok-fixture', kind: 'agent', efforts: ['low', 'medium', 'high'] });
+  const ultra = createTask({ cwd, provider: 'grok', model: 'h3-grok-fixture', effort: 'ultra' });
+  assert.equal(ultra.effort, 'high');
+  assert.match(ultra.warning || '', /clamped effort "ultra" to "high"/);
+  const max = createTask({ cwd, provider: 'grok', model: 'h3-grok-fixture', effort: 'max' });
+  assert.equal(max.effort, 'high');
+  const kept = createTask({ cwd, provider: 'grok', model: 'h3-grok-fixture', effort: 'medium' });
+  assert.equal(kept.effort, 'medium');
+  assert.doesNotMatch(kept.warning || '', /clamped effort "medium"/);
+  for (const t of [ultra, max, kept]) cancelTask(t.id);
+});
+
+test('persist failure after a decided outcome does not overwrite it', async (ctx) => {
+  mockCompletions(ctx, async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
+  const t = createTask({ cwd: tmpDir('g8-persist'), provider: 'deepseek', spec: 'x' });
+  let cur = t.status;
+  Object.defineProperty(t, 'status', {
+    configurable: true, enumerable: true,
+    get() { return cur; },
+    set(v) { cur = v; if (v === 'done') t.circular = t; },
+  });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    schedule();
+    const done = await awaitTask(t.id, 15000);
+    assert.equal(done.status, 'done');
+    assert.notEqual(done.status, 'failed');
+    const { listImprovements } = await import('../core/improve.mjs');
+    assert.ok(listImprovements().some((i) => /journal persist failed after done/.test(i.message)));
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    delete t.circular;
+    cancelTask(t.id);
+  }
+});
+
+test('claimed writes gitignore hides are not phantom when the file landed on disk', async (ctx) => {
+  const { findCli } = await import('../core/proc.mjs');
+  const gitBin = findCli('git');
+  if (!gitBin) { ctx.skip('git is not installed'); return; }
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === './workers/index.mjs' && context.parentURL?.includes('/core/tasks.mjs')) {
+        return { url: 'g5-worker://run', shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      if (url === 'g5-worker://run') {
+        return { format: 'module', shortCircuit: true, source: 'export async function runWorker(t) { return globalThis.__g5Worker(t); }' };
+      }
+      return nextLoad(url, context);
+    },
+  });
+  ctx.after(() => { hooks.deregister(); delete globalThis.__g5Worker; });
+  globalThis.__g5Worker = async (t) => {
+    writeFileSync(join(t.cwd, 'ignored.bin'), 'landed');
+    return { ok: true, finalMessage: 'wrote ignored.bin', items: [{ type: 'file_change', changes: [{ path: 'ignored.bin' }] }], usage: { input_tokens: 3, output_tokens: 1 }, durationMs: 5 };
+  };
+  const tk = await import(`../core/tasks.mjs?g5=${encodeURIComponent(ctx.name)}`);
+  for (const existing of tk.listTasks()) tk.cancelTask(existing.id);
+  const cwd = tmpDir('phantom-ignore');
+  childProcess.execFileSync(gitBin, ['init', '--quiet'], { cwd, windowsHide: true });
+  writeFileSync(join(cwd, '.gitignore'), 'ignored.bin\n');
+  childProcess.execFileSync(gitBin, ['add', '.gitignore'], { cwd, windowsHide: true });
+  childProcess.execFileSync(gitBin, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'ignore'], { cwd, windowsHide: true });
+  const t = tk.createTask({ cwd, provider: 'deepseek', spec: 'write ignored.bin', category: 'edit', difficulty: 1 });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    tk.schedule();
+    const done = await tk.awaitTask(t.id, 15000);
+    assert.equal(done.status, 'done', done.error);
+    assert.notEqual(done.failKind, 'phantom');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.abortRunning();
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+  }
+});
+
+test('failover passes the access-gate provider restriction intersected with the excluded provider', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  registryModels(ctx, [
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+    { provider: 'grok', id: 'grok-4.6', kind: 'agent' },
+  ]);
+  const scorecard = loadConfig().scorecard;
+  const tools = loadConfig().tools;
+  saveConfig({
+    scorecard: { minSamples: 1 },
+    tools: { index: { og4_gate: { kind: 'access', match: ['og4-gate.test/'], providers: ['grok'] } } },
+  });
+  for (const [id, provider, model] of [['og4o', 'ollama', 'qwen'], ['og4g', 'grok', 'grok-4.6']]) {
+    recordRun({ id, title: 't', status: 'done', provider, model, effort: null, category: 'search', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  mockCompletions(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
+  });
+  const cwd = tmpDir('og4-failover');
+  const t = createTask({ cwd, provider: 'deepseek', model: 'deepseek-flash', title: 'read', spec: 'fetch og4-gate.test/page', category: 'search', difficulty: 2, overflowApi: true });
+  try {
+    assert.equal(recommend({ category: 'search', difficulty: 2, overflowApi: true }).provider, 'ollama', 'without the gate, free-local would win');
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    const done = await awaitTask(t.id, 15000);
+    assert.equal(done.status, 'failed');
+    assert.equal(getTask(done.failedOverTo)?.provider, 'grok');
+    assert.equal(getTask(done.failedOverTo)?.model, 'grok-4.6');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) cancelTask(t.failedOverTo);
+    cancelTask(t.id);
+    saveConfig({ scorecard, tools });
   }
 });

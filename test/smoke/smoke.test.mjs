@@ -91,6 +91,42 @@ test('an environment failure is voided immediately, not left as a failed attempt
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'envfail')), 'voided at detection time');
 });
 
+test('a smoke timeout still records a run so the fail rating lands', { timeout: 30_000 }, async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../../core/config.mjs');
+  const { PROVIDERS } = await import('../../core/providers/index.mjs');
+  const conductor = loadConfig().conductor;
+  const prevPoll = PROVIDERS.deepseek.pollLimits;
+  PROVIDERS.deepseek.pollLimits = async () => ({ provider: 'deepseek', windows: [], blocked: false });
+  saveConfig({ providers: { deepseek: { apiKey: 'test-key' } }, conductor: { budgetGate: false } });
+  ctx.mock.method(globalThis, 'fetch', async (url, opts) => {
+    if (String(url).includes('/chat/completions')) {
+      return new Promise((_, reject) => {
+        const s = opts?.signal;
+        if (!s) return;
+        if (s.aborted) return reject(s.reason || new Error('aborted'));
+        s.addEventListener('abort', () => reject(s.reason || new Error('aborted')), { once: true });
+      });
+    }
+    return new Response('{}', { status: 200 });
+  });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    const results = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-flash', effort: null }], tasks: ['read-1'], timeoutMinutes: 0.05 });
+    assert.equal(results[0].verdict, 'fail');
+    assert.equal(results[0].notes, 'timeout');
+    assert.ok(results[0].taskId);
+    const smoke = rootRuns({ source: 'smoke' });
+    const row = smoke.find((c) => c.attempts.some((a) => a.taskId === results[0].taskId));
+    assert.ok(row, 'timeout cancellation must leave a scorecard run row for rateTask to attach to');
+    assert.equal(row.attempts[0].verdict, 'fail');
+    assert.equal(row.attempts[0].notes, 'timeout');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    PROVIDERS.deepseek.pollLimits = prevPoll;
+    saveConfig({ conductor });
+  }
+});
+
 test('timeouts immediately before a provider limit surfaces are voided as the same quota stall', async () => {
   let n = 0;
   const execute = async (spec) => {

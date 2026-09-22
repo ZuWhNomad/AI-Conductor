@@ -1,6 +1,7 @@
 // Image generation workers: OpenAI images (DALL-E / gpt-image), Stability AI, local Stable Diffusion (A1111 API).
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { isInside } from '../context.mjs';
 
 /**
  * @param {object} t { id, cwd, prompt, provider: 'openai-images'|'stability'|'sd', model, size, n, outDir, apiKey, baseUrl }
@@ -8,11 +9,20 @@ import { join, resolve } from 'node:path';
  */
 export async function runImage(t) {
   const signal = AbortSignal.any([t.signal, ...(t.timeoutMs ? [AbortSignal.timeout(t.timeoutMs)] : [])].filter(Boolean));
-  const outDir = resolve(t.cwd, t.outDir || 'generated-images');
-  mkdirSync(outDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const files = [];
   try {
+    // S4: reject outDir that resolves outside t.cwd (containment check matching openai-compat.mjs safe())
+    const outDir = resolve(t.cwd, t.outDir || 'generated-images');
+    const root = realpathSync(t.cwd);
+    if (!isInside(t.cwd, outDir)) throw new Error(`outDir resolves outside project: ${t.outDir || 'generated-images'}`);
+    let existing = outDir;
+    for (;;) {
+      try { lstatSync(existing); break; }
+      catch (e) { if (e.code !== 'ENOENT') throw e; existing = dirname(existing); }
+    }
+    if (!isInside(root, realpathSync(existing))) throw new Error(`outDir resolves outside project: ${t.outDir || 'generated-images'}`);
+    mkdirSync(outDir, { recursive: true });
     if (t.provider === 'openai-images') {
       const r = await fetch('https://api.openai.com/v1/images/generations', { method: 'POST', signal, headers: { 'content-type': 'application/json', authorization: `Bearer ${t.apiKey}` }, body: JSON.stringify({ model: t.model || 'gpt-image-1', prompt: t.prompt, n: t.n || 1, size: t.size || '1024x1024' }) });
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 400)}`);
@@ -29,7 +39,8 @@ export async function runImage(t) {
       const f = join(outDir, `${stamp}-1.png`); writeFileSync(f, Buffer.from(await r.arrayBuffer())); files.push(f);
     } else if (t.provider === 'sd') {
       const [w, h] = (t.size || '1024x1024').split('x').map(Number);
-      const r = await fetch(`${(t.baseUrl || 'http://127.0.0.1:7860').replace(/\/$/, '')}/sdapi/v1/txt2img`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: t.prompt, steps: 25, width: w, height: h, batch_size: t.n || 1 }) });
+      // G7: pass the abort signal so cancellation and timeouts propagate to the A1111 request
+      const r = await fetch(`${(t.baseUrl || 'http://127.0.0.1:7860').replace(/\/$/, '')}/sdapi/v1/txt2img`, { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: t.prompt, steps: 25, width: w, height: h, batch_size: t.n || 1 }) });
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 400)}`);
       const j = await r.json();
       for (const [i, b64] of (j.images || []).entries()) { const f = join(outDir, `${stamp}-${i + 1}.png`); writeFileSync(f, Buffer.from(b64, 'base64')); files.push(f); }
