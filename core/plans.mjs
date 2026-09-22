@@ -80,17 +80,17 @@ export function expandStage(stage, ctx) {
   return out;
 }
 
-async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime }) {
+async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride }) {
   const created = inputs.map((inp) => {
     let { provider, model, effort } = inp;
     if (!provider && !model && inp.category && recommend) {
       let pick, noWorker = 'No worker available for this input.';
-      try { pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [] }); }
+      try { pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi }); }
       catch { noWorker = 'Worker recommendation failed.'; }
       if (!pick) return { input: inp, id: null, noWorker };
       provider = pick.provider; model = pick.model; effort = effort || pick.effort;
     }
-    const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty });
+    const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty, overflowApi, parallelOverride });
     return { input: inp, id: t.id };
   });
   // One stage deadline: a failover continues the wait; it does not get a fresh timeout.
@@ -116,7 +116,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
  * An incomplete stage stops the plan; its active tasks remain on the scheduler.
  * taskRuntime is injectable so stage ordering can be tested without launching workers.
  */
-export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask } } = {}) {
+export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false } = {}) {
   validatePlan(plan);
   const id = shortId();
   const timeoutMs = Math.max(1, Number(plan.timeout_minutes) || 45) * 60_000;
@@ -132,7 +132,7 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
     total += inputs.length;
     if (total > MAX_TASKS) throw new Error(`plan exceeds ${MAX_TASKS} tasks`);
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
-    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime });
+    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride });
     const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
     if (done.some((d) => !d.complete)) {
       result.incomplete = true;
@@ -140,10 +140,15 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
       if (done.some((d) => d.task?.timedOut)) result.summary = `${done.some((d) => d.noWorker) ? result.summary + '\n' : ''}Incomplete: stage deadline reached; tasks may still be active.`;
       return result;
     }
+    if (stage.for_each && done.some((d) => !d.ok)) {
+      result.incomplete = true;
+      result.summary = 'Incomplete: one or more voters failed or were canceled; no verdict was reached.';
+      return result;
+    }
     if (stage.for_each) {
       const groups = new Map();
       for (const d of done) { const k = d.input.item.id || findingKey(d.input.item); if (!groups.has(k)) groups.set(k, { item: d.input.item, votes: [] }); groups.get(k).votes.push({ ...parseVerdict(d.report), taskId: d.id, ok: d.ok }); }
-      for (const g of groups.values()) { const t = tally(g.votes.filter((v) => v.ok), stage.pass || 'majority'); const entry = { ...g.item, votes: g.votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)), tally: `${t.real}/${t.total}` }; (t.confirmed ? result.confirmed : result.rejected).push(entry); }
+      for (const g of groups.values()) { const t = tally(g.votes, stage.pass || 'majority'); const entry = { ...g.item, votes: g.votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)), tally: `${t.real}/${t.total}` }; (t.confirmed ? result.confirmed : result.rejected).push(entry); }
       result.findings = result.confirmed;
       result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''} (${f.tally})`).join('\n');
     } else {

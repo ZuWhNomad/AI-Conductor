@@ -14,6 +14,7 @@ import { loadConfig, saveConfig } from './config.mjs';
 import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan } from './plans.mjs';
+import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched } from './capabilities.mjs';
 
@@ -110,8 +111,18 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const exclude = [...(a.exclude || [])];
         let depth = 0, root = failed;
         if (failed) {
-          // exclude every model already tried in this chain; remember the chain root (the original worker)
-          for (let f = failed; f; f = f.retryOf ? getTask(f.retryOf) : null) { exclude.push(`${f.provider}:${f.model || 'default'}:${f.effort || 'default'}`); depth++; root = f; }
+          // Count attempts once, keeping the latest review rounds while resolving each attempt's retry link.
+          const visited = new Set();
+          for (let f = failed; f && !visited.has(f.id);) {
+            depth++; root = f;
+            while (f && !visited.has(f.id)) {
+              visited.add(f.id); exclude.push(selOf(f));
+              if (!f.followUpOf) break;
+              f = getTask(f.followUpOf);
+              if (f && visited.has(f.id)) { f = null; break; }
+            }
+            f = f?.retryOf ? getTask(f.retryOf) : null;
+          }
           category = category || failed.category || undefined; difficulty = difficulty || failed.difficulty || undefined;
         }
         // Review → escalation ladder (see escalationState). First delegate: best VALUE. Once the worker's review
@@ -280,8 +291,8 @@ export function conductorToolDefs({ sessionId, cwd }) {
         timeout_minutes: z.number().optional(),
       }),
       handler: async (a) => {
-        const r = await runPlan(a, { sessionId, cwd, recommend });
-        return `Plan ${r.id} — ${r.goal}\n\n${r.report}\n\nFull record: ~/.conductor2/plans/${r.id}.json`;
+        const r = await runPlan(a, { sessionId, cwd, recommend, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
+        return `Plan ${r.id} — ${r.goal}\n\n${r.report}\n\nFull record: ${statePath('plans', `${r.id}.json`)}`;
       },
     },
   ];

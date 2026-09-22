@@ -1,4 +1,4 @@
-import './_env.mjs';
+import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readJson, statePath } from '../core/paths.mjs';
@@ -37,6 +37,57 @@ test('tally modes', () => {
   assert.equal(tally(v, 'all').confirmed, false);
   assert.equal(tally([{ real: false }, { real: true }], 'any').confirmed, true);
   assert.equal(tally([]).confirmed, false);
+});
+
+test('unsuccessful voters leave the requested electorate incomplete and prevent dependent fixes', async (t) => {
+  for (const pass of ['all', 'majority', 'any']) {
+    for (const statuses of [['done', 'failed', 'canceled'], ['failed', 'failed', 'failed'], ['canceled', 'canceled', 'canceled']]) {
+      await t.test(`${pass}: ${statuses.join('/')}`, async () => {
+        const created = [];
+        const out = await runPlan({ stages: [
+          { id: 'find', tasks: [{ spec: 'find' }] },
+          { id: 'vote', for_each: 'find', votes: statuses.length, pass, task: { spec: 'vote {{item}}' } },
+          { id: 'fix', for_each: 'vote.confirmed', task: { spec: 'fix {{item}}' } },
+          { id: 'rejected', for_each: 'vote.rejected', task: { spec: 'must not start {{item}}' } },
+        ] }, { taskRuntime: {
+          createTask(input) { created.push(input); return { id: String(created.length) }; },
+          async awaitTask(id) {
+            return { id, status: id === '1' ? 'done' : statuses[Number(id) - 2], result: {
+              finalMessage: id === '1' ? '{"findings":[{"id":"bug","title":"Bug"}]}' : '{"real":true}',
+            } };
+          },
+          getTask() { assert.fail('use terminal snapshots'); },
+        } });
+        assert.equal(created.length, 1 + statuses.length);
+        assert.equal(out.status, 'incomplete');
+        assert.equal(out.stages.vote.incomplete, true);
+        assert.deepEqual(out.stages.vote.tasks.map((task) => task.status), statuses);
+        for (const field of ['findings', 'confirmed', 'rejected']) assert.deepEqual(out.stages.vote[field], []);
+        assert.equal(out.stages.fix, undefined);
+        assert.equal(out.stages.rejected, undefined);
+        assert.match(out.report, /Incomplete: one or more voters failed or were canceled/);
+        assert.equal(readJson(statePath('plans', `${out.id}.json`)).status, 'incomplete');
+      });
+    }
+  }
+});
+
+test('completed voters retain the full electorate for majority and all decisions', async (t) => {
+  for (const pass of ['all', 'majority']) await t.test(pass, async () => {
+    let created = 0;
+    const out = await runPlan({ stages: [
+      { id: 'find', tasks: [{ spec: 'find' }] },
+      { id: 'vote', for_each: 'find', votes: 3, pass, task: { spec: 'vote {{item}}' } },
+    ] }, { taskRuntime: {
+      createTask() { return { id: String(++created) }; },
+      async awaitTask(id) { return { id, status: 'done', result: { finalMessage: id === '1' ? '{"findings":[{"title":"Bug"}]}' : JSON.stringify({ real: id !== '4' }) } }; },
+      getTask() { assert.fail('use terminal snapshots'); },
+    } });
+    assert.equal(out.status, 'done');
+    const decision = pass === 'all' ? out.stages.vote.rejected : out.stages.vote.confirmed;
+    assert.equal(decision.length, 1);
+    assert.equal(decision[0].tally, '2/3');
+  });
 });
 
 test('stages expand with templates, per-item votes and lenses, and inherited defaults', () => {
@@ -246,9 +297,9 @@ test('a mixed stage awaits eligible inputs and preserves explicit and recommende
     ]);
     assert.deepEqual(waited, ['task-1', 'task-2', 'task-3']);
     assert.deepEqual(recommendations, [
-      { category: 'refused', difficulty: 2, exclude: [] },
-      { category: 'auto', difficulty: 4, exclude: ['excluded'] },
-      { category: 'auto', difficulty: 2, exclude: [] },
+      { category: 'refused', difficulty: 2, exclude: [], overflowApi: false },
+      { category: 'auto', difficulty: 4, exclude: ['excluded'], overflowApi: false },
+      { category: 'auto', difficulty: 2, exclude: [], overflowApi: false },
     ]);
   } finally { terminal.resolve(); }
   const out = await pending;
@@ -318,4 +369,127 @@ test('dedupe repeats keep unchanged findings once while global novelty controls 
   assert.equal(out.stages.vote.tasks.length, 2);
   assert.equal(out.stages.vote.confirmed[0].tally, '2/2');
   for (const input of created.slice(1)) assert.match(input.spec, /seen: - Bug A \(a.mjs\)$/);
+});
+
+// Handler regressions for plan routing and retry ancestry.
+import { registerHooks } from 'node:module';
+import { setSessionFlags } from '../core/session-flags.mjs';
+import { createTask, getTask } from '../core/tasks.mjs';
+import { loadConfig } from '../core/config.mjs';
+
+// Execute the actual handlers and plan executor. Only selection, capability research and task waits
+// are mocked; createTask persists real records under _env and its scheduler is disabled.
+const calls = [];
+const pick = { provider: 'stub', model: 'next', effort: 'high', reason: 'fixture' };
+globalThis.toolFixtures = {
+  recommend(input) { calls.push(input); return pick; },
+  async awaitTask(id) {
+    const task = getTask(id);
+    task.status = 'done';
+    task.result = { finalMessage: task.spec === 'find' ? '{"findings":[{"title":"Bug"}]}' : '{"real":true}' };
+    return task;
+  },
+};
+const urls = Object.fromEntries(['tools', 'plans', 'tasks', 'scorecard', 'capabilities'].map((name) => [name, new URL(`../core/${name}.mjs`, import.meta.url).href]));
+const sources = {
+  tasks: `export * from ${JSON.stringify(urls.tasks)}; export const awaitTask = (...args) => globalThis.toolFixtures.awaitTask(...args);`,
+  scorecard: `export * from ${JSON.stringify(urls.scorecard)}; export const recommend = (...args) => globalThis.toolFixtures.recommend(...args);`,
+  capabilities: 'export const accessProviders = () => null, missingFor = () => [], shouldResearch = () => false, researchSpec = () => "", parseResearched = () => [];',
+};
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (context.parentURL === urls.tools && specifier === './plans.mjs') return { url: `${urls.plans}?tool-fixture`, shortCircuit: true };
+    if ([urls.tools, `${urls.plans}?tool-fixture`].includes(context.parentURL)) {
+      const name = Object.keys(sources).find((name) => specifier === `./${name}.mjs`);
+      if (name) return { url: `tool-fixture:${name}`, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url.startsWith('tool-fixture:')) return { format: 'module', source: sources[url.slice('tool-fixture:'.length)], shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
+const { conductorToolDefs, selOf } = await import('../core/tools.mjs');
+hooks.deregister();
+const handler = (name, sessionId = name) => conductorToolDefs({ sessionId, cwd: HOME }).find((tool) => tool.name === name).handler;
+const attempt = (input = {}) => {
+  const task = createTask({ cwd: HOME, spec: 'fixture', provider: 'stub', model: 'original', effort: 'low', category: 'code', difficulty: 2, ...input });
+  Object.assign(task, { status: 'done', threadId: `thread-${task.id}` });
+  return task;
+};
+const delegate = (failed) => handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, background: true });
+
+test('run_plan forwards current session flags to recommendations and every task, and reports its persisted path', async (t) => {
+  for (const enabled of [true, false]) await t.test(`flags ${enabled}`, async () => {
+    const run = handler('run_plan');
+    // Read flags at invocation, including changes made after the tool table was constructed.
+    setSessionFlags('run_plan', { overflowApi: enabled, parallelOverride: enabled });
+    calls.length = 0;
+    const report = await run({ goal: 'fixture', stages: [
+      { id: 'find', tasks: [{ spec: 'find', category: 'code' }] },
+      { id: 'vote', for_each: 'find', votes: 2, task: { spec: 'vote', provider: 'stub', model: 'pinned' } },
+      { id: 'fix', for_each: 'vote.confirmed', task: { spec: 'fix', category: 'code' } },
+    ] });
+    const id = /^Plan (\S+)/.exec(report)[1];
+    const path = statePath('plans', `${id}.json`);
+    assert.ok(report.endsWith(`Full record: ${path}`));
+    const record = readJson(path);
+    assert.equal(record.status, 'done');
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => call.overflowApi === enabled));
+    const tasks = Object.values(record.stages).flatMap((stage) => stage.tasks).map(({ id }) => readJson(statePath('tasks', `${id}.json`)));
+    assert.equal(tasks.length, 4);
+    for (const task of tasks) {
+      assert.equal(task.overflowApi, enabled);
+      assert.equal(task.parallelOverride, enabled);
+      assert.equal(task.sessionId, 'run_plan');
+    }
+    assert.equal(tasks[0].model, 'next');
+    assert.equal(tasks[1].model, 'pinned');
+  });
+});
+
+test('delegate resolves retry ancestry through follow-ups and excludes every prior selection', async () => {
+  const original = attempt();
+  const retry = attempt({ model: 'fallback', retryOf: original.id });
+  const reviewed = attempt({ followUpOf: retry.id, effort: 'medium' });
+  calls.length = 0;
+  const report = await delegate(reviewed);
+  assert.equal(calls.length, 2); // ceiling query followed by the excluded selection query
+  assert.equal(calls[1].escalate, true);
+  assert.deepEqual(new Set(calls[1].exclude), new Set([selOf(original), selOf(retry), selOf(reviewed)]));
+  assert.match(report, /Escalation attempt 1\//);
+  const id = /^Task (\S+)/.exec(report)[1];
+  assert.equal(getTask(id).retryOf, reviewed.id);
+});
+
+test('follow-up rounds do not count as new attempts or lose the latest reviewed round count', async () => {
+  const original = attempt();
+  let reviewed = original;
+  const maxRounds = loadConfig().worker.maxRounds;
+  for (let round = 1; round <= maxRounds; round++) {
+    reviewed = attempt({ followUpOf: reviewed.id });
+    calls.length = 0;
+    await delegate(reviewed);
+    assert.equal(calls.at(-1).escalate, round >= maxRounds);
+  }
+  const retry = attempt({ model: 'escalation', retryOf: reviewed.id });
+  const retryReview = attempt({ followUpOf: retry.id });
+  calls.length = 0;
+  const report = await delegate(retryReview);
+  assert.match(report, /Escalation attempt 2\//); // original's latest review exhausted its rounds
+  assert.deepEqual(new Set(calls.at(-1).exclude), new Set([selOf(original), selOf(retry)]));
+});
+
+test('delegate terminates cyclic follow-up and retry ancestry without counting an attempt twice', async (t) => {
+  for (const link of ['followUpOf', 'retryOf']) await t.test(link, async () => {
+    const a = attempt(), b = attempt({ model: 'second' });
+    a[link] = b.id; b[link] = a.id;
+    calls.length = 0;
+    const report = await delegate(a);
+    assert.match(report, /queued/);
+    assert.deepEqual(new Set(calls.at(-1).exclude), new Set([selOf(a), selOf(b)]));
+    assert.equal(calls.at(-1).escalate, link === 'retryOf');
+  });
 });
