@@ -873,6 +873,34 @@ test('D7: a run with no reported usage is unknown cost, except a zero list price
   assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'ollama').avgUsd, 0);
 });
 
+test('a ladder with an unpriced step ranks as cost unknown after priced plans', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, hourlyUsd: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const ladder = {
+      sel: 'codex:gpt-5.6-luna:low>codex:gpt-5.6-terra:medium', steps: 2,
+      category: 'search', difficulty: 2, rated: 3, n: 3, quality: 0.95, accept: 0.95,
+      avgUsd: 0.02, avgDurationMs: 0,
+      stepCosts: [
+        { sel: 'codex:gpt-5.6-luna:low', avgUsd: 0.02, avgDurationMs: 0 },
+        { sel: 'codex:gpt-5.6-terra:medium', avgUsd: null, avgDurationMs: 0 },
+      ],
+    };
+    const priced = {
+      sel: 'codex:gpt-6-astra:medium', steps: 1, provider: 'codex', model: 'gpt-6-astra', effort: 'medium',
+      category: 'search', difficulty: 2, rated: 3, n: 3, quality: 0.95, accept: 0.95, avgUsd: 0.50, avgDurationMs: 0,
+    };
+    const both = sc.recommend({ category: 'search', difficulty: 2, summary: [ladder, priced] });
+    assert.equal(both.model, 'gpt-6-astra', 'priced single model beats a ladder whose later step has no price');
+    assert.equal(both.plan.usd, 0.50);
+    assert.doesNotMatch(both.reason, /cost unknown/);
+    const only = sc.recommend({ category: 'search', difficulty: 2, summary: [ladder] });
+    assert.deepEqual(only.plan.steps, ladder.sel.split('>'));
+    assert.equal(only.plan.usd, null);
+    assert.match(only.reason, /cost unknown/);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
 test('OB7: unknown-cost plans stay eligible but rank after every priced eligible plan', () => {
   const cfg = loadConfig().scorecard;
   try {

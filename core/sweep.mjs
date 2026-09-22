@@ -18,7 +18,10 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
     if (model && r.model !== model) continue;
     for (const [id, d] of Object.entries(r.pct)) {
       const w = windows.find((x) => x.id === id);
-      if (w?.models && r.model && !new RegExp(w.models, 'i').test(r.model)) continue;
+      if (w?.models && r.model) {
+        try { if (!new RegExp(w.models, 'i').test(r.model)) continue; }
+        catch { if (!String(r.model).toLowerCase().includes(String(w.models).toLowerCase())) continue; }
+      }
       const per = d / ((r.concurrentByWindow?.[id] ?? r.concurrent ?? 0) + 1); // legacy rows have only the scalar
       // OB2: always record the window (even zero delta) so isUnmeasured knows it has been observed.
       cost[id] = Math.max(cost[id] ?? 0, per);

@@ -391,6 +391,29 @@ test('scoped rejections block their model until reset and preserve genuine globa
 
 // D5 — regression tests for anthropic window scoping
 
+test('live seven_day_nimbus rejection does not park every Claude model', () => {
+  const original = getLimits().providers.claude;
+  const reset = Date.now() + 60_000;
+  const clear = () => { getLimits().providers.claude = { provider: 'claude', blocked: false, blockedUntil: null, blockedReason: null, windows: [] }; };
+  try {
+    clear();
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_nimbus', resetsAt: reset });
+    assert.equal(blockedUntil('claude'), null);
+    assert.equal(modelBlockedUntil('claude', 'claude-sonnet-4-6'), null);
+    assert.ok(windowFromEvent({ rateLimitType: 'seven_day_nimbus' }).models, 'nimbus event must carry a models scope');
+
+    clear();
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day', resetsAt: reset });
+    assert.ok(blockedUntil('claude') > Date.now(), 'seven_day rejected still blocks the provider');
+
+    clear();
+    noteRateLimitEvent('claude', { status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: reset });
+    assert.equal(blockedUntil('claude'), null);
+    assert.equal(modelBlockedUntil('claude', 'claude-opus-4-8'), reset);
+    assert.equal(modelBlockedUntil('claude', 'claude-sonnet-4-6'), null);
+  } finally { getLimits().providers.claude = original; }
+});
+
 test('D5: novel model_scoped name (Nimbus Quill) does not block the whole provider', () => {
   // seven_day_nimbus at 100% + five_hour at 10% → provider NOT blocked; opus not blocked.
   const r = normalizeUsage({ rate_limits_available: true, rate_limits: {

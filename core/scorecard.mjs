@@ -301,8 +301,8 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
   const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + cfg.reservePct * w * gap; };
   const costOf = (g) => {
-    if (g.avgUsd == null) return null;
     const costs = g.stepCosts || [g];
+    if (costs.some((c) => c.avgUsd == null)) return null;
     return costs.reduce((sum, c) => {
       const { provider, model } = parseSel(c.sel.split('>').at(-1));
       return sum + (c.avgUsd + hourly * (c.avgDurationMs || 0) / 3.6e6) * weight(provider, model) * reserve(provider) * wasteDiscount(provider, cfg, model);

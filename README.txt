@@ -90,8 +90,9 @@ conductor-benchmarks (https://github.com/ZuWhNomad/conductor-benchmarks), so the
 own cadence without churning the core. Conductor keeps only a distilled copy of the results for
 model selection: see MODELING and DRAFTING in core/priors.mjs (pass / close / fail; the auto-pick
 routes only a recorded pass) and the "modeling" and "drafting" categories. Pull the benchmarks
-repo when you want to run or inspect a full benchmark. Current status: 3D-modeling is NOT YET
-RELIABLE (best result is "close but no cigar"); the conductor warns you before taking such a task.
+repo when you want to run or inspect a full benchmark. Current status: only models with a recorded
+pass are auto-picked (read the MODELING and DRAFTING tables for which); a first result may still
+need review rounds.
 Design notes: docs/ROADMAP-capabilities.md.
 
 

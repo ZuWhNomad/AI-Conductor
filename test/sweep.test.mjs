@@ -20,6 +20,20 @@ test('measuredCostByWindow takes the largest delta per window, honouring model-g
   delete lim.getLimits().providers.antigravity;
 });
 
+test('measuredCostByWindow does not throw on an invalid models pattern', () => {
+  const id = 'sweep-bad-re';
+  try {
+    lim.getLimits().providers[id] = { provider: id, windows: [{ id: 'spark', models: 'Spark+ (unclosed' }] };
+    const rows = [
+      { provider: id, model: 'gpt-5.3-codex-spark', pct: { spark: 5 } },
+      { provider: id, model: 'Spark+ (unclosed-x', pct: { spark: 3 } },
+    ];
+    assert.doesNotThrow(() => measuredCostByWindow(rows, id));
+    assert.deepEqual(measuredCostByWindow(rows, id), { spark: 3 });
+    assert.deepEqual(measuredCostByWindow(rows, id, { model: 'gpt-5.3-codex-spark' }), {});
+  } finally { delete lim.getLimits().providers[id]; }
+});
+
 test('OB2: a measured 0% delta still records the window so it is not treated as unmeasured', () => {
   const rows = [{ provider: 'codex', model: 'x', pct: { w1: 5, w2: 0 } }];
   assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w1: 5, w2: 0 });

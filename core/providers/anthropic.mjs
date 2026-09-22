@@ -210,6 +210,6 @@ export function normalizeUsage(u) {
 /** Translate a live SDKRateLimitInfo (from a running session) into a window update. */
 export function windowFromEvent(info) {
   if (!info?.rateLimitType) return null;
-  const models = familyRe(info.rateLimitType);
+  const models = modelsForKey(info.rateLimitType);
   return { id: info.rateLimitType, label: WINDOW_LABELS[info.rateLimitType] || info.rateLimitType, usedPercent: info.utilization != null ? Math.round(info.utilization * (info.utilization <= 1 ? 100 : 1)) : null, resetsAt: info.resetsAt ? info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1) : null, status: info.status, ...(models ? { models } : {}) };
 }
