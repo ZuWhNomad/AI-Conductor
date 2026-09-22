@@ -158,6 +158,7 @@ function start(s) {
   const abort = new AbortController();
   const inbox = new Inbox();
   const bypass = s.permissionMode === 'bypassPermissions';
+  const servers = forClaudeSdk(mcpServers());
   const q = query({
     prompt: inbox,
     options: {
@@ -169,8 +170,9 @@ function start(s) {
       canUseTool: bypass ? undefined : (toolName, input, o) => askPermission(s, toolName, input, o),
       includePartialMessages: true,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: PROMPT },
-      mcpServers: { ...forClaudeSdk(mcpServers(), { skip: ['claude'] }), conductor: conductorTools({ sessionId: s.id, cwd: s.cwd }) },
-      allowedTools: ['mcp__conductor', ...Object.keys(mcpServers()).map((n) => `mcp__${n}`)],
+      mcpServers: { ...servers, conductor: conductorTools({ sessionId: s.id, cwd: s.cwd }) },
+      strictMcpConfig: true,
+      allowedTools: ['mcp__conductor', ...Object.keys(servers).map((n) => `mcp__${n}`)],
       agents: CONDUCTOR_AGENTS,
       settingSources: ['user', 'project', 'local'],
       resume: s.sdkSessionId || undefined,

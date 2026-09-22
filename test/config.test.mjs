@@ -34,6 +34,28 @@ test('settings reject nonobjects, preserve subtrees and normalize positive numbe
   assert.equal(loadConfig().conductor.model, null);
 });
 
+test('registry entry null tombstones survive saving existing entries and reloading', () => {
+  saveConfig({
+    mcpServers: { existing: { command: 'fixture.exe' }, retained: { url: 'https://fixture.test/mcp' } },
+    tools: { index: { existing: { kind: 'program', invoke: 'fixture' }, retained: { kind: 'program' } } },
+    conductor: { effort: 'medium' },
+  });
+  const saved = saveConfig({ mcpServers: { existing: null }, tools: { index: { existing: null } }, conductor: null });
+  for (const cfg of [saved, loadConfig()]) {
+    assert.equal(cfg.mcpServers.existing, null);
+    assert.equal(cfg.tools.index.existing, null);
+    assert.equal(cfg.mcpServers.retained.url, 'https://fixture.test/mcp');
+    assert.equal(cfg.tools.index.retained.kind, 'program');
+    assert.equal(cfg.conductor.effort, 'medium');
+  }
+  saveConfig({ mcpServers: null, tools: { index: null } });
+  assert.equal(loadConfig().mcpServers.existing, null);
+  assert.equal(loadConfig().tools.index.retained.kind, 'program', 'registry subtree null still preserves entries');
+  saveConfig({ mcpServers: { existing: { command: 'restored.exe' } }, tools: { index: { existing: { kind: 'mcp' } } } });
+  assert.equal(loadConfig().mcpServers.existing.command, 'restored.exe');
+  assert.equal(loadConfig().tools.index.existing.kind, 'mcp');
+});
+
 test('turn budgets default high and reject non-positive values', () => {
   assert.equal(DEFAULTS.conductor.maxTurns, 9999);
   assert.equal(DEFAULTS.worker.maxTurns, 500);

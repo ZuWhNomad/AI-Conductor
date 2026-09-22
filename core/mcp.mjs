@@ -7,22 +7,42 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig } from './config.mjs';
 
-const unq = (v) => v.trim().replace(/^(['"])(.*)\1$/s, '$2');
+const stringToken = `"(?:[^"\\\\]|\\\\.)*"|'[^']*'`;
+const keyToken = `(?:${stringToken}|[A-Za-z0-9_-]+)`;
+const unq = (v) => {
+  v = v.trim();
+  if (v.startsWith("'")) return v.slice(1, -1);
+  if (v.startsWith('"')) return JSON.parse(v.replace(/\\(?:U([0-9a-fA-F]{8})|.)/g, (escape, hex) => hex ? JSON.stringify(String.fromCodePoint(parseInt(hex, 16))).slice(1, -1) : escape));
+  return v;
+};
+function withoutComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote === '"' && c === '\\') { i++; continue; }
+    if (quote) { if (c === quote) quote = null; }
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '#') return line.slice(0, i).trim();
+  }
+  return line.trim();
+}
 
 /** Parse `[mcp_servers.NAME]` tables (url | command/args/env) from a Codex config.toml. */
 export function parseCodexToml(text) {
   const out = {}; let cur = null, env = null;
+  const header = new RegExp(`^\\[mcp_servers\\.(${keyToken})(\\.env)?\\]$`);
+  const keyValue = new RegExp(`^(${keyToken})\\s*=\\s*(.+)$`);
   for (const raw of String(text || '').split('\n')) {
-    const line = raw.trim();
-    const h = /^\[mcp_servers\.([^\].]+)(\.env)?\]$/.exec(line);
-    if (h) { cur = out[h[1]] = out[h[1]] || {}; env = h[2] ? (cur.env = cur.env || {}) : null; continue; }
+    const line = withoutComment(raw);
+    const h = header.exec(line);
+    if (h) { const name = unq(h[1]); cur = out[name] = out[name] || {}; env = h[2] ? (cur.env = cur.env || {}) : null; continue; }
     if (/^\[/.test(line)) { cur = null; env = null; continue; }
     if (!cur) continue;
-    const kv = /^([A-Za-z0-9_]+)\s*=\s*(.+)$/.exec(line); if (!kv) continue;
-    const [, k, v] = kv;
+    const kv = keyValue.exec(line); if (!kv) continue;
+    const k = unq(kv[1]), v = kv[2];
     if (env) { env[k] = unq(v); continue; }
     if (k === 'url' || k === 'command') cur[k] = unq(v);
-    else if (k === 'args') { try { cur.args = JSON.parse(v.replace(/'/g, '"')); } catch { cur.args = []; } }
+    else if (k === 'args') { try { cur.args = [...v.matchAll(new RegExp(stringToken, 'g'))].map(([s]) => unq(s)); } catch { cur.args = []; } }
     else if (k === 'enabled' && v.trim() === 'false') cur.disabled = true;
   }
   for (const [n, s] of Object.entries(out)) if (s.disabled || (!s.url && !s.command)) delete out[n];
@@ -77,17 +97,31 @@ export const forClaudeSdk = (servers, { skip = [] } = {}) => Object.fromEntries(
 export function codexMcpArgs(servers) {
   const args = [];
   if (servers == null) return args;
+  const q = (v) => JSON.stringify(String(v)).replace(/\x7f/g, '\\u007f');
+  const table = (entries) => `{${Object.entries(entries).map(([k, v]) => `${q(k)}=${v}`).join(',')}}`;
+  const dotted = {};
+  const put = (name, key, value) => {
+    if (name.includes('.')) (dotted[name] ||= {})[key] = value;
+    else args.push('-c', `mcp_servers.${name}.${key}=${value}`);
+  };
   for (const name of Object.keys(readCodexServers())) {
-    if (!Object.hasOwn(servers, name)) args.push('-c', `mcp_servers.${name}.enabled=false`);
+    if (!Object.hasOwn(servers, name)) put(name, 'enabled', 'false');
   }
-  const q = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   for (const [name, s] of Object.entries(servers || {})) {
     if (s.source !== 'codex') {
-      if (s.url) args.push('-c', `mcp_servers.${name}.url=${q(s.url)}`);
-      else { args.push('-c', `mcp_servers.${name}.command=${q(s.command)}`, '-c', `mcp_servers.${name}.args=[${(s.args || []).map(q).join(',')}]`); for (const [k, v] of Object.entries(s.env || {})) args.push('-c', `mcp_servers.${name}.env.${k}=${q(v)}`); }
-      args.push('-c', `mcp_servers.${name}.tool_timeout_sec=${s.toolTimeoutSec || 3600}`, '-c', `mcp_servers.${name}.startup_timeout_sec=${s.startupTimeoutSec || 30}`);
+      if (s.url) put(name, 'url', q(s.url));
+      else {
+        put(name, 'command', q(s.command));
+        put(name, 'args', `[${(s.args || []).map(q).join(',')}]`);
+        put(name, 'env', table(Object.fromEntries(Object.entries(s.env || {}).map(([k, v]) => [k, q(v)]))));
+      }
+      put(name, 'tool_timeout_sec', s.toolTimeoutSec || 3600);
+      put(name, 'startup_timeout_sec', s.startupTimeoutSec || 30);
     }
-    args.push('-c', `mcp_servers.${name}.default_tools_approval_mode="approve"`);
+    put(name, 'default_tools_approval_mode', '"approve"');
   }
+  // Codex 0.153.4 splits CLI keypaths on literal dots, even inside quotes. Group dotted names
+  // in ONE table override, before other paths: a later mcp_servers table would replace this one.
+  if (Object.keys(dotted).length) args.unshift('-c', `mcp_servers=${table(Object.fromEntries(Object.entries(dotted).map(([n, fields]) => [n, table(fields)])))}`);
   return args;
 }

@@ -129,11 +129,14 @@ export const DEFAULTS = {
 const FILE = () => statePath('config.json');
 const plain = (v) => v !== null && typeof v === 'object' && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
 
-function deepMerge(a, b) {
+function deepMerge(a, b, path = '') {
   if (b === null && plain(a)) return a;
   if (!b || typeof b !== 'object' || Array.isArray(b)) return b === undefined ? a : b;
   const out = { ...a };
-  for (const [k, v] of Object.entries(b)) out[k] = deepMerge(a?.[k], v);
+  for (const [k, v] of Object.entries(b)) {
+    // Registry entries use null as a tombstone; ordinary object subtrees keep their values.
+    out[k] = v === null && (path === 'mcpServers' || path === 'tools.index') ? null : deepMerge(a?.[k], v, path ? `${path}.${k}` : k);
+  }
   return out;
 }
 
