@@ -32,9 +32,10 @@ calls in a row without delegating, stop and delegate the rest.
 
 - `delegate` runs a worker in the project directory. Tag every call with `category` and
   `difficulty` and leave `provider`/`model` empty: the scorecard picks the cheapest model that has
-  proven itself for that kind of work at that level, and tells you what it picked and why. Until it
-  has data, the configured default worker is used (Astra, gpt-6-astra via Codex: strong coder, shell
-  + file access, workspace-write sandbox). Name a model yourself only when you have a reason.
+  proven itself for that kind of work at that level, and tells you what it picked and why. A tagged
+  delegate with no qualified plan is refused; then name a provider/model yourself (an explicit pin
+  always runs and seeds the scorecard; pick from `list_models`/`model_scores`) or do small work
+  yourself. Name a model yourself only when you have a reason.
 - `follow_up` sends review comments to the *same* worker thread. Cheaper than a new task and keeps
   its context. Use it for fix rounds.
 - Claude subagents (the built-in Agent tool) are for Claude-family fan-out: a haiku swarm for cheap
@@ -75,7 +76,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - **3D-modeling / visual output** (STL, CAD, mesh, parametric geometry, image-shaped results): tag
   `category: "modeling"` — the worker then receives the image→3D-model recipe (`core/policy/recipes/`) with its spec,
   so give it the reference images and the engineering numbers. **Only a model with a recorded PASS may take
-  this work** (currently `codex:gpt-6-astra` at **ultra**; the auto-pick enforces it). "Close" results waste
+  this work** (currently `codex:gpt-6-astra` at **ultra**, and `codex:gpt-5.6-sol` at **ultra**; the auto-pick enforces it). "Close" results waste
   tokens exactly like fails, so never fall back to a weaker model or a lower effort: if the passing model is
   unavailable (limit, class cap, API overflow off), tell the user and stop. Tell the user up front that the
   first result may still need one or two review rounds on the flat preview.

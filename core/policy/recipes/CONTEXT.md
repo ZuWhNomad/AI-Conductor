@@ -7,16 +7,10 @@ working notes belong in the user's notes location, **never in this repo** — a 
 `core/tasks.mjs buildPrompt` via `core/recipes.mjs recipeFor(category)`. A recipe says *how* to approach a
 kind of work (tools, order of operations, what to verify, known anti-patterns); it never restates the task.
 
-**Entries.** `image-to-3d-model.md` (category `modeling`) — distilled from the cookie-cutter benchmark run that
-passed (Astra ultra, 2026-09-12) versus the four that failed the same day. `video-briefing-finance.md` and
-`video-briefing-general.md` (category `summarize`) — briefings of a video someone else watched.
-The finance one is scoped to markets and adds a quantitative dossier, an editorial layer and a
-QuantGPT claim-and-update pass; the general one is the older, broader prompt. They do different
-jobs and are NOT graded against each other. Both self-scope: a non-video `summarize` task is told
-to ignore them.
+**Entries.** `image-to-3d-model.b.md` (default for `modeling` and `drafting` in `RECIPES`) — recipe B, where B0.1 is the drafting stage that stops at an approved drawing. `RECIPE_VARIANTS` provides category variants: for `modeling` (`recipe-a`: `image-to-3d-model.md`, `recipe-b`: `image-to-3d-model.b.md`, `recipe-c`: `image-to-3d-model.c-build.md`, `recipe-c-trace`: `image-to-3d-model.c-trace.md`); for `summarize` (`video-general`: `video-briefing-general.md`, `video-finance`: `video-briefing-finance.md`). `summarize` has no default in `RECIPES`; video briefing tasks opt in explicitly by variant (e.g. via `youtube` in `capabilities.json`).
 
 **Invariants.** Recipes must be machine-independent (no absolute paths; tools referenced by name with a
-"get it" line). Keep them short enough to sit under a spec without drowning it. Registering a new one is a
-one-line change in `RECIPES`.
+"get it" line). Keep them short enough to sit under a spec without drowning it. Defaults are registered in
+`RECIPES` and variants in `RECIPE_VARIANTS` (overridable in config `recipes.defaults` and `recipes.variants`).
 
-**How to test.** `test/hygiene.test.mjs` checks the registry and that a tagged task keeps its category.
+**How to test.** `test/recipes.test.mjs` and `test/hygiene.test.mjs` check recipe resolution, defaults, variants, and registry.

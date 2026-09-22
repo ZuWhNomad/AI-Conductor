@@ -163,10 +163,11 @@ local state) to your Desktop for offline hand-offs.
 CONFIGURATION
 -------------
 
-Settings has the same provider : model : effort pickers for the DEFAULT WORKER (the grunt coder
-every "delegate" uses unless the conductor names another provider/model) and the CONDUCTOR DEFAULT.
-The conductor can still send lesser tasks anywhere: a haiku swarm for reading, a free Ollama model
-for boilerplate, Astra for real coding, per task.
+Settings has the same provider : model : effort pickers for the DEFAULT WORKER (the fallback worker
+for composer shortcuts like /worker and untagged tasks; tagged delegates auto-pick from the
+scorecard and are refused when no qualified plan exists until explicitly pinned) and the CONDUCTOR
+DEFAULT. The conductor can still send lesser tasks anywhere: a haiku swarm for reading, a free
+Ollama model for boilerplate, Astra for real coding, per task.
 
 ~/.conductor2/config.json (see core/config.mjs for every default): port, poll interval, conductor
 defaults, default worker (codex / gpt-6-astra / medium), Codex sandbox (workspace-write, network

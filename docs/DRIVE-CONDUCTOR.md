@@ -35,14 +35,14 @@ curl -s "$BASE/api/state" >/dev/null && echo "up: $BASE" || echo "not running"
 ## 2. Orient: what models, providers, and folders exist
 
 `GET /api/state` returns everything you need to make choices — no guessing:
-- `.version`, `.config` (redacted), `.providers` (login status per vendor), `.models`
+- `.version`, `.config` (redacted), `.providers` (summary array), `.models` (with `.providers[<id>].status` per vendor)
 - `.sessions` (existing chats), `.tasks` (recent worker tasks)
 - `.home` and `.repoRoot` (safe candidate working directories)
 
 Model list also at `GET /api/models` (`POST /api/models/refresh` to re-poll). Each model has
 `{ provider, id, kind:'agent', efforts:[...] }`. Build a **selection string** `provider:model:effort`
 (e.g. `claude:claude-opus-4-8:max`, `codex:gpt-5.2:high`). Only pick a model whose provider shows
-`status:'ok'` (logged in) in `.providers`.
+`status:'ok'` (logged in) in `.models.providers[<id>].status`.
 
 ---
 
@@ -132,7 +132,7 @@ cancel with `POST /api/tasks/:id/cancel`.
 - State lives under `~/.conductor2` (override with `CONDUCTOR_HOME`, or by creating `.state/` in the checkout). The server listens only on
   `127.0.0.1`.
 - The `claude` provider runs via the Claude Agent SDK and needs `claude` to be logged in; check
-  `/api/state.providers.claude.status === 'ok'` first (same for `codex`).
+  `/api/state.models.providers.claude.status === 'ok'` first (same for `codex`).
 - Prefer discovery (`/api/state`, `/api/models`, the PID file) over constants so the same script
   runs on any machine.
 - Before a long driven job: `POST /api/settings {"conductor":{"autoUpdate":"off"}}` (live, no restart), and turn it back on

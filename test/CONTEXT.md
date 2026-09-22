@@ -7,7 +7,7 @@ Node's built-in test runner. Run `npm test` from the repository root (it preload
 file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… test/workers/`.
 
 **Layout mirrors the source folders that have tests:** `test/workers/` (`core/workers/*`), `test/smoke/` (`core/smoke/`),
-`test/server/` (`server/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `git`,
+`test/server/` (`server/`), `test/ui/` (`ui/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `git`,
 `selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
 `ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
 must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.

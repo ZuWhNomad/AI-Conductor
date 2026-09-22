@@ -216,7 +216,7 @@ test('the product repo carries no project notes, and every code folder has a CON
 
   // Plans, reviews, backlogs and logs belong in the user's notes location, never in the product. They arrive by
   // accident (an agent writes its plan next to the code it is changing) and then ship to everyone who clones this.
-  const notes = tracked.filter((f) => /^(plans|reviews|notes)\//i.test(f) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW)[-_.]/i.test(f));
+  const notes = tracked.filter((f) => /(^|\/)(plans|reviews|notes)\//i.test(f) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW)[-_.]/i.test(f));
   assert.deepEqual(notes, [], `project notes tracked in the product repo: ${notes.join(', ')} — move them to the notes location (see AGENTS.md)`);
 
   // A folder holding code or policy text gets a CONTEXT.md: it is what an agent reads first, and context.mjs injects

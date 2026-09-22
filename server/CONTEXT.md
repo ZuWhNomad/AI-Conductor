@@ -16,7 +16,7 @@ state of its own: every route is a thin call into a `core/` module.
 |---|---|---|
 | `GET /api/state` | everything the UI needs at boot / resync | all |
 | `GET /api/events?since=` | SSE stream with ring-buffer replay | `bus` |
-| `/api/sessions[/<id>[/messages\|interrupt\|stop\|permission\|title\|model\|effort\|mode\|overflow]]` | chat sessions | `conductor` |
+| `/api/sessions[/<id>[/messages\|interrupt\|stop\|permission\|title\|model\|effort\|mode\|overflow\|parallel]]` | chat sessions | `conductor` |
 | `/api/tasks[/<id>[/cancel]]` | worker tasks; `POST` = direct-to-worker (`/worker …`) | `tasks` |
 | `GET /api/models`, `POST /api/models/refresh` | model registry | `models` |
 | `GET /api/limits`, `POST /api/limits/refresh` | provider windows (+ synthetic "estimated" window: `limitsWithEstimates`) | `limits`, `usage-estimate` |

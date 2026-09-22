@@ -7,13 +7,13 @@ working notes belong in the user's notes location, **never in this repo** — a 
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
 
 **Entry points.**
-- `index.mjs` — `runWorker(task)` picks the runner by the model's `kind` (agent → codex/claude/vendor-cli;
-  openai-compat for API + Ollama-via-its-own-endpoint; image). Local Ollama-via-Claude-harness gets
-  `worker.maxTurnsLocal`.
+- `index.mjs` — `runWorker(task)` picks the runner by the provider's `kind` (codex, claude, ollama,
+  openai-compat, image, vendor-cli). Local Ollama-via-Claude-harness gets `worker.maxTurnsLocal`.
 - `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin).
 - `claude.mjs` — the Claude Agent SDK harness (also runs local models via `ollama.claudeHarnessEnv()`).
-- `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Its `run` tool is the only
-  unsandboxed host surface; `fetch_url` has an SSRF guard.
+- `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Host execution is not limited
+  to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
+  and `gpt-6-astra` defaults to `danger-full-access`. `fetch_url` has an SSRF guard.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs.
 - `image.mjs` — image generation.
 

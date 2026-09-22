@@ -49,7 +49,7 @@ is logged when a minute's p99 exceeds `server.lagWarnMs`.
 ## Directory map
 
 ```
-bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, review, share
+bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, bench, review, feedback, share, update, stop
 core/
   paths.mjs              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
@@ -85,7 +85,7 @@ server/index.mjs         HTTP + SSE + static UI
 scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
 share/                   install.cmd, install.sh (for friends)
-test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/), the rest flat
+test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/), the rest flat
 docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, ROADMAP-capabilities
 ```
 
@@ -134,8 +134,8 @@ D on long-context recall). The window % stays as the availability guard and is s
 `op: "void"` rows exclude a run the harness failed (`conductor scores --void-env`); the ledger is
 never rewritten.
 
-Shadow dollars are scaled by `scorecard.providerWeight` (local 0, included subscriptions 0.2, APIs and
-Claude 1) because a token from a subscription you already pay for costs nothing until its window fills;
+Shadow dollars are scaled by `scorecard.providerWeight` (local 0, included subscription CLIs 0.1, APIs 0.3,
+Codex 0.6, Claude 1) because a token from a subscription you already pay for costs nothing until its window fills;
 past `quotaPressurePct` (80%) a provider counts at full list price, and a blocked provider is never
 proposed. **Budget classes** are the cross-provider rule: every provider belongs to a class derived from how it
 authenticates (`free` local · `included` subscription CLIs such as Antigravity/Grok/Kimi · `subscription`
@@ -172,7 +172,8 @@ ladder; or an estimated ladder (any measured first step, qualified fallback; exp
 q₁ + (1−p₁)q₂, cost c₁ + (1−p₁)c₂, assuming independent failures — flagged "est." until observed
 chains replace it). `delegate` without provider/model runs the first step and tells the conductor
 the fallback to use with `retry_of`. With `scorecard.usePriors`, the public tier routes before any
-data exists; otherwise the configured default worker does. `modeling` and `drafting` are gated on
+data exists; otherwise a tagged delegate with no qualified plan is refused until a provider/model is
+named explicitly (which always runs and seeds the scorecard) or small work is done directly. `modeling` and `drafting` are gated on
 every automatic route (measured plans, both ladder steps, extrapolation, cold start with or without
 priors): only a selection with a recorded PASS at the effort that passed (pass / close / fail
 verdicts in `core/priors.mjs` `MODELING` / `DRAFTING`) is routable, and with none available
@@ -200,7 +201,7 @@ into a refactor (`mcpServersFor` in `core/mcp.mjs`).
 - Codex: app-server `account/rateLimits/read` (used %, window, resets) and `model/list`.
 - Ollama: local, unlimited; models from `/api/tags`.
 - API-key providers: models from `/models`; limits learned from 429 `retry-after`.
-- Registry refreshes every `pollMinutes` (default 15) and on the UI's **Refresh** button.
+- Registry refreshes on startup, on the UI's **Refresh** button, and every `pollMinutes` (default 15) when `ui.autoRefresh` is enabled (default false).
 
 ## Context management
 
