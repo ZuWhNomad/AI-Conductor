@@ -1,15 +1,21 @@
 // Context notes: discover CLAUDE.md / AGENTS.md / CONTEXT.md relevant to a set of paths and build
 // an injection block for worker specs. Keeps large projects modular: a worker only sees the notes
 // for the folders it touches.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const NOTE_NAMES = ['CONTEXT.md', 'CLAUDE.md', 'AGENTS.md'];
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__', '.conductor2']);
 
+/** True when `p` resolves to a real path inside `rootReal` (already realpath'd). Missing or dangling paths are outside. */
+function realpathInside(rootReal, p) {
+  try { return isInside(rootReal, realpathSync(p)); } catch { return false; }
+}
+
 /** Note files from each path's directory up to the project root (root first), de-duplicated by file and by content. */
 export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
   const root = resolve(cwd);
+  let rootReal; try { rootReal = realpathSync(root); } catch { return []; }
   const seen = new Set();
   const out = [];
   const dirs = new Set([root]);
@@ -22,10 +28,11 @@ export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
   for (const d of ordered) {
     for (const n of NOTE_NAMES) {
       let f = join(d, n);
-      if (!existsSync(f)) continue;
+      if (!existsSync(f) || !realpathInside(rootReal, f)) continue;
       let content = readFileSync(f, 'utf8');
       const ptr = content.trim().match(/^@(\S+)$/); // a pure pointer (CLAUDE.md = "@AGENTS.md"): inject what it points at, once
-      if (ptr && isInside(root, join(d, ptr[1]))) { try { content = readFileSync(join(d, ptr[1]), 'utf8'); f = join(d, ptr[1]); } catch {} }
+      const target = ptr && join(d, ptr[1]);
+      if (target && realpathInside(rootReal, target)) { try { content = readFileSync(target, 'utf8'); f = target; } catch {} }
       if (seen.has(f) || seen.has(content.trim())) continue; // same file, or a byte-identical copy (CLAUDE.md == AGENTS.md)
       seen.add(f); seen.add(content.trim());
       out.push({ file: relative(root, f) || n, content });

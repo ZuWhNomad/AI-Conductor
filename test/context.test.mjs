@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpDir } from './_env.mjs';
 
@@ -52,4 +52,20 @@ test('a CLAUDE.md that only points at AGENTS.md, or duplicates it, is injected o
   assert.deepEqual(findContextFiles(root).map((f) => f.file), ['CLAUDE.md']);
   writeFileSync(join(root, 'CLAUDE.md'), '@../outside.md'); // a pointer out of the project is left as text, never followed
   assert.deepEqual(findContextFiles(root).map((f) => f.content), ['@../outside.md', '# rules']);
+});
+
+test('notes and pointers through a directory junction outside the project are skipped', () => {
+  const root = tmpDir('ctx-junc');
+  const outside = tmpDir('ctx-junc-out');
+  writeFileSync(join(outside, 'config.json'), '{"apiKey":"leaked-key"}');
+  writeFileSync(join(outside, 'CONTEXT.md'), '# leaked outside notes');
+  writeFileSync(join(root, 'CONTEXT.md'), '# in-project notes');
+  writeFileSync(join(root, 'CLAUDE.md'), '@leak/config.json');
+  symlinkSync(outside, join(root, 'leak'), 'junction');
+  const files = findContextFiles(root, ['leak']);
+  const blob = files.map((f) => f.content).join('\n');
+  assert.match(blob, /in-project notes/);
+  assert.doesNotMatch(blob, /leaked outside notes/);
+  assert.doesNotMatch(blob, /leaked-key/);
+  assert.ok(!files.some((f) => /config\.json/i.test(String(f.file).replaceAll('\\', '/'))));
 });

@@ -15,7 +15,7 @@ import { loadConfig } from '../config.mjs';
  * Gate for the `run` tool (API/Ollama workers have no OS sandbox). Returns a refusal string when the command is not
  * permitted under `worker.shell`, or null when it may run. `worker.shell`: true = allowed; false/'off' = disabled;
  * an array = allow-list of command names. Allow-list mode permits ONE simple command whose executable is listed
- * (exact name/basename, extension-insensitive — never a prefix) and rejects every shell control operator, so
+ * (exact name/basename, extension-insensitive — never a prefix or path) and rejects every shell control operator, so
  * `git & evil`, `git | evil`, `git && evil`, redirects, subshells and backticks can't smuggle a second command.
  */
 export function shellDenied(shell, command) {
@@ -24,9 +24,15 @@ export function shellDenied(shell, command) {
   const cmd = String(command || '');
   if (/[&|;\n\r`]|\$\(|[<>]/.test(cmd)) return `run blocked: worker.shell allow-list permits a single command with no shell operators (& | ; < > \` $() ); got: ${cmd.slice(0, 80)}`;
   const first = cmd.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '');
-  const base = first.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
+  if (/[\\/]/.test(first) || first.startsWith('.')) return `run blocked: worker.shell allow-list permits a bare command name, not a path; got: ${first.slice(0, 80)}`;
+  const base = first.replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
   if (!shell.some((a) => a.replace(/\.(exe|cmd|bat|com|ps1)$/i, '') === base)) return `run blocked: "${base}" is not in worker.shell allow-list (${shell.join(', ')})`;
   return null;
+}
+
+/** Env for the `run` tool child. On Windows, a bare name must not resolve to a cwd shim (`git.cmd` in the project). */
+export function runEnv(env = process.env) {
+  return { ...env, NoDefaultCurrentDirectoryInExePath: '1' };
 }
 
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__']);
@@ -146,7 +152,7 @@ function makeTools(cwd, signal) {
       // false disables host execution; an array filters command names, without sandboxing the allowed programs.
       const deny = shellDenied(loadConfig().worker?.shell, command);
       if (deny) return res(deny);
-      const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv() });
       let out = ''; let err = ''; let why = '';
       const cap = (s) => (s.length > 40000 ? s.slice(-40000) : s);
       child.stdout.on('data', (d) => { out = cap(out + d); });

@@ -54,6 +54,40 @@ test('masked MCP URLs round-trip without replacing the real URLs', () => {
   assert.equal(loadConfig().mcpServers.query.url, '', 'an explicit empty URL still saves');
 });
 
+test('publicConfig masks secret MCP args and saveConfig restores them from the stored config', () => {
+  const cases = [
+    [['--token', 'abc'], ['--token', '••••']],
+    [['--api-key', 'abc'], ['--api-key', '••••']],
+    [['--apikey', 'abc'], ['--apikey', '••••']],
+    [['--key', 'abc'], ['--key', '••••']],
+    [['--secret', 'abc'], ['--secret', '••••']],
+    [['--password', 'abc'], ['--password', '••••']],
+    [['--auth', 'abc'], ['--auth', '••••']],
+    [['--token=abc'], ['--token=••••']],
+    [['--api-key=abc'], ['--api-key=••••']],
+    [['-k', 'abc'], ['-k', 'abc']],
+    [['--verbose', 'keep'], ['--verbose', 'keep']],
+  ];
+  for (const [args, masked] of cases) {
+    saveConfig({ mcpServers: { t: { command: 'npx', args } } });
+    assert.deepEqual(publicConfig().mcpServers.t.args, masked, String(args));
+  }
+  const mcpServers = {
+    split: { command: 'npx', args: ['--token', 'split-secret', '--other', 'ok'] },
+    eq: { command: 'npx', args: ['--api-key=eq-secret'] },
+  };
+  saveConfig({ mcpServers });
+  const pub = publicConfig().mcpServers;
+  assert.deepEqual(pub.split.args, ['--token', '••••', '--other', 'ok']);
+  assert.deepEqual(pub.eq.args, ['--api-key=••••']);
+  assert.ok(!JSON.stringify(pub).includes('secret'));
+  saveConfig({ mcpServers: pub });
+  assert.deepEqual(loadConfig().mcpServers.split.args, mcpServers.split.args);
+  assert.deepEqual(loadConfig().mcpServers.eq.args, mcpServers.eq.args);
+  saveConfig({ mcpServers: { split: { args: ['--token', 'replacement-secret', '--other', 'ok'] } } });
+  assert.deepEqual(loadConfig().mcpServers.split.args, ['--token', 'replacement-secret', '--other', 'ok'], 'unmasked edits still save');
+});
+
 test('settings reject nonobjects, preserve subtrees and normalize positive numbers', () => {
   for (const patch of ['x', null, [], 42]) assert.throws(() => saveConfig(patch), { status: 400 });
   saveConfig({ conductor: null });

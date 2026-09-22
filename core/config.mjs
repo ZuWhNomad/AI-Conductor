@@ -220,21 +220,36 @@ function normalize(cfg) {
 }
 
 const SECRET_MASK = '••••';
+const SECRET_FLAGS = new Set(['--token', '--api-key', '--apikey', '--key', '--secret', '--password', '--auth']);
+
+function maskMcpArgs(args) {
+  const out = [...args];
+  for (let i = 0; i < out.length; i++) {
+    const a = String(out[i] ?? '');
+    const eq = a.indexOf('=');
+    if (eq > 0 && SECRET_FLAGS.has(a.slice(0, eq).toLowerCase())) { out[i] = a.slice(0, eq + 1) + SECRET_MASK; continue; }
+    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < out.length) { out[++i] = SECRET_MASK; }
+  }
+  return out;
+}
 
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
   const clean = structuredClone(patch);
+  const stored = readJson(FILE(), {});
   // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
   for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;
-  for (const s of Object.values(clean.mcpServers || {})) {
+  for (const [name, s] of Object.entries(clean.mcpServers || {})) {
     if (!s || typeof s !== 'object') continue;
     if (typeof s.url === 'string' && (s.url.includes(SECRET_MASK) || s.url.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()))) delete s.url;
     if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
+    const prev = stored.mcpServers?.[name]?.args;
+    if (Array.isArray(s.args) && Array.isArray(prev)) s.args = s.args.map((a, i) => typeof a === 'string' && a.includes(SECRET_MASK) && prev[i] != null ? prev[i] : a);
   }
   // Merge the patch onto the RAW file (the user's overrides), not onto loadConfig() (which already has DEFAULTS
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
-  const effective = normalize(deepMerge(DEFAULTS, deepMerge(readJson(FILE(), {}), clean)));
+  const effective = normalize(deepMerge(DEFAULTS, deepMerge(stored, clean)));
   writeJson(FILE(), pruneToDefaults(effective, DEFAULTS));
   fileCache = { key: null, value: {} }; // our own write: re-read on the next load even if size and mtime did not move
   return effective;
@@ -262,6 +277,7 @@ export function publicConfig(cfg = loadConfig()) {
     if (!s || typeof s !== 'object') continue;
     if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k]) s.env[k] = SECRET_MASK;
     if (typeof s.url === 'string') s.url = maskUrlSecrets(s.url);
+    if (Array.isArray(s.args)) s.args = maskMcpArgs(s.args);
   }
   return c;
 }
