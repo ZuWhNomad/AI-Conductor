@@ -1,10 +1,49 @@
 import { HOME, tmpDir } from './_env.mjs';
-import { test } from 'node:test';
+import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 
-const { createTask, cancelTask, awaitTask, getTask, listTasks, describeTask, publicTask, schedule, abortRunning } = await import('../core/tasks.mjs');
+const { PROVIDERS } = await import('../core/providers/index.mjs');
+const originalProviders = { ...PROVIDERS };
+for (const [id, provider] of Object.entries(PROVIDERS)) {
+  PROVIDERS[id] = { ...provider, pollLimits: mock.fn(async () => ({ provider: id, windows: [], blocked: false })) };
+}
+const unexpectedIO = [];
+const rejectIO = (operation) => {
+  unexpectedIO.push(operation);
+  throw new Error(`unexpected external I/O: ${operation}`);
+};
+mock.method(globalThis, 'fetch', (url) => rejectIO(`fetch ${url}`));
+const { findCli } = await import('../core/proc.mjs');
+const git = findCli('git');
+for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+  const original = childProcess[method];
+  mock.method(childProcess, method, (command, ...args) => {
+    if (git && command === git && ['execFile', 'execFileSync'].includes(method)) return original(command, ...args);
+    return rejectIO(`${method} ${command}`);
+  });
+}
+syncBuiltinESMExports();
+// Only the worker completion endpoint belongs in worker-start/completion counts.
+const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (url, options) => {
+  if (new URL(url).pathname !== '/v1/chat/completions') return rejectIO(`fetch ${url}`);
+  return respond(url, options);
+});
+
+const { createTask, cancelTask, awaitTask, getTask, listTasks, describeTask, publicTask, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
+afterEach(async () => {
+  await flushRecords(); // scoring outlives awaitTask; finish it before the next test installs its fetch spy
+  assert.deepEqual(unexpectedIO, [], 'caught worker/poll errors must still fail the test');
+});
+after(async () => {
+  await flushRecords();
+  Object.assign(PROVIDERS, originalProviders);
+  mock.restoreAll();
+  syncBuiltinESMExports();
+});
 
 test('tasks are journaled, default to the configured worker, and follow-ups need a thread', async () => {
   const cwd = tmpDir('tasks');
@@ -107,7 +146,7 @@ test('follow-up errors carry client status codes', () => {
 });
 
 test('graceful shutdown requeues in-flight tasks instead of failing them', async (ctx) => {
-  ctx.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  mockCompletions(ctx, async (_url, { signal }) => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
   const t = createTask({ cwd: tmpDir('requeue'), provider: 'deepseek' });
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
@@ -125,7 +164,7 @@ test('graceful shutdown requeues in-flight tasks instead of failing them', async
 
 test('abortRunning aborts every active worker', async (ctx) => {
   const signals = [];
-  ctx.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => {
+  mockCompletions(ctx, async (_url, { signal }) => new Promise((_resolve, reject) => {
     signals.push(signal);
     signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
   }));
@@ -149,7 +188,11 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
   writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }] });
   saveConfig({ providers: { deepseek: { apiKey: 'test-key' } }, scorecard: { minSamples: 1 } });
   for (let i = 0; i < 2; i++) { const id = `fo${i}`; recordRun({ id, title: 't', status: 'done', provider: 'ollama', model: 'qwen', effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }); rateTask(id, 'pass'); }
-  ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } }));
+  mockCompletions(ctx, async () => {
+    // Verify the retry is queued, without dispatching its Ollama worker into live detection.
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
+  });
   const cwd = tmpDir('failover');
   const t = createTask({ sessionId: 'fo', cwd, title: 'review it', spec: 'x', provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2 });
   delete process.env.CONDUCTOR_NO_SCHEDULE;
@@ -158,6 +201,7 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
   assert.equal(done.status, 'failed');
   assert.match(done.error, /failed over to task/);
   const next = getTask(done.failedOverTo);
+  assert.equal(next.status, 'queued');
   assert.equal(next.provider, 'ollama');
   assert.equal(next.retryOf, t.id);
   assert.match(describeTask(getTask(t.id)), /Failed over to task/);
@@ -199,7 +243,7 @@ test('dispatch is not serialized on git: two tasks are running before the first 
   const dirs = [tmpDir('inter-a'), tmpDir('inter-b')];
   for (const d of dirs) execFileSync(git, ['init', '--quiet'], { cwd: d, windowsHide: true });
   const starts = [];
-  ctx.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => { starts.push(Date.now()); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  mockCompletions(ctx, async (_url, { signal }) => new Promise((_resolve, reject) => { starts.push(Date.now()); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
   const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek; // an earlier test may have left it blocked
   const batch = dirs.map((cwd) => createTask({ cwd, provider: 'deepseek', spec: 'x' }));
   delete process.env.CONDUCTOR_NO_SCHEDULE;
@@ -208,5 +252,13 @@ test('dispatch is not serialized on git: two tasks are running before the first 
     assert.deepEqual(batch.map((t) => getTask(t.id).status), ['running', 'running']); // both flipped synchronously; neither waited for the other's git status
     for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
     assert.equal(starts.length, 2);
-  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); for (const t of batch) cancelTask(t.id); }
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    abortRunning();
+    await Promise.all(batch.map((t) => awaitTask(t.id)));
+    await flushRecords();
+  }
+  const { runRows } = await import('../core/scorecard.mjs');
+  for (const t of batch) assert.ok(runRows().some((r) => r.taskId === t.id), 'aborted worker scoring is drained');
+  assert.ok(PROVIDERS.deepseek.pollLimits.mock.callCount() > 0, 'scoring uses the offline limit stub');
 });

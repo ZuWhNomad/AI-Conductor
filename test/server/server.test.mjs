@@ -1,13 +1,55 @@
 import { tmpDir } from '../_env.mjs';
-import { test, after } from 'node:test';
+import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request } from 'node:http';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+
+// Explicit refresh/doctor calls bypass CONDUCTOR_NO_POLL. Keep their real routes,
+// but replace every provider probe and the machine-specific capability catalogue.
+const { PROVIDERS } = await import('../../core/providers/index.mjs');
+const { loadIndex } = await import('../../core/capabilities.mjs');
+const { saveConfig } = await import('../../core/config.mjs');
+const originalProviders = { ...PROVIDERS };
+for (const [id, provider] of Object.entries(PROVIDERS)) {
+  PROVIDERS[id] = { ...provider,
+    detect: mock.fn(async () => ({ installed: true, configured: true, loggedIn: true, version: 'test-version' })),
+    listModels: mock.fn(async () => [{ provider: id, id: 'test-model', kind: 'agent' }]),
+    account: mock.fn(async () => ({ loggedIn: true })),
+    pollLimits: mock.fn(async () => ({ provider: id, windows: [], blocked: false })),
+  };
+}
+saveConfig({ tools: { index: {
+  ...Object.fromEntries(loadIndex().map(({ name }) => [name, null])),
+  'test-capability': { kind: 'app', purpose: 'offline fixture' },
+} } });
+
+const unexpectedIO = [];
+const rejectIO = (operation) => {
+  unexpectedIO.push(operation);
+  throw new Error(`unexpected external I/O: ${operation}`);
+};
+for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+  mock.method(childProcess, method, () => rejectIO(method));
+}
+syncBuiltinESMExports();
 
 const { startServer, lagVerdict, doctorReport, isIdle } = await import('../../server/index.mjs');
 const { server, url } = await startServer({ port: 0 });
-after(() => server.close());
+const realFetch = globalThis.fetch;
+mock.method(globalThis, 'fetch', (input, options) => {
+  if (new URL(input).origin !== url) return rejectIO(`fetch ${input}`);
+  return realFetch(input, { ...options, redirect: 'error' });
+});
+afterEach(() => assert.deepEqual(unexpectedIO, [], 'caught probe errors must still fail the test'));
+after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  Object.assign(PROVIDERS, originalProviders);
+  mock.restoreAll();
+  syncBuiltinESMExports();
+});
 
 const get = (p) => fetch(url + p).then((r) => r.json());
 const post = (p, b) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then((r) => r.json());
@@ -95,12 +137,33 @@ test('bad requests are client errors and leave state usable', async () => {
   assert.equal(browse.status, 200); const b = await browse.json(); assert.deepEqual(b.dirs, []); assert.equal(b.error, 'ENOTDIR');
 });
 
-test('event-loop lag: sampled live for doctor; a friction verdict only above the threshold', async () => {
+test('event-loop lag: sampled live for doctor; a friction verdict only above the threshold', async (ctx) => {
   assert.equal(lagVerdict(120, 500), null);
   const v = lagVerdict(900, 500, { running: 3 });
   assert.match(v.message, /p99=900ms/); assert.equal(v.context.running, 3);
-  const d = await doctorReport();
-  assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
+  const previousCodex = process.env.CONDUCTOR_CODEX;
+  process.env.CONDUCTOR_CODEX = process.execPath; // deterministic resolution; version execution is stubbed below
+  ctx.mock.method(childProcess, 'execFileSync', (_command, args) => {
+    assert.deepEqual(args, ['--version']);
+    return 'test-version';
+  });
+  ctx.mock.method(childProcess, 'execSync', (command) => {
+    assert.match(command, / --version$/);
+    return 'test-version';
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const d of [await doctorReport(), await get('/api/doctor')]) {
+      assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
+      assert.equal(d.rows.find((r) => r.name === 'codex').value, 'test-version');
+      assert.equal(d.rows.find((r) => r.name === 'codex').status, 'logged in');
+    }
+  } finally {
+    if (previousCodex === undefined) delete process.env.CONDUCTOR_CODEX;
+    else process.env.CONDUCTOR_CODEX = previousCodex;
+    ctx.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 test('auto-update idle gate: empty is not enough, it must also have been quiet', () => {
@@ -115,10 +178,26 @@ test('POST /api/models/refresh: no body, {} and {only:[…]} all work', async ()
   // The route started reading a body when `only` was added; the UI posts it both with and without one, so a bodyless
   // POST must not hang or 400. (A scoped refresh also skips the capability detection a full one triggers.)
   const send = (body) => fetch(url + '/api/models/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body }) });
+  const { detectionStatus } = await import('../../core/capabilities.mjs');
   for (const body of [undefined, '{}', JSON.stringify({ only: ['grok'] }), JSON.stringify({ only: [] }), 'not json']) {
+    const before = Object.fromEntries(Object.entries(PROVIDERS).map(([id, p]) => [id, [p.detect.mock.callCount(), p.listModels.mock.callCount()]]));
+    const capabilitiesBefore = detectionStatus();
     const r = await send(body);
     assert.equal(r.status, 200, `body: ${body}`);
     const j = await r.json();
     assert.ok(j.providers, `body: ${body}`);
+    const scoped = body === JSON.stringify({ only: ['grok'] });
+    for (const [id, p] of Object.entries(PROVIDERS)) {
+      const calls = scoped && id !== 'grok' ? 0 : 1;
+      assert.equal(p.detect.mock.callCount() - before[id][0], calls, `${id} detect, body: ${body}`);
+      assert.equal(p.listModels.mock.callCount() - before[id][1], calls, `${id} list, body: ${body}`);
+      assert.ok(j.models.some((m) => m.provider === id && m.id === 'test-model'));
+    }
+    if (scoped) assert.equal(detectionStatus(), capabilitiesBefore);
+    else {
+      assert.notEqual(detectionStatus(), capabilitiesBefore);
+      assert.deepEqual(Object.keys(detectionStatus()), ['test-capability']);
+      assert.equal(detectionStatus()['test-capability'].available, true);
+    }
   }
 });
