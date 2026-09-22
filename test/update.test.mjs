@@ -1,7 +1,7 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import childProcess, { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
@@ -21,6 +21,52 @@ const setup = () => {
   const b = tmpDir('clone-b'); run(b, 'clone', '--quiet', origin, '.'); run(b, 'config', 'user.email', 't@example.com'); run(b, 'config', 'user.name', 't');
   return { origin, a, b };
 };
+
+for (const [label, npmInstalled, npmError] of [
+  ['failed dependency install', false, 'dependency unavailable'],
+  ['successful dependency install', true, null],
+  ['unchanged lockfile', false, null],
+]) test(`update CLI: ${label}`, () => {
+  const result = { updated: true, from: 'abc123', to: 'def456', commits: 1, npmInstalled, npmError, restartNeeded: true };
+  const child = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import childProcess from 'node:child_process';
+    import { registerHooks, syncBuiltinESMExports } from 'node:module';
+    let calls = 0;
+    const unexpectedIO = [];
+    const rejectIO = () => { unexpectedIO.push('external I/O'); throw new Error('unexpected external I/O'); };
+    globalThis.fetch = rejectIO;
+    for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) childProcess[method] = rejectIO;
+    syncBuiltinESMExports();
+    globalThis.mockApplyUpdate = () => { calls++; return ${JSON.stringify(result)}; };
+    process.on('exit', () => { assert.equal(calls, 1); assert.deepEqual(unexpectedIO, []); });
+    registerHooks({ load(url, context, nextLoad) {
+      if (url === new URL('./core/update.mjs', import.meta.url).href) return {
+        format: 'module', shortCircuit: true,
+        source: "export const updateStatus = () => ({ git: true, behind: 1 }); export const formatUpdate = () => '1 update(s) available'; export const applyUpdate = globalThis.mockApplyUpdate;",
+      };
+      return nextLoad(url, context);
+    } });
+    // parseArgs skips only argv[0] under --eval.
+    process.argv = [process.execPath, 'update'];
+    await import('./bin/conductor.mjs');
+  `], { cwd: REPO_ROOT, encoding: 'utf8', windowsHide: true });
+  assert.ifError(child.error);
+  assert.equal(child.status, npmError ? 1 : 0, child.stderr || child.stdout);
+  if (npmError) {
+    assert.match(child.stderr, /Partial update: code updated abc123.*def456/);
+    assert.match(child.stderr, /dependency install failed: dependency unavailable/);
+    assert.ok(child.stderr.includes(REPO_ROOT), child.stderr);
+    assert.match(child.stderr, /npm install/);
+    assert.match(child.stderr, /restart only after.*succeeds/i);
+    assert.doesNotMatch(child.stdout + child.stderr, /Restart Conductor to run the new version/);
+  } else {
+    assert.equal(child.stderr, '');
+    assert.match(child.stdout, /Updated abc123.*def456 \(1 commit\(s\)\)/);
+    assert.match(child.stdout, /Restart Conductor to run the new version/);
+    assert.equal(child.stdout.includes('dependencies installed'), npmInstalled);
+  }
+});
 
 test('update: status counts commits behind the remote and applyUpdate fast-forwards', { skip: !git && 'git not installed' }, () => {
   const { a, b } = setup();

@@ -182,6 +182,11 @@ if (cmd === 'start') {
   if (!flags.check && st.git && !st.error && st.behind) {
     try {
       const r = applyUpdate();
+      if (r.npmError) {
+        console.error(`Partial update: code updated ${r.from} → ${r.to} (${r.commits} commit(s)), but dependency install failed: ${r.npmError}`);
+        console.error(`Run "npm install" in "${REPO_ROOT}"; restart only after the install succeeds.`);
+        process.exit(1);
+      }
       console.log(`Updated ${r.from} → ${r.to} (${r.commits} commit(s))${r.npmInstalled ? ', dependencies installed' : ''}. Restart Conductor to run the new version.`);
     } catch (e) { console.error(e.message); process.exit(1); }
   }
