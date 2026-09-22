@@ -233,6 +233,45 @@ function maskMcpArgs(args) {
   return out;
 }
 
+/** Restore masked MCP args by flag identity (nth occurrence of the same flag/form). No match → drop the flag pair, never persist the mask. */
+function restoreMcpArgs(posted, stored) {
+  const eq = new Map(), split = new Map();
+  const push = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
+  for (let i = 0; i < stored.length; i++) {
+    const a = String(stored[i] ?? '');
+    const eqAt = a.indexOf('=');
+    if (eqAt > 0 && SECRET_FLAGS.has(a.slice(0, eqAt).toLowerCase())) { push(eq, a.slice(0, eqAt + 1).toLowerCase(), stored[i]); continue; }
+    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < stored.length) { push(split, a.toLowerCase(), stored[i + 1]); i++; }
+  }
+  const eqSeen = new Map(), splitSeen = new Map();
+  const nth = (map, k) => { const n = map.get(k) || 0; map.set(k, n + 1); return n; };
+  const out = [];
+  for (let i = 0; i < posted.length; i++) {
+    const a = String(posted[i] ?? '');
+    const eqAt = a.indexOf('=');
+    if (eqAt > 0 && SECRET_FLAGS.has(a.slice(0, eqAt).toLowerCase())) {
+      const key = a.slice(0, eqAt + 1).toLowerCase(), n = nth(eqSeen, key);
+      if (a.includes(SECRET_MASK)) { const got = eq.get(key)?.[n]; if (got != null) out.push(got); }
+      else out.push(posted[i]);
+      continue;
+    }
+    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < posted.length) {
+      const key = a.toLowerCase(), n = nth(splitSeen, key), next = posted[i + 1];
+      if (typeof next === 'string' && next.includes(SECRET_MASK)) {
+        const got = split.get(key)?.[n];
+        if (got != null) { out.push(posted[i]); out.push(got); }
+        i++;
+        continue;
+      }
+      out.push(posted[i]);
+      continue;
+    }
+    if (typeof posted[i] === 'string' && posted[i].includes(SECRET_MASK)) continue;
+    out.push(posted[i]);
+  }
+  return out;
+}
+
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
   const clean = structuredClone(patch);
@@ -244,7 +283,7 @@ export function saveConfig(patch) {
     if (typeof s.url === 'string' && (s.url.includes(SECRET_MASK) || s.url.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()))) delete s.url;
     if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
     const prev = stored.mcpServers?.[name]?.args;
-    if (Array.isArray(s.args) && Array.isArray(prev)) s.args = s.args.map((a, i) => typeof a === 'string' && a.includes(SECRET_MASK) && prev[i] != null ? prev[i] : a);
+    if (Array.isArray(s.args)) s.args = restoreMcpArgs(s.args, Array.isArray(prev) ? prev : []);
   }
   // Merge the patch onto the RAW file (the user's overrides), not onto loadConfig() (which already has DEFAULTS
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides

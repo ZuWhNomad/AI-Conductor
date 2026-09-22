@@ -734,3 +734,32 @@ test('failover passes the access-gate provider restriction intersected with the 
     saveConfig({ scorecard, tools });
   }
 });
+
+test('GP7: a noFailover task that parks on a limit hit is scored after a successful resume', async (ctx) => {
+  const { runRows } = await import('../core/scorecard.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  delete getLimits().providers.deepseek;
+  let n = 0;
+  mockCompletions(ctx, async () => {
+    n++;
+    if (n === 1) return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '1' } });
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+  });
+  const t = createTask({ cwd: tmpDir('gp7-limit'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, noFailover: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    schedule();
+    const done = await awaitTask(t.id, 15000);
+    assert.equal(done.timedOut, undefined, done.error);
+    assert.equal(done.status, 'done', done.error);
+    assert.ok(!done.limitHit);
+    assert.equal(getTask(t.id).attempts, 2);
+    await flushRecords();
+    assert.ok(runRows().some((r) => r.taskId === t.id), 'the successful resume must leave a run row');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    abortRunning();
+    cancelTask(t.id);
+    delete getLimits().providers.deepseek;
+  }
+});

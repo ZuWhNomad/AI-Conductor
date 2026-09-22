@@ -88,6 +88,32 @@ test('publicConfig masks secret MCP args and saveConfig restores them from the s
   assert.deepEqual(loadConfig().mcpServers.split.args, ['--token', 'replacement-secret', '--other', 'ok'], 'unmasked edits still save');
 });
 
+test('saveConfig restores masked MCP args by flag identity across insert and remove', () => {
+  const stored = ['-y', 'server', '--token', 'SECRET1', '--api-key=SECRET2'];
+  saveConfig({ mcpServers: { t: { command: 'npx', args: stored } } });
+  saveConfig({ mcpServers: { t: { args: publicConfig().mcpServers.t.args } } });
+  assert.deepEqual(loadConfig().mcpServers.t.args, stored, 'same-length round trip');
+
+  saveConfig({ mcpServers: { t: { args: stored } } });
+  saveConfig({ mcpServers: { t: { args: publicConfig().mcpServers.t.args.filter((a) => a !== '-y') } } });
+  assert.deepEqual(loadConfig().mcpServers.t.args, ['server', '--token', 'SECRET1', '--api-key=SECRET2'], 'remove');
+
+  saveConfig({ mcpServers: { t: { args: stored } } });
+  const pub = publicConfig().mcpServers.t.args;
+  saveConfig({ mcpServers: { t: { args: [pub[0], '--inserted', ...pub.slice(1)] } } });
+  assert.deepEqual(loadConfig().mcpServers.t.args, ['-y', '--inserted', 'server', '--token', 'SECRET1', '--api-key=SECRET2'], 'insert');
+
+  const twice = ['--token', 'A', '--other', 'x', '--token', 'B'];
+  saveConfig({ mcpServers: { t: { args: twice } } });
+  saveConfig({ mcpServers: { t: { args: publicConfig().mcpServers.t.args } } });
+  assert.deepEqual(loadConfig().mcpServers.t.args, twice, 'nth occurrence of a repeated flag');
+
+  saveConfig({ mcpServers: { t: { args: ['-y', 'server'] } } });
+  saveConfig({ mcpServers: { t: { args: ['-y', 'server', '--token', '••••', '--api-key=••••'] } } });
+  assert.deepEqual(loadConfig().mcpServers.t.args, ['-y', 'server'], 'no match drops the masked flag pair');
+  assert.ok(!JSON.stringify(loadConfig().mcpServers.t.args).includes('••••'));
+});
+
 test('settings reject nonobjects, preserve subtrees and normalize positive numbers', () => {
   for (const patch of ['x', null, [], 42]) assert.throws(() => saveConfig(patch), { status: 400 });
   saveConfig({ conductor: null });

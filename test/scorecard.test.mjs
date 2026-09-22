@@ -935,3 +935,64 @@ test('B1: effort dominance uses parseSel so model ids containing a colon still d
   assert.equal(r.effort, 'high');
 });
 
+test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'GP2-avg';
+  const lunaUsd = pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, pr.priceFor('codex', 'gpt-5.6-luna'));
+  const terraUsd = pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, pr.priceFor('codex', 'gpt-5.6-terra'));
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 3, quality: 0.75, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    for (let i = 0; i < 6; i++) {
+      run({ id: `${source}-luna-${i}`, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'search', difficulty: 2 });
+      sc.rateTask(`${source}-luna-${i}`, 'pass');
+    }
+    run({ id: `${source}-luna-fail`, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'search', difficulty: 2, result: { durationMs: 1000 } });
+    sc.rateTask(`${source}-luna-fail`, 'fail');
+    for (let i = 0; i < 3; i++) {
+      run({ id: `${source}-astra-${i}`, source, provider: 'codex', model: 'gpt-6-astra', effort: 'medium', category: 'search', difficulty: 2 });
+      sc.rateTask(`${source}-astra-${i}`, 'pass');
+    }
+    const sum = sc.summarize({ source });
+    const luna = sum.find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.steps === 1 && g.category === 'search');
+    assert.equal(luna.n, 7);
+    assert.equal(luna.pass, 6);
+    assert.ok(luna.avgUsd != null, 'one unpriced attempt must not null the group average');
+    assert.ok(Math.abs(luna.avgUsd - lunaUsd) < 1e-9);
+    const r = sc.recommend({ category: 'search', difficulty: 2, source });
+    assert.equal(r.model, 'gpt-5.6-luna');
+    assert.doesNotMatch(r.reason, /cost unknown/);
+
+    run({ id: `${source}-chain-a`, source, category: 'search', difficulty: 3 });
+    run({ id: `${source}-chain-b`, source, category: 'search', difficulty: 3, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-chain-a`, result: { durationMs: 1000 } });
+    const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-chain-a`);
+    assert.ok(chain.attempts[0].usd != null);
+    assert.equal(chain.attempts[1].usd, null);
+    assert.equal(chain.usd, chain.attempts[0].usd);
+
+    run({ id: `${source}-lad1a`, source, category: 'ui', difficulty: 2 });
+    sc.rateTask(`${source}-lad1a`, 'fail');
+    run({ id: `${source}-lad1b`, source, category: 'ui', difficulty: 2, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-lad1a` });
+    sc.rateTask(`${source}-lad1b`, 'pass');
+    run({ id: `${source}-lad2a`, source, category: 'ui', difficulty: 2 });
+    sc.rateTask(`${source}-lad2a`, 'fail');
+    run({ id: `${source}-lad2b`, source, category: 'ui', difficulty: 2, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-lad2a`, result: { durationMs: 1000 } });
+    sc.rateTask(`${source}-lad2b`, 'pass');
+    const ladder = sc.summarize({ source }).find((g) => g.steps === 2 && g.category === 'ui');
+    assert.ok(ladder.stepCosts[1].avgUsd != null);
+    assert.ok(Math.abs(ladder.stepCosts[1].avgUsd - terraUsd) < 1e-9);
+
+    const thin = { sel: 'codex:gpt-5.6-luna:low', steps: 1, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'debug', difficulty: 2, rated: 1, n: 1, quality: 1, accept: 1, avgUsd: 0.02, avgDurationMs: 0 };
+    const hard = { ...thin, difficulty: 3, rated: 3, n: 3, avgUsd: null };
+    const pooled = sc.recommend({ category: 'debug', difficulty: 2, summary: [thin, hard] });
+    assert.ok(pooled.plan.usd != null);
+    assert.doesNotMatch(pooled.reason, /cost unknown/);
+
+    run({ id: `${source}-spark`, source, provider: 'codex', model: 'gpt-5.3-codex-spark', effort: 'low', category: 'search', difficulty: 1, result: { usage: USAGE, durationMs: 1000 } });
+    sc.rateTask(`${source}-spark`, 'pass');
+    assert.equal(sc.summarize({ source }).find((g) => /spark/.test(g.sel)).avgUsd, null, 'no list price stays cost-unknown');
+    run({ id: `${source}-local`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'search', difficulty: 1, result: { durationMs: 1000 } });
+    sc.rateTask(`${source}-local`, 'pass');
+    assert.equal(sc.summarize({ source }).find((g) => g.provider === 'ollama').avgUsd, 0);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+

@@ -124,6 +124,7 @@ export function migrateScorecard() {
 
 const maxPct = (pct) => (pct ? Math.max(...Object.values(pct)) : null);
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const meanKnown = (xs) => mean(xs.filter((x) => x != null)); // unknown costs are skipped, not poison
 const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] += b[k] || 0; };
 
 /**
@@ -209,8 +210,8 @@ export function rootRuns({ source = null } = {}) {
     if (chainRate) { last.verdict = chainRate.verdict; last.notes = chainRate.notes || null; }
     c.verdict = last.verdict; c.notes = last.notes;
     c.tokens = { in: 0, out: 0, cached: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
-    let usd = 0, priced = true;
-    for (const a of c.attempts) { addTok(c.tokens, a.tokens); c.durationMs += a.durationMs; c.rounds += a.rounds; if (a.usd == null) priced = false; else usd += a.usd; if (a.pct) { c.pct = c.pct || {}; for (const [k, v] of Object.entries(a.pct)) c.pct[k] = (c.pct[k] || 0) + v; } }
+    let usd = 0, priced = 0;
+    for (const a of c.attempts) { addTok(c.tokens, a.tokens); c.durationMs += a.durationMs; c.rounds += a.rounds; if (a.usd != null) { usd += a.usd; priced++; } if (a.pct) { c.pct = c.pct || {}; for (const [k, v] of Object.entries(a.pct)) c.pct[k] = (c.pct[k] || 0) + v; } }
     c.usd = priced ? usd : null;
     c.provider = last.provider; c.model = last.model; c.effort = last.effort; c.status = last.status;
     out.push(c);
@@ -232,7 +233,7 @@ export function summarize({ source = null } = {}) {
     if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
     if (x.verdict) { g.rated++; g[x.verdict]++; }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
-    if (x.usd != null) g._usd.push(x.usd); else g._unpriced = true;
+    if (x.usd != null) g._usd.push(x.usd);
     const p = maxPct(x.pct); if (p != null) g._pct.push(p);
     g._dur.push(x.durationMs); g._rounds.push(x.rounds);
     return g;
@@ -246,14 +247,14 @@ export function summarize({ source = null } = {}) {
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _unpriced, _stepCosts, ...g }) => {
+  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, ...g }) => {
     const cost = g.steps === 1 ? findModel(g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
     return {
       ...g, cost, priorTier: prior?.tier || null, quality, accept: g.rated ? (g.pass + g.fixable) / g.rated : null,
-      ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: costs.some((c) => c.avgUsd == null) ? null : mean(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
-      avgTokens: mean(_tok), avgUsd: _unpriced ? null : mean(_usd), avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
+      ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: meanKnown(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
+      avgTokens: mean(_tok), avgUsd: mean(_usd), avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
     };
   }).sort((a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1));
@@ -514,9 +515,9 @@ function pool(cells, floor) {
   const base = used[0];
   const stepCosts = base.stepCosts?.map((s, i) => {
     const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
-    return { sel: s.sel, avgUsd: costs.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n', costs), avgDurationMs: w('avgDurationMs', 'n', costs) };
+    return { sel: s.sel, avgUsd: w('avgUsd', 'n', costs), avgDurationMs: w('avgDurationMs', 'n', costs) };
   });
-  return { ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: used.some((c) => c.avgUsd == null) ? null : w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
+  return { ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
 }
 
 // Single source of truth for effort ordering (low -> ultra). Everything that ranks effort imports this;

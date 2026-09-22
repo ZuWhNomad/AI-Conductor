@@ -255,7 +255,7 @@ async function run(t) {
   try {
     const ac = new AbortController();
     running.set(t.id, ac);
-    t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null;
+    t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null; t.limitHit = false;
     persist(t);
     const limitsBefore = snapshotWindows(t.provider);
     // Each window needs its own divisor: Opus and Sonnet share global windows, but only Sonnet consumes its
