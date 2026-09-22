@@ -30,7 +30,7 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
 // (weekly, monthly, a budget) up to 100%. The gate applies to every subscription; a provider with only a weekly
 // window (Codex) is simply planned against 100% of it.
 export const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
-export const targetFor = (w) => { const t = loadConfig().scorecard?.windowTargets || {}; return isSession(w) ? (t.session ?? 95) : (t.other ?? 100); };
+export const targetFor = (w) => { const t = loadConfig().scorecard.windowTargets; return isSession(w) ? t.session : t.other; };
 
 /** Earliest reset among windows at or over their target. */
 export function nextResetWindows(windows) {

@@ -1,7 +1,8 @@
 import { tmpDir } from '../_env.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
 import { request } from 'node:http';
 
@@ -141,4 +142,61 @@ test('POST /api/models/refresh: no body, {} and {only:[…]} all work', async ()
     const j = await r.json();
     assert.ok(j.providers, `body: ${body}`);
   }
+});
+
+test('saving settings replaces the update interval and off or shutdown clears it', async (ctx) => {
+  const { loadConfig, saveConfig, DEFAULTS } = await import('../../core/config.mjs');
+  const { stopBackgroundWork } = await import('../../server/index.mjs');
+  const previous = loadConfig();
+  const timers = [];
+  ctx.mock.method(globalThis, 'setInterval', (_fn, ms) => {
+    const timer = { ms, cleared: false, unref() { return this; } }; timers.push(timer); return timer;
+  });
+  ctx.mock.method(globalThis, 'clearInterval', (timer) => { if (timer) timer.cleared = true; });
+  delete process.env.CONDUCTOR_NO_POLL;
+  try {
+    const initial = await post('/api/settings', { conductor: DEFAULTS.conductor });
+    assert.equal(initial.conductor.autoUpdate, 'auto');
+    const first = timers.find((t) => t.ms === DEFAULTS.conductor.updateCheckHours * 3_600_000);
+    assert.ok(first, 'uses the default interval');
+    await post('/api/settings', { conductor: { updateCheckHours: 2.5 } });
+    assert.equal(first.cleared, true);
+    const second = timers.find((t) => t.ms === 2.5 * 3_600_000);
+    assert.ok(second, 'uses the saved interval without restarting the server');
+    await post('/api/settings', { conductor: { autoUpdate: 'off' } });
+    assert.equal(second.cleared, true);
+    assert.ok(timers.filter((t) => t.ms !== DEFAULTS.ui.detectMinutes * 60_000).every((t) => t.cleared));
+    await post('/api/settings', { conductor: { autoUpdate: 'ask' } });
+    assert.equal(timers.at(-1).ms, 2.5 * 3_600_000);
+    stopBackgroundWork();
+    assert.ok(timers.every((t) => t.cleared));
+  } finally { process.env.CONDUCTOR_NO_POLL = '1'; stopBackgroundWork(); saveConfig(previous); }
+});
+
+test('changing the update cadence preserves startup and busy rechecks; off cancels them', async () => {
+  const { DEFAULTS } = await import('../../core/config.mjs');
+  const cfg = structuredClone(DEFAULTS), timers = [];
+  const timer = (fn, ms) => { const t = { fn, ms, cleared: false, unref() { return this; } }; timers.push(t); return t; };
+  // Run the timer closure with no provider or git side effects.
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  const context = {
+    loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
+    clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
+    conductor: { listSessions: () => [{ status: 'running' }] }, listTasks: () => [], lastActivity: Date.now(), isIdle,
+    checkForUpdates: () => ({ git: true, behind: 1 }), logImprovement() {},
+  };
+  runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
+  context.start();
+  const startup = timers.find((t) => t.ms === 3000);
+  cfg.conductor.updateCheckHours = 2.5;
+  context.start({ initial: false });
+  assert.equal(startup.cleared, false);
+  startup.fn(); // auto policy notices the update but defers while a conductor turn is running
+  const busy = timers.find((t) => t.ms === 60_000);
+  assert.ok(busy);
+  context.start({ initial: false });
+  assert.equal(busy.cleared, false);
+  cfg.conductor.autoUpdate = 'off';
+  context.start({ initial: false });
+  assert.ok(timers.every((t) => t.cleared));
 });

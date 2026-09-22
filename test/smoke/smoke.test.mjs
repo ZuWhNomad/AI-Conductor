@@ -1,7 +1,8 @@
 import { HOME, tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { rmSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const { BATTERY } = await import('../../core/smoke/battery.mjs');
 const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../../core/smoke/index.mjs');
@@ -51,6 +52,36 @@ test('a task that did not finish is rated fail with the reason', async () => {
   const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'fail');
   assert.equal(r.notes, 'timeout');
+});
+
+test('smoke timeouts are per invocation and bench probes never write config, even on failure', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../../core/config.mjs');
+  const { getModels } = await import('../../core/models.mjs');
+  const { runBench } = await import('../../core/bench.mjs');
+  const previous = loadConfig().smoke;
+  saveConfig({ smoke: { timeoutMinutes: 17 } });
+  const file = join(HOME, 'config.json');
+  const before = readFileSync(file, 'utf8');
+  const models = [{ provider: 'ollama', model: 'timeout-probe' }];
+  const waits = [];
+  const execute = async (_spec, minutes) => { waits.push(minutes); return { status: 'canceled', timedOut: true }; };
+  const reg = getModels(); const saved = { models: reg.models, providers: reg.providers };
+  const probeWaits = [], during = [];
+  try {
+    await runSmoke({ models, tasks: ['read-1'], execute, timeoutMinutes: 3 });
+    await runSmoke({ models, tasks: ['read-1'], execute });
+    assert.deepEqual(waits, [3, 17]);
+    reg.models = [{ provider: 'ollama', id: 'timeout-probe', kind: 'agent' }]; reg.providers = { ollama: { status: 'ok' } };
+    ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => {
+      probeWaits.push(ms); during.push(readFileSync(file, 'utf8'));
+      queueMicrotask(fn); return {};
+    });
+    await assert.rejects(runBench({ onResult: () => { throw new Error('probe interrupted'); } }), /probe interrupted/);
+    assert.deepEqual(probeWaits, [3 * 60_000], 'the bench passes the probe timeout to the real smoke executor');
+    assert.deepEqual(during, [before], 'config stays untouched during the probe');
+    assert.equal(readFileSync(file, 'utf8'), before);
+    assert.equal(loadConfig().smoke.timeoutMinutes, 17);
+  } finally { Object.assign(reg, saved); saveConfig({ smoke: previous }); }
 });
 
 test('an environment failure is voided immediately, not left as a failed attempt', async () => {

@@ -2,14 +2,14 @@
 // and a runner that probes each (one cheap task, short timeout) before spending a full battery on it.
 import { getModels } from './models.mjs';
 import { rootRuns } from './scorecard.mjs';
-import { loadConfig, saveConfig } from './config.mjs';
+import { loadConfig } from './config.mjs';
 import { runSmoke } from './smoke/index.mjs';
 import { logImprovement } from './improve.mjs';
 
 const selId = (s) => `${s.provider}:${s.model}:${s.effort || 'default'}`;
 
 /** Selections due for a battery: every agent model of an available provider at its cheapest effort, unless a rated battery newer than `days` exists. */
-export function dueForBench({ days = loadConfig().scorecard.rebenchDays || 21, reg = getModels() } = {}) {
+export function dueForBench({ days = loadConfig().scorecard.rebenchDays, reg = getModels() } = {}) {
   const newest = new Map();
   for (const c of rootRuns({ source: 'smoke' })) for (const a of c.attempts) { if (!a.verdict) continue; const k = selId(a); if (!newest.has(k) || newest.get(k) < a.ts) newest.set(k, a.ts); }
   const cutoff = Date.now() - days * 86_400_000;
@@ -28,21 +28,14 @@ export function dueForBench({ days = loadConfig().scorecard.rebenchDays || 21, r
 export async function runBench({ days, onResult = null } = {}) {
   const due = dueForBench({ days });
   const results = [];
-  const cfg = loadConfig();
-  const prevTimeout = cfg.smoke.timeoutMinutes;
-  saveConfig({ smoke: { timeoutMinutes: 3 } });
-  try {
-    for (const sel of due) {
-      const probe = await runSmoke({ models: [sel], tasks: ['read-1'], onResult });
-      const ok = probe.length && probe[0].verdict === 'pass';
-      results.push({ ...sel, probe: probe[0]?.verdict || 'none', notes: probe[0]?.notes || '' });
-      if (!ok) continue;
-      saveConfig({ smoke: { timeoutMinutes: prevTimeout } });
-      const battery = await runSmoke({ models: [sel], onResult });
-      results[results.length - 1].battery = `${battery.filter((r) => r.verdict === 'pass').length}/${battery.length}`;
-      saveConfig({ smoke: { timeoutMinutes: 3 } });
-    }
-  } finally { saveConfig({ smoke: { timeoutMinutes: prevTimeout } }); }
+  for (const sel of due) {
+    const probe = await runSmoke({ models: [sel], tasks: ['read-1'], timeoutMinutes: 3, onResult });
+    const ok = probe.length && probe[0].verdict === 'pass';
+    results.push({ ...sel, probe: probe[0]?.verdict || 'none', notes: probe[0]?.notes || '' });
+    if (!ok) continue;
+    const battery = await runSmoke({ models: [sel], onResult });
+    results[results.length - 1].battery = `${battery.filter((r) => r.verdict === 'pass').length}/${battery.length}`;
+  }
   return results;
 }
 

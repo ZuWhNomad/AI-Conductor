@@ -23,7 +23,7 @@ state of its own: every route is a thin call into a `core/` module.
 | `POST /api/providers/<id>/usage` | user check-in that calibrates the usage estimate | `usage-estimate` |
 | `POST /api/providers/<id>/{install,login,relogin}` | opens a visible terminal (`openTerminal`) | `providers/*` |
 | `GET /api/scores`, `GET /api/bench` | scorecard table; models due a re-benchmark | `scorecard`, `bench` |
-| `GET\|POST /api/settings` | config (redacted by `publicConfig`); a save re-applies polling + `schedule()` | `config` |
+| `GET\|POST /api/settings` | config (redacted by `publicConfig`); a save re-applies polling, update checks + `schedule()` | `config` |
 | `/api/improvements[/<id>/resolve]`, `POST /api/review` | improvement log; open a self-review session | `improve` |
 | `POST /api/ollama/pull`, `GET /api/browse` | pull a local model; folder picker | `providers/ollama` |
 | `GET\|POST /api/update` | update status; pull + self-restart | `update` |

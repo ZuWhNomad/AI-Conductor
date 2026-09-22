@@ -82,6 +82,40 @@ test('turn budgets default high and reject non-positive values', () => {
   saveConfig({ conductor: { maxTurns: 9999 } });
 });
 
+test('timer and loop settings accept positive finite numbers and otherwise use DEFAULTS', () => {
+  const keys = {
+    conductor: ['turnTimeoutMinutes', 'updateQuietMinutes'], // updateCheckHours and detectMinutes: 0 means off, tested below
+    worker: ['maxIterations', 'maxTurnsLocal', 'longRunMinutes'],
+    scorecard: ['blockedMinutes'], server: ['lagWarnMs'],
+  };
+  for (const value of [0, -1, '3', null, Infinity, -Infinity, NaN, 1.5]) {
+    const patch = Object.fromEntries(Object.entries(keys).map(([group, names]) => [group, Object.fromEntries(names.map((key) => [key, value]))]));
+    patch.scorecard.windowTargets = { session: value, other: value };
+    const saved = saveConfig(patch);
+    for (const cfg of [saved, loadConfig()]) {
+      for (const [group, names] of Object.entries(keys)) for (const key of names) {
+        assert.equal(cfg[group][key], value === 1.5 ? value : DEFAULTS[group][key], `${group}.${key}`);
+      }
+      for (const key of ['session', 'other']) assert.equal(cfg.scorecard.windowTargets[key], value === 1.5 ? value : DEFAULTS.scorecard.windowTargets[key]);
+    }
+  }
+  for (const value of ['bad', []]) {
+    saveConfig({ scorecard: { windowTargets: value } });
+    assert.deepEqual(loadConfig().scorecard.windowTargets, DEFAULTS.scorecard.windowTargets);
+  }
+  saveConfig(Object.fromEntries(Object.keys(keys).map((group) => [group, DEFAULTS[group]])));
+});
+
+test('the live prompt budgets are settings; the retired shared budget is absent', () => {
+  assert.equal(DEFAULTS.worker.recipeChars, 6000);
+  assert.equal(DEFAULTS.worker.toolLineChars, 1500);
+  assert.ok(!('specAppendChars' in DEFAULTS.worker));
+  saveConfig({ worker: { recipeChars: 7000, toolLineChars: 2000 } });
+  assert.equal(loadConfig().worker.recipeChars, 7000);
+  assert.equal(loadConfig().worker.toolLineChars, 2000);
+  saveConfig({ worker: { recipeChars: DEFAULTS.worker.recipeChars, toolLineChars: DEFAULTS.worker.toolLineChars } });
+});
+
 test('worker.escalationRounds defaults to 2, allows 0 (disable), rejects negatives and non-integers', () => {
   assert.equal(DEFAULTS.worker.escalationRounds, 2);
   saveConfig({ worker: { escalationRounds: 0 } });
@@ -132,4 +166,15 @@ test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code
   const saved = process.env.CONDUCTOR_HOME; delete process.env.CONDUCTOR_HOME;
   try { assert.equal(resolveStateDir(), existsSync(join(REPO_ROOT, '.state')) ? join(REPO_ROOT, '.state') : join(homedir(), '.conductor2')); }
   finally { process.env.CONDUCTOR_HOME = saved; }
+});
+
+test('0 is a documented off switch for updateCheckHours and detectMinutes, so validation must keep it', async () => {
+  const { saveConfig, loadConfig, DEFAULTS } = await import('../core/config.mjs');
+  saveConfig({ conductor: { updateCheckHours: 0 }, ui: { detectMinutes: 0 } });
+  assert.equal(loadConfig().conductor.updateCheckHours, 0, 'the periodic update check stays off');
+  assert.equal(loadConfig().ui.detectMinutes, 0, 'the signed-out provider sweep stays off');
+  saveConfig({ conductor: { updateCheckHours: -4 }, ui: { detectMinutes: 'soon' } });
+  assert.equal(loadConfig().conductor.updateCheckHours, DEFAULTS.conductor.updateCheckHours, 'garbage still resets');
+  assert.equal(loadConfig().ui.detectMinutes, DEFAULTS.ui.detectMinutes);
+  saveConfig({ conductor: { updateCheckHours: DEFAULTS.conductor.updateCheckHours }, ui: { detectMinutes: DEFAULTS.ui.detectMinutes } });
 });
