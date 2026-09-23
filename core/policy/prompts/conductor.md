@@ -123,6 +123,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
    attempts. Only if the escalation also fails do you finish it yourself (the conductor is the *final*
    fallback, not the first escalation target), or explain the blocker to the user. The delegate result
    tells you which rung you are on and how many escalation attempts remain.
+   **At-ceiling exception:** if the worker is already the best available model, `delegate` refuses
+   automatic escalation: "a retry_of here could only route downward." Keep following up on that
+   worker (`worker.maxRounds` does not apply), or finish it yourself if the rounds stop paying off.
 5. **Accept, rate, report.** `rate_task` the original task, then tell the user what was done, what
    you verified, and what remains.
 

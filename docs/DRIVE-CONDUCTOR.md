@@ -24,9 +24,15 @@ If nothing answers, the server isn't running — start it from the Conductor rep
 (or `node bin/conductor.mjs`) and re-check. Do not assume a port; always confirm via `/api/state`.
 
 ```bash
-# POSIX shell example — resolve BASE without hardcoding
-STATE="${CONDUCTOR_HOME:-$HOME/.conductor2}"
-BASE=$(node -e "try{console.log(require('$STATE/server.pid').url)}catch{console.log('http://127.0.0.1:47474')}")
+# POSIX shell example — run from the Conductor repo root
+BASE=$(node -e '
+const fs = require("node:fs"), { join } = require("node:path"), { homedir } = require("node:os");
+const local = join(process.cwd(), ".state");
+const state = process.env.CONDUCTOR_HOME || (fs.existsSync(local) ? local : join(homedir(), ".conductor2"));
+const path = join(state, "server.pid");
+try { console.log(JSON.parse(fs.readFileSync(path, "utf8")).url); }
+catch { console.log("http://127.0.0.1:47474"); }
+')
 curl -s "$BASE/api/state" >/dev/null && echo "up: $BASE" || echo "not running"
 ```
 

@@ -173,10 +173,14 @@ DEFAULT. The conductor can still send lesser tasks anywhere: a haiku swarm for r
 Ollama model for boilerplate, Astra for real coding, per task.
 
 ~/.conductor2/config.json (see core/config.mjs for every default): port, poll interval, conductor
-defaults, default worker (codex / gpt-6-astra / medium), Codex sandbox (workspace-write, network
-on), worker concurrency, timeouts, review rounds, provider URLs and API keys (also read from
+defaults, default worker (codex / gpt-6-astra / medium), Codex sandbox, worker concurrency,
+timeouts, review rounds, provider URLs and API keys (also read from
 DEEPSEEK_API_KEY, MOONSHOT_API_KEY, XAI_API_KEY, DASHSCOPE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY,
 STABILITY_API_KEY).
+
+The default worker gpt-6-astra uses danger-full-access via worker.codexSandboxByModel.
+Override that model's entry to change it; worker.codexSandbox is the fallback (workspace-write),
+with network enabled by worker.codexNetwork. A per-task sandbox argument to delegate overrides both.
 
 
 TROUBLESHOOTING
