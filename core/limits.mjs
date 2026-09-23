@@ -142,7 +142,7 @@ export function noteRateLimitEvent(providerId, info) {
   if (info?.status === 'rejected' && !w?.models) {
     p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + blockedMs(); p.blockedReason = info.rateLimitType || 'rate_limit';
     observe(providerId, BLOCK);
-  } else if (info?.status === 'allowed' && (p.blockedReason === info.rateLimitType || (w && !w.models && !p.blockedReason))) {
+  } else if ((info?.status === 'allowed' || info?.status === 'allowed_warning') && (p.blockedReason === info.rateLimitType || (w && !w.models && !p.blockedReason))) {
     const full = (p.windows || []).filter(globalWindowBlocks);
     p.blocked = !!full.length; p.blockedUntil = earliestReset(full); p.blockedReason = null;
     observe(providerId, BLOCK);

@@ -227,6 +227,52 @@ for (const scenario of [
   });
 }
 
+for (const scenario of [
+  { name: 'same-window recovery', rateLimitType: 'five_hour', blocked: false },
+  { name: 'remaining exhausted window', rateLimitType: 'five_hour', remaining: true, blocked: true },
+  { name: 'scoped mismatch', rateLimitType: 'seven_day_opus', blocked: true, reason: 'five_hour' },
+  { name: 'independent rejection', rateLimitType: 'five_hour', independent: true, blocked: true, reason: 'rate_limit' },
+]) {
+  test(`GP4-01: allowed_warning preserves recovery scope: ${scenario.name}`, async (ctx) => {
+    const { PROVIDERS } = await import('../core/providers/index.mjs');
+    const { refreshLimits } = await import('../core/limits.mjs');
+    const { loadConfig } = await import('../core/config.mjs');
+    const id = 'fake-warning-recovery', now = Date.now();
+    ctx.mock.method(Date, 'now', () => now);
+    const reset = now + loadConfig().scorecard.blockedMinutes * 60_000;
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+    if (scenario.remaining) noteRateLimitEvent(id, { rateLimitType: 'seven_day', status: 'rejected', utilization: 1, resetsAt: reset });
+    noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'rejected', utilization: 1, resetsAt: reset });
+    assert.equal(modelBlockedUntil(id, 'claude-sonnet'), reset);
+    const stale = structuredClone(getLimits().providers[id]);
+    const poll = Promise.withResolvers(), entered = Promise.withResolvers();
+    PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
+    const refresh = refreshLimits({ only: [id] });
+    const warning = { rateLimitType: scenario.rateLimitType, status: 'allowed_warning', utilization: 0.9, resetsAt: reset };
+    const assertState = () => {
+      const p = getLimits().providers[id];
+      assert.deepEqual(p.windows.find((w) => w.id === warning.rateLimitType), windowFromEvent(warning));
+      assert.equal(modelBlockedUntil(id, 'claude-sonnet'), scenario.blocked ? reset : null);
+      assert.equal(p.blocked, scenario.blocked);
+      assert.equal(p.blockedUntil, scenario.blocked ? reset : null);
+      assert.equal(p.blockedReason, scenario.reason ?? null);
+      assert.deepEqual(readJson(join(HOME, 'limits.json')), getLimits());
+    };
+    try {
+      await entered.promise;
+      if (scenario.independent) noteRateLimitEvent(id, { status: 'rejected' });
+      noteRateLimitEvent(id, warning);
+      assertState();
+      poll.resolve(stale);
+      await refresh;
+      assertState(); // An older poll cannot undo the warning's recovery or its scope.
+    } finally {
+      poll.resolve(stale); await refresh;
+      delete PROVIDERS[id]; delete getLimits().providers[id];
+    }
+  });
+}
+
 test('live global recovery keeps an unrelated polled global rejection and a newer HTTP block', async () => {
   const { PROVIDERS } = await import('../core/providers/index.mjs');
   const { refreshLimits } = await import('../core/limits.mjs');
