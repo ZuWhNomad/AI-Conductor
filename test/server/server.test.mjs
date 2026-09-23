@@ -353,3 +353,68 @@ test('auto-update defers relaunch when work starts during applyUpdate, then rela
   assert.equal(applyCalls, 1, 'no second pull');
   assert.equal(relaunches, 1, 'relaunches once idle');
 });
+
+test('stopped update checks do not pull or relaunch from an in-flight run', async () => {
+  const { DEFAULTS } = await import('../../core/config.mjs');
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  const slice = src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;';
+  const applyResult = { updated: true, from: 'aaa', to: 'bbb', commits: 1, npmInstalled: false, npmError: null, restartNeeded: true };
+  const boot = (extra) => {
+    const cfg = structuredClone(DEFAULTS), timers = [];
+    const timer = (fn, ms) => { const t = { fn, ms, fired: false, cleared: false, unref() { return this; } }; timers.push(t); return t; };
+    const context = {
+      loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
+      clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
+      conductor: { listSessions: () => [] }, listTasks: () => [], lastActivity: 0, isIdle,
+      lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
+      bus: { publish() {} },
+      ...extra,
+    };
+    runInNewContext(slice, context);
+    return { cfg, timers, context };
+  };
+
+  let applyCalls = 0, relaunches = 0, checkRelease, checking;
+  const a = boot({
+    checkForUpdates: () => {
+      const p = new Promise((resolve) => { checkRelease = () => resolve({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }); });
+      checking();
+      return p;
+    },
+    applyUpdate: async () => { applyCalls++; return applyResult; },
+    scheduleRelaunch: () => { relaunches++; return true; },
+  });
+  a.context.start();
+  const enteredCheck = new Promise((resolve) => { checking = resolve; });
+  const startedCheck = a.timers.find((t) => t.ms === 3000).fn();
+  await enteredCheck;
+  a.cfg.conductor.autoUpdate = 'off';
+  a.context.start({ initial: false });
+  checkRelease();
+  await startedCheck;
+  assert.equal(applyCalls, 0, 'does not pull after stop during check');
+  assert.equal(relaunches, 0, 'does not relaunch after stop during check');
+
+  applyCalls = 0; relaunches = 0;
+  let applyRelease, applying;
+  const b = boot({
+    checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
+    applyUpdate: () => {
+      applyCalls++;
+      const p = new Promise((resolve) => { applyRelease = () => resolve(applyResult); });
+      applying();
+      return p;
+    },
+    scheduleRelaunch: () => { relaunches++; return true; },
+  });
+  b.context.start();
+  const enteredApply = new Promise((resolve) => { applying = resolve; });
+  const startedApply = b.timers.find((t) => t.ms === 3000).fn();
+  await enteredApply;
+  b.cfg.conductor.autoUpdate = 'off';
+  b.context.start({ initial: false });
+  applyRelease();
+  await startedApply;
+  assert.equal(applyCalls, 1, 'in-flight pull already started');
+  assert.equal(relaunches, 0, 'does not relaunch after stop during apply');
+});

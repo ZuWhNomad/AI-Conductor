@@ -507,7 +507,12 @@ async function openSession(id) {
   try {
     s = await api.get(`/api/sessions/${id}`);
   } catch (e) {
-    if (S.opening?.tok === tok) { S.opening = null; S.bufferedEvents = null; }
+    if (S.opening?.tok === tok) {
+      const replay = S.current?.id === id ? S.bufferedEvents : null;
+      S.opening = null;
+      S.bufferedEvents = null;
+      if (replay) for (const ev of replay) onSessionEvent(ev);
+    }
     throw e;
   }
   if (S.opening?.tok !== tok) return;

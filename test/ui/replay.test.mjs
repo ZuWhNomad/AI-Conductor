@@ -70,7 +70,7 @@ const openSrc = app.slice(app.indexOf('async function openSession(id)'), app.ind
 const onSrc = app.slice(app.indexOf('function onSessionEvent(ev)'), app.indexOf('// ---------- modals ----------'));
 function openingClient() {
   const el = { textContent: '', checked: false, focus() {}, classList: { remove() {} } };
-  const pending = [], deltas = [];
+  const pending = [], deltas = [], permissions = [];
   const S = { opening: null, bufferedEvents: null, current: null, sessions: [] };
   const context = {
     S, pending, deltas,
@@ -79,13 +79,13 @@ function openingClient() {
     document: { body: { classList: { remove() {} } } },
     $: () => el,
     refreshHeaderPicker() {}, renderChip() {}, renderBudget() {}, setStatus() {},
-    renderHistory() {}, addPermission() {}, renderSessions() {}, renderTasks() {},
+    renderHistory() {}, addPermission(req) { permissions.push(req); }, renderSessions() {}, renderTasks() {},
     refreshSessions() {}, clearCurrent() {}, addUser() {},
     addDelta(block, text) { deltas.push({ block, text }); },
     addAssistant() {}, addToolResult() {}, addResult() {}, addSys() {}, resolvePermission() {},
   };
   runInNewContext(openSrc + '\n' + onSrc, context);
-  return { S, pending, deltas, openSession: (...a) => context.openSession(...a), onSessionEvent: (...a) => context.onSessionEvent(...a) };
+  return { S, pending, deltas, permissions, openSession: (...a) => context.openSession(...a), onSessionEvent: (...a) => context.onSessionEvent(...a) };
 }
 
 test('concurrent openSession of the same id keeps the buffer and applies only the latest response', async () => {
@@ -117,4 +117,16 @@ test('openSession error on the latest call clears opening state', async () => {
   await assert.rejects(p, /offline/);
   assert.equal(c.S.opening, null);
   assert.equal(c.S.bufferedEvents, null);
+
+  const d = openingClient();
+  d.S.current = { id: 's1' };
+  const p2 = d.openSession('s1');
+  d.onSessionEvent({ sessionId: 's1', seq: 8, kind: 'permission', request: { id: 'r1', toolName: 'bash', input: {} } });
+  assert.equal(d.permissions.length, 0, 'permission is buffered while the reopen is in flight');
+  d.pending[0].reject(new Error('offline'));
+  await assert.rejects(p2, /offline/);
+  assert.equal(d.S.opening, null);
+  assert.equal(d.S.bufferedEvents, null);
+  assert.equal(d.permissions.length, 1, 'buffered permission still renders when the current session reopen fails');
+  assert.equal(d.permissions[0].id, 'r1');
 });

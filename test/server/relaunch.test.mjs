@@ -52,6 +52,21 @@ test('scheduleRelaunch returns false and never exits when spawn throws', () => {
   assert.equal(exited, 0);
 });
 
+test('scheduleRelaunch is idempotent while a handoff is pending', async () => {
+  const calls = [];
+  const child = fakeChild();
+  assert.equal(scheduleRelaunch({ port: 1, spawnFn: () => (calls.push('a'), child), exit: () => {} }), true);
+  assert.equal(scheduleRelaunch({ port: 1, spawnFn: () => (calls.push('b'), child), exit: () => {} }), true);
+  assert.deepEqual(calls, ['a'], 'second call does not spawn');
+  child.emit('exit', 1, null); // fail path releases the guard so a later retry can relaunch
+  await new Promise((r) => setTimeout(r, 50));
+  const retry = fakeChild();
+  assert.equal(scheduleRelaunch({ port: 1, spawnFn: () => (calls.push('c'), retry), exit: () => {} }), true);
+  assert.deepEqual(calls, ['a', 'c']);
+  retry.emit('exit', 1, null);
+  await new Promise((r) => setTimeout(r, 50));
+});
+
 test('startServer retries the bind while CONDUCTOR_RELAUNCH_WAIT is set, then binds the SAME port once it frees', async () => {
   const blocker = await listen0();
   const port = blocker.address().port;

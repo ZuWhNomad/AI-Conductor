@@ -354,6 +354,7 @@ function startScheduledReview() {
   setInterval(() => check().catch(() => {}), 6 * 3_600_000).unref();
 }
 
+let relaunchPending = null; // in-flight child; overlapping scheduleRelaunch returns true without spawning another
 /** Self-restart: spawn a DETACHED fresh conductor on the SAME port using THIS process's own env (so it inherits the
  *  real CONDUCTOR_HOME + port, never an ambient shell's), then hand off — once the child is confirmed alive we requeue
  *  in-flight work, drop the port and exit so the new version takes over. The child's retry-bind (CONDUCTOR_RELAUNCH_WAIT,
@@ -361,12 +362,15 @@ function startScheduledReview() {
  *  child can't be spawned, so callers fall back to "restart manually" and never strand the app dead. spawnFn/exit are
  *  injectable for tests. */
 export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () => process.exit(0), okTimeoutMs = 10_000 } = {}) {
+  if (relaunchPending) return true; // handoff already in progress
   const argv = [join(REPO_ROOT, 'bin', 'conductor.mjs'), 'start', '--no-open', ...(port ? ['--port', String(port)] : [])];
   const okFile = statePath('relaunch-ok'); try { unlinkSync(okFile); } catch {}
   let child;
   try {
     child = spawnFn(process.execPath, argv, { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, CONDUCTOR_RELAUNCH_WAIT: String(RELAUNCH_WAIT_MS) } });
   } catch { return false; } // couldn't even spawn → stay up, let the caller show the manual-restart message
+  relaunchPending = child;
+  const release = () => { if (relaunchPending === child) relaunchPending = null; };
   let settled = false;
   const handoff = () => {
     if (settled) return; settled = true;
@@ -374,12 +378,13 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
     try { stopBackgroundWork(); } catch {}
     try { abortRunning({ requeue: true }); } catch {} // in-flight worker tasks resume in the new process
     try { unlinkSync(statePath('server.pid')); } catch {}
-    setTimeout(exit, 300); // let the HTTP response flush before we drop the port
+    setTimeout(() => { try { exit(); } finally { release(); } }, 300); // let the HTTP response flush before we drop the port
   };
   // A child that dies on import (missing dependency, syntax error) must not take the running server down with it:
   // the previous version stays up, says so, and the user restarts by hand once it is fixed.
   const fail = (why) => {
     if (settled) return; settled = true;
+    release();
     try { child.kill?.(); } catch {}
     try { logImprovement('friction', 'update', 'update applied, but the new version failed to start (' + why + '); still running the previous version — fix it, then restart by hand'); } catch {}
     bus.publish('update', { relaunchFailed: true, why });
@@ -395,17 +400,18 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
     timer.unref?.();
   });
   child.once?.('exit', (code, sig) => fail('exited with ' + (sig || 'code ' + code) + ' before binding'));
-  child.once?.('error', (e) => { try { logImprovement('friction', 'update', 'relaunch child failed: ' + (e?.message || e) + ' — staying up; restart manually'); } catch {} });
+  child.once?.('error', (e) => { if (!settled) release(); try { logImprovement('friction', 'update', 'relaunch child failed: ' + (e?.message || e) + ' — staying up; restart manually'); } catch {} });
   return true;
 }
 
 /** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). On 'auto' it pulls AND
  *  self-restarts — but only while the server is IDLE (no chat turn running, no worker task active), so an update never
  *  interrupts in-flight work; while busy it defers and re-checks on a short cadence, applying as soon as work settles. */
-let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch = null;
+let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch = null, updateGen = 0;
 function stopUpdateChecks() {
   clearInterval(updateInterval); clearTimeout(updateStartup); clearTimeout(recheck);
   updateInterval = updateStartup = recheck = pendingRelaunch = null;
+  updateGen++;
 }
 function startUpdateChecks({ initial = true } = {}) {
   clearInterval(updateInterval); updateInterval = null;
@@ -422,9 +428,12 @@ function startUpdateChecks({ initial = true } = {}) {
   };
   const run = async ({ fetch = true } = {}) => {
     try {
+      const gen = updateGen;
       const cfg = loadConfig();
       const policy = cfg.conductor.autoUpdate;
       if (policy === 'off') return;
+      const stale = () => updateGen !== gen;
+      const auto = () => loadConfig().conductor.autoUpdate === 'auto';
       const defer = () => { if (!recheck) { recheck = setTimeout(() => { recheck = null; run({ fetch: false }); }, 60_000); recheck.unref?.(); } };
       const relaunch = (r) => {
         if (scheduleRelaunch()) { bus.publish('update', { relaunching: true, from: r.from, to: r.to }); logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {}); }
@@ -432,18 +441,21 @@ function startUpdateChecks({ initial = true } = {}) {
       };
       // Pull already landed while we were busy: relaunch once idle, never pull a second time.
       if (pendingRelaunch) {
+        if (stale() || !auto()) return;
         if (!idle()) { defer(); return; }
         const r = pendingRelaunch; pendingRelaunch = null;
         relaunch(r);
         return;
       }
       const st = fetch ? await checkForUpdates() : lastUpdateStatus(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
-      if (policy !== 'auto' || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
+      if (stale()) return;
+      if (!auto() || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
       if (!idle()) { // update ready but work is in flight — defer; re-check soon so it applies as soon as we're idle
         defer();
         return;
       }
       const r = await applyUpdate(); // git pull + npm install; publishes its own 'update' event
+      if (stale() || !auto()) return;
       // Loop guard: only restart when the pull actually advanced HEAD. After a successful pull we're up to date, so the
       // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
       const moved = !!(r.updated && r.to && r.to !== r.from);
