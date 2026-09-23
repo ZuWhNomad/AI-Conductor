@@ -86,6 +86,220 @@ for (const scenario of [
   });
 }
 
+for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
+  for (const status of ['rejected', 'allowed']) {
+    for (const collected of [false, true]) {
+      test(`live ${rateLimitType} ${status} supersedes a ${collected ? 'collected' : 'pending'} poll`, async (ctx) => {
+        const { PROVIDERS } = await import('../core/providers/index.mjs');
+        const { refreshLimits } = await import('../core/limits.mjs');
+        const id = 'fake-live-race', slowId = 'fake-live-slow';
+        const now = Date.now(), reset = now + 60_000;
+        ctx.mock.method(Date, 'now', () => now);
+        const info = { rateLimitType, status, utilization: status === 'rejected' ? 1 : 0, resetsAt: reset };
+        const initial = { ...info, status: status === 'rejected' ? 'allowed' : 'rejected', utilization: status === 'rejected' ? 0.2 : 1 };
+        const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset };
+        getLimits().providers[id] = { provider: id, blocked: false, windows: [unrelated] };
+        noteRateLimitEvent(id, initial);
+        const stale = {
+          provider: id, blocked: rateLimitType === 'five_hour' && status === 'allowed',
+          windows: [windowFromEvent(initial), { ...unrelated, usedPercent: 40 }],
+        };
+        const poll = Promise.withResolvers(), entered = Promise.withResolvers(), slow = Promise.withResolvers();
+        PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
+        PROVIDERS[slowId] = { id: slowId, pollLimits: () => slow.promise };
+        const refresh = refreshLimits({ only: [id, slowId] });
+        const assertEvent = () => {
+          const p = getLimits().providers[id];
+          assert.deepEqual(p.windows.find((w) => w.id === rateLimitType), windowFromEvent(info));
+          assert.equal(modelBlockedUntil(id, 'claude-sonnet'), status === 'rejected' ? reset : null);
+          assert.equal(modelBlockedUntil(id, 'claude-haiku'), status === 'rejected' && rateLimitType === 'five_hour' ? reset : null);
+          assert.equal(p.blocked, status === 'rejected' && rateLimitType === 'five_hour');
+        };
+        try {
+          await entered.promise;
+          if (collected) { poll.resolve(stale); await poll.promise; }
+          noteRateLimitEvent(id, info);
+          noteRateLimitEvent(id, { rateLimitType: 'seven_day_opus', status: 'allowed', utilization: 0.7, resetsAt: reset });
+          poll.resolve(stale); slow.resolve({ provider: slowId, blocked: false, windows: [] });
+          await refresh;
+          assertEvent();
+          assert.equal(getLimits().providers[id].windows.find((w) => w.id === unrelated.id).usedPercent, 40, 'unrelated poll window updates');
+          assert.equal(getLimits().providers[id].windows.find((w) => w.id === 'seven_day_opus').usedPercent, 70, 'new unrelated live window survives');
+          assert.deepEqual(readJson(join(HOME, 'limits.json')), getLimits());
+
+          await refreshLimits({ only: [id] });
+          assert.deepEqual(getLimits().providers[id].windows, stale.windows, 'a poll started after the events may replace their observations');
+          noteRateLimitEvent(id, info);
+          assertEvent(); // the reverse order: an event after the poll also wins
+        } finally {
+          poll.resolve(stale); slow.resolve({ provider: slowId, blocked: false, windows: [] });
+          await refresh;
+          delete PROVIDERS[id]; delete PROVIDERS[slowId];
+          delete getLimits().providers[id]; delete getLimits().providers[slowId];
+        }
+      });
+    }
+  }
+}
+
+for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
+  for (const resetsAt of [0, undefined]) {
+    test(`live ${rateLimitType} rejection/recovery with reset=${resetsAt} survives stale polls`, async (ctx) => {
+      const { PROVIDERS } = await import('../core/providers/index.mjs');
+      const { refreshLimits } = await import('../core/limits.mjs');
+      const { loadConfig } = await import('../core/config.mjs');
+      const id = 'fake-live-reset', now = Date.now();
+      ctx.mock.method(Date, 'now', () => now);
+      const allowed = { rateLimitType, status: 'allowed', utilization: 0, resetsAt };
+      getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+      noteRateLimitEvent(id, allowed);
+      let poll = Promise.withResolvers();
+      PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+      let refresh = refreshLimits({ only: [id] });
+      try {
+        noteRateLimitEvent(id, { rateLimitType, status: 'rejected', resetsAt }); // utilization is unknown
+        poll.resolve({ provider: id, blocked: false, windows: [] });
+        await refresh;
+        assert.equal(modelBlockedUntil(id, 'sonnet'), now + loadConfig().scorecard.blockedMinutes * 60_000);
+        assert.equal(getLimits().providers[id].windows[0].usedPercent, null);
+
+        noteRateLimitEvent(id, allowed);
+        poll = Promise.withResolvers();
+        refresh = refreshLimits({ only: [id] });
+        noteRateLimitEvent(id, { rateLimitType, status: 'rejected', resetsAt });
+        noteRateLimitEvent(id, allowed); // same values as before the poll; observation order must still win
+        poll.resolve({ provider: id, blocked: rateLimitType === 'five_hour', windows: [windowFromEvent({ rateLimitType, status: 'rejected', utilization: 1, resetsAt })] });
+        await refresh;
+        assert.equal(modelBlockedUntil(id, 'sonnet'), null, 'stale rejection cannot resurrect after recovery to zero');
+        assert.deepEqual(getLimits().providers[id].windows, [windowFromEvent(allowed)]);
+      } finally {
+        poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
+        delete PROVIDERS[id]; delete getLimits().providers[id];
+      }
+    });
+  }
+}
+
+test('live global recovery keeps an unrelated polled global rejection and a newer HTTP block', async () => {
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const id = 'fake-live-global', reset = Date.now() + 60_000;
+  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+  noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'rejected', resetsAt: reset });
+  const poll = Promise.withResolvers();
+  PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+  const refresh = refreshLimits({ only: [id] });
+  try {
+    noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'allowed', utilization: 0, resetsAt: reset });
+    noteHttp(id, 429, { 'Retry-After': '120' });
+    const httpUntil = blockedUntil(id);
+    poll.resolve({ provider: id, blocked: true, windows: [
+      { id: 'five_hour', usedPercent: 100, resetsAt: reset },
+      { id: 'seven_day', usedPercent: 100, resetsAt: reset },
+    ] });
+    await refresh;
+    assert.equal(modelBlockedUntil(id, 'sonnet'), httpUntil);
+    noteHttp(id, 200);
+    assert.equal(modelBlockedUntil(id, 'sonnet'), reset, 'the unrelated weekly poll window still blocks');
+    assert.equal(getLimits().providers[id].windows.find((w) => w.id === 'five_hour').usedPercent, 0);
+  } finally {
+    poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
+    delete PROVIDERS[id]; delete getLimits().providers[id];
+  }
+});
+
+test('newer HTTP requests exhaustion and recovery survive pending polls, then fresh polls can replace them', async (ctx) => {
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const id = 'fake-http-observation', now = Date.now(), reset = now + 60_000;
+  ctx.mock.method(Date, 'now', () => now);
+  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+  let poll = Promise.withResolvers();
+  PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+  let refresh = refreshLimits({ only: [id] });
+  const headers = (remaining) => ({ 'x-ratelimit-limit-requests': '10', 'x-ratelimit-remaining-requests': String(remaining), 'x-ratelimit-reset-requests': '60s' });
+  try {
+    noteHttp(id, 200, headers(0));
+    const exhausted = { ...getLimits().providers[id].windows[0] };
+    assert.equal(modelBlockedUntil(id, 'model'), reset);
+    poll.resolve({ provider: id, blocked: false, windows: [] });
+    await refresh;
+    assert.equal(modelBlockedUntil(id, 'model'), reset, 'an empty older poll cannot erase a newer exhausted window');
+    assert.deepEqual(getLimits().providers[id].windows, [exhausted]);
+
+    poll = Promise.withResolvers();
+    refresh = refreshLimits({ only: [id] });
+    noteHttp(id, 200, headers(10));
+    assert.equal(modelBlockedUntil(id, 'model'), null, 'recovery clears the request-derived provider block immediately');
+    const recovered = { ...getLimits().providers[id].windows[0] };
+    const stale = { provider: id, blocked: true, windows: [exhausted, { id: 'budget', usedPercent: 40 }] };
+    poll.resolve(stale);
+    await refresh;
+    assert.equal(modelBlockedUntil(id, 'model'), null, 'older request exhaustion cannot resurrect');
+    assert.deepEqual(getLimits().providers[id].windows, [stale.windows[1], recovered]);
+    assert.deepEqual(readJson(join(HOME, 'limits.json')), getLimits());
+
+    await refreshLimits({ only: [id] });
+    assert.deepEqual(getLimits().providers[id].windows, stale.windows, 'a later poll can update HTTP windows normally');
+    assert.equal(modelBlockedUntil(id, 'model'), reset);
+  } finally {
+    poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
+    delete PROVIDERS[id]; delete getLimits().providers[id];
+  }
+});
+
+for (const independentBlock of [false, true]) {
+  test(`newer HTTP recovery prevents stale 429 resurrection; independent block=${independentBlock}`, async () => {
+    const { PROVIDERS } = await import('../core/providers/index.mjs');
+    const { refreshLimits } = await import('../core/limits.mjs');
+    const id = 'fake-http-block-observation';
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+    noteHttp(id, 429, { 'Retry-After': '60' });
+    const stale = { ...getLimits().providers[id], httpRetryUntil: blockedUntil(id) };
+    if (independentBlock) stale.blockedReason = 'balance exhausted';
+    const poll = Promise.withResolvers();
+    PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+    const refresh = refreshLimits({ only: [id] });
+    try {
+      noteHttp(id, 200);
+      assert.equal(modelBlockedUntil(id, 'model'), null);
+      poll.resolve(stale);
+      await refresh;
+      assert.equal(!!modelBlockedUntil(id, 'model'), independentBlock);
+      assert.equal(getLimits().providers[id].blockedReason, independentBlock ? 'balance exhausted' : null);
+      assert.ok(!getLimits().providers[id].httpRetryUntil, 'the cleared HTTP retry deadline must not return either');
+      await refreshLimits({ only: [id] });
+      assert.ok(modelBlockedUntil(id, 'model'), 'a poll started after recovery may establish a new block');
+    } finally {
+      poll.resolve(stale); await refresh;
+      delete PROVIDERS[id]; delete getLimits().providers[id];
+    }
+  });
+}
+
+test('a repeated newer 429 with identical timestamps cannot be cleared by an older recovery poll', async (ctx) => {
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const id = 'fake-http-repeated', now = Date.now();
+  ctx.mock.timers.enable({ apis: ['Date'], now });
+  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+  noteHttp(id, 429, { 'Retry-After': '60' });
+  const poll = Promise.withResolvers();
+  PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+  const refresh = refreshLimits({ only: [id] });
+  try {
+    noteHttp(id, 429, { 'Retry-After': '60' });
+    poll.resolve({ provider: id, blocked: false, windows: [{ id: 'requests', usedPercent: 20 }] });
+    await refresh;
+    assert.equal(modelBlockedUntil(id, 'model'), now + 60_000);
+    await refreshLimits({ only: [id] });
+    assert.equal(modelBlockedUntil(id, 'model'), null, 'a fresh recovery poll can clear the rejection');
+  } finally {
+    poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
+    delete PROVIDERS[id]; delete getLimits().providers[id];
+  }
+});
+
 test('429 blocks until retry-after; a later 2xx unblocks', () => {
   noteHttp('deepseek', 429, { 'Retry-After': '60' });
   assert.ok(blockedUntil('deepseek') > Date.now());

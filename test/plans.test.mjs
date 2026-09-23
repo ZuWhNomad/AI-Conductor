@@ -516,6 +516,73 @@ test('delegate and run_plan preserve pass-gated visual effort, including inherit
   });
 });
 
+test('GP2-02: delegate and runPlan never create unsupported automatic visual tasks', async (t) => {
+  const { getModels } = await import('../core/models.mjs');
+  const { recommend, recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const { saveConfig } = await import('../core/config.mjs');
+  const { listTasks } = await import('../core/tasks.mjs');
+  const reg = getModels(), previous = { models: reg.models, providers: reg.providers }, cfg = loadConfig();
+  const source = 'gp2-02-visual-effort';
+  const astra = { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts: ['low', 'medium', 'high', 'xhigh', 'ultra'] };
+  reg.providers = { codex: { status: 'ok' } };
+  saveConfig({ worker: { provider: 'codex', model: astra.id }, scorecard: { usePriors: true } });
+  t.after(() => { Object.assign(reg, previous); saveConfig({ worker: cfg.worker, scorecard: cfg.scorecard }); });
+  const recordPass = (category, effort) => {
+    for (let i = 0; i < cfg.scorecard.minSamples; i++) {
+      const id = `${source}-${category}-${i}`;
+      recordRun({ id, source, provider: 'codex', model: astra.id, effort, category, difficulty: 2, status: 'done',
+        result: { usage: { input_tokens: 100, output_tokens: 10 } } });
+      rateTask(id, 'pass');
+    }
+  };
+  const dispatch = async (kind, input, sessionId) => {
+    const report = kind === 'delegate'
+      ? await handler(kind, sessionId)({ title: 'visual', spec: 'fixture', background: true, ...input })
+      : await handler(kind, sessionId)({ defaults: input, stages: [{ id: 'work', tasks: [{ spec: 'fixture' }] }] });
+    return { report, tasks: listTasks({ sessionId }) };
+  };
+  for (const [category, effort, clamped] of [['drafting', 'xhigh', 'high'], ['modeling', 'ultra', 'xhigh']]) {
+    recordPass(category, effort);
+    for (const route of ['measured', 'prior']) for (const supported of [false, true]) {
+      await t.test(`${category}, ${route}, supported=${supported}`, async (ctx) => {
+        reg.models = [{ ...astra, efforts: supported ? astra.efforts : astra.efforts.filter((e) => e !== effort) }];
+        const picks = [];
+        ctx.mock.method(globalThis.toolFixtures, 'recommend', (input) => {
+          const result = recommend({ ...input, source, ...(route === 'prior' ? { summary: [] } : {}) });
+          picks.push(result); return result;
+        });
+        for (const kind of ['delegate', 'run_plan']) {
+          const session = `${category}-${route}-${supported}-${kind}`;
+          const automatic = await dispatch(kind, { category, difficulty: 2, effort: 'high' }, session);
+          assert.equal(automatic.tasks.length, supported ? 1 : 0, automatic.report);
+          if (supported) {
+            assert.equal(selOf(automatic.tasks[0]), `codex:${astra.id}:${effort}`);
+            assert.equal(!!picks.at(-1).plan, route === 'measured', 'exercise the requested recommendation route');
+          } else {
+            assert.equal(picks.at(-1), null);
+            assert.match(automatic.report, /no worker/i);
+          }
+          const count = picks.length;
+          const pinned = await dispatch(kind, { category, difficulty: 2, provider: 'codex', model: astra.id, effort }, `${session}-pin`);
+          assert.equal(pinned.tasks.length, 1, pinned.report);
+          assert.equal(selOf(pinned.tasks[0]), `codex:${astra.id}:${supported ? effort : clamped}`);
+          assert.equal(picks.length, count, 'explicit pins bypass recommendation');
+        }
+      });
+    }
+  }
+  // Ordinary measured selections still use createTask's existing normalization.
+  recordPass('implement', 'ultra');
+  reg.models = [{ ...astra, efforts: ['low', 'medium', 'high', 'xhigh'] }];
+  t.mock.method(globalThis.toolFixtures, 'recommend', (input) => recommend({ ...input, source }));
+  for (const kind of ['delegate', 'run_plan']) {
+    const ordinary = await dispatch(kind, { category: 'implement', difficulty: 2 }, `ordinary-${kind}`);
+    assert.equal(ordinary.tasks.length, 1, ordinary.report);
+    assert.equal(selOf(ordinary.tasks[0]), `codex:${astra.id}:xhigh`);
+    assert.match(ordinary.tasks[0].warning, /clamped effort/);
+  }
+});
+
 test('delegate keeps effort-only overrides for ordinary categories', async () => {
   const report = await handler('delegate')({ title: 'ordinary', spec: 'fixture', category: 'implement', difficulty: 2, effort: 'low', background: true });
   const task = getTask(/^Task (\S+)/.exec(report)?.[1]);

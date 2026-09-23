@@ -278,7 +278,7 @@ export function errorRates({ source = null } = {}) {
  * quality bar, observed ladders, and estimated ladders (cheap first step, qualified fallback; assumes
  * independent failures). Returns null when nothing measured qualifies (then the prior fallback, if enabled).
  */
-export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, _noExtrap = false, _failedBelow = null } = {}) {
+export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null } = {}) {
   const cfg = loadConfig().scorecard;
   // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
@@ -286,15 +286,14 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const weight = memo((provider, model) => providerWeight(provider, cfg, model));
   const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd;
   const excluded = (sel) => sel.split('>').some((s) => { const { provider, model } = parseSel(s); return exclude.includes(s) || exclude.includes(`${provider}:${model || 'default'}`); });
-  const reg = getModels();
   const blockedSel = (sel) => sel.split('>').some((s) => {
     const { provider, model } = parseSel(s);
     // A transient registry error retains cached models; explicit unavailability or removal does not.
-    return reg.providers[provider]?.status === 'unavailable' || findModel(provider, model)?.kind !== 'agent' || !avail(provider, model);
+    return reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
   const all = summary || summarize({ source });
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
-  const gate = passGate(category);
+  const gate = passGate(category, reg);
   const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
@@ -379,10 +378,10 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, _noExtrap: true, _failedBelow: failedBelow });
+      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow });
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
-    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, failedBelow });
+    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow });
   }
   const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
@@ -499,12 +498,13 @@ const parseSel = (s) => {
   return { provider, model: model === 'default' ? null : model, effort: effort === 'default' ? null : effort };
 };
 // Visual work (modeling, drafting): the auto-pick may route only a selection with a recorded cookie-cutter PASS, at
-// the effort that passed (priors.mjs MODELING / DRAFTING; 'close' and 'fail' are not routable), on every path and
+// the effort that passed AND is still supported (priors.mjs MODELING / DRAFTING; 'close' and 'fail' are not routable), on every path and
 // every ladder step. An explicit provider/model pin is the caller's call and is not gated (benchmark runs need that).
-const passGate = (category) => (KIND[category] !== 'visual' ? () => true : (sel) => sel.split('>').every((s) => {
+const modelInRegistry = (reg, provider, model) => reg.models.find((m) => m.provider === provider && (m.id === model || m.resolved === model));
+const passGate = (category, reg) => (KIND[category] !== 'visual' ? () => true : (sel) => sel.split('>').every((s) => {
   const { provider, model, effort } = parseSel(s);
   const p = priorFor(provider, model, category);
-  return !!p?.tier && !!effort && p.effort === effort;
+  return !!p?.tier && !!effort && p.effort === effort && !!modelInRegistry(reg, provider, model)?.efforts?.includes(effort);
 }));
 
 /** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
@@ -553,10 +553,9 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
  * Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level).
  * Visual work always takes this path, restricted by the pass gate: its benchmark verdicts are our own evidence, not a public prior.
  */
-function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, failedBelow }) {
+function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow }) {
   if (!cfg.usePriors && KIND[category] !== 'visual') return null;
-  const gate = passGate(category);
-  const reg = getModels();
+  const gate = passGate(category, reg);
   const cands = [];
   for (const m of reg.models) {
     if (m.kind !== 'agent' || reg.providers[m.provider]?.status !== 'ok' || !providerAvailable(m.provider, { overflowApi, cfg, model: m.id })) continue;

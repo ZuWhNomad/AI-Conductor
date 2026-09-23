@@ -511,6 +511,80 @@ test('visual work: every automatic route honors the recorded-pass gate; nothing 
   assert.equal(pick(sc.recommend({ category: 'drafting', difficulty: 2, source })), 'codex:gpt-6-astra:xhigh');
 });
 
+test('GP2-02: visual routes require the passing effort in the supplied registry', async (t) => {
+  const cfg = loadConfig().scorecard, globalReg = getModels();
+  const previous = { models: globalReg.models, providers: globalReg.providers };
+  const efforts = ['low', 'medium', 'high', 'xhigh', 'ultra'];
+  const astra = { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts };
+  Object.assign(globalReg, { models: [astra], providers: { codex: { status: 'ok' } } });
+  saveConfig({ scorecard: { usePriors: false } });
+  t.after(() => { Object.assign(globalReg, previous); saveConfig({ scorecard: cfg }); });
+  for (const [category, effort] of [['drafting', 'xhigh'], ['modeling', 'ultra']]) await t.test(category, () => {
+    const sel = `codex:gpt-6-astra:${effort}`;
+    const cell = { sel, steps: 1, provider: 'codex', model: astra.id, effort, category, difficulty: 2,
+      rated: cfg.minSamples, n: cfg.minSamples, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 };
+    const reg = { models: [{ ...astra }], providers: { codex: { status: 'ok' } } };
+    for (const route of [
+      { name: 'measured', summary: [cell], difficulty: 2 },
+      { name: 'extrapolated', summary: [cell], difficulty: 4 },
+      { name: 'prior', summary: [], difficulty: 2 },
+    ]) for (const escalate of [false, true]) {
+      const request = { ...route, category, escalate, reg };
+      globalReg.models = [{ ...astra, efforts: efforts.filter((e) => e !== effort) }];
+      reg.models = [{ ...astra }];
+      const supported = sc.recommend(request);
+      assert.ok(supported, `${route.name}, escalate=${escalate}: use supplied support`);
+      assert.equal(sc.selOf(supported), sel);
+      assert.equal(!!supported.plan, route.name !== 'prior');
+      globalReg.models = [astra];
+      for (const offered of [efforts.filter((e) => e !== effort), [], undefined]) {
+        reg.models = [{ ...astra, efforts: offered }];
+        assert.equal(sc.recommend(request), null, `${route.name}, escalate=${escalate}: unsupported effort ${offered}`);
+      }
+    }
+    // Measured resolved aliases use the same registry lookup as task effort normalization.
+    reg.models = [{ ...astra, id: 'astra-alias', resolved: astra.id }];
+    assert.equal(sc.selOf(sc.recommend({ category, summary: [cell], reg })), sel);
+    reg.models[0].efforts = [];
+    assert.equal(sc.recommend({ category, summary: [cell], reg }), null);
+  });
+});
+
+test('GP2-02: every visual ladder step needs supported effort; supported alternatives remain eligible', () => {
+  const cfg = loadConfig().scorecard;
+  const models = ['gpt-6-astra', 'gpt-5.6-sol'].map((id) => ({ provider: 'codex', id, kind: 'agent', efforts: ['high', 'ultra'] }));
+  const reg = { models, providers: { codex: { status: 'ok' } } };
+  const selections = models.map((m) => `codex:${m.id}:ultra`);
+  const cell = (steps, quality = 1, avgUsd = 0.01) => ({ sel: steps.join('>'), steps: steps.length,
+    provider: 'codex', model: steps[0].split(':')[1], effort: 'ultra', category: 'modeling', difficulty: 2,
+    rated: cfg.minSamples, n: cfg.minSamples, quality, accept: quality, avgUsd, avgDurationMs: 0 });
+  const pick = (summary, options = {}) => sc.recommend({ category: 'modeling', summary, reg, ...options });
+  for (const steps of [selections, [...selections].reverse()]) {
+    reg.models = models;
+    const observed = [cell(steps)];
+    assert.deepEqual(pick(observed)?.plan?.steps, steps);
+    for (const unsupported of models) {
+      reg.models = models.map((m) => m === unsupported ? { ...m, efforts: ['high'] } : m);
+      const alternative = selections.find((sel) => !sel.includes(unsupported.id));
+      assert.equal(sc.selOf(pick(observed)), alternative, 'reject observed ladder and use supported prior');
+      assert.equal(sc.selOf(pick([...observed, cell([alternative])])), alternative, 'supported measured single wins');
+    }
+    reg.models = models;
+    const estimated = [cell([steps[0]], 0.5, 0), cell([steps[1]], 1, cfg.qualityValueUsd)];
+    assert.deepEqual(pick(estimated)?.plan?.steps, steps);
+    assert.equal(pick(estimated).plan.estimated, true);
+    for (const unsupported of models) {
+      reg.models = models.map((m) => m === unsupported ? { ...m, efforts: ['high'] } : m);
+      const result = pick(estimated);
+      assert.ok(!result || result.plan.steps.every((sel) => !sel.includes(unsupported.id)), 'estimated ladder drops unsupported step');
+    }
+    reg.models = models.map((m) => ({ ...m, efforts: ['high'] }));
+    for (const summary of [observed, estimated]) for (const escalate of [false, true]) {
+      assert.equal(pick(summary, { escalate }), null, 'no unsupported first or fallback step');
+    }
+  }
+});
+
 test('wasteDiscount: a soon-resetting subscription window with unused quota is discounted', async () => {
   const { wasteDiscount } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
