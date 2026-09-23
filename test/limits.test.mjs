@@ -180,6 +180,53 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
   }
 }
 
+for (const scenario of [
+  { name: 'both windows recover', weekly: 20 },
+  { name: 'weekly remains exhausted', weekly: 100 },
+  { name: 'independent rejection remains', weekly: 20, independent: true },
+]) {
+  test(`GP3-01: mixed SDK/poll recovery: ${scenario.name}`, async (ctx) => {
+    const { PROVIDERS } = await import('../core/providers/index.mjs');
+    const { refreshLimits } = await import('../core/limits.mjs');
+    const { loadConfig } = await import('../core/config.mjs');
+    const id = 'claude', original = getLimits().providers[id], originalProvider = PROVIDERS[id], now = Date.now();
+    ctx.mock.method(Date, 'now', () => now);
+    const reset = now + loadConfig().scorecard.blockedMinutes * 60_000;
+    const usage = (weekly) => normalizeUsage({ rate_limits_available: true, rate_limits: {
+      five_hour: { utilization: 100, resets_at: new Date(reset).toISOString() },
+      seven_day: { utilization: weekly, resets_at: new Date(reset).toISOString() },
+    } });
+    getLimits().providers[id] = usage(100);
+    const poll = Promise.withResolvers(), entered = Promise.withResolvers();
+    PROVIDERS[id] = { ...originalProvider, pollLimits: () => { entered.resolve(); return poll.promise; } };
+    const refresh = refreshLimits({ only: [id] });
+    try {
+      await entered.promise;
+      noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'allowed', utilization: 0.1, resetsAt: reset });
+      assert.equal(getLimits().providers[id].blocked, true, 'cached weekly exhaustion still blocks');
+      assert.equal(getLimits().providers[id].blockedReason, null, 'the cached block is window-derived');
+      if (scenario.independent) noteRateLimitEvent(id, { status: 'rejected' }); // no window represents this rejection
+      poll.resolve(usage(scenario.weekly));
+      await refresh;
+
+      const p = getLimits().providers[id];
+      const blocked = scenario.weekly === 100 || !!scenario.independent;
+      assert.equal(p.windows.find((w) => w.id === 'five_hour').usedPercent, 10);
+      assert.equal(p.windows.find((w) => w.id === 'seven_day').usedPercent, scenario.weekly);
+      assert.equal(modelBlockedUntil(id, 'claude-sonnet'), blocked ? reset : null);
+      assert.equal(p.blocked, blocked);
+      assert.equal(p.blockedUntil, blocked ? reset : null);
+      assert.equal(p.blockedReason, scenario.independent ? 'rate_limit' : null);
+      assert.deepEqual(readJson(join(HOME, 'limits.json')), getLimits());
+    } finally {
+      poll.resolve(usage(scenario.weekly)); await refresh;
+      PROVIDERS[id] = originalProvider;
+      if (original === undefined) delete getLimits().providers[id];
+      else getLimits().providers[id] = original;
+    }
+  });
+}
+
 test('live global recovery keeps an unrelated polled global rejection and a newer HTTP block', async () => {
   const { PROVIDERS } = await import('../core/providers/index.mjs');
   const { refreshLimits } = await import('../core/limits.mjs');

@@ -103,7 +103,9 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
   if (observed.has(BLOCK) || live.some((w) => !w.models)) {
     const full = (merged.windows || []).filter(globalWindowBlocks);
     const independentBlock = merged.blocked && !(r.windows || []).some(globalWindowBlocks) && !observed.has(BLOCK);
-    const liveBlock = observed.has(BLOCK) && prev.blocked && prev.blockedReason !== '429';
+    // Window-derived aggregate blocks have no reason; window-backed rejections are already in full.
+    const liveBlock = observed.has(BLOCK) && prev.blocked && prev.blockedReason && prev.blockedReason !== '429'
+      && !full.some((w) => w.id === prev.blockedReason);
     merged.blocked = !!(independentBlock || liveBlock || full.length);
     merged.blockedUntil = liveBlock && !full.length ? prev.blockedUntil : merged.blocked ? earliestReset(full) : null;
     merged.blockedReason = liveBlock ? prev.blockedReason : independentBlock ? r.blockedReason : null;
