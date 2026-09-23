@@ -285,14 +285,14 @@ test('saving settings replaces the update interval and off or shutdown clears it
 test('changing the update cadence preserves startup and busy rechecks; off cancels them', async () => {
   const { DEFAULTS } = await import('../../core/config.mjs');
   const cfg = structuredClone(DEFAULTS), timers = [];
-  const timer = (fn, ms) => { const t = { fn, ms, cleared: false, unref() { return this; } }; timers.push(t); return t; };
+  const timer = (fn, ms) => { const t = { fn, ms, fired: false, cleared: false, unref() { return this; } }; timers.push(t); return t; };
   // Run the timer closure with no provider or git side effects.
   const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
   const context = {
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
     conductor: { listSessions: () => [{ status: 'running' }] }, listTasks: () => [], lastActivity: Date.now(), isIdle,
-    checkForUpdates: () => ({ git: true, behind: 1 }), logImprovement() {},
+    checkForUpdates: async () => ({ git: true, behind: 1 }), lastUpdateStatus: () => ({ git: true, behind: 1 }), logImprovement() {},
   };
   runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
   context.start();
@@ -300,12 +300,13 @@ test('changing the update cadence preserves startup and busy rechecks; off cance
   cfg.conductor.updateCheckHours = 2.5;
   context.start({ initial: false });
   assert.equal(startup.cleared, false);
-  startup.fn(); // auto policy notices the update but defers while a conductor turn is running
+  startup.fired = true; await startup.fn(); // auto policy notices the update but defers while a conductor turn is running
   const busy = timers.find((t) => t.ms === 60_000);
   assert.ok(busy);
+  busy.fired = true; await busy.fn(); // busy recheck uses the already-known update instead of fetching again
   context.start({ initial: false });
   assert.equal(busy.cleared, false);
   cfg.conductor.autoUpdate = 'off';
   context.start({ initial: false });
-  assert.ok(timers.every((t) => t.cleared));
+  assert.ok(timers.filter((t) => !t.fired).every((t) => t.cleared));
 });

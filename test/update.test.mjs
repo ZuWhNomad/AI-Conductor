@@ -9,7 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { findCli } from '../core/proc.mjs';
 import { REPO_ROOT } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
-const { updateStatus, applyUpdate, formatUpdate, npmCommand } = await import('../core/update.mjs');
+const { updateStatus, applyUpdate, checkForUpdates, formatUpdate, npmCommand } = await import('../core/update.mjs');
 
 const git = findCli('git');
 const run = (cwd, ...args) => execFileSync(git, args, { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -21,6 +21,28 @@ const setup = () => {
   const b = tmpDir('clone-b'); run(b, 'clone', '--quiet', origin, '.'); run(b, 'config', 'user.email', 't@example.com'); run(b, 'config', 'user.name', 't');
   return { origin, a, b };
 };
+
+test('update: a slow git check yields to the event loop and overlapping checks share it', async () => {
+  const cwd = tmpDir('slow-update'); writeFileSync(join(cwd, '.git'), 'gitdir: nowhere');
+  let calls = 0, release;
+  const exec = async (_cmd, args) => {
+    calls++;
+    if (args[0] === 'fetch') return new Promise((resolve) => { release = () => resolve({ stdout: '', stderr: '' }); });
+    return { stdout: args[0] === 'rev-parse' ? (args[1] === '--abbrev-ref' ? 'main\n' : 'abc123\n') : args[0] === 'remote' ? 'origin\n' : args[0] === 'rev-list' ? '0 0\n' : '', stderr: '' };
+  };
+  {
+    const first = checkForUpdates({ cwd, exec });
+    const second = checkForUpdates({ cwd, exec });
+    assert.equal(first, second, 'a concurrent check reuses the in-flight promise');
+    let immediate = false;
+    await new Promise((resolve) => setImmediate(() => { immediate = true; resolve(); }));
+    assert.equal(immediate, true);
+    assert.ok(release, 'git fetch is pending without blocking the immediate callback');
+    release();
+    await first;
+    assert.equal(calls, 6, 'only one git status sequence ran');
+  }
+});
 
 for (const [label, npmInstalled, npmError] of [
   ['failed dependency install', false, 'dependency unavailable'],
@@ -68,43 +90,43 @@ for (const [label, npmInstalled, npmError] of [
   }
 });
 
-test('update: status counts commits behind the remote and applyUpdate fast-forwards', { skip: !git && 'git not installed' }, () => {
+test('update: status counts commits behind the remote and applyUpdate fast-forwards', { skip: !git && 'git not installed' }, async () => {
   const { a, b } = setup();
-  assert.equal(updateStatus({ cwd: b }).behind, 0);
+  assert.equal((await updateStatus({ cwd: b })).behind, 0);
   writeFileSync(join(a, 'f.txt'), '2'); run(a, 'commit', '--quiet', '-am', 'two'); run(a, 'push', '--quiet');
-  const st = updateStatus({ cwd: b });
+  const st = await updateStatus({ cwd: b });
   assert.equal(st.behind, 1); assert.equal(st.dirty, 0); assert.match(formatUpdate(st), /1 update\(s\) available/);
-  const r = applyUpdate({ cwd: b, exec: () => assert.fail('unchanged lockfile must not run npm') });
+  const r = await applyUpdate({ cwd: b, exec: () => assert.fail('unchanged lockfile must not run npm') });
   assert.equal(r.updated, true); assert.equal(r.commits, 1); assert.equal(r.restartNeeded, true);
   assert.equal(r.npmInstalled, false); assert.equal(r.npmError, null);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
-  assert.equal(applyUpdate({ cwd: b, npm: false }).updated, false);
+  assert.equal((await applyUpdate({ cwd: b, npm: false })).updated, false);
 });
 
-test('update: refuses over modified TRACKED files or unpushed commits, and explains a non-git folder', { skip: !git && 'git not installed' }, () => {
+test('update: refuses over modified TRACKED files or unpushed commits, and explains a non-git folder', { skip: !git && 'git not installed' }, async () => {
   const { a, b } = setup();
   writeFileSync(join(a, 'f.txt'), '3'); run(a, 'commit', '--quiet', '-am', 'three'); run(a, 'push', '--quiet');
   writeFileSync(join(b, 'f.txt'), 'edited'); // a modified TRACKED file must block the fast-forward
-  assert.throws(() => applyUpdate({ cwd: b, npm: false }), /not committed/);
+  await assert.rejects(applyUpdate({ cwd: b, npm: false }), /not committed/);
   run(b, 'checkout', '--', 'f.txt'); // discard the tracked edit
   writeFileSync(join(b, 'local.txt'), 'x'); run(b, 'add', '.'); run(b, 'commit', '--quiet', '-m', 'mine');
-  assert.throws(() => applyUpdate({ cwd: b, npm: false }), /push them first/);
+  await assert.rejects(applyUpdate({ cwd: b, npm: false }), /push them first/);
   const plain = tmpDir('plain');
-  assert.equal(updateStatus({ cwd: plain }).git, false);
-  assert.match(formatUpdate(updateStatus({ cwd: plain })), /clone the repo/);
+  assert.equal((await updateStatus({ cwd: plain })).git, false);
+  assert.match(formatUpdate(await updateStatus({ cwd: plain })), /clone the repo/);
 });
 
-test('update: untracked files do NOT block a fast-forward (dirty:0, applyUpdate proceeds)', { skip: !git && 'git not installed' }, () => {
+test('update: untracked files do NOT block a fast-forward (dirty:0, applyUpdate proceeds)', { skip: !git && 'git not installed' }, async () => {
   const { a, b } = setup();
   writeFileSync(join(a, 'f.txt'), '4'); run(a, 'commit', '--quiet', '-am', 'four'); run(a, 'push', '--quiet');
   // b has untracked files present (the real-world case: logs, local notes, docs/plans/*.md) — these must not gate the pull
   writeFileSync(join(b, 'note.md'), 'local note'); writeFileSync(join(b, 'scratch.log'), 'x');
-  const st = updateStatus({ cwd: b });
+  const st = await updateStatus({ cwd: b });
   assert.equal(st.dirty, 0);           // gate value ignores untracked
   assert.equal(st.untracked, 2);       // still reported, informationally
   assert.equal(st.behind, 1);
   assert.match(formatUpdate(st), /2 untracked/);
-  const r = applyUpdate({ cwd: b, npm: false }); // proceeds despite the untracked files
+  const r = await applyUpdate({ cwd: b, npm: false }); // proceeds despite the untracked files
   assert.equal(r.updated, true); assert.equal(r.commits, 1);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD'));
   assert.equal(run(b, 'status', '--porcelain'), '?? note.md\n?? scratch.log'); // untracked files survived the pull
@@ -118,18 +140,18 @@ test('update: bundled npm runs through Node without a shell', { skip: !existsSyn
   assert.equal(version, JSON.parse(readFileSync(join(dirname(bundledNpm), '..', 'package.json'), 'utf8')).version);
 });
 
-test('update: a lockfile change runs npm through the injected exec; a failing install is reported, never thrown', { skip: !git && 'git not installed' }, () => {
+test('update: a lockfile change runs npm through the injected exec; a failing install is reported, never thrown', { skip: !git && 'git not installed' }, async () => {
   const { a, b } = setup();
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
   const calls = [];
-  const r = applyUpdate({ cwd: b, exec: (cmd, args, opts) => { calls.push({ cmd, args, opts }); } });
+  const r = await applyUpdate({ cwd: b, exec: async (cmd, args, opts) => { calls.push({ cmd, args, opts }); } });
   assert.equal(r.updated, true); assert.equal(r.npmInstalled, true); assert.equal(r.npmError, null);
   assert.equal(calls.length, 1); assert.deepEqual(calls[0].args.slice(-3), ['install', '--no-fund', '--no-audit']); assert.equal(calls[0].opts.cwd, b);
   if (existsSync(bundledNpm)) {
     assert.equal(calls[0].cmd, process.execPath); assert.equal(calls[0].args[0], bundledNpm); assert.equal(calls[0].opts.shell, false);
   }
   writeFileSync(join(a, 'package-lock.json'), '{"v":2}'); run(a, 'commit', '--quiet', '-am', 'lock2'); run(a, 'push', '--quiet');
-  const bad = applyUpdate({ cwd: b, exec: () => { throw new Error('spawn npm.cmd EINVAL'); } });
+  const bad = await applyUpdate({ cwd: b, exec: () => { throw new Error('spawn npm.cmd EINVAL'); } });
   assert.equal(bad.updated, true); assert.equal(bad.npmInstalled, false); assert.match(bad.npmError, /EINVAL/);
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD')); // HEAD moved anyway: the caller must not restart blindly
 });
@@ -139,15 +161,15 @@ test('update: failed npm install reaches the HTTP response and UI without relaun
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { server, url } = await startServer({ port: 0 });
-  const exec = childProcess.execFileSync, read = fs.readFileSync;
+  const exec = childProcess.execFile, read = fs.readFileSync;
   const seq = bus.seq;
   // Exercise the real route and updater, redirecting checkout reads/git to the temporary clone only.
   ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
   const npmCalls = [];
-  ctx.mock.method(childProcess, 'execFileSync', (cmd, args, opts) => {
-    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd });
+  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
+    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
     npmCalls.push({ cmd, args });
-    throw new Error('npm install failed: dependency unavailable');
+    callback(new Error('npm install failed: dependency unavailable'));
   });
   const spawn = ctx.mock.method(childProcess, 'spawn', () => { throw new Error('unexpected relaunch'); });
   syncBuiltinESMExports();

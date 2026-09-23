@@ -257,9 +257,9 @@ async function route(req, res, url) {
     if (opened && !process.env.CONDUCTOR_NO_POLL) watchSignIn(seg[2], { awaitDrop: seg[3] === 'relogin' }); // re-probe until it comes back ok: no manual Refresh
     return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
   }
-  if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? updateStatus() : lastUpdateStatus() || updateStatus({ fetch: false }));
+  if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? await updateStatus() : lastUpdateStatus() || await updateStatus({ fetch: false }));
   if (p === '/api/update' && m === 'POST') { // pull, then self-restart into the new version; relaunching:false falls back to the manual-restart message
-    const r = applyUpdate();
+    const r = await applyUpdate();
     const relaunching = !!(r.updated && r.restartNeeded && !r.npmError && scheduleRelaunch({ port: boundPort ?? req.socket.localPort }));
     return json(res, 200, { ...r, relaunching });
   }
@@ -417,18 +417,18 @@ function startUpdateChecks({ initial = true } = {}) {
       });
     } catch { return false; } // can't tell → defer rather than risk interrupting work
   };
-  const run = () => {
+  const run = async ({ fetch = true } = {}) => {
     try {
       const cfg = loadConfig();
       const policy = cfg.conductor.autoUpdate;
       if (policy === 'off') return;
-      const st = checkForUpdates(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
+      const st = fetch ? await checkForUpdates() : lastUpdateStatus(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
       if (policy !== 'auto' || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
       if (!idle()) { // update ready but work is in flight — defer; re-check soon so it applies as soon as we're idle
-        if (!recheck) { recheck = setTimeout(() => { recheck = null; run(); }, 60_000); recheck.unref?.(); }
+        if (!recheck) { recheck = setTimeout(() => { recheck = null; run({ fetch: false }); }, 60_000); recheck.unref?.(); }
         return;
       }
-      const r = applyUpdate(); // git pull + npm install; publishes its own 'update' event
+      const r = await applyUpdate(); // git pull + npm install; publishes its own 'update' event
       // Loop guard: only restart when the pull actually advanced HEAD. After a successful pull we're up to date, so the
       // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
       const moved = !!(r.updated && r.to && r.to !== r.from);

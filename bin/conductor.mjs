@@ -177,11 +177,11 @@ if (cmd === 'start') {
   process.exit(r.isError || r.kind === 'error' ? 1 : 0);
 } else if (cmd === 'update') {
   const { updateStatus, applyUpdate, formatUpdate } = await import('../core/update.mjs');
-  const st = updateStatus();
+  const st = await updateStatus();
   console.log(formatUpdate(st));
   if (!flags.check && st.git && !st.error && st.behind) {
     try {
-      const r = applyUpdate();
+      const r = await applyUpdate();
       if (r.npmError) {
         console.error(`Partial update: code updated ${r.from} → ${r.to} (${r.commits} commit(s)), but dependency install failed: ${r.npmError}`);
         console.error(`Run "npm install" in "${REPO_ROOT}"; restart only after the install succeeds.`);
