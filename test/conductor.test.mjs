@@ -15,11 +15,14 @@ writeJson(join(HOME, 'sessions.json'), [{
 const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
   export function query({ prompt }) {
     return (async function* () {
+      if (globalThis.__claudeEndWithoutResult) {
+        for await (const msg of prompt) { (globalThis.__claudeInbox ||= []).push(msg); return; }
+      }
       for await (const msg of prompt) {
         (globalThis.__claudeInbox ||= []).push(msg);
         const gate = (globalThis.__claudeGates || []).shift();
         if (gate) await gate.promise;
-        yield { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0, duration_ms: 1, num_turns: 1 };
+        yield { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0, duration_ms: 1, num_turns: 1, queued_turn_count: (globalThis.__claudeGates || []).length };
       }
     })();
   }
@@ -68,6 +71,7 @@ afterEach(() => {
   for (const g of globalThis.__claudeGates || []) try { g.resolve(); } catch {}
   globalThis.__claudeGates = [];
   globalThis.__claudeInbox = [];
+  globalThis.__claudeEndWithoutResult = false;
   globalThis.__histHold?.resolve?.();
   globalThis.__histHold = null;
   globalThis.__codexHold?.resolve?.();
@@ -90,6 +94,23 @@ test('queued Claude message keeps the session running so setEffort does not drop
   await result2;
   const live = await getSession(s.id);
   assert.equal(live.messages.filter((m) => m.role === 'user').length, 2);
+});
+
+test('a Claude query that ends without a result does not leave the session running', async () => {
+  globalThis.__claudeEndWithoutResult = true;
+  const s = createSession({ cwd: tmpDir('no-result') });
+  const idle = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { bus.off('event', h); reject(new Error('timed out waiting for idle')); }, 10_000);
+    const h = (e) => {
+      if (e.type === 'session' && e.sessionId === s.id && e.kind === 'status' && e.status === 'idle') {
+        clearTimeout(timer); bus.off('event', h); resolve(e);
+      }
+    };
+    bus.on('event', h);
+  });
+  await sendMessage(s.id, 'hello');
+  await idle;
+  assert.equal((await getSession(s.id)).status, 'idle');
 });
 
 test('deleting a Codex session mid-turn does not rewrite history or emit for the deleted id', async () => {

@@ -31,14 +31,18 @@ export function validatePlan(plan) {
   return plan;
 }
 
-/** String-aware, brace-balanced scan: the parseable object that ends last (the outermost on a tie). Every `{` is a
- *  candidate — prose quotes (12" screen) must not hide a trailing object. */
-function lastBalancedObject(text) {
-  let best = null, bestEnd = -1;
-  for (let i = 0; i < text.length; i++) {
+// Spec: bound the unfenced `{` scan so a brace bomb cannot monopolize the server thread.
+const SCAN_STEPS = 2_000_000;
+
+/** Last parseable `{...}` that satisfies `want`, ending last (outermost on a tie). Each `{` is its own candidate —
+ *  string state does not carry across prose, so a 12" quote cannot hide a later object. */
+function lastBalancedObject(text, want = () => true) {
+  let best = null, bestEnd = -1, bestStart = Infinity, steps = SCAN_STEPS;
+  for (let i = text.length - 1; i >= 0; i--) {
     if (text[i] !== '{') continue;
     let depth = 0, s = false, e = false;
     for (let j = i; j < text.length; j++) {
+      if (steps-- <= 0) return best;
       const c = text[j];
       if (e) { e = false; continue; }
       if (s) { if (c === '\\') e = true; else if (c === '"') s = false; continue; }
@@ -47,10 +51,13 @@ function lastBalancedObject(text) {
       else if (c === '}') {
         depth--;
         if (depth === 0) {
-          try {
-            const obj = JSON.parse(text.slice(i, j + 1));
-            if (j + 1 > bestEnd) { best = obj; bestEnd = j + 1; }
-          } catch {}
+          const end = j + 1;
+          if (end > bestEnd || (end === bestEnd && i < bestStart)) {
+            try {
+              const obj = JSON.parse(text.slice(i, end));
+              if (want(obj)) { best = obj; bestEnd = end; bestStart = i; }
+            } catch {}
+          }
           break;
         }
       }
@@ -59,17 +66,40 @@ function lastBalancedObject(text) {
   return best;
 }
 
+function lastFenced(text) {
+  const fences = [...String(text).matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1].trim()).reverse();
+  for (const f of fences) { try { return JSON.parse(f); } catch {} }
+}
+
+function hasVerdictKey(o) {
+  return !!o && typeof o === 'object' && (typeof o.real === 'boolean' || typeof o.refuted === 'boolean' || typeof o.verdict === 'string' || typeof o.score === 'number');
+}
+
+function verdictOf(j) {
+  if (typeof j.real === 'boolean') return { real: j.real, reason: j.reason || '', score: j.score ?? null };
+  if (typeof j.refuted === 'boolean') return { real: !j.refuted, reason: j.reason || '', score: j.score ?? null };
+  if (typeof j.verdict === 'string') return { real: /^(real|confirmed|pass|accept)/i.test(j.verdict), reason: j.reason || '', score: j.score ?? null };
+  if (typeof j.score === 'number') return { real: j.score >= (j.threshold ?? 5), reason: j.reason || '', score: j.score };
+}
+
+/** Fenced JSON, else an unfenced object with findings[]. */
+function structuredOf(report) {
+  if (!report) return undefined;
+  const fenced = lastFenced(report);
+  if (fenced !== undefined) return fenced;
+  return lastBalancedObject(String(report), (o) => Array.isArray(o.findings)) ?? undefined;
+}
+
 /** Last fenced ```json block (or a bare trailing object) in a worker report. */
 export function extractJson(text) {
   if (!text) return null;
-  const fences = [...String(text).matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1].trim()).reverse();
-  for (const f of fences) { try { return JSON.parse(f); } catch {} }
-  return lastBalancedObject(String(text));
+  const fenced = lastFenced(text);
+  return fenced !== undefined ? fenced : lastBalancedObject(String(text));
 }
 
 /** Findings from a report: an explicit findings[] block, else the whole report as one item. */
 export function findingsOf(report, taskId) {
-  const j = extractJson(report);
+  const j = structuredOf(report);
   const arr = Array.isArray(j?.findings) ? j.findings : Array.isArray(j) ? j : null;
   if (arr) return arr.filter((f) => f && typeof f === 'object').map((f, i) => ({ ...f, id: f.id || `${taskId}-${i + 1}`, source: taskId }));
   return report?.trim() ? [{ id: `${taskId}-1`, title: report.trim().slice(0, 140), detail: report.trim(), source: taskId }] : [];
@@ -79,15 +109,14 @@ export const findingKey = (f) => `${String(f.file || f.location || '').toLowerCa
 
 /** Verdict from a refuter/judge report: {real:boolean} / {verdict:'real'|'refuted'} / {score}. */
 export function parseVerdict(report) {
-  const parsed = extractJson(report);
-  const j = parsed || {};
-  if (typeof j.real === 'boolean') return { real: j.real, reason: j.reason || '', score: j.score ?? null };
-  if (typeof j.refuted === 'boolean') return { real: !j.refuted, reason: j.reason || '', score: j.score ?? null };
-  if (typeof j.verdict === 'string') return { real: /^(real|confirmed|pass|accept)/i.test(j.verdict), reason: j.reason || '', score: j.score ?? null };
-  if (typeof j.score === 'number') return { real: j.score >= (j.threshold ?? 5), reason: j.reason || '', score: j.score };
-  // Parsed JSON without verdict keys is not-real; the prose heuristic only runs when no object was found.
-  if (parsed !== null) return { real: false, reason: JSON.stringify(parsed).slice(0, 200), score: null };
   const t = String(report || '');
+  const fenced = t ? lastFenced(t) : undefined;
+  if (fenced !== undefined) {
+    const j = fenced && typeof fenced === 'object' && !Array.isArray(fenced) ? fenced : {};
+    return verdictOf(j) || { real: false, reason: JSON.stringify(fenced).slice(0, 200), score: null };
+  }
+  const found = lastBalancedObject(t, hasVerdictKey);
+  if (found) return verdictOf(found);
   return { real: !/\b(refuted|not (?:real|a bug)|false positive|cannot reproduce)\b/i.test(t) && /\b(confirmed|real|reproduc)/i.test(t), reason: t.slice(0, 200), score: null };
 }
 
@@ -227,7 +256,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
       }
       result.fresh = fresh;
       result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
-      if (done.length === 1 && done[0].ok && !extractJson(done[0].report)) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
+      if (done.length === 1 && done[0].ok && structuredOf(done[0].report) === undefined) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
     }
     return result;
   };

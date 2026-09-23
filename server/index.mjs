@@ -402,10 +402,10 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
 /** Periodic GitHub update check, governed by conductor.autoUpdate ('auto' | 'ask' | 'off'). On 'auto' it pulls AND
  *  self-restarts — but only while the server is IDLE (no chat turn running, no worker task active), so an update never
  *  interrupts in-flight work; while busy it defers and re-checks on a short cadence, applying as soon as work settles. */
-let updateInterval = null, updateStartup = null, recheck = null;
+let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch = null;
 function stopUpdateChecks() {
   clearInterval(updateInterval); clearTimeout(updateStartup); clearTimeout(recheck);
-  updateInterval = updateStartup = recheck = null;
+  updateInterval = updateStartup = recheck = pendingRelaunch = null;
 }
 function startUpdateChecks({ initial = true } = {}) {
   clearInterval(updateInterval); updateInterval = null;
@@ -425,10 +425,22 @@ function startUpdateChecks({ initial = true } = {}) {
       const cfg = loadConfig();
       const policy = cfg.conductor.autoUpdate;
       if (policy === 'off') return;
+      const defer = () => { if (!recheck) { recheck = setTimeout(() => { recheck = null; run({ fetch: false }); }, 60_000); recheck.unref?.(); } };
+      const relaunch = (r) => {
+        if (scheduleRelaunch()) { bus.publish('update', { relaunching: true, from: r.from, to: r.to }); logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {}); }
+        else logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restart to apply (relaunch unavailable)`, {});
+      };
+      // Pull already landed while we were busy: relaunch once idle, never pull a second time.
+      if (pendingRelaunch) {
+        if (!idle()) { defer(); return; }
+        const r = pendingRelaunch; pendingRelaunch = null;
+        relaunch(r);
+        return;
+      }
       const st = fetch ? await checkForUpdates() : lastUpdateStatus(); // publishes an 'update' event when behind — flashes the button on 'ask' AND 'auto'
       if (policy !== 'auto' || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
       if (!idle()) { // update ready but work is in flight — defer; re-check soon so it applies as soon as we're idle
-        if (!recheck) { recheck = setTimeout(() => { recheck = null; run({ fetch: false }); }, 60_000); recheck.unref?.(); }
+        defer();
         return;
       }
       const r = await applyUpdate(); // git pull + npm install; publishes its own 'update' event
@@ -436,8 +448,8 @@ function startUpdateChecks({ initial = true } = {}) {
       // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
       const moved = !!(r.updated && r.to && r.to !== r.from);
       if (r.npmError) logImprovement('friction', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)}, but npm install failed (${r.npmError}) — run \`npm install\` in the Conductor folder, then restart`, {});
-      else if (moved && scheduleRelaunch()) { bus.publish('update', { relaunching: true, from: r.from, to: r.to }); logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restarting to apply`, {}); }
-      else if (moved) logImprovement('idea', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)} — restart to apply (relaunch unavailable)`, {});
+      else if (moved && !idle()) { pendingRelaunch = r; defer(); }
+      else if (moved) relaunch(r);
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };
   if (initial) updateStartup = setTimeout(run, 3000).unref();

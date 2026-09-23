@@ -94,10 +94,39 @@ test('unfenced nested JSON extracts the outer object; a parsed object is not a p
   assert.equal(v.real, false);
   assert.match(v.reason, /brace/);
   assert.equal(parseVerdict('On a 12" screen it looks real. {"real":false,"reason":"not reproducible"}').real, false); // an odd prose quote
-  const prose =parseVerdict('{"note":"this is real and confirmed"}');
+  const prose = parseVerdict('```json\n{"note":"this is real and confirmed"}\n```');
   assert.equal(prose.real, false);
   assert.match(prose.reason, /note/);
   assert.deepEqual(extractJson('x {"a":1}'), { a: 1 });
+});
+
+test('parseVerdict ignores incidental unfenced objects without verdict keys', () => {
+  assert.equal(parseVerdict('Confirmed: real bug. `readJson(FILE(), {})` and move on.').real, true);
+  assert.equal(parseVerdict('{"real": true, "reason": "x"}\nNote: the handler returns {} on error.').real, true);
+  assert.equal(parseVerdict('{"note":"this is real and confirmed"}').real, true);
+});
+
+test('a planner report containing {} keeps its long summary', async () => {
+  const report = 'Plan: do the thing.\nUse readJson(FILE(), {}) for defaults.\n' + 'step '.repeat(200);
+  const out = await runPlan({ stages: [{ id: 'plan', tasks: [{ spec: 'plan' }] }] }, { taskRuntime: {
+    createTask() { return { id: 'p1' }; },
+    async awaitTask() { return { id: 'p1', status: 'done', result: { finalMessage: report } }; },
+    getTask() { assert.fail('use the awaitTask snapshot'); },
+  } });
+  assert.equal(out.status, 'done');
+  assert.equal(out.stages.plan.summary, report.slice(0, 4000));
+  assert.ok(out.stages.plan.summary.length > 140);
+});
+
+test('a 100 KB brace bomb returns in under 200 ms', (t) => {
+  const bomb = '{'.repeat(100_000);
+  const t0 = performance.now();
+  assert.equal(extractJson(bomb), null);
+  const ms = performance.now() - t0;
+  t.diagnostic(`extractJson: ${ms.toFixed(2)} ms`);
+  assert.ok(ms < 200, `extractJson took ${ms} ms`);
+  assert.equal(parseVerdict(bomb).real, false);
+  assert.equal(findingsOf(bomb, 't')[0].title.length, 140);
 });
 
 test('tally modes', () => {

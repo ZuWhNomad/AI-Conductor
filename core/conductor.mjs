@@ -28,7 +28,7 @@ const sessions = new Map();
 let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
 
-for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null, inboxCount: 0 });
+for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null });
 // The routing flags the delegate tools read live in a side map (no import cycle). Seed it from every session, not only
 // when a toggle is clicked: a chat created with API overflow on, or any chat after a restart, used to read it as off.
 const syncFlags = (s) => setSessionFlags(s.id, { overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride });
@@ -139,7 +139,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
     effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, inboxCount: 0,
+    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -203,7 +203,6 @@ function stop(s) {
   try { s.abort?.abort(); } catch {}
   try { s.turnAbort?.abort(); } catch {}
   s.turnAbort = null; // E9: clear so mine() returns false; the aborted turn's finally won't repersist history
-  s.inboxCount = 0; // E6: a stopped process answers nothing still queued in it
   s.query = null; s.inbox = null; s.abort = null;
   for (const p of s.pending.values()) p.resolve({ behavior: 'deny', message: 'session stopped' });
   s.pending.clear();
@@ -242,21 +241,18 @@ async function pump(s, q) {
           }
         }
       } else if (m.type === 'result') {
-        // E6: only go idle when the inbox is empty (no queued user messages waiting); if more are pending,
-        // keep status 'running' so setEffort/setPermissionMode don't call stop() and close the inbox.
-        s.inboxCount = Math.max(0, (s.inboxCount || 0) - 1);
-        const hasMoreMessages = s.inboxCount > 0;
-        if (!hasMoreMessages) s.status = 'idle';
+        const more = (m.queued_turn_count || 0) > 0;
+        if (!more) s.status = 'idle';
         s.costUsd = m.total_cost_usd || s.costUsd; s.updatedAt = nowIso(); persistAll();
         const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' ? '' : (m.errors || [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
         if (s.interrupted) { s.interrupted = false; msg.subtype = 'interrupted'; msg.text = 'interrupted by user'; }
         pushMessage(s, msg); emit(s, 'result', msg); emit(s, 'status', { status: s.status });
         if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text}`, { sessionId: s.id });
-        if (s.restartPending && !hasMoreMessages) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
+        if (s.restartPending && !more) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
           s.restartPending = false;
           const pending = s.inbox?.drain() || [];
           stop(s);
-          if (pending.length) { start(s); for (const q2 of pending) s.inbox.push(q2); s.inboxCount = pending.length; s.status = 'running'; emit(s, 'status', { status: 'running' }); }
+          if (pending.length) { start(s); for (const q2 of pending) s.inbox.push(q2); s.status = 'running'; emit(s, 'status', { status: 'running' }); }
         }
       } else if (m.type === 'rate_limit_event') {
         bus.publish('rate_limit', { provider: 'claude', info: m.rate_limit_info });
@@ -276,7 +272,7 @@ async function pump(s, q) {
       logImprovement('error', 'conductor', `session loop error: ${msg}`, { sessionId: s.id });
     }
   } finally {
-    if (s.query === q) { s.query = null; s.inbox = null; s.abort = null; }
+    if (s.query === q) { s.query = null; s.inbox = null; s.abort = null; s.restartPending = false; }
     if (s.query === q || s.query == null) { s.status = 'idle'; emit(s, 'status', { status: 'idle' }); }
   }
 }
@@ -385,7 +381,6 @@ export async function sendMessage(sessionId, text) {
   const msg = { role: 'user', text };
   pushMessage(s, msg); emit(s, 'user', msg); emit(s, 'status', { status: 'running' });
   if (s.runtime === 'claude') {
-    s.inboxCount = (s.inboxCount || 0) + 1; // E6: track queued messages; result handler decrements
     s.inbox.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
   } else void runTurn(s, text);
   return publicSession(s);
@@ -413,8 +408,7 @@ export function setEffort(sessionId, effort) {
   // U13: clamp unsupported effort (including 'ultra') to 'max' for claude runtime.
   s.effort = s.runtime === 'claude' ? clampClaudeEffort(s.provider, s.model, effort || null) : (effort || null);
   persistAll();
-  // E6: treat messages queued but not yet processed the same as 'running' — use restartPending so stop() is not called while inbox has items.
-  if (s.runtime === 'claude' && s.query) { if (s.status === 'running' || (s.inboxCount || 0) > 0) s.restartPending = true; else stop(s); }
+  if (s.runtime === 'claude' && s.query) { if (s.status === 'running') s.restartPending = true; else stop(s); }
   emit(s, 'updated', { session: publicSession(s) });
 }
 
@@ -453,8 +447,7 @@ export async function setPermissionMode(sessionId, mode) {
   // bypass needs a fresh process (canUseTool wiring differs); other modes switch live. A running turn is
   // never killed for this: the restart happens after its result, like an effort change.
   if (s.runtime === 'claude' && s.query) {
-    // E6: treat messages queued but not yet processed the same as 'running'.
-    if (mode === 'bypassPermissions' || was === 'bypassPermissions') { if (s.status === 'running' || (s.inboxCount || 0) > 0) s.restartPending = true; else stop(s); }
+    if (mode === 'bypassPermissions' || was === 'bypassPermissions') { if (s.status === 'running') s.restartPending = true; else stop(s); }
     else { try { await s.query.setPermissionMode(mode); } catch (e) { emit(s, 'error', { message: `setPermissionMode failed: ${e.message}` }); } }
   }
   emit(s, 'updated', { session: publicSession(s) });

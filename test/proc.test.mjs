@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnCli, spawnCodex } from '../core/proc.mjs';
+import { spawn } from 'node:child_process';
+import { spawnCli, spawnCodex, killTree } from '../core/proc.mjs';
 import { capture, providerFor, VENDORS } from '../core/providers/vendors.mjs';
 
 const WIN = process.platform === 'win32';
@@ -75,7 +76,32 @@ test('vendor capture marks a timed-out probe and returns its captured output', a
 
 test('POSIX CLI children are process-group leaders for tree termination', { skip: WIN }, () => {
   const child = spawnCli(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
-  assert.equal(child.spawnargs[0], '-e');
-  assert.ok(child.pid);
-  child.kill();
+  try {
+    assert.doesNotThrow(() => process.kill(-child.pid, 0));
+  } finally {
+    try { process.kill(-child.pid); } catch {}
+  }
+});
+
+test('killTree unblocks close when a grandchild still holds the pipes', async () => {
+  const child = spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+    process.stdout.write(String(g.pid));
+    g.unref();
+  `], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let pidBuf = '';
+  child.stdout.on('data', (d) => { pidBuf += d; });
+  await new Promise((resolve) => child.on('exit', resolve));
+  const gp = Number(pidBuf);
+  try {
+    const closed = new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('close did not fire')), 2000);
+      child.on('close', () => { clearTimeout(t); resolve(); });
+    });
+    killTree(child);
+    await closed;
+  } finally {
+    if (Number.isFinite(gp) && gp > 0) try { process.kill(gp); } catch {}
+  }
 });

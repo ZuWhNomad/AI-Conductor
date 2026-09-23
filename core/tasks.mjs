@@ -398,34 +398,38 @@ async function git(cwd, args) {
   if (!root) return null;
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) return null;
-  try { return (await execFileP(gitBin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
+  try { return (await execFileP(gitBin, args, { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
 }
 async function gitStatus(cwd) {
+  const root = findGitRoot(cwd);
+  if (!root) return null;
   const out = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
   if (out == null) return null;
+  const relName = (porcelain) => relative(cwd, join(root, porcelain)).replaceAll('\\', '/');
   const entries = out.split('\0'); const statusMap = new Map(); const untracked = [], tracked = [];
   for (let i = 0; i < entries.length; i++) {
     const l = entries[i]; if (!l) continue;
-    const name = l.slice(3); const status = l.slice(0, 2);
+    const porcelain = l.slice(3); const status = l.slice(0, 2); const name = relName(porcelain);
     if (/[RC]/.test(status)) i++; // -z emits the original name after a rename/copy destination.
-    if (status === '??') untracked.push(name);
-    else tracked.push(name);
+    if (status === '??') untracked.push(porcelain);
+    else tracked.push(porcelain);
     statusMap.set(name, status);
   }
   // An untracked file carries its mtime+size, so an edit to it counts as a change too.
-  await Promise.all(untracked.map(async (name) => { try { const s = await stat(join(cwd, name)); statusMap.set(name, `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
+  await Promise.all(untracked.map(async (porcelain) => { try { const s = await stat(join(root, porcelain)); statusMap.set(relName(porcelain), `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
   // Porcelain stays " M" when a worker edits an already-dirty file; compare its content too.
   // E5: files above 8 MiB use mtime+size to avoid hashing large files on the main thread (twice per task).
   // Same-size same-mtime edits are detectable for small files only; the spec pins this at 8 MiB.
   const LARGE_FILE_BYTES = 8 * 1024 * 1024;
-  await Promise.all(tracked.map(async (name) => {
+  await Promise.all(tracked.map(async (porcelain) => {
     try {
-      const s = await stat(join(cwd, name));
+      const name = relName(porcelain);
+      const s = await stat(join(root, porcelain));
       let fingerprint;
       if (s.size >= LARGE_FILE_BYTES) {
         fingerprint = `${s.mtimeMs}:${s.size}`;
       } else {
-        fingerprint = createHash('sha256').update(await readFile(join(cwd, name))).digest('hex');
+        fingerprint = createHash('sha256').update(await readFile(join(root, porcelain))).digest('hex');
       }
       statusMap.set(name, `${statusMap.get(name)} ${fingerprint}`);
     } catch {}

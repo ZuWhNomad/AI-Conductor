@@ -65,3 +65,56 @@ test('a failed gap resync still reconnects with the previous cursor', async () =
   c.timers[0]();
   assert.equal(c.streams[1].url, '/api/events?since=10');
 });
+
+const openSrc = app.slice(app.indexOf('async function openSession(id)'), app.indexOf('\nfunction clearCurrent()'));
+const onSrc = app.slice(app.indexOf('function onSessionEvent(ev)'), app.indexOf('// ---------- modals ----------'));
+function openingClient() {
+  const el = { textContent: '', checked: false, focus() {}, classList: { remove() {} } };
+  const pending = [], deltas = [];
+  const S = { opening: null, bufferedEvents: null, current: null, sessions: [] };
+  const context = {
+    S, pending, deltas,
+    api: { get: (path) => { let resolve, reject; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); pending.push({ path, resolve, reject }); return promise; } },
+    localStorage: { setItem() {}, getItem: () => null },
+    document: { body: { classList: { remove() {} } } },
+    $: () => el,
+    refreshHeaderPicker() {}, renderChip() {}, renderBudget() {}, setStatus() {},
+    renderHistory() {}, addPermission() {}, renderSessions() {}, renderTasks() {},
+    refreshSessions() {}, clearCurrent() {}, addUser() {},
+    addDelta(block, text) { deltas.push({ block, text }); },
+    addAssistant() {}, addToolResult() {}, addResult() {}, addSys() {}, resolvePermission() {},
+  };
+  runInNewContext(openSrc + '\n' + onSrc, context);
+  return { S, pending, deltas, openSession: (...a) => context.openSession(...a), onSessionEvent: (...a) => context.onSessionEvent(...a) };
+}
+
+test('concurrent openSession of the same id keeps the buffer and applies only the latest response', async () => {
+  const c = openingClient();
+  const first = c.openSession('s1');
+  assert.equal(c.pending.length, 1);
+  c.onSessionEvent({ sessionId: 's1', seq: 5, kind: 'delta', block: 0, text: 'a' });
+  assert.equal(c.S.bufferedEvents.length, 1);
+  const second = c.openSession('s1');
+  assert.equal(c.pending.length, 2);
+  assert.equal(c.S.bufferedEvents.length, 1, 'same-id reopen must not drop buffered events');
+  c.onSessionEvent({ sessionId: 's1', seq: 6, kind: 'delta', block: 0, text: 'b' });
+  assert.equal(c.S.bufferedEvents.length, 2);
+  c.pending[0].resolve({ id: 's1', seq: 4, title: 'first', cwd: '/x', messages: [], pending: [] });
+  await first;
+  assert.equal(c.S.current, null);
+  assert.ok(c.S.opening);
+  c.pending[1].resolve({ id: 's1', seq: 4, title: 'second', cwd: '/x', messages: [], pending: [] });
+  await second;
+  assert.equal(c.S.current.title, 'second');
+  assert.equal(c.S.opening, null);
+  assert.deepEqual(c.deltas.map((d) => d.text), ['a', 'b']);
+});
+
+test('openSession error on the latest call clears opening state', async () => {
+  const c = openingClient();
+  const p = c.openSession('s1');
+  c.pending[0].reject(new Error('offline'));
+  await assert.rejects(p, /offline/);
+  assert.equal(c.S.opening, null);
+  assert.equal(c.S.bufferedEvents, null);
+});

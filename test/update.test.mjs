@@ -22,6 +22,14 @@ const setup = () => {
   return { origin, a, b };
 };
 
+test('update: overlapping applyUpdate calls share the in-flight promise', { skip: !git && 'git not installed' }, async () => {
+  const { b } = setup();
+  const first = applyUpdate({ cwd: b, npm: false });
+  const second = applyUpdate({ cwd: b, npm: false });
+  assert.equal(first, second, 'a concurrent apply reuses the in-flight promise');
+  await first;
+});
+
 test('update: a slow git check yields to the event loop and overlapping checks share it', async () => {
   const cwd = tmpDir('slow-update'); writeFileSync(join(cwd, '.git'), 'gitdir: nowhere');
   let calls = 0, release;

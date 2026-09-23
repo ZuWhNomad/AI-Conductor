@@ -106,11 +106,18 @@ export function spawnCodex(args, opts = {}) {
 
 /** Kill a child and its descendants (Codex spawns a native binary under the node shim). */
 export function killTree(child) {
-  if (!child?.pid || child.exitCode !== null) return; // never spawned (ENOENT) or already gone
-  try {
-    if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    else process.kill(-child.pid, 'SIGTERM');
-  } catch { try { child.kill(); } catch {} }
+  if (!child) return;
+  if (child.pid && child.exitCode === null) {
+    try {
+      if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else process.kill(-child.pid, 'SIGTERM');
+    } catch { try { child.kill(); } catch {} }
+  } else if (child.pid && !WIN) {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch {} // group may still hold the pipes after the direct child exited
+  }
+  // A grandchild can keep the pipes open after the kill, so 'close' never fires: after a short grace (output already
+  // written still drains), destroy them.
+  setTimeout(() => { try { child.stdout?.destroy(); } catch {} try { child.stderr?.destroy(); } catch {} }, 500).unref?.();
 }
 
 export function trackProbe(child) {

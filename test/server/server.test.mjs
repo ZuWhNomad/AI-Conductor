@@ -312,3 +312,44 @@ test('changing the update cadence preserves startup and busy rechecks; off cance
   context.start({ initial: false });
   assert.ok(timers.filter((t) => !t.fired).every((t) => t.cleared));
 });
+
+test('auto-update defers relaunch when work starts during applyUpdate, then relaunches on idle recheck without a second pull', async () => {
+  const { DEFAULTS } = await import('../../core/config.mjs');
+  const cfg = structuredClone(DEFAULTS), timers = [];
+  const timer = (fn, ms) => { const t = { fn, ms, fired: false, cleared: false, unref() { return this; } }; timers.push(t); return t; };
+  let running = 0, applyCalls = 0, applyRelease, applying, relaunches = 0;
+  const applyResult = { updated: true, from: 'aaa', to: 'bbb', commits: 1, npmInstalled: false, npmError: null, restartNeeded: true };
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  const context = {
+    loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
+    clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
+    conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, listTasks: () => [], lastActivity: 0, isIdle,
+    checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
+    lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
+    applyUpdate: () => {
+      applyCalls++;
+      const p = new Promise((resolve) => { applyRelease = () => resolve(applyResult); });
+      applying();
+      return p;
+    },
+    scheduleRelaunch: () => { relaunches++; return true; },
+    bus: { publish() {} },
+  };
+  runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
+  context.start();
+  const startup = timers.find((t) => t.ms === 3000);
+  const enteredApply = new Promise((resolve) => { applying = resolve; });
+  const started = startup.fn();
+  await enteredApply;
+  assert.equal(applyCalls, 1);
+  running = 1; // a chat starts while pull + npm install are in flight
+  applyRelease();
+  await started;
+  assert.equal(relaunches, 0, 'no relaunch while busy after apply');
+  const busy = timers.find((t) => t.ms === 60_000);
+  assert.ok(busy, 'schedules the idle recheck');
+  running = 0;
+  await busy.fn();
+  assert.equal(applyCalls, 1, 'no second pull');
+  assert.equal(relaunches, 1, 'relaunches once idle');
+});

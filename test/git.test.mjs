@@ -59,6 +59,26 @@ test('git observes content edits to already-dirty tracked files with unchanged s
   assert.deepEqual(await _git.changedSince(cwd, before), [name]);
 });
 
+test('git status from a subdirectory reports cwd-relative dirty tracked and existing untracked edits', { skip: !git }, async () => {
+  const repo = tmpDir('git-pkg');
+  const run = (...args) => execFileSync(git, args, { cwd: repo, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  const pkg = join(repo, 'pkg');
+  mkdirSync(pkg);
+  writeFileSync(join(pkg, 'a.txt'), 'base');
+  run('add', '--', 'pkg/a.txt');
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  writeFileSync(join(pkg, 'a.txt'), 'dirty');
+  writeFileSync(join(pkg, 'u.txt'), 'untracked');
+  const before = await _git.gitStatus(pkg);
+  assert.ok(before.has('a.txt'), [...before.keys()]);
+  assert.ok(before.has('u.txt'), [...before.keys()]);
+  writeFileSync(join(pkg, 'a.txt'), 'edited-again');
+  writeFileSync(join(pkg, 'u.txt'), 'rewritten');
+  const changed = await _git.changedSince(pkg, before);
+  assert.deepEqual([...changed].sort(), ['a.txt', 'u.txt']);
+});
+
 test('git status walks parent directories so a subdirectory cwd is still a repo', { skip: !git }, async () => {
   const cwd = tmpDir('git-sub');
   const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });

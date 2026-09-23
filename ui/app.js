@@ -499,16 +499,18 @@ async function openTask(id) {
 
 // ---------- sessions ----------
 async function openSession(id) {
-  S.opening = id;
-  S.bufferedEvents = [];
+  const tok = {};
+  const same = S.opening?.id === id;
+  S.opening = { id, tok };
+  if (!same || !S.bufferedEvents) S.bufferedEvents = [];
   let s;
   try {
     s = await api.get(`/api/sessions/${id}`);
   } catch (e) {
-    if (S.opening === id) { S.opening = null; S.bufferedEvents = null; }
+    if (S.opening?.tok === tok) { S.opening = null; S.bufferedEvents = null; }
     throw e;
   }
-  if (S.opening !== id) return;
+  if (S.opening?.tok !== tok) return;
   S.opening = null;
   const buffered = S.bufferedEvents || [];
   S.bufferedEvents = null;
@@ -709,7 +711,7 @@ function onSessionEvent(ev) {
     return;
   }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
-  if (S.opening && ev.sessionId === S.opening) { S.bufferedEvents?.push(ev); return; }
+  if (S.opening && ev.sessionId === S.opening.id) { S.bufferedEvents?.push(ev); return; }
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {
     case 'user': addUser(ev.text); $('#chat-title').textContent = S.current.title = (S.current.title === 'New chat' ? ev.text.slice(0, 60) : S.current.title); break;
