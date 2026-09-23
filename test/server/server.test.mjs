@@ -125,6 +125,36 @@ test('task follow-ups inherit cwd without requiring it in the request', async ()
   await post(`/api/tasks/${follow.id}/cancel`);
 });
 
+test('SSE hello exposes the oldest retained event when the replay cursor has fallen behind', async () => {
+  const { bus } = await import('../../core/bus.mjs');
+  const empty = new bus.constructor();
+  assert.equal(empty.oldest, empty.seq + 1);
+  const cursor = bus.seq;
+  // The bus contract retains 2000 events; one more evicts the event immediately after this cursor.
+  for (let i = 0; i < 2001; i++) bus.publish('replay-test');
+  assert.equal(bus.oldest, cursor + 2);
+  assert.equal(bus.since(cursor).length, 2000);
+  const res = await fetch(url + `/api/events?since=${cursor}`);
+  const reader = res.body.getReader();
+  try {
+    let chunk = '';
+    while (!chunk.includes('\n\n')) chunk += new TextDecoder().decode((await reader.read()).value);
+    const hello = JSON.parse(chunk.split('\n')[1].slice(6));
+    assert.equal(hello.oldest, cursor + 2);
+    assert.equal(hello.boot, (await get('/api/state')).boot);
+  } finally { await reader.cancel(); }
+});
+
+test('resolving an improvement over HTTP publishes exactly one event', async () => {
+  const { bus } = await import('../../core/bus.mjs');
+  const entry = await post('/api/improvements', { kind: 'idea', message: 'resolution route fixture' });
+  const seq = bus.seq;
+  assert.deepEqual(await post(`/api/improvements/${entry.id}/resolve`), { ok: true });
+  const events = bus.since(seq).filter((e) => e.type === 'improvement' && e.resolved === entry.id);
+  assert.equal(events.length, 1);
+  assert.ok(!(await get('/api/improvements')).some((e) => e.id === entry.id));
+});
+
 test('bad requests are client errors and leave state usable', async () => {
   const cwd = tmpDir('srv-validation');
   const send = (p, body, headers = {}) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });

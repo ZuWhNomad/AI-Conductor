@@ -520,6 +520,11 @@ test('wasteDiscount: a soon-resetting subscription window with unused quota is d
   wk(20, 6); assert.ok(wasteDiscount('codex', cfg, null) < 0.5, 'near reset with 80% headroom -> heavy discount');
   wk(20, 100); assert.equal(wasteDiscount('codex', cfg, null), 1, 'far from reset -> no discount');
   wk(95, 6); assert.ok(wasteDiscount('codex', cfg, null) > 0.9, 'near reset but little headroom -> tiny discount');
+  for (const used of [-50, -Infinity, 0, 100, 150]) {
+    wk(used, 0.001);
+    const factor = wasteDiscount('codex', cfg, null);
+    assert.ok(factor >= 1 - cfg.wasteStrength && factor <= 1, `usage ${used}: discount must remain bounded, got ${factor}`);
+  }
   // 5-hour windows churn; they are ignored.
   lim.providers.codex = { windows: [{ id: 'codex:5h', label: '5-hour', usedPercent: 10, resetsAt: Date.now() + 1 * 3600e3, windowMinutes: 300 }] };
   assert.equal(wasteDiscount('codex', cfg, null), 1, '5-hour window is not a waste source');
@@ -1038,4 +1043,3 @@ test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
     assert.equal(sc.summarize({ source }).find((g) => g.provider === 'ollama').avgUsd, 0);
   } finally { saveConfig({ scorecard: cfg }); }
 });
-

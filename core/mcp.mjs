@@ -93,10 +93,22 @@ export const forClaudeSdk = (servers, { skip = [] } = {}) => Object.fromEntries(
  * `codex exec -c` overrides. Servers Codex already knows (source 'codex') only get the approval mode
  * (exec runs with approval_policy=never, which otherwise rejects MCP calls); others are defined in full.
  * A supplied registry is authoritative: disable inherited servers absent after config removal/category scoping.
+ * Returns { args, env }; merge env into the Codex process environment, never its argv. Conflicting env names
+ * cannot be forwarded from one process environment: only those keys retain per-server literal overrides.
  */
 export function codexMcpArgs(servers) {
-  const args = [];
-  if (servers == null) return args;
+  const args = [], env = {};
+  if (servers == null) return { args, env };
+  const envKey = (key) => process.platform === 'win32' ? key.toUpperCase() : key;
+  const values = new Map(), conflicts = new Set();
+  for (const s of Object.values(servers)) {
+    if (s.url) continue;
+    for (const [key, value] of Object.entries(s.env || {})) {
+      const k = envKey(key), v = String(value);
+      if (values.has(k) && values.get(k) !== v) conflicts.add(k);
+      values.set(k, v);
+    }
+  }
   const q = (v) => JSON.stringify(String(v)).replace(/\x7f/g, '\\u007f');
   const table = (entries) => `{${Object.entries(entries).map(([k, v]) => `${q(k)}=${v}`).join(',')}}`;
   const dotted = {};
@@ -113,7 +125,13 @@ export function codexMcpArgs(servers) {
       else {
         put(name, 'command', q(s.command));
         put(name, 'args', `[${(s.args || []).map(q).join(',')}]`);
-        put(name, 'env', table(Object.fromEntries(Object.entries(s.env || {}).map(([k, v]) => [k, q(v)]))));
+        const forward = [], literal = {};
+        for (const [key, value] of Object.entries(s.env || {})) {
+          if (conflicts.has(envKey(key))) literal[key] = q(value);
+          else { forward.push(key); env[envKey(key)] = String(value); }
+        }
+        put(name, 'env_vars', `[${forward.map(q).join(',')}]`);
+        put(name, 'env', table(literal)); // also clear an inherited env table that would override forwarded values
       }
       put(name, 'tool_timeout_sec', s.toolTimeoutSec || 3600);
       put(name, 'startup_timeout_sec', s.startupTimeoutSec || 30);
@@ -123,5 +141,5 @@ export function codexMcpArgs(servers) {
   // Codex 0.153.4 splits CLI keypaths on literal dots, even inside quotes. Group dotted names
   // in ONE table override, before other paths: a later mcp_servers table would replace this one.
   if (Object.keys(dotted).length) args.unshift('-c', `mcp_servers=${table(Object.fromEntries(Object.entries(dotted).map(([n, fields]) => [n, table(fields)])))}`);
-  return args;
+  return { args, env };
 }

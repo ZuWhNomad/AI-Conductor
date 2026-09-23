@@ -21,7 +21,8 @@ export function logImprovement(kind, source, message, context = {}) {
   if (hit) { hit.repeats++; return hit.entry; } // same problem within 10 minutes is one entry, not a flood
   const contextText = JSON.stringify(context);
   if (contextText.length > 4000) context = contextText.slice(0, 4000); // same cap as message; keep small contexts structured
-  const entry = { id: shortId(), ts: nowIso(), kind, source, message: msg, context, resolved: false };
+  const ids = new Set(readNdjson(FILE()).map((e) => e.id));
+  const entry = { id: shortId((id) => ids.has(id)), ts: nowIso(), kind, source, message: msg, context, resolved: false };
   recent.set(key, { at: now, entry, repeats: 0 });
   appendNdjson(FILE(), entry);
   bus.publish('improvement', { entry });
@@ -42,12 +43,14 @@ export function listImprovements({ includeResolved = false } = {}) {
 
 export function resolveImprovement(id) {
   appendNdjson(FILE(), { op: 'resolve', id, ts: nowIso() });
+  bus.publish('improvement', { resolved: id });
 }
 
 /** Capture unexpected process errors without crashing the server. */
 export function installGlobalErrorCapture() {
-  process.on('uncaughtException', (err) => logImprovement('error', 'process', `uncaughtException: ${err?.stack || err}`));
-  process.on('unhandledRejection', (err) => logImprovement('error', 'process', `unhandledRejection: ${err?.stack || err}`));
+  for (const event of ['uncaughtException', 'unhandledRejection']) {
+    process.on(event, (err) => { try { logImprovement('error', 'process', `${event}: ${err?.stack || err}`); } catch {} });
+  }
 }
 
 /** The prompt a review session receives. Runs on the Conductor repo itself. */

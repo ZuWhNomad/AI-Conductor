@@ -19,8 +19,7 @@ export function refreshModels({ only = null } = {}) {
   if (inflightByScope.has(key)) return inflightByScope.get(key);
   const inflight = (async () => {
     const { PROVIDERS } = await import('./providers/index.mjs');
-    const providers = { ...cache.providers };
-    let models = [...cache.models];
+    const fresh = {}, lists = {};
     const targets = Object.values(PROVIDERS).filter((p) => !only || only.includes(p.id));
     await Promise.allSettled(targets.map(async (p) => {
       const t0 = Date.now();
@@ -30,13 +29,15 @@ export function refreshModels({ only = null } = {}) {
         // missing installs / missing keys skip the call.
         const usable = det.installed !== false && det.configured !== false;
         const list = usable ? await p.listModels() : [];
-        models = models.filter((m) => m.provider !== p.id).concat(list);
-        providers[p.id] = { ...det, status: usable && det.loggedIn !== false ? 'ok' : 'unavailable', count: list.length, error: det.error || null, updatedAt: nowIso(), ms: Date.now() - t0 };
+        lists[p.id] = list;
+        fresh[p.id] = { ...det, status: usable && det.loggedIn !== false ? 'ok' : 'unavailable', count: list.length, error: det.error || null, updatedAt: nowIso(), ms: Date.now() - t0 };
       } catch (e) {
-        providers[p.id] = { ...(providers[p.id] || {}), status: 'error', error: String(e?.message || e), updatedAt: nowIso(), ms: Date.now() - t0 };
+        fresh[p.id] = { ...(cache.providers[p.id] || {}), status: 'error', error: String(e?.message || e), updatedAt: nowIso(), ms: Date.now() - t0 };
       }
     }));
     const before = cache;
+    const providers = { ...cache.providers, ...fresh };
+    const models = cache.models.filter((m) => !Object.hasOwn(lists, m.provider)).concat(...Object.values(lists));
     cache = { updatedAt: nowIso(), providers, models: sortModels(models) };
     writeJson(FILE(), cache);
     try { const { noteNewModels } = await import('./bench.mjs'); noteNewModels(before, cache); } catch {}

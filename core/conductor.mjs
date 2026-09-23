@@ -125,7 +125,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     if (!sel.model && runtime !== 'claude') throw new Error(`No model known for provider ${sel.provider}; refresh models or pick one explicitly`);
   } catch (e) { throw Object.assign(e, { status: 400 }); }
   const s = {
-    id: shortId(), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: honoredEffort(sel.provider, sel.model, sel.effort),
+    id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: honoredEffort(sel.provider, sel.model, sel.effort),
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
     costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null,
   };

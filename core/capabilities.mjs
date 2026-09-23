@@ -68,8 +68,8 @@ export function capabilitiesFor(category, cfg = loadConfig()) {
 
 /**
  * Lines appended to a worker spec after the recipe: only what is installed (or an access note), never a proposed
- * entry that the user has not approved. The recipe and these lines share one budget, so a worker's prompt cannot
- * silently double; the caller passes what is left.
+ * entry that the user has not approved. These lines have their own character budget (worker.toolLineChars),
+ * separate from the recipe; entries stop before exceeding maxChars.
  */
 export function capabilityLines(category, { maxChars = 1500, cfg = loadConfig() } = {}) {
   const lines = [];

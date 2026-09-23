@@ -18,6 +18,9 @@ class Bus extends EventEmitter {
   /** Latest sequence number handed out (0 before any event). */
   get seq() { return this.#seq; }
 
+  /** Oldest sequence available for replay (the next sequence when empty). */
+  get oldest() { return this.#ring[0]?.seq ?? this.#seq + 1; }
+
   since(seq = 0) {
     return this.#ring.filter((e) => e.seq > seq);
   }

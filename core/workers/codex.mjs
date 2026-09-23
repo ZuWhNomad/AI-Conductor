@@ -32,7 +32,8 @@ export function runCodex(t) {
     '-c', `sandbox_workspace_write.network_access=${t.network === false ? 'false' : 'true'}`];
   if (t.effort) args.push('-c', `model_reasoning_effort="${t.effort}"`);
   if (t.model) args.push('-c', `model="${t.model}"`);
-  args.push(...codexMcpArgs(t.mcp)); // conductor endpoint and/or the conductor-wide registry (core/mcp.mjs)
+  const mcp = codexMcpArgs(t.mcp); // conductor endpoint and/or the conductor-wide registry (core/mcp.mjs)
+  args.push(...mcp.args);
   args.push('-s', sandbox);
   if (t.resumeThreadId) args.push('resume', t.resumeThreadId, '-');
   else args.push('-');
@@ -41,7 +42,7 @@ export function runCodex(t) {
     const started = Date.now();
     const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, exitCode: null, stderr: '' };
     let child;
-    try { child = spawnCodex(args, { cwd: t.cwd }); }
+    try { child = spawnCodex(args, { cwd: t.cwd, env: { ...process.env, ...mcp.env } }); }
     catch (e) { res.error = e.message; return resolve(res); }
 
     const items = new Map();

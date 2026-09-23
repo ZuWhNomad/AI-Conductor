@@ -509,6 +509,89 @@ for (const scenario of ['exhausted', 'rejected', 'budget-disabled', 'expired', '
   });
 }
 
+for (const mode of ['session-reservation', 'weekly-reservation', 'probe', 'soft-sequential', 'fits']) {
+  test(`completion retains budget ownership through a fresh poll and scoring: ${mode}`, async (ctx) => {
+    const { getLimits, refreshLimits } = await import('../core/limits.mjs');
+    const { loadConfig, saveConfig } = await import('../core/config.mjs');
+    const { appendNdjson, statePath } = await import('../core/paths.mjs');
+    const { runRows } = await import('../core/scorecard.mjs');
+    for (const task of listTasks()) cancelTask(task.id);
+    const conductor = loadConfig().conductor;
+    saveConfig({ conductor: { maxWorkerConcurrency: 1, budgetGate: true } });
+    const provider = `settling-${mode}`, model = 'test-model';
+    const usage = (session, weekly) => ({ provider, blocked: false, windows: [
+      { id: 'session', label: '5-hour', usedPercent: session },
+      { id: 'weekly', label: 'weekly', usedPercent: weekly },
+    ] });
+    const initial = usage(mode === 'session-reservation' ? 80 : mode === 'soft-sequential' ? 96 : 0, mode === 'weekly-reservation' ? 85 : 0);
+    const updated = usage(initial.windows[0].usedPercent + (mode === 'soft-sequential' ? 1 : 10), initial.windows[1].usedPercent + 10);
+    getLimits().providers[provider] = initial;
+    if (mode !== 'probe') appendNdjson(statePath('scorecard.ndjson'), {
+      op: 'run', taskId: `seed-${provider}`, provider, model, pct: { session: 10, weekly: 10 }, concurrent: 0,
+    });
+    const oldPoll = Promise.withResolvers(), freshPoll = Promise.withResolvers(), freshEntered = Promise.withResolvers();
+    let polls = 0;
+    PROVIDERS[provider] = {
+      id: provider, kind: 'openai-compat', workerConfig: () => ({ baseUrl: 'https://offline.example/v1', apiKey: 'test-only' }),
+      pollLimits: () => {
+        if (++polls === 1) return oldPoll.promise;
+        if (polls === 2) { freshEntered.resolve(); return freshPoll.promise; }
+        return updated;
+      },
+    };
+    let calls = 0;
+    const secondStarted = Promise.withResolvers(), secondFinish = Promise.withResolvers();
+    mockCompletions(ctx, async () => {
+      if (++calls === 2) {
+        secondStarted.resolve(runRows().some((row) => row.taskId === first.id));
+        await secondFinish.promise;
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] }), { status: 200 });
+    });
+    const stale = refreshLimits({ only: [provider] }); // already in flight before the worker finishes
+    const cwd = tmpDir('settling');
+    const first = createTask({ cwd, provider, model, spec: 'first' });
+    let second, other;
+    try {
+      delete process.env.CONDUCTOR_NO_SCHEDULE;
+      schedule();
+      assert.equal((await awaitTask(first.id)).status, 'done', 'waiters do not wait for accounting');
+      assert.equal(polls, 1);
+      assert.ok(!runRows().some((row) => row.taskId === first.id));
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      second = createTask({ cwd, provider, model, spec: 'second' });
+      if (mode !== 'fits') other = createTask({ cwd, provider: 'missing-test-provider', spec: 'other provider can use the slot' });
+      delete process.env.CONDUCTOR_NO_SCHEDULE;
+      schedule();
+      assert.equal(second.status, mode === 'fits' ? 'running' : 'queued');
+      if (other) assert.equal((await awaitTask(other.id)).status, 'failed', 'settling does not occupy maxWorkerConcurrency');
+      if (mode === 'fits') assert.equal(await secondStarted.promise, false, 'remaining headroom permits dispatch while accounting settles');
+      oldPoll.resolve(initial);
+      await stale;
+      await freshEntered.promise;
+      assert.ok(!runRows().some((row) => row.taskId === first.id), 'a pre-completion poll cannot settle the score');
+      assert.equal(second.status, mode === 'fits' ? 'running' : 'queued');
+      freshPoll.resolve(updated);
+      await flushRecords();
+      assert.deepEqual(runRows().find((row) => row.taskId === first.id).pct, {
+        session: updated.windows[0].usedPercent - initial.windows[0].usedPercent, weekly: 10,
+      });
+      if (mode !== 'fits') assert.equal(await secondStarted.promise, true, 'settlement reschedules only after recording the cost');
+      secondFinish.resolve();
+      assert.equal((await awaitTask(second.id)).status, 'done');
+    } finally {
+      process.env.CONDUCTOR_NO_SCHEDULE = '1';
+      oldPoll.resolve(initial); freshPoll.resolve(updated); secondFinish.resolve();
+      for (const task of [first, second, other].filter(Boolean)) cancelTask(task.id);
+      await stale;
+      await flushRecords();
+      delete PROVIDERS[provider];
+      delete getLimits().providers[provider];
+      saveConfig({ conductor });
+    }
+  });
+}
+
 test('recorded concurrency divides global and model-exclusive window costs independently', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
   const { runRows } = await import('../core/scorecard.mjs');

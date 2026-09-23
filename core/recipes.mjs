@@ -29,4 +29,4 @@ export function recipeFor(category, variant = null) {
   return cache.get(file);
 }
 
-export const listRecipes = () => Object.entries(RECIPES).map(([category, file]) => ({ category, file, present: !!recipeFor(category) }));
+export const listRecipes = () => Object.entries(defaults()).map(([category, file]) => ({ category, file, present: !!recipeFor(category) }));

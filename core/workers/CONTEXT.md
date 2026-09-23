@@ -14,6 +14,9 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Host execution is not limited
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
   and `gpt-6-astra` defaults to `danger-full-access`. `fetch_url` has an SSRF guard.
+- `openai-compat-files.mjs` — async canonical-path checks and bounded file reads; the disposable search worker
+  runs the entire traversal and regex off the server thread. Search terminates at the task deadline (or the configured
+  worker-run timeout when none was supplied), and on cancellation. The tool waits for termination before settling.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs.
 - `image.mjs` — image generation.
 
@@ -23,10 +26,11 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
 - The openai-compat `run` tool is disabled by default (`worker.shell: false`). Explicit `true` or an allow-list
   trusts host execution: permitted programs can read/write outside the workspace. `shellDenied` filters commands,
-  not their filesystem access. This setting does not change Codex sandbox defaults or per-model exceptions.
-- File tools check canonical workspace containment via `safe()`, including symlinks/junctions and new-file
+  not their filesystem access. The allow-list deliberately rejects operators even inside quotes; it does not strip
+  quoted spans or parse shell-specific escapes. This setting does not change Codex sandbox defaults or per-model exceptions.
+- File tools check canonical workspace containment via `safePath()`, including symlinks/junctions and new-file
   ancestors. These checks cannot prevent concurrent link swaps (TOCTOU); they are not an OS sandbox.
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 
-**How to test.** `test/workers/`: `openai-compat.test.mjs`, `shell-safety.test.mjs` (spawn/allow-list),
+**How to test.** `test/workers/`: `openai-compat.test.mjs`, `file-tools.test.mjs` (responsiveness, bounds, cleanup), `shell-safety.test.mjs` (spawn/allow-list),
 `vendor-cli.test.mjs`, `codex-args.test.mjs` / `codex-parse.test.mjs`. `CONDUCTOR_HOME`-isolated.

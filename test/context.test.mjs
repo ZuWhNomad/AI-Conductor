@@ -1,8 +1,8 @@
+import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpDir } from './_env.mjs';
+import { join, parse } from 'node:path';
 
 const { findContextFiles, contextBlock, folderTree, isInside } = await import('../core/context.mjs');
 
@@ -29,6 +29,26 @@ test('context block is capped', () => {
   const [f] = findContextFiles(root, [], { maxChars: 1000 });
   assert.ok(f.content.length < 1100);
   assert.match(f.content, /truncated/);
+});
+
+test('containment respects path boundaries and platform casing', () => {
+  const root = join(tmpDir('ctx-case'), 'Project');
+  assert.equal(isInside(root, root.toLowerCase()), process.platform === 'win32');
+  assert.equal(isInside(root, join(root.toLowerCase(), 'sub')), process.platform === 'win32');
+  assert.equal(isInside(root, root.toLowerCase() + '-backup'), false);
+  assert.equal(isInside(root, '../outside'), false);
+  assert.equal(isInside(parse(root).root, root), true, 'filesystem roots retain their separator boundary');
+});
+
+test('Windows context discovery accepts differently cased absolute paths', { skip: process.platform !== 'win32' }, () => {
+  const root = tmpDir('ctx-case-notes');
+  mkdirSync(join(root, 'Sub'));
+  writeFileSync(join(root, 'AGENTS.md'), '# root');
+  writeFileSync(join(root, 'Sub', 'CONTEXT.md'), '# nested');
+  writeFileSync(join(root, 'Sub', 'file.js'), 'x');
+  const expected = findContextFiles(root, ['Sub/file.js']).map((f) => f.content);
+  assert.deepEqual(expected, ['# root', '# nested']);
+  assert.deepEqual(findContextFiles(root.toUpperCase(), [join(root, 'sub', 'file.js').toLowerCase()]).map((f) => f.content), expected);
 });
 
 test('under the cap the deepest note survives whole; the root note is the one trimmed', () => {

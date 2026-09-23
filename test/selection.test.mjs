@@ -2,7 +2,7 @@ import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeJson } from '../core/paths.mjs';
+import { readJson, writeJson } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 
 // The registry is loaded at import time: seed the one model the no-effort test needs (no Codex models, on purpose).
@@ -34,6 +34,26 @@ test('session creation validates directory, permission mode and model selection'
   assert.equal(s.title, '123'); deleteSession(s.id);
   const long = createSession({ cwd, title: 'x'.repeat(150) });
   assert.equal(long.title.length, 120); deleteSession(long.id);
+});
+
+test('session ID collisions preserve existing sessions and their histories', async (ctx) => {
+  const samples = [0.125, 0.125, 0.25];
+  ctx.mock.method(Math, 'random', () => { assert.ok(samples.length); return samples.shift(); });
+  const cwd = tmpDir('session-collision');
+  const first = createSession({ cwd, title: 'first', provider: 'ollama', model: 'qwen2.5:3b' });
+  const history = [{ role: 'user', text: 'keep this history' }];
+  writeJson(join(HOME, 'history', `${first.id}.messages.json`), history);
+  const second = createSession({ cwd, title: 'second', provider: 'ollama', model: 'qwen2.5:3b' });
+  try {
+    assert.notEqual(second.id, first.id);
+    const { getSession } = await import('../core/conductor.mjs');
+    assert.equal((await getSession(first.id)).title, 'first');
+    assert.deepEqual((await getSession(first.id)).messages, history);
+    const saved = readJson(join(HOME, 'sessions.json'));
+    assert.equal(saved.find((s) => s.id === first.id).title, 'first');
+    assert.equal(saved.find((s) => s.id === second.id).title, 'second');
+    assert.deepEqual(readJson(join(HOME, 'history', `${first.id}.messages.json`)), history);
+  } finally { deleteSession(first.id); deleteSession(second.id); }
 });
 
 test('setTitle renames a chat, trims and clamps, and rejects empty or unknown', () => {

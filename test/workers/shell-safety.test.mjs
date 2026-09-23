@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
 import { resolveNpmShim, winArgEscape, spawnCli } from '../../core/proc.mjs';
-import { shellDenied, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
+import { shellDenied, runDescription, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';
 
@@ -72,6 +72,17 @@ test('worker.shell allow-list blocks operators, chaining and prefix bypasses', (
   assert.match(shellDenied(AL, 'git x > /dev/null'), /operators/);          // redirect
   assert.match(shellDenied(AL, 'C:/tmp/git-unlisted.cmd'), /not a path/);   // path-qualified, even if basename looks listed
   assert.match(shellDenied(AL, 'gitfoo --x'), /not in/);
+});
+
+test('P43: allow-list documents and refuses quoted operators and recorded quote/escape bypasses', () => {
+  assert.match(runDescription(['git']), /operators are rejected even inside quotes/);
+  for (const command of [
+    'git commit -m "a; b"',                         // intentionally refused quoted literal
+    'git log --format="%h|%s"',                    // intentionally refused quoted literal
+    `git '"' | evil '"'`,                          // POSIX: single-quoted quote leaves a real pipe
+    String.raw`git \"a | evil "#"`,                // POSIX: escaped opening quote
+    'git ^"a | evil "',                            // cmd.exe: caret-escaped opening quote
+  ]) assert.match(shellDenied(['git'], command), /operators .*are rejected even inside quotes/, command);
 });
 
 test('D9: allow-list rejects a path or dot-prefixed first token; a bare git is allowed', () => {

@@ -1,28 +1,30 @@
 // Generic tool-calling worker for any OpenAI-compatible chat-completions API
 // (DeepSeek, Kimi/Moonshot, Grok/xAI, Qwen/DashScope, Gemini's compat endpoint, Ollama /v1).
 // File tools check workspace containment; optional command execution has unsandboxed host access.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, lstatSync, realpathSync, existsSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdir, realpath } from 'node:fs/promises';
+import { dirname, join, relative } from 'node:path';
 import { spawn } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
 import { bus } from '../bus.mjs';
-import { isInside } from '../context.mjs';
 import { killTree } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
+import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
 
 /**
  * Gate for the `run` tool (API/Ollama workers have no OS sandbox). Returns a refusal string when the command is not
  * permitted under `worker.shell`, or null when it may run. `worker.shell`: true = allowed; false/'off' = disabled;
  * an array = allow-list of command names. Allow-list mode permits ONE simple command whose executable is listed
- * (exact name/basename, extension-insensitive — never a prefix or path) and rejects every shell control operator, so
+ * (exact name/basename, extension-insensitive — never a prefix or path) and rejects shell operators even inside quotes, so
  * `git & evil`, `git | evil`, `git && evil`, redirects, subshells and backticks can't smuggle a second command.
  */
 export function shellDenied(shell, command) {
   if (shell === false || shell === 'off') return 'run disabled: worker.shell is off in this conductor config';
   if (!Array.isArray(shell)) return null;
   const cmd = String(command || '');
-  if (/[&|;\n\r`]|\$\(|[<>]/.test(cmd)) return `run blocked: worker.shell allow-list permits a single command with no shell operators (& | ; < > \` $() ); got: ${cmd.slice(0, 80)}`;
+  if (/[&|;\n\r`]|\$\(|[<>]/.test(cmd)) return `run blocked: worker.shell allow-list permits a single command; shell operators (& | ; < > \` $() ) are rejected even inside quotes; got: ${cmd.slice(0, 80)}`;
   const first = cmd.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '');
   if (/[\\/]/.test(first) || first.startsWith('.')) return `run blocked: worker.shell allow-list permits a bare command name, not a path; got: ${first.slice(0, 80)}`;
   const base = first.replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
@@ -34,8 +36,6 @@ export function shellDenied(shell, command) {
 export function runEnv(env = process.env) {
   return { ...env, NoDefaultCurrentDirectoryInExePath: '1' };
 }
-
-const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__']);
 
 const TOOLS = [
   { name: 'read_file', description: 'Read a UTF-8 text file. Returns at most 60k characters.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
@@ -49,7 +49,7 @@ const TOOLS = [
 
 /** Describe the command filter without claiming it provides a host sandbox. */
 export function runDescription(shell) {
-  const gate = shell === false || shell === 'off' ? 'Disabled in this workspace: every command is refused' : Array.isArray(shell) ? `Only these programs are allowed (first word of the command): ${shell.join(', ')}; shell control operators are refused` : 'Any shell command is allowed';
+  const gate = shell === false || shell === 'off' ? 'Disabled in this workspace: every command is refused' : Array.isArray(shell) ? `Only these programs are allowed (first word of the command): ${shell.join(', ')}; shell control operators are rejected even inside quotes` : 'Any shell command is allowed';
   return `Run a host shell command in the project directory. ${gate}. Enabled commands are not sandboxed and can access files outside the workspace. timeout_s (default 120). Returns exit code and output.`;
 }
 
@@ -111,40 +111,59 @@ export function closeDanglingToolCalls(messages, note = 'aborted before executio
   return messages;
 }
 
-function makeTools(cwd, signal) {
-  const root = realpathSync(cwd);
-  const safe = (p) => {
-    const a = resolve(cwd, p || '.');
-    if (!isInside(cwd, a)) throw new Error(`path outside project: ${p}`);
-    // For a new file, resolve its nearest existing ancestor. lstat keeps dangling links from
-    // being mistaken for missing paths. These checks cannot prevent concurrent link swaps (TOCTOU).
-    let existing = a;
-    for (;;) {
-      try { lstatSync(existing); break; }
-      catch (e) { if (e.code !== 'ENOENT') throw e; existing = dirname(existing); }
-    }
-    if (!isInside(root, realpathSync(existing))) throw new Error(`path outside project: ${p}`);
-    return a;
-  };
+function searchInWorker(data, signal, deadline) {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'));
+  if (Date.now() >= deadline) return Promise.reject(new Error('search timeout'));
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./openai-compat-files.mjs', import.meta.url), { workerData: { type: 'openai-compat-search', ...data } });
+    let finished = false;
+    const finish = async (error, result) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      // Wait for termination, including a regex stuck in native code, before settling the tool.
+      try { await worker.terminate(); } catch (e) { error ||= e; }
+      worker.removeListener('message', onMessage);
+      worker.removeListener('error', onError);
+      worker.removeListener('exit', onExit);
+      if (error) reject(error); else resolve(result);
+    };
+    const onMessage = ({ error, result }) => finish(error ? new Error(error) : null, result);
+    const onError = (error) => finish(error);
+    const onExit = (code) => finish(new Error(`search worker exited without a result (exit ${code})`));
+    const onAbort = () => finish(new Error('aborted'));
+    const timer = setTimeout(() => finish(new Error('search timeout')), Math.max(0, deadline - Date.now()));
+    worker.once('message', onMessage);
+    worker.once('error', onError);
+    worker.once('exit', onExit);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+async function makeTools(cwd, signal, deadline) {
+  const root = await realpath(cwd);
+  const safe = (p) => safePath(cwd, root, p);
   return {
-    read_file: ({ path }) => readFileSync(safe(path), 'utf8').slice(0, 60000),
-    write_file: ({ path, content }) => { const f = safe(path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content); return `wrote ${content.length} chars to ${path}`; },
-    edit_file: ({ path, old, new: nu }) => {
-      const f = safe(path); const s = readFileSync(f, 'utf8');
+    // UTF-8 needs at most three bytes per UTF-16 code unit (astral characters use two units).
+    read_file: async ({ path }) => (await readBytes(await safe(path), 60000 * 3)).toString('utf8').slice(0, 60000),
+    write_file: async ({ path, content }) => { const f = await safe(path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content); return `wrote ${content.length} chars to ${path}`; },
+    edit_file: async ({ path, old, new: nu }) => {
+      const f = await safe(path); const s = readFileSync(f, 'utf8');
       const first = s.indexOf(old); if (first < 0) throw new Error('`old` not found');
       if (s.indexOf(old, first + 1) >= 0) throw new Error('`old` is ambiguous (multiple matches)');
       writeFileSync(f, s.slice(0, first) + nu + s.slice(first + old.length)); return 'edited';
     },
-    list_dir: ({ path }) => {
-      const root = safe(path); const out = [];
-      const walk = (d, lvl) => { if (lvl > 2) return; for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = safe(join(d, e.name)); out.push(relative(cwd, p) + (e.isDirectory() ? '/' : '')); if (e.isDirectory()) walk(p, lvl + 1); if (out.length > 500) return; } };
-      walk(root, 0); return out.join('\n');
+    list_dir: async ({ path }) => {
+      const root = await safe(path); const out = [];
+      const walk = async (d, lvl) => { if (lvl > 2) return; for (const e of await readdir(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = await safe(join(d, e.name)); out.push(relative(cwd, p) + (e.isDirectory() ? '/' : '')); if (e.isDirectory()) await walk(p, lvl + 1); if (out.length > 500) return; } };
+      await walk(root, 0); return out.join('\n');
     },
-    search: ({ pattern, path }) => {
-      const re = new RegExp(pattern); const root = safe(path); const hits = [];
-      const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = safe(join(d, e.name)); if (e.isDirectory()) walk(p); else if (statSync(p).size < 2e6) { const lines = readFileSync(p, 'utf8').split('\n'); lines.forEach((l, i) => { if (re.test(l) && hits.length < 200) hits.push(`${relative(cwd, p)}:${i + 1}: ${l.trim().slice(0, 200)}`); }); } if (hits.length >= 200) return; } };
-      walk(root); return hits.join('\n') || '(no matches)';
-    },
+    // The caller's task deadline is authoritative; direct calls without one use the configured
+    // worker-run timeout, so even those searches have a hard deadline without a new policy knob.
+    search: ({ pattern, path }) => searchInWorker({ cwd, root, pattern, path }, signal,
+      deadline === Infinity ? Date.now() + loadConfig().worker.timeoutMinutes * 60_000 : deadline),
     fetch_url: ({ url }) => fetchUrlText(url, { signal }),
     // Shell command with a hard deadline and cancellation. The whole process tree is killed (on Windows
     // `exec`'s timeout only kills cmd.exe and leaves the real command running).
@@ -177,7 +196,9 @@ function makeTools(cwd, signal) {
 export async function runOpenAICompat(t) {
   const res = { ok: false, provider: t.provider || 'openai-compat', finalMessage: '', items: [], usage: { input_tokens: 0, output_tokens: 0 }, error: null, limitHit: false, retryAfterMs: null, messages: null };
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data }); t.onEvent?.(event, data); };
-  const impl = { ...makeTools(t.cwd, t.signal), ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, x.impl])) };
+  const started = Date.now();
+  const deadline = t.timeoutMs ? started + t.timeoutMs : Infinity;
+  const impl = { ...await makeTools(t.cwd, t.signal, deadline), ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, x.impl])) };
   // read-only (a review): no write, edit or run tool at all, so a reviewer on these models cannot change the repo.
   // The run tool's description states its real limits, so a model does not burn a turn discovering them.
   const readOnly = t.sandbox === 'read-only';
@@ -187,8 +208,6 @@ export async function runOpenAICompat(t) {
   const messages = t.history?.length ? [...t.history] : [{ role: 'system', content: t.system || 'You are a careful software engineer working in the project directory. Use the tools to inspect and change files, run the verification commands, then finish with a short report.' }];
   if (t.prompt) messages.push({ role: 'user', content: t.prompt });
   res.messages = messages;
-  const started = Date.now();
-  const deadline = t.timeoutMs ? started + t.timeoutMs : Infinity;
   try {
     for (let i = 0; i < (t.maxIterations || 150); i++) {
       if (t.signal?.aborted) throw new Error('aborted');

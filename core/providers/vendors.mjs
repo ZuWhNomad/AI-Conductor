@@ -55,16 +55,18 @@ const pyScripts = WIN
 
 /**
  * Run a CLI with stdin closed and capture output (auth probes, model lists). An npm `.cmd` shim is unwrapped to
- * `node <entry>` and spawned directly — no cmd.exe, so no console window ever flashes during polling. Only a `.cmd`
- * we cannot unwrap falls back to the shell (windowsHide keeps that windowless too; a direct execFile on it throws EINVAL).
+ * `node <entry>` and spawned directly — no cmd.exe, so no console window ever flashes during polling.
+ * Refuse unresolved .cmd/.bat scripts instead of passing them through a shell.
  */
 export function capture(bin, args, { timeoutMs = 30_000, cwd } = {}) {
   const shim = WIN && /\.(cmd|bat)$/i.test(bin) ? resolveNpmShim(bin) : null;
-  const useShell = !shim && WIN && /\.(cmd|bat)$/i.test(bin);
-  const cmd = shim ? shim.command : useShell ? [bin, ...args].map(quoteArg).join(' ') : bin;
-  const argv = shim ? [...shim.args, ...args] : useShell ? [] : args;
+  if (!shim && WIN && /\.(cmd|bat)$/i.test(bin)) {
+    return Promise.resolve({ code: 1, out: `Error: cannot run ${bin} without a shell (not a resolvable npm shim); point the config at the real executable`, timedOut: false });
+  }
+  const cmd = shim ? shim.command : bin;
+  const argv = shim ? [...shim.args, ...args] : args;
   return new Promise((resolve) => {
-    const child = execFile(cmd, argv, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: useShell }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    const child = execFile(cmd, argv, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: false }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
     trackProbe(child);
   });
 }

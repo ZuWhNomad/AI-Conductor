@@ -71,6 +71,28 @@ test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWS
     .replace('<script type="module" src="/app.js"></script>', '') });
   // Run the actual render functions without boot's network requests or speech setup.
   await evaluate(app.replace(/^import[^\n]*\n/, '').replace(/^boot\(\)\.catch\([\s\S]*$/m, ''));
+  await t.test('ultra survives fallback model pickers and saved selections', async () => {
+    for (const model of ['', 'unlisted-model']) {
+      const result = await evaluate(`
+        (() => {
+        S.providers = [{ id: 'codex', kind: 'codex' }]; S.models.models = [];
+        fillPicker('new-', { provider: 'codex', model: ${JSON.stringify(model)}, effort: 'ultra' }, { all: false });
+        const saved = new Map();
+        Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) } });
+        refreshNewPicker(true);
+        return { current: pickerValue('new-'), saved: savedSelection() };
+        })();
+      `);
+      assert.deepEqual(result.current, { provider: 'codex', model, effort: 'ultra' });
+      assert.deepEqual(result.saved, result.current);
+    }
+    const effort = await evaluate(`
+      S.models.models = [{ provider: 'codex', id: 'listed', label: 'Listed', kind: 'agent', efforts: ['low', 'high'] }];
+      fillPicker('new-', { provider: 'codex', model: 'listed', effort: 'ultra' }, { all: false });
+      pickerValue('new-').effort;
+    `);
+    assert.equal(effort, 'high', 'listed model capabilities still take precedence');
+  });
   await evaluate(`
     S.current = { provider: 'codex', model: 'gpt-5.6-long-model-name', effort: 'high' }; renderChip();
     $('#chat-title').textContent = 'A chat title that should shrink to fit';

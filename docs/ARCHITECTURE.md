@@ -41,10 +41,10 @@ the last segment when it is a known effort word, so Ollama ids like `qwen3.8:lat
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
 thread/session id, status, result, usage). Tasks that die at a provider limit are parked with a
-`resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). Everything on the dispatch path is
-asynchronous: the git reads around a run (`status` before and after, `diff --stat`) go through `execFile`, so many tasks
-starting or finishing together never stall the event loop; `/api/doctor` reports the loop's p99 lag and a friction entry
-is logged when a minute's p99 exceeds `server.lagWarnMs`.
+`resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). The git reads around a run (`status`
+before and after, `diff --stat`) are asynchronous through `execFile`. Ledger parsing and journal I/O remain
+synchronous; scorecard `runRows` reads are cached by file size and mtime. `/api/doctor` reports the loop's p99 lag,
+and a friction entry is logged when a minute's p99 exceeds `server.lagWarnMs`.
 
 ## Directory map
 
@@ -190,6 +190,10 @@ Codex conductors and workers via `codex exec -c mcp_servers.*` (servers Codex al
 get `default_tools_approval_mode="approve"`, which exec mode needs). Workers are told which
 servers they have in their preamble, so research that needs a data MCP can be delegated.
 
+A `mcpServers` config entry may set `toolTimeoutSec` (default 3600) and `startupTimeoutSec` (default 30), passed to
+Codex as `tool_timeout_sec` and `startup_timeout_sec`; these overrides do not apply to servers inherited from Codex
+or to Claude SDK runtimes.
+
 **Scoped to the task's category.** A server entry may carry `categories: [...]` (in config; `{ categories }` alone
 tags a server inherited from Codex or Claude). A worker task gets every untagged server plus the ones tagged with
 its category; untagged tasks and conductor sessions get everything. So a data MCP's tool schemas are not loaded
@@ -222,6 +226,9 @@ change it. Existing explicit `true` and array settings remain effective.
 `~/.conductor2/improvements.ndjson` collects errors (auto) and ideas (tool/UI). `conductor review`
 (or the UI button, or the optional schedule) opens a conductor session *on this repo* with the log
 as input, delegates fixes, runs `npm test`, and marks entries resolved.
+
+Feedback bundles include only improvement IDs, timestamps, recognized kinds and resolved flags; messages,
+sources and context are omitted because free text can contain credentials that pattern-based redaction misses.
 
 ## Sharing
 

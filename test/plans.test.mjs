@@ -1,10 +1,64 @@
 import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readJson, statePath } from '../core/paths.mjs';
+import { readJson, writeJson, statePath } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 
 const { validatePlan, extractJson, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan } = await import('../core/plans.mjs');
+
+test('plan IDs avoid persisted journals and simultaneous active plans', async (ctx) => {
+  const diskId = (0.125).toString(36).slice(2, 10), file = statePath('plans', `${diskId}.json`);
+  const old = { id: diskId, goal: 'keep this plan', status: 'done' };
+  writeJson(file, old);
+  const samples = [0.125, 0.25, 0.25, 0.375, 0.25, 0.375, 0.5];
+  ctx.mock.method(Math, 'random', () => { assert.ok(samples.length); return samples.shift(); });
+  const finish = Promise.withResolvers();
+  const taskRuntime = { createTask: () => ({ id: 'stub' }), awaitTask: () => finish.promise };
+  const plan = (goal) => ({ goal, stages: [{ id: 'work', tasks: [{ spec: goal }] }] });
+  const seq = bus.seq;
+  const first = runPlan(plan('first'), { taskRuntime });
+  const second = runPlan(plan('second'), { taskRuntime });
+  const started = bus.since(seq).filter((e) => e.type === 'plan' && e.kind === 'started');
+  try {
+    assert.equal(started.length, 2);
+    assert.notEqual(started[0].planId, started[1].planId, 'active plans have no final journal yet');
+  } finally { finish.resolve({ status: 'done', result: { finalMessage: 'done' } }); }
+  const results = await Promise.all([first, second]);
+  results.push(await runPlan(plan('third'), { taskRuntime }));
+  assert.equal(new Set(results.map((r) => r.id)).size, results.length);
+  assert.deepEqual(readJson(file), old);
+  for (const out of results) assert.equal(readJson(statePath('plans', `${out.id}.json`)).goal, out.goal);
+});
+
+for (const loop of [false, true]) {
+  test(`plan task cap preserves completed ${loop ? 'rounds' : 'stages'} and publishes incomplete`, async () => {
+    const created = [];
+    const taskRuntime = {
+      createTask(input) { created.push(input); return { id: `cap-${created.length}` }; },
+      async awaitTask(id) { return { id, status: 'done', result: { finalMessage: '```json\n' + JSON.stringify({ findings: Array.from({ length: loop ? 1 : 30 }, (_, i) => ({ title: `${id} finding ${i}` })) }) + '\n```' } }; },
+    };
+    // Existing MAX_TASKS=200: 30 findings * 7 votes overflows; 99 tasks fits twice after the seed, then overflows.
+    const seq = bus.seq;
+    const out = await runPlan({ stages: [
+      { id: 'seed', tasks: [{ spec: 'seed' }] },
+      loop ? { id: 'work', tasks: Array.from({ length: 99 }, () => ({ spec: 'find more' })) }
+        : { id: 'work', for_each: 'seed', votes: 7, task: { spec: 'vote {{item}}' } },
+      { id: 'later', tasks: [{ spec: 'must not run' }] },
+    ], ...(loop ? { until_dry: { stage: 'work', max_rounds: 3 } } : {}) }, { taskRuntime });
+    assert.equal(created.length, loop ? 199 : 1);
+    assert.equal(out.status, 'incomplete');
+    assert.equal(out.stages.seed.tasks[0].id, 'cap-1');
+    assert.equal(out.stages.seed.findings.length, loop ? 1 : 30);
+    assert.equal(out.stages.work.tasks.length, loop ? 198 : 0);
+    assert.equal(out.stages.work.findings.length, loop ? 198 : 0);
+    assert.equal(out.stages.later, undefined);
+    assert.match(out.report, /Incomplete: plan exceeds 200 tasks/);
+    assert.deepEqual(readJson(statePath('plans', `${out.id}.json`)).stages, out.stages);
+    const events = bus.since(seq).filter((e) => e.planId === out.id);
+    assert.equal(events.at(-1).kind, 'incomplete');
+    assert.ok(events.some((e) => e.kind === 'stage_incomplete' && e.stage === 'work'));
+  });
+}
 
 test('plan validation catches structural mistakes', () => {
   assert.throws(() => validatePlan({}), /stages/);

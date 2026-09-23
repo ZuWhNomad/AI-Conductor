@@ -5,6 +5,7 @@ import fs, { writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
+import childProcess from 'node:child_process';
 
 // CONDUCTOR_HOME does not change os.homedir(): intercept every default Claude config read.
 let claudeFixture = { mcpServers: { claude_retained: { command: 'claude-fixture.exe', args: ['--fixture'], env: { KEY: 'fixture' } } } };
@@ -68,20 +69,54 @@ test('the registry merges Codex, Claude and Conductor sources; config can add or
 });
 
 test('codex exec overrides: approval-only for servers Codex already has, full definition otherwise', () => {
-  const args = codexMcpArgs({ warehouse: { url: 'https://example.test/mcp', source: 'codex' }, extra: { url: 'https://extra/mcp', source: 'conductor' }, tool: { command: 'x.exe', args: ['--a', 'q"t'], env: { K: 'v' }, source: 'claude' }, conductor: { url: 'http://127.0.0.1:1/mcp/s' } });
+  const { args, env } = codexMcpArgs({ warehouse: { url: 'https://example.test/mcp', source: 'codex' }, extra: { url: 'https://extra/mcp', source: 'conductor' }, tool: { command: 'x.exe', args: ['--a', 'q"t'], env: { K: 'v' }, source: 'claude' }, conductor: { url: 'http://127.0.0.1:1/mcp/s' } });
   const s = args.join(' ');
   assert.match(s, /mcp_servers\.warehouse\.default_tools_approval_mode="approve"/);
   assert.doesNotMatch(s, /mcp_servers\.warehouse\.url/);
   assert.match(s, /mcp_servers\.extra\.url="https:\/\/extra\/mcp"/);
-  assert.match(s, /mcp_servers\.tool\.command="x\.exe" -c mcp_servers\.tool\.args=\["--a","q\\"t"\] -c mcp_servers\.tool\.env=\{"K"="v"\}/);
+  assert.match(s, /mcp_servers\.tool\.command="x\.exe" -c mcp_servers\.tool\.args=\["--a","q\\"t"\] -c mcp_servers\.tool\.env_vars=\["K"\]/);
+  assert.deepEqual(env, { K: 'v' });
   assert.match(s, /mcp_servers\.conductor\.url="http:\/\/127\.0\.0\.1:1\/mcp\/s".*mcp_servers\.conductor\.default_tools_approval_mode="approve"/);
-  assert.equal(codexMcpArgs(undefined).length, 0);
+  assert.deepEqual(codexMcpArgs(undefined), { args: [], env: {} });
 });
 
 test('Agent SDK shape and source skipping', () => {
   const reg = { a: { url: 'https://a/mcp', source: 'claude' }, b: { command: 'b.exe', args: ['1'], env: {}, source: 'codex' } };
   assert.deepEqual(forClaudeSdk(reg), { a: { type: 'http', url: 'https://a/mcp' }, b: { command: 'b.exe', args: ['1'], env: {} } });
   assert.deepEqual(Object.keys(forClaudeSdk(reg, { skip: ['claude'] })), ['b']);
+});
+
+test('Codex env forwarding keeps secrets off argv except conflicting per-server values', () => {
+  const overridden = codexMcpArgs({ node_repl: { command: 'node', env: { NODE_PATH: 'replacement-secret' } } });
+  assert.ok(overridden.args.includes('mcp_servers.node_repl.env={}'), 'clear inherited literal values before forwarding replacements');
+  assert.deepEqual(overridden.env, { NODE_PATH: 'replacement-secret' });
+  assert.doesNotMatch(overridden.args.join(' '), /replacement-secret/);
+  const result = codexMcpArgs({
+    first: { command: 'node', env: { SHARED: 'same-secret', TOKEN: 'first-secret', UNIQUE: 'unique-secret' } },
+    'second.db': { command: 'node', env: { SHARED: 'same-secret', TOKEN: 'second-secret' } },
+  });
+  assert.deepEqual(result.env, { SHARED: 'same-secret', UNIQUE: 'unique-secret' });
+  assert.doesNotMatch(result.args.join(' '), /same-secret|unique-secret/);
+  assert.ok(result.args.includes('mcp_servers.first.env_vars=["SHARED","UNIQUE"]'));
+  assert.ok(result.args.includes('mcp_servers.first.env={"TOKEN"="first-secret"}'));
+  assert.match(result.args[1], /"second.db"=.*"env_vars"=\["SHARED"\],"env"=\{"TOKEN"="second-secret"\}/);
+  const inherited = codexMcpArgs({
+    known: { source: 'codex', command: 'node', env: { TOKEN: 'inherited-secret' } },
+    added: { command: 'node', env: { TOKEN: 'added-secret' } },
+  });
+  assert.deepEqual(inherited.env, {});
+  assert.doesNotMatch(inherited.args.join(' '), /inherited-secret/);
+  assert.ok(inherited.args.includes('mcp_servers.added.env={"TOKEN"="added-secret"}'));
+});
+
+test('Codex environment collisions respect Windows case-insensitive names', { skip: process.platform !== 'win32' }, () => {
+  const { args, env } = codexMcpArgs({
+    first: { command: 'node', env: { Token: 'first-secret' } },
+    second: { command: 'node', env: { TOKEN: 'second-secret' } },
+  });
+  assert.deepEqual(env, {});
+  assert.ok(args.includes('mcp_servers.first.env={"Token"="first-secret"}'));
+  assert.ok(args.includes('mcp_servers.second.env={"TOKEN"="second-secret"}'));
 });
 
 test('D1: MCP instructions refuse a tagged delegate when no plan qualifies instead of naming a fallback default worker', () => {
@@ -129,9 +164,10 @@ test('Codex dotted names share one table override, preserving exclusion, approva
   const cfg = { mcpServers: { 'private.db': null, warehouse: { categories: ['research'] } } };
   const registry = mcpServersFor('implement', cfg);
   registry['new.db'] = { command: 'C:\\tools\\fixture.exe', args: ['q"t', 'line\nnext'], env: { 'KEY.NAME': 'slash\\quote"\n#kept' }, toolTimeoutSec: 42, startupTimeoutSec: 12 };
-  const args = codexMcpArgs(registry);
+  const { args, env } = codexMcpArgs(registry);
   const tables = args.filter((arg) => arg.startsWith('mcp_servers='));
-  assert.deepEqual(tables, ['mcp_servers={"private.db"={"enabled"=false},"retained.db"={"default_tools_approval_mode"="approve"},"new.db"={"command"="C:\\\\tools\\\\fixture.exe","args"=["q\\"t","line\\nnext"],"env"={"KEY.NAME"="slash\\\\quote\\"\\n#kept"},"tool_timeout_sec"=42,"startup_timeout_sec"=12,"default_tools_approval_mode"="approve"}}']);
+  assert.deepEqual(tables, ['mcp_servers={"private.db"={"enabled"=false},"retained.db"={"default_tools_approval_mode"="approve"},"new.db"={"command"="C:\\\\tools\\\\fixture.exe","args"=["q\\"t","line\\nnext"],"env_vars"=["KEY.NAME"],"env"={},"tool_timeout_sec"=42,"startup_timeout_sec"=12,"default_tools_approval_mode"="approve"}}']);
+  assert.equal(env['KEY.NAME'], 'slash\\quote"\n#kept');
   assert.equal(args[1], tables[0], 'table comes before all other paths so it cannot erase them');
   assert.ok(args.includes('mcp_servers.warehouse.enabled=false'), 'category exclusion survives');
   assert.ok(args.includes('mcp_servers.node_repl.default_tools_approval_mode="approve"'));
@@ -147,7 +183,7 @@ test('MCP fixtures control Claude precedence and saved tombstones remove inherit
     saveConfig({ mcpServers: { node_repl: { command: 'override.exe' } } });
     saveConfig({ mcpServers: { node_repl: null } });
     assert.equal(mcpServers().node_repl, undefined);
-    assert.ok(codexMcpArgs(mcpServers()).includes('mcp_servers.node_repl.enabled=false'));
+    assert.ok(codexMcpArgs(mcpServers()).args.includes('mcp_servers.node_repl.enabled=false'));
   } finally { claudeFixture = previous; }
 });
 
@@ -188,4 +224,31 @@ test('Claude conductor passes the complete filtered registry in strict mode and 
       assert.ok(!options.allowedTools.includes('mcp__removed'));
     } finally { deleteSession(session.id); }
   } finally { claudeFixture = previous; hooks.deregister(); }
+});
+
+test('Codex conductor sessions forward MCP credentials through runCodex into the child env', async (ctx) => {
+  let captured;
+  const previous = process.env.CONDUCTOR_CODEX;
+  process.env.CONDUCTOR_CODEX = 'fixture-codex.exe';
+  const spawn = ctx.mock.method(childProcess, 'spawn', (command, args, options) => {
+    captured = { command, args, options };
+    throw new Error('fixture: captured conductor spawn');
+  });
+  syncBuiltinESMExports();
+  const { createSession, sendMessage, deleteSession } = await import('../core/conductor.mjs');
+  saveConfig({ mcpServers: { credentials: { command: 'fixture.exe', env: { MCP_TEST_CREDENTIAL: 'conductor-secret' } } } });
+  const session = createSession({ cwd: HOME, provider: 'codex', model: 'gpt-6-astra' });
+  try {
+    await sendMessage(session.id, 'fixture');
+    assert.ok(captured, 'conductor reaches the common Codex runner');
+    assert.doesNotMatch(captured.args.join(' '), /conductor-secret/);
+    assert.ok(captured.args.includes('mcp_servers.credentials.env_vars=["MCP_TEST_CREDENTIAL"]'));
+    assert.equal(captured.options.env.MCP_TEST_CREDENTIAL, 'conductor-secret');
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH');
+    assert.equal(captured.options.env[pathKey], process.env[pathKey]);
+  } finally {
+    deleteSession(session.id);
+    spawn.mock.restore(); syncBuiltinESMExports();
+    if (previous === undefined) delete process.env.CONDUCTOR_CODEX; else process.env.CONDUCTOR_CODEX = previous;
+  }
 });

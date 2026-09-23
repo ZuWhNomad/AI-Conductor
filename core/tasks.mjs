@@ -31,6 +31,7 @@ const TERMINAL = new Set(['done', 'failed', 'canceled']);
 
 const tasks = new Map();
 const running = new Map();   // id -> AbortController
+const settling = new Set(); // completed tasks retain budget reservations until polling and scoring settle
 const waiters = new Map();   // id -> resolve[]
 
 // Load the journal so history survives restarts and interrupted work resumes. Work interrupted long ago is NOT
@@ -215,9 +216,10 @@ export function schedule() {
   const isUnmeasured = (t) => { const ws = providerWindows(t.provider, t.model); return ws.length > 0 && ws.some((w) => !(w.id in costByWindow(t))); };
   const runningByWindow = {};
   const probing = {}; // provider -> a probe (unmeasured task) is in flight / dispatched this pass; hold everything else on it
-  if (budget) for (const id of running.keys()) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
+  const reserved = new Set([...running.keys(), ...settling]);
+  if (budget) for (const id of reserved) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
   const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
-  const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys()].some((id) => tasks.get(id)?.provider === prov);
+  const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys(), ...settling].some((id) => tasks.get(id)?.provider === prov);
   for (const t of queued) {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (running.size >= max) break;
@@ -235,7 +237,7 @@ export function schedule() {
         // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
         // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
         // (below), so another agent takes over instead of the queue stalling. Hold this task only while its
-        // provider already has one in flight; it resumes the moment that finishes. Never a queued-forever park.
+        // provider already has one in flight or settling; it resumes after usage and score settle. Never a queued-forever park.
         if (providerBusy(t.provider)) continue;
       }
       if (unmeasured) probing[t.provider] = true; // this dispatch IS the probe; nothing else on this provider runs alongside it
@@ -357,14 +359,21 @@ function failover(t) {
 // not held up; `flushRecords` lets the CLI/smoke runner wait for the rows before reading them.
 const pendingRecords = new Set();
 function score(t, limitsBefore, concurrent, concurrentByWindow) {
-  const p = refreshLimits({ only: [t.provider] }).catch(() => {}).then(() => { try {
+  settling.add(t.id);
+  // The first refresh may join a poll started before completion. Drain it before requesting a
+  // second refresh, which must have started after completion (the scope entry clears on settlement).
+  const p = refreshLimits({ only: [t.provider] }).catch(() => {})
+    .then(() => refreshLimits({ only: [t.provider] })).catch(() => {}).then(() => { try {
     // Per-task % of the provider window this run burned (max across its windows) — surfaced on the Fleet card.
     const d = windowDelta(limitsBefore, snapshotWindows(t.provider));
     if (d) { const max = Math.max(...Object.values(d)); t.pctWindow = Math.round(max * 10) / 10; persist(t); }
     recordRun(t, { before: limitsBefore, concurrent, concurrentByWindow });
-  } catch {} });
+  } catch {} }).finally(() => {
+    settling.delete(t.id);
+    pendingRecords.delete(p);
+    try { if (!shuttingDown) schedule(); } catch {}
+  });
   pendingRecords.add(p);
-  p.finally(() => pendingRecords.delete(p));
 }
 export const flushRecords = () => Promise.allSettled([...pendingRecords]);
 

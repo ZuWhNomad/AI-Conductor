@@ -131,9 +131,9 @@ const FILE = () => statePath('config.json');
 const plain = (v) => v !== null && typeof v === 'object' && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
 
 function deepMerge(a, b, path = '') {
-  if (b === null && plain(a)) return a;
-  if (!b || typeof b !== 'object' || Array.isArray(b)) return b === undefined ? a : b;
-  const out = { ...a };
+  if (b === undefined || (b === null && plain(a))) return structuredClone(a);
+  if (!plain(b)) return b;
+  const out = plain(a) ? structuredClone(a) : {};
   for (const [k, v] of Object.entries(b)) {
     // Registry entries use null as a tombstone; ordinary object subtrees keep their values.
     out[k] = v === null && (path === 'mcpServers' || path === 'tools.index') ? null : deepMerge(a?.[k], v, path ? `${path}.${k}` : k);
@@ -165,6 +165,26 @@ export function loadConfig() {
 }
 
 function normalize(cfg) {
+  if (!plain(cfg)) cfg = structuredClone(DEFAULTS);
+  for (const [key, value] of Object.entries(DEFAULTS)) {
+    if (plain(value) && !plain(cfg[key])) cfg[key] = structuredClone(value);
+  }
+  if (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535) cfg.port = DEFAULTS.port;
+  for (const [name, value] of Object.entries(cfg.providers)) {
+    const p = cfg.providers[name] = plain(value) ? value : structuredClone(DEFAULTS.providers[name] || {});
+    if ('baseUrl' in p && typeof p.baseUrl !== 'string') {
+      if (DEFAULTS.providers[name]?.baseUrl) p.baseUrl = DEFAULTS.providers[name].baseUrl;
+      else delete p.baseUrl; // providers with their own endpoint use that default
+    }
+  }
+  for (const [name, s] of Object.entries(cfg.mcpServers)) {
+    if (s === false) { cfg.mcpServers[name] = null; continue; } // legacy removal spelling
+    if (s === null) continue;
+    if (!plain(s)) { delete cfg.mcpServers[name]; continue; }
+    for (const key of ['url', 'command']) if (key in s && typeof s[key] !== 'string') delete s[key];
+    if ('args' in s) s.args = Array.isArray(s.args) ? s.args.filter((a) => typeof a === 'string') : [];
+    if ('env' in s) s.env = plain(s.env) ? Object.fromEntries(Object.entries(s.env).filter(([, v]) => typeof v === 'string')) : {};
+  }
   if (!plain(cfg.ui)) cfg.ui = { ...DEFAULTS.ui };
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
   if (!Number.isFinite(cfg.ui.autoRefreshMinutes) || cfg.ui.autoRefreshMinutes < 1) cfg.ui.autoRefreshMinutes = DEFAULTS.ui.autoRefreshMinutes;
@@ -178,7 +198,7 @@ function normalize(cfg) {
   for (const [obj, defaults, key] of [
     [cfg, DEFAULTS, 'pollMinutes'],
     ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
-    ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
+    ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
     ...['minSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
     [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
@@ -197,13 +217,27 @@ function normalize(cfg) {
   if (!plain(cfg.scorecard.classes)) cfg.scorecard.classes = { ...DEFAULTS.scorecard.classes };
   if (!plain(cfg.scorecard.classCap)) cfg.scorecard.classCap = { ...DEFAULTS.scorecard.classCap };
   if (!plain(cfg.worker.timeoutByCategory)) cfg.worker.timeoutByCategory = { ...DEFAULTS.worker.timeoutByCategory };
+  for (const [obj, key] of [[cfg.worker, 'timeoutByCategory'], [cfg.scorecard, 'usageBudgets'], [cfg.scorecard, 'usageGapHours']]) {
+    if (!plain(obj[key])) obj[key] = {};
+    for (const [name, value] of Object.entries(obj[key])) {
+      if (!Number.isFinite(value) || value <= 0) delete obj[key][name];
+    }
+  }
+  for (const key of ['wasteHorizonHours', 'wasteStrength']) {
+    if (!Number.isFinite(cfg.scorecard[key])) cfg.scorecard[key] = DEFAULTS.scorecard[key];
+  }
+  cfg.scorecard.wasteHorizonHours = Math.max(1, cfg.scorecard.wasteHorizonHours);
+  cfg.scorecard.wasteStrength = Math.max(0, Math.min(1, cfg.scorecard.wasteStrength));
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
   if (!Number.isFinite(cfg.scorecard.effortSlackPct) || cfg.scorecard.effortSlackPct < 0) cfg.scorecard.effortSlackPct = DEFAULTS.scorecard.effortSlackPct;
-  // Minutes feed setTimeout; anything past a day is a typo (and > 2^31 ms fires immediately).
-  if (cfg.worker.timeoutMinutes > 1440) cfg.worker.timeoutMinutes = 1440;
-  if (cfg.pollMinutes > 1440) cfg.pollMinutes = 1440;
+  // Config timer bounds: minutes at one day; hours at 596, below Node's 2^31-1 ms timer maximum.
+  for (const [obj, key] of [[cfg, 'pollMinutes'], [cfg.worker, 'timeoutMinutes'], [cfg.conductor, 'turnTimeoutMinutes'], [cfg.smoke, 'timeoutMinutes'], [cfg.ui, 'detectMinutes']]) {
+    obj[key] = Math.min(1440, obj[key]);
+  }
+  for (const key of Object.keys(cfg.worker.timeoutByCategory)) cfg.worker.timeoutByCategory[key] = Math.min(1440, cfg.worker.timeoutByCategory[key]);
+  cfg.conductor.updateCheckHours = Math.min(596, cfg.conductor.updateCheckHours);
   // A reset schedule the user entered: clamp the wall-clock fields (a <select> hands us strings, and garbage here
   // would move the reset instant). Any provider, not just Grok, since `usageResets` ships empty.
   for (const s of Object.values(cfg.scorecard.usageResets || {})) {
@@ -220,53 +254,63 @@ function normalize(cfg) {
 }
 
 const SECRET_MASK = '••••';
-const SECRET_FLAGS = new Set(['--token', '--api-key', '--apikey', '--key', '--secret', '--password', '--auth']);
+const secretFlag = (flag) => flag === '-H' || flag === '-t' || (/^--?[^=]+$/.test(flag) && /token|key|secret|pass|auth|bearer|credential|header/i.test(flag));
+const hasMask = (value) => typeof value === 'string' && (value.includes(SECRET_MASK) || value.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()));
+// Positional URLs and --endpoint=URL both occur in MCP launch arguments.
+const maskUrlArg = (arg) => arg.replace(/^((?:--?[^=]+=)?)([a-z][a-z\d+.-]*:\/\/.*)$/i, (_, flag, url) => flag + maskUrlSecrets(url));
 
 function maskMcpArgs(args) {
   const out = [...args];
   for (let i = 0; i < out.length; i++) {
     const a = String(out[i] ?? '');
     const eq = a.indexOf('=');
-    if (eq > 0 && SECRET_FLAGS.has(a.slice(0, eq).toLowerCase())) { out[i] = a.slice(0, eq + 1) + SECRET_MASK; continue; }
-    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < out.length) { out[++i] = SECRET_MASK; }
+    if (eq > 0 && secretFlag(a.slice(0, eq))) { out[i] = a.slice(0, eq + 1) + SECRET_MASK; continue; }
+    if (secretFlag(a) && i + 1 < out.length) { out[++i] = SECRET_MASK; continue; }
+    out[i] = maskUrlArg(a);
   }
   return out;
 }
 
 /** Restore masked MCP args by flag identity (nth occurrence of the same flag/form). No match → drop the flag pair, never persist the mask. */
 function restoreMcpArgs(posted, stored) {
-  const eq = new Map(), split = new Map();
+  const eq = new Map(), split = new Map(), urls = new Map();
   const push = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
   for (let i = 0; i < stored.length; i++) {
     const a = String(stored[i] ?? '');
     const eqAt = a.indexOf('=');
-    if (eqAt > 0 && SECRET_FLAGS.has(a.slice(0, eqAt).toLowerCase())) { push(eq, a.slice(0, eqAt + 1).toLowerCase(), stored[i]); continue; }
-    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < stored.length) { push(split, a.toLowerCase(), stored[i + 1]); i++; }
+    if (eqAt > 0 && secretFlag(a.slice(0, eqAt))) { push(eq, a.slice(0, eqAt + 1).toLowerCase(), stored[i]); continue; }
+    if (secretFlag(a) && i + 1 < stored.length) { push(split, a.toLowerCase(), stored[++i]); continue; }
+    const masked = maskUrlArg(a);
+    if (hasMask(masked) && !hasMask(a)) push(urls, masked, a);
   }
-  const eqSeen = new Map(), splitSeen = new Map();
+  const eqSeen = new Map(), splitSeen = new Map(), urlSeen = new Map();
   const nth = (map, k) => { const n = map.get(k) || 0; map.set(k, n + 1); return n; };
   const out = [];
   for (let i = 0; i < posted.length; i++) {
     const a = String(posted[i] ?? '');
     const eqAt = a.indexOf('=');
-    if (eqAt > 0 && SECRET_FLAGS.has(a.slice(0, eqAt).toLowerCase())) {
+    if (eqAt > 0 && secretFlag(a.slice(0, eqAt))) {
       const key = a.slice(0, eqAt + 1).toLowerCase(), n = nth(eqSeen, key);
-      if (a.includes(SECRET_MASK)) { const got = eq.get(key)?.[n]; if (got != null) out.push(got); }
+      if (hasMask(a)) { const got = eq.get(key)?.[n]; if (got != null && !hasMask(got)) out.push(got); }
       else out.push(posted[i]);
       continue;
     }
-    if (SECRET_FLAGS.has(a.toLowerCase()) && i + 1 < posted.length) {
+    if (secretFlag(a) && i + 1 < posted.length) {
       const key = a.toLowerCase(), n = nth(splitSeen, key), next = posted[i + 1];
-      if (typeof next === 'string' && next.includes(SECRET_MASK)) {
+      if (hasMask(next)) {
         const got = split.get(key)?.[n];
-        if (got != null) { out.push(posted[i]); out.push(got); }
+        if (got != null && !hasMask(got)) { out.push(posted[i]); out.push(got); }
         i++;
         continue;
       }
-      out.push(posted[i]);
+      out.push(posted[i], posted[++i]);
       continue;
     }
-    if (typeof posted[i] === 'string' && posted[i].includes(SECRET_MASK)) continue;
+    if (hasMask(a)) {
+      const got = urls.get(a)?.[nth(urlSeen, a)];
+      if (got != null) out.push(got);
+      continue;
+    }
     out.push(posted[i]);
   }
   return out;
@@ -275,12 +319,13 @@ function restoreMcpArgs(posted, stored) {
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
   const clean = structuredClone(patch);
-  const stored = readJson(FILE(), {});
+  const raw = readJson(FILE(), {});
+  const stored = plain(raw) ? raw : {};
   // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
   for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;
   for (const [name, s] of Object.entries(clean.mcpServers || {})) {
     if (!s || typeof s !== 'object') continue;
-    if (typeof s.url === 'string' && (s.url.includes(SECRET_MASK) || s.url.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()))) delete s.url;
+    if (hasMask(s.url)) delete s.url;
     if (s.env && typeof s.env === 'object') for (const k of Object.keys(s.env)) if (s.env[k] === SECRET_MASK) delete s.env[k];
     const prev = stored.mcpServers?.[name]?.args;
     if (Array.isArray(s.args)) s.args = restoreMcpArgs(s.args, Array.isArray(prev) ? prev : []);

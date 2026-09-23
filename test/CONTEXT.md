@@ -11,6 +11,11 @@ file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… 
 `selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
 `ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
 must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.
+`proc.test.mjs` checks shell-free executable/npm-shim spawning, unresolved Windows script refusal in worker and
+vendor-probe paths, and Codex environment forwarding. Fixtures live in temporary directories.
+`models.test.mjs` exercises overlapping registry refreshes with deferred fake providers; it must never probe live providers.
+`feedback.test.mjs` verifies that bundles and written feedback export only safe improvement metadata, including
+when messages, sources, kinds and context contain credentials.
 
 `_env.mjs` isolates state (`CONDUCTOR_HOME` = a temp dir, scheduling and polling off) and supplies `HOME` and
 `tmpDir()`. Every test file still imports it first (`./_env.mjs` or `../_env.mjs`) — `test/hygiene.test.mjs` fails

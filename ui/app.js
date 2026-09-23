@@ -191,7 +191,7 @@ function renderChip() {
 }
 
 // ---------- conductor picker: provider : model : effort ----------
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const composite = (v) => `${v.provider}:${v.model || 'default'}:${v.effort || 'default'}`;
 const CONDUCT_KINDS = new Set(['claude', 'codex', 'ollama', 'openai-compat']);
 const ALL = '*';
@@ -557,6 +557,7 @@ async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
+  $('#improve-count').textContent = S.improvements.length;
   renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   if (!S.bypassTouched) $('#new-bypass').checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; // settings default; a manual toggle sticks
   if (!S.overflowTouched) $('#new-overflow').checked = !!S.config?.conductor?.overflowApi;
@@ -575,8 +576,8 @@ function applyAutoRefresh() {
 }
 function connect() {
   const es = new EventSource(`/api/events?since=${S.lastSeq}`);
-  // A different boot id means the server restarted: refetch state (which carries the new seq) and reconnect. Never leave the page without a stream.
-  es.addEventListener('hello', (e) => { const boot = JSON.parse(e.data).boot; if (S.boot && boot !== S.boot) { S.boot = boot; es.close(); resync().catch(() => {}).then(() => setTimeout(connect, 500)); } else S.boot = boot; });
+  // A restart or an evicted replay range requires fresh state (and its seq) before reconnecting.
+  es.addEventListener('hello', (e) => { const { boot, oldest } = JSON.parse(e.data); if ((S.boot && boot !== S.boot) || (S.lastSeq && oldest > S.lastSeq + 1)) { S.boot = boot; es.close(); resync().catch(() => {}).then(() => setTimeout(connect, 500)); } else S.boot = boot; });
   const on = (type, fn) => es.addEventListener(type, (e) => { const ev = JSON.parse(e.data); S.lastSeq = Math.max(S.lastSeq, ev.seq); fn(ev); });
   on('session', onSessionEvent);
   on('task', (ev) => updateTask(ev.task));

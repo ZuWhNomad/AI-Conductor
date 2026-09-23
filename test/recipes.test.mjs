@@ -38,3 +38,16 @@ test('recipe variants still resolve, and an unknown category gets nothing', asyn
   assert.ok(recipeFor('modeling', 'recipe-a'), 'recipe A is still selectable by variant');
   assert.equal(recipeFor('nonsense-category'), null);
 });
+
+test('recipe listing includes configured categories and reports overridden files', async () => {
+  const { saveConfig } = await import('../core/config.mjs');
+  const { recipeFor, listRecipes } = await import('../core/recipes.mjs');
+  try {
+    saveConfig({ recipes: { defaults: { debug: 'video-briefing-general.md', modeling: 'image-to-3d-model.md' } } });
+    const listed = listRecipes();
+    assert.deepEqual(listed.find((r) => r.category === 'debug'), { category: 'debug', file: 'video-briefing-general.md', present: true });
+    assert.equal(recipeFor('debug'), recipeFor('summarize', 'video-general'));
+    assert.deepEqual(listed.find((r) => r.category === 'modeling'), { category: 'modeling', file: 'image-to-3d-model.md', present: true });
+    assert.equal(recipeFor('modeling'), recipeFor('modeling', 'recipe-a'));
+  } finally { saveConfig({ recipes: null }); }
+});

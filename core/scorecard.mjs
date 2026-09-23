@@ -449,7 +449,7 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   for (const w of providerWindows(provider, model)) {
     if (!w.resetsAt) continue;
     if (/hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)) continue; // ignore the 5-hour churn
-    factor = Math.min(factor, discount(w.resetsAt - now, Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100));
+    factor = Math.min(factor, discount(w.resetsAt - now, Math.min(1, Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100)));
   }
   // Windowless provider (Grok, …): no real weekly window drove a discount, so fall back to a configured reset schedule.
   // "Use till it fails" means we assume the quota is worth spending (full headroom) as its reset nears.

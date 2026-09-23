@@ -33,7 +33,8 @@ banner and read only that section.
 - All state lives in `S`; render functions read `S` and rebuild their DOM. Sections call each other freely (there are
   ~80 cross-section references), which is why the file is not split yet.
 - Data arrives two ways only: `api.get/post/del` (JSON, throws on a non-2xx with the server's `error`) and the SSE
-  stream `/api/events`. A changed `boot` id in the `hello` event means the server restarted: `resync()`, then reconnect.
+  stream `/api/events`. A changed `boot` id or a replay gap (`hello.oldest > lastSeq + 1` for a nonzero cursor)
+  triggers `resync()`, including the improvement count, then reconnects.
   Bursts of `models` / `limits` / `settings` / `improvement` events are coalesced into one refetch.
 - Build DOM with `el()` and `textContent`; model/worker text goes through `md()` (which escapes first). Never assign
   unescaped text to `innerHTML`.

@@ -54,8 +54,8 @@ export function readNdjson(file) {
 }
 
 export const nowIso = () => new Date().toISOString();
-export function shortId() {
+export function shortId(taken = (id) => existsSync(statePath('tasks', `${id}.json`))) {
   let id;
-  do { id = Math.random().toString(36).slice(2, 10); } while (existsSync(statePath('tasks', `${id}.json`)));
+  do { id = Math.random().toString(36).slice(2, 10); } while (taken(id));
   return id;
 }

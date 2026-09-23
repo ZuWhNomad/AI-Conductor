@@ -98,16 +98,15 @@ export function winArgEscape(s) {
 /**
  * Spawn any CLI. A real `.exe`/binary spawns without a shell, args as separate argv (no shell parsing at all). A
  * Windows `.cmd`/`.bat` can't be spawned directly on modern Node (EINVAL); when it's an npm shim we unwrap it to
- * `node <entry>` and still avoid the shell entirely. Only a `.cmd` we cannot unwrap falls back to the shell, with
- * cmd-escaped args (imperfect against a shim's own `%*` re-parse, so unwrapping is strongly preferred).
+ * `node <entry>` and still avoid the shell entirely. Refuse unresolved scripts: shell escaping cannot safely
+ * preserve arbitrary arguments through cmd.exe and a script's own `%*` re-parse.
  */
 export function spawnCli(bin, args, opts = {}) {
-  const base = { windowsHide: true, ...opts }; // never flash a console window on Windows (a caller may still override)
+  const base = { windowsHide: true, ...opts, shell: false }; // callers may override window visibility, never shell safety
   if (WIN && /\.(cmd|bat)$/i.test(bin)) {
     const shim = resolveNpmShim(bin);
     if (shim) return spawn(shim.command, [...shim.args, ...args], base); // no shell: argv passed verbatim, no re-parse
-    // Last-resort .cmd shell fallback: keep it windowless (windowsHide from base) and pipe stdio so no cmd.exe window shows.
-    return spawn(`${quoteArg(bin)} ${args.map(winArgEscape).join(' ')}`, { stdio: ['pipe', 'pipe', 'pipe'], ...base, shell: true });
+    throw new Error(`cannot run ${bin} without a shell (not a resolvable npm shim); point the config at the real executable`);
   }
   return spawn(bin, args, base);
 }

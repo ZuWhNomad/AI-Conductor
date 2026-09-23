@@ -8,6 +8,7 @@ every file.
 | `vendor-cli.test.mjs` | Subscription CLIs: model-list parsing, the auth probe, recorded stream shapes for **agy** (stream-json, 2026-09-08) and **grok** (streaming-messages-json, 2026-09-10). qwen-code and kimi have no recorded JSON event fixtures. |
 | `codex-args.test.mjs`, `codex-parse.test.mjs` | The Codex argv Conductor builds, and its event stream. |
 | `openai-compat.test.mjs` | The API/Ollama tool loop: tool schemas, malformed arguments, the repeat guard, SSRF. |
+| `file-tools.test.mjs` | Async bounded file reads/listing, search worker results and containment, pathological regex responsiveness, deadline/cancellation termination and cleanup. Uses real worker threads and fake timers to advance existing configured deadlines. |
 | `shell-safety.test.mjs` | Default `run` denial, explicit host-execution opt-ins, the command allow-list and operator denylist (not a filesystem sandbox). |
 | `image.test.mjs` | The image runner: `outDir` containment and the SD request honouring the abort signal. |
 | `dangling.test.mjs` | Tool calls left open when a turn ends. |

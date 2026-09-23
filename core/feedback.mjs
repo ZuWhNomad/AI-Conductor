@@ -32,7 +32,7 @@ export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   return s;
 }
 
-/** The bundle as an object: versions, providers, limits (windows only), the improvement log, and the scorecard text. */
+/** The bundle as an object: versions, providers, limits (windows only), improvement metadata, and scorecard text. */
 export function feedbackBundle() {
   const cfg = loadConfig();
   const reg = getModels();
@@ -43,7 +43,10 @@ export function feedbackBundle() {
     worker: { provider: cfg.worker?.provider, model: cfg.worker?.model, effort: cfg.worker?.effort },
     providers: Object.fromEntries(Object.entries(reg.providers || {}).map(([k, v]) => [k, { status: v.status, plan: v.plan, installed: v.installed, loggedIn: v.loggedIn, error: v.error }])),
     limits: Object.fromEntries(Object.entries(lim.providers || {}).map(([k, v]) => [k, { blocked: v.blocked, blockedReason: v.blockedReason, error: v.error, windows: (v.windows || []).map((w) => ({ id: w.id, label: w.label, usedPercent: w.usedPercent })) }])),
-    improvements: listImprovements({ includeResolved: true }).slice(-300),
+    // Free text (including source and unknown kinds) can contain credentials that no regex can reliably redact.
+    improvements: listImprovements({ includeResolved: true }).slice(-300).map(({ id, ts, kind, resolved }) => ({
+      id, ts, kind: ['error', 'idea', 'friction'].includes(kind) ? kind : null, resolved: !!resolved,
+    })),
     scores: formatScores({}),
   };
 }

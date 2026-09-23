@@ -9,7 +9,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 **Entry points.**
 - `tasks.mjs` — the worker-task journal + scheduler. `schedule()` is the framework budget gate: it admits queued
   tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); a real
-  provider limit fails over or parks. `run()` executes and scores.
+  provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
+  probe exclusion until a post-completion limits poll and scoring settle, without holding worker concurrency slots.
 - `sweep.mjs` — the budget math: `admit` (a task must fit EVERY window under its target — session 95%,
   weekly/budget 100%), `measuredCostByWindow`, `targetFor`.
 - `scorecard.mjs` — the ledger + `recommend()` (utility = value-of-quality − cost; `escalate:true` bypasses the class

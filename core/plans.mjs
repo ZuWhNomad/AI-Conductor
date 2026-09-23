@@ -5,8 +5,10 @@ import { createTask, awaitTask, getTask } from './tasks.mjs';
 import { statePath, writeJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
+import { existsSync } from 'node:fs';
 
 const MAX_TASKS = 200;
+const activePlans = new Set();
 
 /** Validate and normalize a plan; throws on structural errors. */
 export function validatePlan(plan) {
@@ -121,9 +123,15 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
  * An incomplete stage stops the plan; its active tasks remain on the scheduler.
  * taskRuntime is injectable so stage ordering can be tested without launching workers.
  */
-export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false } = {}) {
+export async function runPlan(plan, options = {}) {
   validatePlan(plan);
-  const id = shortId();
+  const id = shortId((id) => activePlans.has(id) || existsSync(statePath('plans', `${id}.json`)));
+  activePlans.add(id);
+  try { return await executePlan(id, plan, options); }
+  finally { activePlans.delete(id); }
+}
+
+async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false }) {
   const timeoutMs = Math.max(1, Number(plan.timeout_minutes) || 45) * 60_000;
   const ctx = { goal: plan.goal, defaults: plan.defaults || {}, results: {}, seen: [] };
   const seenKeys = new Set();
@@ -134,8 +142,8 @@ export async function runPlan(plan, { sessionId, cwd, recommend = null, taskRunt
   const runStage = async (stage, outputKeys, round = 0) => {
     const inputs = expandStage(stage, ctx);
     if (!inputs.length) return { tasks: [], findings: [], confirmed: [], rejected: [], summary: '(no inputs)' };
+    if (total + inputs.length > MAX_TASKS) return { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: `Incomplete: plan exceeds ${MAX_TASKS} tasks` };
     total += inputs.length;
-    if (total > MAX_TASKS) throw new Error(`plan exceeds ${MAX_TASKS} tasks`);
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
     const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride });
     const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };

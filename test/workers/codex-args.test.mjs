@@ -69,6 +69,33 @@ test('invalid Codex model and effort are rejected before spawning', async () => 
   }
 });
 
+test('Codex workers pass MCP credentials via the child environment, not argv', async (ctx) => {
+  const previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = tmpDir('codex-env');
+  let captured;
+  const spawn = ctx.mock.method(childProcess, 'spawn', (command, args, options) => {
+    captured = { command, args, options };
+    throw new Error('fixture: captured spawn');
+  });
+  syncBuiltinESMExports();
+  try {
+    const r = await runCodex({ cwd, prompt: 'fixture', mcp: {
+      tool: { command: 'fixture.exe', env: { MCP_TEST_CREDENTIAL: 'worker-secret', EMPTY: '' } },
+    } });
+    assert.equal(r.error, 'fixture: captured spawn');
+    assert.doesNotMatch(captured.args.join(' '), /worker-secret/);
+    assert.ok(captured.args.includes('mcp_servers.tool.env_vars=["MCP_TEST_CREDENTIAL","EMPTY"]'));
+    assert.equal(captured.options.env.MCP_TEST_CREDENTIAL, 'worker-secret');
+    assert.equal(captured.options.env.EMPTY, '');
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH');
+    assert.equal(captured.options.env[pathKey], process.env[pathKey]);
+    assert.equal(process.env.MCP_TEST_CREDENTIAL, undefined, 'parent environment is unchanged');
+  } finally {
+    spawn.mock.restore(); syncBuiltinESMExports();
+    if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome;
+  }
+});
+
 test('already-aborted workers return without spawning', async () => {
   const ac = new AbortController(); ac.abort();
   for (const run of [runCodex, runClaude]) {

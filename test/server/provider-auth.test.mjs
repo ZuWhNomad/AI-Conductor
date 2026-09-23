@@ -4,32 +4,45 @@ import assert from 'node:assert/strict';
 
 const { watchSignIn, stopSignInWatch, staleAuthProviders } = await import('../../server/index.mjs');
 
-const settle = (ms = 60) => new Promise((r) => setTimeout(r, ms));
+function watchClock(t, id) {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.after(() => stopSignInWatch(id));
+  return async (ms) => {
+    t.mock.timers.tick(ms);
+    // Each probe awaits refresh before checking status and scheduling its next timer.
+    await Promise.resolve();
+  };
+}
 
-test('a sign-in watch re-probes until the provider comes back ok, then stops', async () => {
+test('a sign-in watch re-probes until the provider comes back ok, then stops', async (t) => {
+  const advance = watchClock(t, 'grok');
   let calls = 0, status = 'unavailable';
   const w = watchSignIn('grok', { intervalMs: 1, maxMs: 5000, refresh: async () => { calls++; if (calls >= 3) status = 'ok'; }, statusOf: () => status });
-  await settle();
+  for (let probe = 0; probe < 3; probe++) await advance(1);
   assert.equal(w.stopped, true);
   assert.equal(calls, 3);            // stopped at the first success, not after a fixed number of tries
 });
 
-test('a sign-in watch gives up when its window runs out', async () => {
+test('a sign-in watch gives up when its window runs out', async (t) => {
+  const advance = watchClock(t, 'grok');
   let calls = 0;
   const w = watchSignIn('grok', { intervalMs: 1, maxMs: 5, refresh: async () => { calls++; }, statusOf: () => 'unavailable' });
-  await settle();
+  await advance(1);
+  assert.equal(w.stopped, false);
+  await advance(w.until - Date.now());
   assert.equal(w.stopped, true);
   const seen = calls;
-  await settle(20);
+  await advance(1);                 // the next probe would be due if it had not stopped
   assert.equal(calls, seen);         // and really stops probing
 });
 
-test('stopping a watch (Quit) ends it', async () => {
+test('stopping a watch (Quit) ends it', async (t) => {
+  const advance = watchClock(t, 'grok');
   let calls = 0;
   const w = watchSignIn('grok', { intervalMs: 1, maxMs: 5000, refresh: async () => { calls++; }, statusOf: () => 'unavailable' });
   stopSignInWatch('grok');
   const seen = calls;
-  await settle(20);
+  await advance(1);
   assert.equal(w.stopped, true);
   assert.equal(calls, seen);
 });
@@ -43,13 +56,15 @@ test('the slow sweep re-probes installed-but-signed-out providers only', () => {
   }), ['grok']);
 });
 
-test('a re-auth watch waits for the sign-out before it accepts ok again', () => {
+test('a re-auth watch waits for the sign-out before it accepts ok again', async (t) => {
+  const advance = watchClock(t, 'kimi');
   // On relogin the provider is still signed in when the watch starts; stopping at the first ok would end it before
   // the CLI's logout had even run.
   let calls = 0; const seq = ['ok', 'unavailable', 'unavailable', 'ok'];
   const w = watchSignIn('kimi', { intervalMs: 1, maxMs: 5000, awaitDrop: true, refresh: async () => { calls++; }, statusOf: () => seq[Math.min(calls, seq.length) - 1] });
-  return new Promise((r) => setTimeout(r, 60)).then(() => {
-    assert.equal(w.stopped, true);
-    assert.equal(calls, 4);          // it rode through the drop and stopped on the ok that followed
-  });
+  for (let probe = 0; probe < seq.length; probe++) {
+    await advance(1);
+    assert.equal(w.stopped, probe === seq.length - 1);
+  }
+  assert.equal(calls, 4);            // it rode through the drop and stopped on the ok that followed
 });

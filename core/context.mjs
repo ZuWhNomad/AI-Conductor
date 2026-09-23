@@ -22,7 +22,7 @@ export function findContextFiles(cwd, paths = [], { maxChars = 12000 } = {}) {
   for (const p of paths) {
     let d = resolve(root, p);
     try { if (statSync(d).isFile()) d = dirname(d); } catch { d = dirname(d); }
-    while (d === root || d.startsWith(root + sep)) { dirs.add(d); if (d === root) break; d = dirname(d); } // `+ sep`: F:\proj-backup must not count as inside F:\proj
+    while (isInside(root, d)) { dirs.add(d); const parent = dirname(d); if (parent === d) break; d = parent; }
   }
   const ordered = [...dirs].sort((a, b) => a.length - b.length);
   for (const d of ordered) {
@@ -73,6 +73,7 @@ export function folderTree(cwd, { depth = 3 } = {}) {
 }
 
 export function isInside(root, p) {
-  const r = resolve(root); const a = isAbsolute(p) ? resolve(p) : resolve(r, p);
-  return a === r || a.startsWith(r + sep);
+  let r = resolve(root); let a = isAbsolute(p) ? resolve(p) : resolve(r, p);
+  if (process.platform === 'win32') { r = r.toLowerCase(); a = a.toLowerCase(); }
+  return a === r || a.startsWith(r.endsWith(sep) ? r : r + sep);
 }

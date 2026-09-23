@@ -169,7 +169,7 @@ async function route(req, res, url) {
 
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
-    res.write(`event: hello\ndata: ${JSON.stringify({ boot: BOOT })}\n\n`);
+    res.write(`event: hello\ndata: ${JSON.stringify({ boot: BOOT, oldest: bus.oldest })}\n\n`);
     const send = (ev) => res.write(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
     for (const ev of bus.since(Number(url.searchParams.get('since') || 0))) send(ev);
     const h = (ev) => send(ev);
@@ -230,7 +230,7 @@ async function route(req, res, url) {
   if (seg[1] === 'improvements') {
     if (m === 'GET') return json(res, 200, listImprovements({ includeResolved: url.searchParams.get('all') === '1' }));
     if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, logImprovement(b.kind || 'idea', 'ui', b.message || '', b.context || {})); }
-    if (m === 'POST' && seg[3] === 'resolve') { resolveImprovement(seg[2]); bus.publish('improvement', { resolved: seg[2] }); return json(res, 200, { ok: true }); }
+    if (m === 'POST' && seg[3] === 'resolve') { resolveImprovement(seg[2]); return json(res, 200, { ok: true }); }
   }
   if (p === '/api/review' && m === 'POST') {
     const b = await readBody(req);

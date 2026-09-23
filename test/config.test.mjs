@@ -1,6 +1,8 @@
-import './_env.mjs';
+import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const { loadConfig, saveConfig, publicConfig, DEFAULTS } = await import('../core/config.mjs');
 
@@ -259,4 +261,102 @@ test('0 is a documented off switch for updateCheckHours and detectMinutes, so va
   assert.equal(loadConfig().conductor.updateCheckHours, DEFAULTS.conductor.updateCheckHours, 'garbage still resets');
   assert.equal(loadConfig().ui.detectMinutes, DEFAULTS.ui.detectMinutes);
   saveConfig({ conductor: { updateCheckHours: DEFAULTS.conductor.updateCheckHours }, ui: { detectMinutes: DEFAULTS.ui.detectMinutes } });
+});
+
+test('malformed hand-edited roots and sections load safely and remain repairable by saveConfig', () => {
+  const previous = process.env.CONDUCTOR_HOME;
+  process.env.CONDUCTOR_HOME = tmpDir('config-shapes');
+  try {
+    const shapes = ['bad', 42, false, [], null];
+    const roots = [...shapes, ...shapes.map((value) => Object.fromEntries(
+      ['conductor', 'worker', 'scorecard', 'smoke', 'providers', 'ui', 'server', 'mcpServers'].map((key) => [key, value])))];
+    for (const [i, raw] of roots.entries()) {
+      writeFileSync(join(process.env.CONDUCTOR_HOME, 'config.json'), JSON.stringify(raw) + ' '.repeat(i));
+      const cfg = loadConfig();
+      for (const key of ['conductor', 'worker', 'scorecard', 'smoke', 'providers', 'ui', 'server', 'mcpServers']) assert.deepEqual(cfg[key], DEFAULTS[key], key);
+      assert.doesNotThrow(() => saveConfig({ port: 0 }));
+      assert.equal(loadConfig().port, 0);
+    }
+    const before = structuredClone(DEFAULTS);
+    saveConfig({ worker: 'bad', scorecard: [] });
+    const first = loadConfig();
+    first.worker.timeoutByCategory.modeling = -1;
+    assert.equal(loadConfig().worker.timeoutByCategory.modeling, before.worker.timeoutByCategory.modeling);
+    assert.deepEqual(DEFAULTS, before, 'normalization and returned objects never mutate defaults');
+  } finally { process.env.CONDUCTOR_HOME = previous; }
+});
+
+test('config validates ports, provider endpoints and malformed MCP entries', () => {
+  for (const value of [-1, 65536, 1.5, '47474', null, NaN]) assert.equal(saveConfig({ port: value }).port, DEFAULTS.port);
+  for (const port of [0, 65535]) assert.equal(saveConfig({ port }).port, port);
+  const cfg = saveConfig({
+    providers: { ollama: { baseUrl: 42 }, sd: false, deepseek: { baseUrl: [] } },
+    mcpServers: { bad: 'x', list: [], disabled: false, malformed: { command: 42, url: {}, args: 'abc', env: 'token' },
+      typed: { command: 'node', args: ['ok', null, {}], env: { KEEP: 'value', BAD: {} } } },
+  });
+  assert.equal(cfg.providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
+  assert.deepEqual(cfg.providers.sd, DEFAULTS.providers.sd);
+  assert.equal(cfg.providers.deepseek.baseUrl, undefined);
+  assert.equal(cfg.mcpServers.bad, undefined);
+  assert.equal(cfg.mcpServers.list, undefined);
+  assert.equal(cfg.mcpServers.disabled, null);
+  assert.deepEqual(cfg.mcpServers.malformed, { args: [], env: {} });
+  assert.deepEqual(cfg.mcpServers.typed, { command: 'node', args: ['ok'], env: { KEEP: 'value' } });
+});
+
+test('config filters invalid usage and category values, bounds waste settings, and restores prompt budgets', () => {
+  const badValues = [0, -1, null, '3', 'bad', NaN, Infinity];
+  for (const value of badValues) {
+    const cfg = saveConfig({ worker: { timeoutByCategory: { bad: value }, recipeChars: value, toolLineChars: value },
+      scorecard: { usageBudgets: { bad: value }, usageGapHours: { bad: value } } });
+    assert.equal(cfg.worker.timeoutByCategory.bad, undefined);
+    for (const key of ['usageBudgets', 'usageGapHours']) assert.equal(cfg.scorecard[key].bad, undefined);
+    for (const key of ['recipeChars', 'toolLineChars']) assert.equal(cfg.worker[key], DEFAULTS.worker[key]);
+  }
+  for (const value of ['bad', []]) {
+    const cfg = saveConfig({ scorecard: { usageBudgets: value, usageGapHours: value, wasteHorizonHours: value, wasteStrength: value } });
+    assert.deepEqual(cfg.scorecard.usageBudgets, {});
+    assert.deepEqual(cfg.scorecard.usageGapHours, {});
+    assert.equal(cfg.scorecard.wasteHorizonHours, DEFAULTS.scorecard.wasteHorizonHours);
+    assert.equal(cfg.scorecard.wasteStrength, DEFAULTS.scorecard.wasteStrength);
+  }
+  let cfg = saveConfig({ scorecard: { wasteHorizonHours: -1, wasteStrength: -1 } });
+  assert.equal(cfg.scorecard.wasteHorizonHours, 1);
+  assert.equal(cfg.scorecard.wasteStrength, 0);
+  cfg = saveConfig({ scorecard: { wasteStrength: 2, usageBudgets: { valid: 100 }, usageGapHours: { valid: 1.5 } } });
+  assert.equal(cfg.scorecard.wasteStrength, 1);
+  assert.equal(loadConfig().scorecard.usageBudgets.valid, 100);
+  assert.equal(loadConfig().scorecard.usageGapHours.valid, 1.5);
+});
+
+test('timer config bounds prevent Node timer overflow and preserve documented zero switches', () => {
+  const cfg = saveConfig({ pollMinutes: Number.MAX_VALUE, ui: { detectMinutes: Number.MAX_VALUE },
+    conductor: { turnTimeoutMinutes: Number.MAX_VALUE, updateCheckHours: Number.MAX_VALUE },
+    worker: { timeoutMinutes: Number.MAX_VALUE, timeoutByCategory: { huge: Number.MAX_VALUE, valid: 2.5 } },
+    smoke: { timeoutMinutes: Number.MAX_VALUE } });
+  for (const minutes of [cfg.pollMinutes, cfg.ui.detectMinutes, cfg.conductor.turnTimeoutMinutes, cfg.worker.timeoutMinutes, cfg.worker.timeoutByCategory.huge, cfg.smoke.timeoutMinutes]) assert.equal(minutes, 1440);
+  assert.equal(cfg.conductor.updateCheckHours, 596);
+  assert.ok(cfg.conductor.updateCheckHours * 3_600_000 <= 2 ** 31 - 1, 'Node timer maximum');
+  assert.equal(cfg.worker.timeoutByCategory.valid, 2.5);
+  saveConfig({ conductor: { updateCheckHours: 0 }, ui: { detectMinutes: 0 } });
+  assert.equal(loadConfig().conductor.updateCheckHours, 0);
+  assert.equal(loadConfig().ui.detectMinutes, 0);
+});
+
+test('broad secret flags and URL arguments redact and restore through JSON with reordered nonsecret args', () => {
+  const flags = ['--header', '--access-token', '--api_key', '--github-token', '--client-secret', '--db-pass', '--AUTHORIZATION', '--bearer', '--credential-file', '-H', '-t'];
+  const args = flags.flatMap((flag, i) => [flag, `split-secret-${i}`, `${flag}=equal-secret-${i}`]);
+  args.push('--header', '--token', 'postgresql://user:db-secret@host/db?option=query-secret',
+    '--endpoint=https://user:web-secret@host/mcp?key=url-secret', '--endpoint', 'https://host/second?token=other-secret', '--verbose');
+  saveConfig({ mcpServers: { broad: { command: 'node', args } } });
+  const masked = JSON.parse(JSON.stringify(publicConfig().mcpServers.broad.args));
+  assert.doesNotMatch(JSON.stringify(masked), /(?:split|equal|db|query|web|url|other)-secret|Authorization: Bearer/);
+  assert.ok(masked.includes('-H') && masked.includes('-t'));
+  saveConfig({ mcpServers: { broad: { args: ['--inserted', ...masked.filter((a) => a !== '--verbose')] } } });
+  assert.deepEqual(loadConfig().mcpServers.broad.args, ['--inserted', ...args.filter((a) => a !== '--verbose')]);
+  const unknown = 'https://unknown.test/?token=' + encodeURIComponent('••••');
+  saveConfig({ mcpServers: { broad: { args: [unknown, '--access-token', '••••', '-H=••••', 'keep'] } } });
+  assert.deepEqual(loadConfig().mcpServers.broad.args, ['--access-token', 'split-secret-1', '-H=equal-secret-9', 'keep']);
+  saveConfig({ mcpServers: { fresh: { command: 'node', args: [unknown, '--header', '••••', '-t=••••', 'keep'] } } });
+  assert.deepEqual(loadConfig().mcpServers.fresh.args, ['keep'], 'unmatched masks never persist');
 });
