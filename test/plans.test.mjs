@@ -85,6 +85,21 @@ test('findings and verdicts are read from JSON blocks, with sane fallbacks', () 
   assert.equal(parseVerdict('Confirmed: reproduces with input 0.').real, true);
 });
 
+test('unfenced nested JSON extracts the outer object; a parsed object is not a prose verdict', () => {
+  const nested = '{"findings":[{"title":"Null deref","file":"a.js","severity":"high"}]}';
+  assert.equal(extractJson(nested).findings[0].title, 'Null deref');
+  assert.equal(findingsOf(nested, 't4').length, 1);
+  assert.equal(findingsOf(nested, 't4')[0].title, 'Null deref');
+  const v = parseVerdict('{"real":false,"reason":"has {brace}"}');
+  assert.equal(v.real, false);
+  assert.match(v.reason, /brace/);
+  assert.equal(parseVerdict('On a 12" screen it looks real. {"real":false,"reason":"not reproducible"}').real, false); // an odd prose quote
+  const prose =parseVerdict('{"note":"this is real and confirmed"}');
+  assert.equal(prose.real, false);
+  assert.match(prose.reason, /note/);
+  assert.deepEqual(extractJson('x {"a":1}'), { a: 1 });
+});
+
 test('tally modes', () => {
   const v = [{ real: true }, { real: false }, { real: true }];
   assert.equal(tally(v).confirmed, true);
@@ -124,6 +139,49 @@ test('unsuccessful voters leave the requested electorate incomplete and prevent 
       });
     }
   }
+});
+
+test('a non-for_each stage with no ok task is incomplete and does not harvest failure text', async (t) => {
+  for (const statuses of [['failed'], ['failed', 'canceled'], ['canceled', 'canceled']]) {
+    await t.test(statuses.join('/'), async () => {
+      const created = [];
+      const out = await runPlan({ stages: [
+        { id: 'find', tasks: statuses.map((_, i) => ({ spec: `t${i}` })) },
+        { id: 'later', tasks: [{ spec: 'must not start' }] },
+      ] }, { taskRuntime: {
+        createTask(input) { created.push(input); return { id: String(created.length) }; },
+        async awaitTask(id) {
+          return { id, status: statuses[Number(id) - 1], error: 'boom', result: { finalMessage: 'Confirmed: this is real.\n{"findings":[{"title":"from failure"}]}' } };
+        },
+        getTask() { assert.fail('use terminal snapshots'); },
+      } });
+      assert.equal(created.length, statuses.length);
+      assert.equal(out.status, 'incomplete');
+      assert.equal(out.stages.find.incomplete, true);
+      assert.deepEqual(out.stages.find.findings, []);
+      assert.equal(out.stages.later, undefined);
+      assert.match(out.report, /Incomplete: all tasks failed or were canceled/);
+      assert.doesNotMatch(out.report, /from failure/);
+    });
+  }
+  await t.test('partial fan-out harvests only ok tasks and continues', async () => {
+    let n = 0;
+    const out = await runPlan({ stages: [
+      { id: 'find', tasks: [{ spec: 'ok' }, { spec: 'bad' }] },
+      { id: 'later', tasks: [{ spec: 'next' }] },
+    ] }, { taskRuntime: {
+      createTask() { return { id: String(++n) }; },
+      async awaitTask(id) {
+        if (id === '2') return { id, status: 'failed', error: 'boom', result: { finalMessage: '{"findings":[{"title":"from failure"}]}' } };
+        return { id, status: 'done', result: { finalMessage: id === '1' ? '{"findings":[{"title":"kept"}]}' : 'ok' } };
+      },
+      getTask() { assert.fail('use terminal snapshots'); },
+    } });
+    assert.equal(out.status, 'done');
+    assert.deepEqual(out.stages.find.findings.map((f) => f.title), ['kept']);
+    assert.equal(out.stages.later.tasks.length, 1);
+    assert.match(out.report, /task 2 failed/);
+  });
 });
 
 test('completed voters retain the full electorate for majority and all decisions', async (t) => {
@@ -425,6 +483,23 @@ test('dedupe repeats keep unchanged findings once while global novelty controls 
   for (const input of created.slice(1)) assert.match(input.spec, /seen: - Bug A \(a.mjs\)$/);
 });
 
+test('until_dry records capped when max_rounds is hit with fresh findings', async () => {
+  let n = 0;
+  const out = await runPlan({ stages: [
+    { id: 'find', tasks: [{ spec: 'find' }] },
+    { id: 'later', tasks: [{ spec: 'after' }] },
+  ], until_dry: { stage: 'find', max_rounds: 2 } }, { taskRuntime: {
+    createTask() { return { id: `t${++n}` }; },
+    async awaitTask(id) { return { id, status: 'done', result: { finalMessage: JSON.stringify({ findings: [{ title: `new ${id}` }] }) } }; },
+    getTask() { assert.fail('use terminal snapshots'); },
+  } });
+  assert.equal(out.status, 'done');
+  assert.equal(n, 3); // two finder rounds, then later
+  assert.deepEqual(out.stages.find.untilDry, { rounds: 2, dry: false, capped: true });
+  assert.match(out.report, /capped at max_rounds=2/);
+  assert.equal(out.stages.later.tasks.length, 1);
+});
+
 // Handler regressions for plan routing and retry ancestry.
 import { registerHooks } from 'node:module';
 import { setSessionFlags } from '../core/session-flags.mjs';
@@ -681,4 +756,63 @@ test('delegate terminates cyclic follow-up and retry ancestry without counting a
     assert.deepEqual(new Set(calls.at(-1).exclude), new Set([selOf(a), selOf(b)]));
     assert.equal(calls.at(-1).escalate, link === 'retryOf');
   });
+});
+
+test('run_plan sandbox shares the delegate enum; a throwing createTask cancels earlier tasks', async () => {
+  const defs = conductorToolDefs({ sessionId: 'e10', cwd: HOME });
+  const planSchema = defs.find((d) => d.name === 'run_plan').schema;
+  const base = { goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x' }] }] };
+  for (const bad of [
+    { ...base, defaults: { sandbox: 'nope' } },
+    { goal: 'g', stages: [{ id: 'a', defaults: { sandbox: 'nope' }, tasks: [{ spec: 'x' }] }] },
+    { goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', sandbox: 'nope' }] }] },
+  ]) assert.throws(() => planSchema.parse(bad));
+  assert.equal(planSchema.parse({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', sandbox: 'read-only' }] }] }).stages[0].tasks[0].sandbox, 'read-only');
+
+  const ids = [];
+  let n = 0;
+  const out = await runPlan({ stages: [
+    { id: 'work', tasks: [{ spec: 'first' }, { spec: 'second' }, { spec: 'third' }] },
+    { id: 'later', tasks: [{ spec: 'must not run' }] },
+  ] }, { taskRuntime: {
+    createTask(input) {
+      n++;
+      if (n === 2) throw new Error('invalid sandbox');
+      const t = createTask({ cwd: HOME, title: input.title, spec: input.spec, provider: 'stub', model: 'x' });
+      ids.push(t.id);
+      return t;
+    },
+    async awaitTask() { assert.fail('must not wait after createTask throw'); },
+    getTask() { assert.fail('must not wait after createTask throw'); },
+  } });
+  assert.equal(out.status, 'incomplete');
+  assert.equal(ids.length, 1);
+  assert.equal(getTask(ids[0]).status, 'canceled');
+  assert.equal(n, 2);
+  assert.equal(out.stages.later, undefined);
+  assert.match(out.report, /createTask failed: invalid sandbox|Incomplete/);
+});
+
+test('timeout_minutes is bounded to 1440 at the tool schema and in runPlan', async () => {
+  const defs = conductorToolDefs({ sessionId: 'e8', cwd: HOME });
+  const cases = [
+    ['delegate', { title: 't', spec: 's' }],
+    ['follow_up', { task_id: 'x', comments: 'c' }],
+    ['await_task', { task_id: 'x' }],
+    ['run_plan', { goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x' }] }] }],
+  ];
+  for (const [name, required] of cases) {
+    const schema = defs.find((d) => d.name === name).schema;
+    schema.parse({ ...required, timeout_minutes: 1440 });
+    assert.throws(() => schema.parse({ ...required, timeout_minutes: 1441 }), undefined, name);
+    assert.throws(() => schema.parse({ ...required, timeout_minutes: 35792 }), undefined, name);
+  }
+  const waits = [];
+  const out = await runPlan({ timeout_minutes: 35792, stages: [{ id: 'find', tasks: [{ spec: 'find' }] }] }, { taskRuntime: {
+    createTask() { return { id: 't1' }; },
+    async awaitTask(id, timeoutMs) { waits.push(timeoutMs); return { id, status: 'done', result: { finalMessage: 'ok' } }; },
+    getTask() { assert.fail('use the awaitTask snapshot'); },
+  } });
+  assert.equal(out.status, 'done');
+  assert.equal(waits[0], 1440 * 60_000);
 });

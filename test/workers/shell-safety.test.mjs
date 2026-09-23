@@ -108,6 +108,23 @@ test('OS2: allow_command refuses interpreters and script hosts, case-insensitive
   } finally { saveConfig({ worker: { shell: previous } }); }
 });
 
+test('S3: allow_command denies pythonw, versioned interpreters, bunx and npm; pytest/cmake/openscad stay allowed', async () => {
+  const { conductorToolDefs } = await import('../../core/tools.mjs');
+  const previous = loadConfig().worker.shell;
+  saveConfig({ worker: { shell: ['git'] } });
+  try {
+    const allow = conductorToolDefs({ sessionId: 's3', cwd: tmpDir('s3') }).find((d) => d.name === 'allow_command').handler;
+    for (const command of ['pythonw', 'python3.12', 'bunx', 'npm', 'Python3.12.exe']) {
+      const msg = await allow({ command });
+      assert.match(msg, /refused: .*shell, interpreter, or script host/, command);
+    }
+    for (const command of ['pytest', 'cmake', 'openscad']) {
+      const msg = await allow({ command });
+      assert.match(msg, new RegExp(`Added "${command}"`), command);
+    }
+  } finally { saveConfig({ worker: { shell: previous } }); }
+});
+
 test('D9: runEnv sets NoDefaultCurrentDirectoryInExePath so a cwd shim cannot shadow a bare name', () => {
   const env = runEnv({ PATH: 'C:\\Windows', OTHER: 'keep' });
   assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');

@@ -45,7 +45,10 @@ winner while grafting the best ideas of the runners-up. Beats iterating on a sin
 
 For discovery of unknown size, keep running finder rounds — each told what was already found —
 until K consecutive rounds add nothing new. Counting to a fixed N misses the tail; stop only when
-the well is dry, and log what was deliberately left out (no silent caps).
+the well is dry, and log what was deliberately left out (no silent caps). `run_plan` caps
+`until_dry` loops at `max_rounds` (default 3): when the cap is reached while the last round still
+produced fresh findings, the stage result includes `untilDry: { capped: true }` and the plan
+report says so. Raise `max_rounds` or run another `run_plan` round when you see `capped: true`.
 
 ## 6. Completeness critic
 

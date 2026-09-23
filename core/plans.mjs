@@ -1,11 +1,14 @@
 // Deterministic multi-stage plans (fan-out, refuter votes, judge panels, until-dry loops, critic)
 // executed on the task scheduler. Model-agnostic: every task carries whatever provider/model/effort
 // the conductor chose (or nothing, for the auto-pick). Pure helpers are exported for tests.
-import { createTask, awaitTask, getTask } from './tasks.mjs';
+import { createTask, awaitTask, getTask, cancelTask } from './tasks.mjs';
 import { statePath, writeJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
 import { existsSync } from 'node:fs';
+
+/** Shared enum for sandbox values (used in run_plan and delegate schemas). */
+export const SANDBOX_VALUES = /** @type {const} */ (['read-only', 'workspace-write', 'danger-full-access']);
 
 const MAX_TASKS = 200;
 const activePlans = new Set();
@@ -28,13 +31,40 @@ export function validatePlan(plan) {
   return plan;
 }
 
+/** String-aware, brace-balanced scan: the parseable object that ends last (the outermost on a tie). Every `{` is a
+ *  candidate — prose quotes (12" screen) must not hide a trailing object. */
+function lastBalancedObject(text) {
+  let best = null, bestEnd = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0, s = false, e = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (e) { e = false; continue; }
+      if (s) { if (c === '\\') e = true; else if (c === '"') s = false; continue; }
+      if (c === '"') { s = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            const obj = JSON.parse(text.slice(i, j + 1));
+            if (j + 1 > bestEnd) { best = obj; bestEnd = j + 1; }
+          } catch {}
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
 /** Last fenced ```json block (or a bare trailing object) in a worker report. */
 export function extractJson(text) {
   if (!text) return null;
   const fences = [...String(text).matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1].trim()).reverse();
   for (const f of fences) { try { return JSON.parse(f); } catch {} }
-  const i = text.lastIndexOf('{'); if (i >= 0) { try { return JSON.parse(text.slice(i)); } catch {} }
-  return null;
+  return lastBalancedObject(String(text));
 }
 
 /** Findings from a report: an explicit findings[] block, else the whole report as one item. */
@@ -49,11 +79,14 @@ export const findingKey = (f) => `${String(f.file || f.location || '').toLowerCa
 
 /** Verdict from a refuter/judge report: {real:boolean} / {verdict:'real'|'refuted'} / {score}. */
 export function parseVerdict(report) {
-  const j = extractJson(report) || {};
+  const parsed = extractJson(report);
+  const j = parsed || {};
   if (typeof j.real === 'boolean') return { real: j.real, reason: j.reason || '', score: j.score ?? null };
   if (typeof j.refuted === 'boolean') return { real: !j.refuted, reason: j.reason || '', score: j.score ?? null };
   if (typeof j.verdict === 'string') return { real: /^(real|confirmed|pass|accept)/i.test(j.verdict), reason: j.reason || '', score: j.score ?? null };
   if (typeof j.score === 'number') return { real: j.score >= (j.threshold ?? 5), reason: j.reason || '', score: j.score };
+  // Parsed JSON without verdict keys is not-real; the prose heuristic only runs when no object was found.
+  if (parsed !== null) return { real: false, reason: JSON.stringify(parsed).slice(0, 200), score: null };
   const t = String(report || '');
   return { real: !/\b(refuted|not (?:real|a bug)|false positive|cannot reproduce)\b/i.test(t) && /\b(confirmed|real|reproduc)/i.test(t), reason: t.slice(0, 200), score: null };
 }
@@ -84,7 +117,9 @@ export function expandStage(stage, ctx) {
 }
 
 async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride }) {
-  const created = inputs.map((inp) => {
+  const created = [];
+  let createError = null;
+  for (const inp of inputs) {
     let { provider, model, effort } = inp;
     if (!provider && !model && inp.category && recommend) {
       let pick, noWorker = 'No worker available for this input.';
@@ -94,13 +129,24 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
         pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi, ...(providers ? { providers } : {}) });
       }
       catch { noWorker = 'Worker recommendation failed.'; }
-      if (!pick) return { input: inp, id: null, noWorker };
+      if (!pick) { created.push({ input: inp, id: null, noWorker }); continue; }
       // Preserve the proven visual effort even when plan/stage defaults supply an effort-only override.
       provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
     }
-    const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty, overflowApi, parallelOverride });
-    return { input: inp, id: t.id };
-  });
+    let t;
+    try {
+      t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty, overflowApi, parallelOverride });
+    } catch (err) {
+      createError = String(err?.message || err);
+      for (const c of created) { if (c.id) cancelTask(c.id); }
+      break;
+    }
+    created.push({ input: inp, id: t.id });
+  }
+  if (createError) {
+    return created.map((c) => ({ ...c, taskIds: c.id ? [c.id] : [], task: { status: 'canceled' }, complete: true, report: '', ok: false, noWorker: c.noWorker }))
+      .concat([{ input: inputs[created.length] || {}, id: null, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false, noWorker: `createTask failed: ${createError}` }]);
+  }
   // One stage deadline: a failover continues the wait; it does not get a fresh timeout.
   const deadline = Date.now() + timeoutMs;
   return Promise.all(created.map(async (c) => {
@@ -133,7 +179,8 @@ export async function runPlan(plan, options = {}) {
 }
 
 async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false }) {
-  const timeoutMs = Math.max(1, Number(plan.timeout_minutes) || 45) * 60_000;
+  // 1440 min = config timer bound (below Node's 2^31-1 ms setTimeout maximum).
+  const timeoutMs = Math.max(1, Math.min(1440, Number(plan.timeout_minutes) || 45)) * 60_000;
   const ctx = { goal: plan.goal, defaults: plan.defaults || {}, results: {}, seen: [] };
   const seenKeys = new Set();
   let total = 0;
@@ -166,8 +213,13 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
       result.findings = result.confirmed;
       result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''} (${f.tally})`).join('\n');
     } else {
+      if (done.every((d) => !d.ok)) {
+        result.incomplete = true;
+        result.summary = 'Incomplete: all tasks failed or were canceled.\n' + done.map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
+        return result;
+      }
       let fresh = 0;
-      for (const d of done) for (const f of findingsOf(d.report, d.id)) {
+      for (const d of done.filter((d) => d.ok)) for (const f of findingsOf(d.report, d.id)) {
         const k = findingKey(f);
         // Stage outputs survive handoffs; global novelty only feeds context and dry convergence.
         if (!seenKeys.has(k)) { seenKeys.add(k); ctx.seen.push(f); fresh++; }
@@ -175,7 +227,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
       }
       result.fresh = fresh;
       result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
-      if (done.length === 1 && !extractJson(done[0].report)) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
+      if (done.length === 1 && done[0].ok && !extractJson(done[0].report)) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
     }
     return result;
   };
@@ -185,13 +237,20 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     let res = await runStage(stage, outputKeys);
     if (!res.incomplete && plan.until_dry?.stage === stage.id) {
       let dry = res.fresh ? 0 : 1; const max = Math.max(1, Number(plan.until_dry.max_rounds) || 3); const k = Math.max(1, Number(plan.until_dry.dry_rounds) || 1);
+      let rounds = 1;
       for (let round = 1; round < max && dry < k; round++) {
+        rounds = round + 1;
         const again = await runStage(stage, outputKeys, round);
         res.tasks.push(...again.tasks);
         if (again.incomplete) { res.incomplete = true; res.summary += `\n${again.summary}`; break; }
         res.findings.push(...again.findings);
         res.summary = `${res.findings.length} findings after ${round + 1} rounds\n` + res.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n');
         dry = again.fresh ? 0 : dry + 1;
+      }
+      if (!res.incomplete) {
+        const capped = dry < k;
+        res.untilDry = { rounds, dry: !capped, capped };
+        if (capped) res.summary += `\n(capped at max_rounds=${max})`;
       }
     }
     ctx.results[stage.id] = res;

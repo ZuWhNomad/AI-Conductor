@@ -13,7 +13,7 @@ import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
 import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
-import { runPlan } from './plans.mjs';
+import { runPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched } from './capabilities.mjs';
@@ -101,8 +101,8 @@ export function conductorToolDefs({ sessionId, cwd }) {
         effort: z.string().optional().describe(effortDesc),
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
-        timeout_minutes: z.number().optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
-        sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
+        timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
+        sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
         let { provider, model, effort, category, difficulty } = a; let pick = null;
@@ -166,7 +166,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
     {
       name: 'follow_up',
       description: 'Send review comments to the same worker thread of a finished task (cheaper than a new task; keeps its context). Numbered, concrete points work best.',
-      schema: z.object({ task_id: z.string(), comments: z.string(), background: z.boolean().optional(), timeout_minutes: z.number().optional(), sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional().describe('Override the inherited Codex sandbox, e.g. workspace-write to turn a read-only review thread into a fix round') }),
+      schema: z.object({ task_id: z.string(), comments: z.string(), background: z.boolean().optional(), timeout_minutes: z.number().max(1440).optional(), sandbox: z.enum(SANDBOX_VALUES).optional().describe('Override the inherited Codex sandbox, e.g. workspace-write to turn a read-only review thread into a fix round') }),
       handler: async (a) => {
         const t = createTask({ sessionId, cwd, spec: a.comments, followUpOf: a.task_id, sandbox: a.sandbox, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         if (a.background) return `Follow-up task ${t.id} queued on thread of ${a.task_id}${t.warning ? `\nWarning: ${t.warning}` : ''}.`;
@@ -176,7 +176,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
     {
       name: 'await_task',
       description: 'Wait for a background task to finish and return its report.',
-      schema: z.object({ task_id: z.string(), timeout_minutes: z.number().optional() }),
+      schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional() }),
       handler: async (a) => { const r = await awaitTask(a.task_id, a.timeout_minutes == null ? undefined : a.timeout_minutes * 60_000); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? '\n(still running)' : '') : `unknown task ${a.task_id}`; },
     },
     {
@@ -198,11 +198,16 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const raw = String(a.command || '').trim();
         const base = raw.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
         if (!base || /[^\w.\-]/.test(base)) return `refused: "${raw}" must be a bare command name (letters, digits, . _ -) with no path, arguments, or shell operators.`;
-        // OS2: deny shells, interpreters, and script hosts — allowing any of them re-enables arbitrary execution.
-        const DENIED = new Set(['bash', 'sh', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'cmd', 'powershell', 'pwsh', 'env', 'wsl', 'ssh',
+        // OS2/S3: deny shells, interpreters, package managers and script hosts — allowing any re-enables arbitrary execution.
+        const DENIED_EXACT = new Set(['bash', 'sh', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'cmd', 'powershell', 'pwsh', 'env', 'wsl', 'ssh',
           'python', 'python3', 'python2', 'py', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'wish',
-          'cscript', 'wscript', 'mshta', 'rundll32', 'regsvr32', 'npx', 'uvx', 'pipx', 'pnpx', 'yarn', 'exec']);
-        if (DENIED.has(base.toLowerCase())) return `refused: "${base}" is a shell, interpreter, or script host — allowing it would re-enable arbitrary execution and defeat the boundary.`;
+          'cscript', 'wscript', 'mshta', 'rundll32', 'regsvr32',
+          'bunx', 'npx', 'npm', 'pnpm', 'pnpx', 'yarn', 'exec',
+          'pip', 'pip3', 'pipx', 'uv', 'uvx',
+          'sudo', 'runas', 'osascript']);
+        // S3: also deny by pattern — catches versioned interpreters (python3.12, python3.12w) and their w suffixes.
+        const DENIED_PATTERN = /^(python|py|node|nodejs|ruby|perl|php|lua|pwsh|powershell|deno|bun|java|osascript)[\d.]*w?$/i;
+        if (DENIED_EXACT.has(base.toLowerCase()) || DENIED_PATTERN.test(base)) return `refused: "${base}" is a shell, interpreter, or script host — allowing it would re-enable arbitrary execution and defeat the boundary.`;
         const shell = loadConfig().worker?.shell;
         if (shell === true) return 'worker.shell is already unrestricted (true); no allow-list to extend.';
         if (shell === false || shell === 'off') return 'worker.shell is off (the run tool is disabled). Turn it into an allow-list in Settings first.';
@@ -290,19 +295,19 @@ export function conductorToolDefs({ sessionId, cwd }) {
       description: 'Execute a multi-stage plan deterministically (the orchestration playbook: planner pass, fan-out finders, adversarial refuters with votes, judge panels, until-dry loops, completeness critic). Stages run in order; each stage\'s tasks run in parallel on any providers YOU choose (leave provider/model empty to auto-pick). Findings flow between stages: ask finder tasks to end with a ```json {"findings":[{title,file,line,severity,detail,fix}]} block; refuter/judge tasks with {"real":true|false,"reason":...}. Returns a per-stage report; verify it yourself.',
       schema: z.object({
         goal: z.string().describe('One line: what the plan is for'),
-        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.string().optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional().describe('Defaults for every task (a task may override)'),
+        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional().describe('Defaults for every task (a task may override)'),
         stages: z.array(z.object({
           id: z.string(), title: z.string().optional(),
-          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.string().optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
-          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.string().optional(), paths: z.array(z.string()).optional(), category: z.string().optional(), difficulty: z.number().optional() })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
+          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
+          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.string().optional(), difficulty: z.number().optional() })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
           for_each: z.string().optional().describe('Run the task template once per finding of an earlier stage: "<stage>" (its findings) or "<stage>.confirmed" / "<stage>.rejected"'),
-          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.string().optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
+          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
           votes: z.number().optional().describe('for_each: independent verdicts per item (1-7); with lenses[] each vote gets a different lens'),
           lenses: z.array(z.string()).optional(),
           pass: z.enum(['majority', 'any', 'all']).optional(),
         })).min(1),
         until_dry: z.object({ stage: z.string(), max_rounds: z.number().optional(), dry_rounds: z.number().optional() }).optional().describe('Repeat the named finder stage (with {{seen}} filled) until a round adds nothing new'),
-        timeout_minutes: z.number().optional(),
+        timeout_minutes: z.number().max(1440).optional(),
       }),
       handler: async (a) => {
         const r = await runPlan(a, { sessionId, cwd, recommend, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
