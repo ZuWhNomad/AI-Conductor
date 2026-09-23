@@ -7,6 +7,8 @@ import { bus } from './bus.mjs';
 const FILE = () => statePath('models.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {}, models: [] });
 const inflightByScope = new Map(); // coalesce concurrent refreshes per scope so an ollama-only refresh isn't returned to a full one
+let refreshGeneration = 0;
+const committedByProvider = new Map(); // request order, not completion order, determines freshness
 
 export function getModels() { return cache; }
 
@@ -17,6 +19,7 @@ const sortModels = (ms) => ms.sort((a, b) => (ORDER.indexOf(a.provider) + 1 || 9
 export function refreshModels({ only = null } = {}) {
   const key = only ? [...only].sort().join(',') : '*';
   if (inflightByScope.has(key)) return inflightByScope.get(key);
+  const generation = ++refreshGeneration;
   const inflight = (async () => {
     const { PROVIDERS } = await import('./providers/index.mjs');
     const fresh = {}, lists = {};
@@ -35,6 +38,11 @@ export function refreshModels({ only = null } = {}) {
         fresh[p.id] = { ...(cache.providers[p.id] || {}), status: 'error', error: String(e?.message || e), updatedAt: nowIso(), ms: Date.now() - t0 };
       }
     }));
+    // A provider result can be superseded while this refresh waits for another provider.
+    for (const { id } of targets) {
+      if ((committedByProvider.get(id) || 0) > generation) { delete fresh[id]; delete lists[id]; }
+      else committedByProvider.set(id, generation);
+    }
     const before = cache;
     const providers = { ...cache.providers, ...fresh };
     const models = cache.models.filter((m) => !Object.hasOwn(lists, m.provider)).concat(...Object.values(lists));

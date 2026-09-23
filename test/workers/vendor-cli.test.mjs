@@ -127,9 +127,18 @@ test('a failed run whose narration mentions 429 is not a limit hit', async () =>
   assert.equal(r.limitHit, false);
 });
 
-test('a short kimi success mentioning 429 is not a quota failure', async () => {
+test('short kimi successes mentioning quota handling are not quota failures', async () => {
   const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 0 };
-  for (const line of ['no 429 today', 'Added 429 retry with backoff; tests pass.']) {
+  for (const line of [
+    'no 429 today',
+    'Added 429 retry with backoff; tests pass.',
+    'Handled the too many requests response; tests passed.',
+    'Handled the monthly usage limit error; tests passed.',
+    'Added tests for quota exceeded and insufficient balance.',
+    'Fixed the rate limit reached response.',
+    `Handled this response: ${KIMI_QUOTA}`,
+    `${KIMI_QUOTA}\nHandled the error; tests passed.`,
+  ]) {
     const r = await runVendorCli(fakeSpec([line], opts), { id: 't', cwd: tmpDir('kimi-429-ok'), prompt: 'x' });
     assert.equal(r.ok, true, `${line}: ${r.error}`);
     assert.equal(r.limitHit, false, line);

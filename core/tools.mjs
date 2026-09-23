@@ -142,7 +142,8 @@ export function conductorToolDefs({ sessionId, cwd }) {
           pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
           if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
           if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
-          if (pick) { provider = pick.provider; model = pick.model; effort = effort || pick.effort; }
+          // Visual passes prove a model AND its effort; effort-only overrides cannot change an automatic pick.
+          if (pick) { provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort; }
         }
         if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
         const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });

@@ -95,7 +95,8 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
       }
       catch { noWorker = 'Worker recommendation failed.'; }
       if (!pick) return { input: inp, id: null, noWorker };
-      provider = pick.provider; model = pick.model; effort = effort || pick.effort;
+      // Preserve the proven visual effort even when plan/stage defaults supply an effort-only override.
+      provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
     }
     const t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty, overflowApi, parallelOverride });
     return { input: inp, id: t.id };

@@ -1,9 +1,90 @@
-import './_env.mjs';
+import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { readJson } from '../core/paths.mjs';
 
 const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
+
+for (const scenario of [
+  { olderFull: true, collected: true, first: 'newer' },
+  { olderFull: false, first: 'older' },
+  { olderFull: true, collected: true, first: 'newer', newerFails: true },
+  { olderFull: true, collected: true, first: 'older', newerFails: true },
+  { olderFull: false, first: 'newer' },
+  { olderFull: false, first: 'newer', olderFails: true },
+]) {
+  test(`superseded limit results cannot commit: ${JSON.stringify(scenario)}`, async (ctx) => {
+    const { PROVIDERS } = await import('../core/providers/index.mjs');
+    const { refreshLimits } = await import('../core/limits.mjs');
+    const original = { ...PROVIDERS }, originalState = getLimits().providers;
+    for (const id of Object.keys(PROVIDERS)) delete PROVIDERS[id];
+    ctx.after(() => {
+      for (const id of Object.keys(PROVIDERS)) delete PROVIDERS[id];
+      Object.assign(PROVIDERS, original);
+      getLimits().providers = originalState;
+    });
+    const id = 'fake-freshness', reset = Date.now() + 60_000;
+    const usage = (usedPercent) => ({ provider: id, blocked: false, windows: [{ id: 'weekly', usedPercent, resetsAt: reset }] });
+    const initial = usage(10);
+    getLimits().providers = { [id]: initial };
+    const old = Promise.withResolvers(), newer = Promise.withResolvers(), slow = Promise.withResolvers();
+    const oldEntered = Promise.withResolvers(), newerEntered = Promise.withResolvers();
+    let calls = 0;
+    PROVIDERS[id] = {
+      id, pollLimits: () => {
+        if (++calls === 1) { oldEntered.resolve(); return old.promise; }
+        newerEntered.resolve(); return newer.promise;
+      },
+    };
+    PROVIDERS.slow = { id: 'slow', pollLimits: () => slow.promise };
+    const olderScope = scenario.olderFull ? {} : { only: [id] };
+    const newerScope = scenario.olderFull ? { only: [id] } : {};
+    const olderRefresh = refreshLimits(olderScope);
+    let newerRefresh;
+    const finishOld = () => scenario.olderFails ? old.reject(new Error('older failed')) : old.resolve(usage(20));
+    const finishNewer = () => scenario.newerFails ? newer.reject(new Error('newer failed')) : newer.resolve(usage(100));
+    const finishSlow = () => slow.resolve({ provider: 'slow', blocked: false, windows: [] });
+    try {
+      assert.equal(refreshLimits(olderScope), olderRefresh, 'same-scope calls coalesce');
+      await oldEntered.promise;
+      if (scenario.collected) {
+        finishOld();
+        await old.promise; // collected 20%, while the full refresh still awaits slow
+      }
+      newerRefresh = refreshLimits(newerScope);
+      assert.equal(refreshLimits(newerScope), newerRefresh, 'newer same-scope calls coalesce');
+      await newerEntered.promise;
+      noteRateLimitEvent('live', { status: 'rejected', rateLimitType: 'five_hour', utilization: 1, resetsAt: reset });
+      if (scenario.first === 'older') {
+        finishOld(); finishSlow();
+        await olderRefresh;
+        assert.deepEqual(getLimits().providers[id].windows, usage(20).windows, 'a newer pending poll must not discard the completed sample');
+        finishNewer(); await newerRefresh;
+      } else {
+        finishNewer();
+        if (!scenario.olderFull) finishSlow();
+        await newerRefresh;
+        const provider = { ...getLimits().providers[id] };
+        assert.equal(modelBlockedUntil(id, 'test-model'), scenario.newerFails ? null : reset);
+        finishOld(); finishSlow();
+        await olderRefresh;
+        assert.deepEqual(getLimits().providers[id], provider, 'old success/error cannot overwrite newer result');
+      }
+      assert.equal(calls, 2);
+      assert.equal(getLimits().providers[id].windows[0].usedPercent, scenario.newerFails ? (scenario.first === 'older' ? 20 : 10) : 100);
+      assert.equal(getLimits().providers[id].error, scenario.newerFails ? 'newer failed' : null);
+      assert.equal(modelBlockedUntil(id, 'test-model'), scenario.newerFails ? null : reset);
+      assert.equal(getLimits().providers.slow.source, 'poll', 'unrelated provider result still commits');
+      assert.equal(modelBlockedUntil('live', 'test-model'), reset, 'unrelated live event survives');
+      assert.deepEqual(readJson(join(HOME, 'limits.json')), getLimits());
+    } finally {
+      old.resolve(usage(20)); newer.resolve(usage(100)); finishSlow();
+      await Promise.allSettled([olderRefresh, newerRefresh]);
+    }
+  });
+}
 
 test('429 blocks until retry-after; a later 2xx unblocks', () => {
   noteHttp('deepseek', 429, { 'Retry-After': '60' });

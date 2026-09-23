@@ -6,8 +6,8 @@ import { bus } from '../bus.mjs';
 
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|unauthorized|authentication (?:required|failed)/i;
-// Quota-only stdout: phrases that appear in a provider quota/limit refusal, not bare "429" or "rate limit".
-const QUOTA_MSG_RE = /(?:monthly|daily) usage limit|usage limit (?:reached|exceeded)|quota (?:exceeded|exhausted|reached)|insufficient (?:quota|balance)|rate[_ -]?limit (?:reached|exceeded)|too many requests/i;
+// Recorded Kimi 1.50 stdout refusal (see vendor-cli.test.mjs). Quota phrases alone can be successful narration.
+const KIMI_QUOTA_STDOUT = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
 
 /**
  * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env? }
@@ -63,11 +63,10 @@ function runVendorCliOnce(spec, t) {
       res.items = st.items.slice(-60);
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;
-      // Quota-only stdout (kimi prints the limit line as the whole report, sometimes with exit 0) is a failed limit, not a success.
-      // Shape: no items, short text, a quota-refusal phrase — independent of exit code. A success that merely mentions "429" is not a hit.
+      // Kimi sometimes exits 0 on refusal. Recognize the recorded whole report, not a quota phrase or a length cutoff.
       const quotaText = (st.text || '').trim();
-      const quotaOnly = !st.items.length && quotaText.length <= 300 && QUOTA_MSG_RE.test(quotaText);
-      if (quotaOnly && !res.error) res.error = quotaText.slice(-400) || 'usage limit';
+      const quotaOnly = !st.items.length && quotaText === KIMI_QUOTA_STDOUT;
+      if (quotaOnly && !res.error) res.error = quotaText;
       // st.text joins the haystack only for quota-only stdout — a failed run whose narration mentions "429" is not a limit hit.
       const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${quotaOnly ? `\n${st.text || ''}` : ''}`;
       res.limitHit = !!res.error && LIMIT_RE.test(haystack);

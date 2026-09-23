@@ -12,6 +12,8 @@ const blockedMs = () => (loadConfig().scorecard.blockedMinutes) * 60_000; // how
 const FILE = () => statePath('limits.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {} });
 const inflightByScope = new Map(); // coalesce concurrent polls, keyed by scope so a codex-only poll is never returned to a full refresh
+let refreshGeneration = 0;
+const committedByProvider = new Map(); // a newer pending poll must not discard a post-completion sample
 let seenMtime = fileMtime();
 
 function fileMtime() { try { const st = statSync(FILE()); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; } } // mtime alone misses two writes in the same tick
@@ -33,6 +35,7 @@ function save(publish = true) {
 export function refreshLimits({ only = null } = {}) {
   const key = only ? [...only].sort().join(',') : '*';
   if (inflightByScope.has(key)) return inflightByScope.get(key);
+  const generation = ++refreshGeneration;
   const inflight = (async () => {
     const targets = Object.values(PROVIDERS).filter((p) => p.pollLimits && (!only || only.includes(p.id)));
     const outcomes = await Promise.allSettled(targets.map(async (p) => {
@@ -48,6 +51,9 @@ export function refreshLimits({ only = null } = {}) {
     for (const outcome of outcomes) {
       if (outcome.status !== 'fulfilled') continue;
       const { id, ok, r, error, before } = outcome.value;
+      // Check at commit: this outcome may have waited for an unrelated slow provider.
+      if ((committedByProvider.get(id) || 0) > generation) continue;
+      committedByProvider.set(id, generation);
       const prev = cache.providers[id] || {};
       if (ok) {
         try {

@@ -99,7 +99,8 @@ Design notes: docs/ROADMAP-capabilities.md.
 MODELS AND LIMITS (NEVER ASSUMED STATIC)
 ----------------------------------------
 
-The sidebar polls every provider every 15 minutes (configurable) and on Refresh:
+The model and limit registries refresh at startup and on Refresh. Periodic polling is off by
+default (ui.autoRefresh: false); when enabled, it runs every pollMinutes (default 15 minutes):
 
   - Claude: exact model ids only (claude-opus-5-5, claude-sonnet-5, ...): the SDK's aliases (opus[1m],
     sonnet, haiku, default) are listed as the model they resolve to, merged with the live Models API

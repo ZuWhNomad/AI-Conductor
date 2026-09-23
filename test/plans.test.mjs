@@ -474,6 +474,55 @@ const attempt = (input = {}) => {
 };
 const delegate = (failed) => handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, background: true });
 
+test('delegate and run_plan preserve pass-gated visual effort, including inherited defaults and explicit pins', async (t) => {
+  const { getModels } = await import('../core/models.mjs');
+  const { recommend } = await import('../core/scorecard.mjs');
+  const { saveConfig } = await import('../core/config.mjs');
+  const reg = getModels(), previous = { models: reg.models, providers: reg.providers }, cfg = loadConfig();
+  reg.models = [{ provider: 'codex', id: 'gpt-6-astra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium', 'high', 'xhigh', 'ultra'] }];
+  reg.providers = { codex: { status: 'ok' } };
+  saveConfig({ worker: { provider: 'codex', model: 'gpt-6-astra', effort: 'high' }, scorecard: { usePriors: false } });
+  t.after(() => { Object.assign(reg, previous); saveConfig({ worker: cfg.worker, scorecard: cfg.scorecard }); });
+  t.mock.method(globalThis.toolFixtures, 'recommend', (input) => { calls.push(input); return recommend({ ...input, summary: [] }); });
+
+  for (const [category, effort] of [['drafting', 'xhigh'], ['modeling', 'ultra']]) await t.test(category, async () => {
+    const expected = `codex:gpt-6-astra:${effort}`;
+    for (const input of [{}, { effort: 'high' }, { provider: 'codex', effort: 'high' }, { model: 'gpt-6-astra', effort: 'high' }]) {
+      calls.length = 0;
+      const report = await handler('delegate')({ title: 'visual', spec: 'fixture', category, difficulty: 2, background: true, ...input });
+      const task = getTask(/^Task (\S+)/.exec(report)?.[1]);
+      assert.ok(task, report);
+      const pinned = !!(input.provider || input.model);
+      assert.equal(selOf(task), pinned ? 'codex:gpt-6-astra:high' : expected);
+      assert.equal(calls.length, pinned ? 0 : 1);
+    }
+
+    calls.length = 0;
+    const report = await handler('run_plan')({ defaults: { category, difficulty: 2, effort: 'high' }, stages: [
+      { id: 'plan_default', tasks: [{ spec: 'fixture' }, { spec: 'fixture', effort: 'high' }] },
+      { id: 'stage_default', defaults: { effort: 'low' }, tasks: [{ spec: 'fixture' }] },
+      { id: 'task_pins', tasks: [{ spec: 'fixture', provider: 'codex' }, { spec: 'fixture', model: 'gpt-6-astra' }] },
+      { id: 'inherited_pin', defaults: { provider: 'codex', model: 'gpt-6-astra' }, tasks: [{ spec: 'fixture' }] },
+    ] });
+    const record = readJson(statePath('plans', `${/^Plan (\S+)/.exec(report)?.[1]}.json`));
+    assert.equal(record?.status, 'done', report);
+    assert.equal(calls.length, 3);
+    for (const [stage, selections] of Object.entries({
+      plan_default: [expected, expected], stage_default: [expected],
+      task_pins: ['codex:gpt-6-astra:high', 'codex:gpt-6-astra:high'], inherited_pin: ['codex:gpt-6-astra:high'],
+    })) {
+      assert.deepEqual(record.stages[stage].tasks.map(({ id }) => selOf(getTask(id))), selections);
+    }
+  });
+});
+
+test('delegate keeps effort-only overrides for ordinary categories', async () => {
+  const report = await handler('delegate')({ title: 'ordinary', spec: 'fixture', category: 'implement', difficulty: 2, effort: 'low', background: true });
+  const task = getTask(/^Task (\S+)/.exec(report)?.[1]);
+  assert.ok(task, report);
+  assert.equal(selOf(task), `${pick.provider}:${pick.model}:low`);
+});
+
 test('run_plan auto-pick passes the access-gate provider list to recommend', async () => {
   const { saveConfig, loadConfig } = await import('../core/config.mjs');
   const previous = loadConfig().tools;
