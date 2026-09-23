@@ -1,24 +1,24 @@
 import { HOME } from './_env.mjs';
 import { test, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
-import fs, { writeFileSync, mkdirSync } from 'node:fs';
+import fs from 'node:fs';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import childProcess from 'node:child_process';
 
-// CONDUCTOR_HOME does not change os.homedir(): intercept every default Claude config read.
+// Intercept user config reads so the registry is deterministic without changing either runtime's home.
 let claudeFixture = { mcpServers: { claude_retained: { command: 'claude-fixture.exe', args: ['--fixture'], env: { KEY: 'fixture' } } } };
 const readFile = fs.readFileSync;
-mock.method(fs, 'readFileSync', (file, ...args) => basename(String(file)) === '.claude.json'
-  ? JSON.stringify(claudeFixture) : readFile(file, ...args));
+mock.method(fs, 'readFileSync', (file, ...args) => {
+  if (basename(String(file)) === '.claude.json') return JSON.stringify(claudeFixture);
+  if (basename(String(file)) === 'config.toml') return codexFixture;
+  return readFile(file, ...args);
+});
 syncBuiltinESMExports();
 after(() => { mock.restoreAll(); syncBuiltinESMExports(); });
 
-// Point the Codex home at a fixture so the registry is deterministic.
-process.env.CODEX_HOME = join(HOME, 'codex');
-mkdirSync(process.env.CODEX_HOME, { recursive: true });
-writeFileSync(join(process.env.CODEX_HOME, 'config.toml'), `
+let codexFixture = `
 model = "gpt-6-astra"
 
 [mcp_servers.node_repl]
@@ -44,7 +44,7 @@ url = "https://example.test/retained"
 
 [windows]
 sandbox = "elevated"
-`);
+`;
 const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, mcpServersFor, readClaudeJson } = await import('../core/mcp.mjs');
 const { saveConfig } = await import('../core/config.mjs');
 
@@ -117,6 +117,104 @@ test('Codex environment collisions respect Windows case-insensitive names', { sk
   assert.deepEqual(env, {});
   assert.ok(args.includes('mcp_servers.first.env={"Token"="first-secret"}'));
   assert.ok(args.includes('mcp_servers.second.env={"TOKEN"="second-secret"}'));
+});
+
+test('inherited Codex env_vars and HTTP bearer env references preserve original values, including unset', () => {
+  const key = 'REVIEW_SHARED_CREDENTIAL';
+  const previous = process.env[key], previousFixture = codexFixture;
+  try {
+    for (const field of ['env_vars', 'bearer_token_env_var']) {
+      const inheritedKey = process.platform === 'win32' ? key.toLowerCase() : key;
+      codexFixture = `[mcp_servers.inherited]\n${field === 'env_vars' ? 'command = "fixture.exe"' : 'url = "https://fixture.test/mcp"'}\n${field} = ${field === 'env_vars' ? `["${inheritedKey}"]` : `"${inheritedKey}"`}\n`;
+      for (const original of ['inherited-fixture', '', undefined, 'added-fixture']) {
+        if (original === undefined) delete process.env[key]; else process.env[key] = original;
+        const added = { command: 'added.exe', env: { [key]: 'added-fixture' } };
+        const registry = mcpServers({ mcpServers: { added } });
+        assert.deepEqual(registry.inherited[field], field === 'env_vars' ? [inheritedKey] : inheritedKey);
+        const { args, env } = codexMcpArgs(registry);
+        const conflict = original !== 'added-fixture';
+        assert.equal(Object.hasOwn(env, key), !conflict, `${field}, original ${original}: preserve shared env`);
+        const childEnv = { ...process.env, ...env };
+        const actualKey = Object.keys(childEnv).find((k) => process.platform === 'win32' ? k.toUpperCase() === key : k === key);
+        assert.equal(actualKey === undefined ? undefined : childEnv[actualKey], original);
+        assert.ok(args.includes(conflict ? 'mcp_servers.added.env_vars=[]' : `mcp_servers.added.env_vars=["${key}"]`));
+        assert.ok(args.includes(conflict ? `mcp_servers.added.env={"${key}"="added-fixture"}` : 'mcp_servers.added.env={}'));
+        assert.doesNotMatch(args.join(' '), /inherited-fixture/);
+        // The authoritative registry can remove an inherited requirement; it then need not constrain forwarding.
+        const removed = codexMcpArgs(mcpServers({ mcpServers: { inherited: null, added } }));
+        assert.equal(removed.env[key], 'added-fixture');
+        assert.ok(removed.args.includes('mcp_servers.inherited.enabled=false'));
+      }
+    }
+  } finally {
+    codexFixture = previousFixture;
+    if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+  }
+});
+
+test('multiline TOML string arrays retain inherited env requirements and comments do not hide entries', () => {
+  const key = 'REVIEW_SHARED_CREDENTIAL';
+  const previous = process.env[key], previousFixture = codexFixture;
+  codexFixture = String.raw`
+[mcp_servers.inherited]
+args = [ # a comment containing ] must not close the array
+  'bracket]#literal',
+  "quote\"#kept", # trailing comment
+]
+env_vars = [ # "IGNORED_COMMENT_KEY" ]
+  # another comment and a blank line
+
+  "REVIEW_SHARED_CREDENTIAL", # ] "ALSO_IGNORED"
+  'REVIEW_OTHER_CREDENTIAL',
+] # trailing comma is valid
+command = 'fixture.exe'
+[mcp_servers.after]
+url = 'https://fixture.test/mcp'
+`;
+  try {
+    const expected = { args: ['bracket]#literal', 'quote"#kept'], env_vars: [key, 'REVIEW_OTHER_CREDENTIAL'], command: 'fixture.exe' };
+    assert.deepEqual(parseCodexToml(codexFixture).inherited, expected);
+    for (const original of ['inherited-fixture', undefined]) {
+      if (original === undefined) delete process.env[key]; else process.env[key] = original;
+      const registry = mcpServers({ mcpServers: { added: { command: 'added.exe', env: { [key]: 'synthetic-secret' } } } });
+      assert.deepEqual(registry.inherited, { ...expected, source: 'codex' });
+      assert.equal(registry.after.url, 'https://fixture.test/mcp');
+      const { args, env } = codexMcpArgs(registry);
+      assert.equal(Object.hasOwn(env, key), false, 'added credentials cannot alter the inherited requirement');
+      assert.equal(({ ...process.env, ...env })[key], original);
+      assert.ok(args.includes('mcp_servers.added.env_vars=[]'));
+      assert.ok(args.includes(`mcp_servers.added.env={"${key}"="synthetic-secret"}`));
+      assert.doesNotMatch(args.join(' '), /inherited-fixture/);
+    }
+  } finally {
+    codexFixture = previousFixture;
+    if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+  }
+});
+
+test('inline TOML env tables preserve the same credential collisions as env subtables', () => {
+  const previousFixture = codexFixture;
+  const declarations = [
+    String.raw`env = { REVIEW_SHARED_CREDENTIAL = "inherited-fixture", "KEY.NAME" = 'comma,brace}#kept', 'QUOTED' = "quote\"#kept" } # trailing comment`,
+    String.raw`[mcp_servers.inherited.env]
+REVIEW_SHARED_CREDENTIAL = "inherited-fixture"
+"KEY.NAME" = 'comma,brace}#kept'
+'QUOTED' = "quote\"#kept"`,
+  ];
+  const expectedEnv = { REVIEW_SHARED_CREDENTIAL: 'inherited-fixture', 'KEY.NAME': 'comma,brace}#kept', QUOTED: 'quote"#kept' };
+  try {
+    for (const declaration of declarations) {
+      codexFixture = `[mcp_servers.inherited]\ncommand = "fixture.exe"\n${declaration}\n`;
+      assert.deepEqual(parseCodexToml(codexFixture).inherited.env, expectedEnv);
+      const registry = mcpServers({ mcpServers: { added: { command: 'added.exe', env: { REVIEW_SHARED_CREDENTIAL: 'synthetic-secret' } } } });
+      assert.deepEqual(registry.inherited.env, expectedEnv);
+      const { args, env } = codexMcpArgs(registry);
+      assert.equal(Object.hasOwn(env, 'REVIEW_SHARED_CREDENTIAL'), false);
+      assert.ok(args.includes('mcp_servers.added.env_vars=[]'));
+      assert.ok(args.includes('mcp_servers.added.env={"REVIEW_SHARED_CREDENTIAL"="synthetic-secret"}'));
+      assert.doesNotMatch(args.join(' '), /inherited-fixture/);
+    }
+  } finally { codexFixture = previousFixture; }
 });
 
 test('D1: MCP instructions refuse a tagged delegate when no plan qualifies instead of naming a fallback default worker', () => {

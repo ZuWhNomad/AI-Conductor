@@ -360,3 +360,29 @@ test('broad secret flags and URL arguments redact and restore through JSON with 
   saveConfig({ mcpServers: { fresh: { command: 'node', args: [unknown, '--header', '••••', '-t=••••', 'keep'] } } });
   assert.deepEqual(loadConfig().mcpServers.fresh.args, ['keep'], 'unmatched masks never persist');
 });
+
+test('unparseable multi-host DB URLs fail closed and round-trip with and without queries', () => {
+  const base = 'mongodb://review-user:review-password@db1.test:27017,db2.test:27017/review';
+  const uris = [base, `${base}?token=review-query-secret`];
+  for (const uri of uris) assert.throws(() => new URL(uri), TypeError, 'fixture exercises the URL parse failure');
+  const args = ['--verbose', ...uris, ...uris.map((uri) => `--endpoint=${uri}`)];
+  const mcpServers = {
+    multiHostArgs: { command: 'node', args },
+    multiHostUrl: { url: uris[0] },
+    multiHostQuery: { url: uris[1] },
+  };
+  saveConfig({ mcpServers });
+  const masked = JSON.parse(JSON.stringify(publicConfig().mcpServers));
+  assert.deepEqual(masked.multiHostArgs.args, ['--verbose', '••••', '••••', '--endpoint=••••', '--endpoint=••••']);
+  assert.equal(masked.multiHostUrl.url, '••••');
+  assert.equal(masked.multiHostQuery.url, '••••');
+  assert.doesNotMatch(JSON.stringify(masked), /review-user|review-password|review-query-secret/);
+  masked.multiHostArgs.args.unshift('--inserted');
+  saveConfig({ mcpServers: masked });
+  const restored = loadConfig().mcpServers;
+  assert.deepEqual(restored.multiHostArgs.args, ['--inserted', ...args]);
+  assert.equal(restored.multiHostUrl.url, uris[0]);
+  assert.equal(restored.multiHostQuery.url, uris[1]);
+  saveConfig({ mcpServers: { unmatchedDb: { command: 'node', args: ['••••', '--endpoint=••••'] } } });
+  assert.deepEqual(loadConfig().mcpServers.unmatchedDb.args, [], 'unmatched opaque URL masks are never persisted');
+});

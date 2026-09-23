@@ -373,5 +373,5 @@ function maskUrlSecrets(u) {
     if (url.username || url.password) { url.username = SECRET_MASK; url.password = ''; }
     for (const k of [...url.searchParams.keys()]) url.searchParams.set(k, SECRET_MASK);
     return url.toString();
-  } catch { return u.includes('?') ? `${u.split('?')[0]}?${SECRET_MASK}` : u; }
+  } catch { return SECRET_MASK; } // e.g. multi-host DB URIs: no unparsed credential-bearing prefix is safe to expose
 }

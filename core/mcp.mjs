@@ -27,13 +27,14 @@ function withoutComment(line) {
   return line.trim();
 }
 
-/** Parse `[mcp_servers.NAME]` tables (url | command/args/env) from a Codex config.toml. */
+/** Parse `[mcp_servers.NAME]` tables, including inherited process-env requirements, from a Codex config.toml. */
 export function parseCodexToml(text) {
   const out = {}; let cur = null, env = null;
   const header = new RegExp(`^\\[mcp_servers\\.(${keyToken})(\\.env)?\\]$`);
   const keyValue = new RegExp(`^(${keyToken})\\s*=\\s*(.+)$`);
-  for (const raw of String(text || '').split('\n')) {
-    const line = withoutComment(raw);
+  const lines = String(text || '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = withoutComment(lines[i]);
     const h = header.exec(line);
     if (h) { const name = unq(h[1]); cur = out[name] = out[name] || {}; env = h[2] ? (cur.env = cur.env || {}) : null; continue; }
     if (/^\[/.test(line)) { cur = null; env = null; continue; }
@@ -41,8 +42,19 @@ export function parseCodexToml(text) {
     const kv = keyValue.exec(line); if (!kv) continue;
     const k = unq(kv[1]), v = kv[2];
     if (env) { env[k] = unq(v); continue; }
-    if (k === 'url' || k === 'command') cur[k] = unq(v);
-    else if (k === 'args') { try { cur.args = [...v.matchAll(new RegExp(stringToken, 'g'))].map(([s]) => unq(s)); } catch { cur.args = []; } }
+    if (k === 'url' || k === 'command' || k === 'bearer_token_env_var') cur[k] = unq(v);
+    else if (k === 'args' || k === 'env_vars') {
+      const chunks = [v];
+      // Array comments and quoted ']' characters do not end a multiline string array.
+      while (!chunks.at(-1).replace(new RegExp(stringToken, 'g'), '').includes(']') && i + 1 < lines.length) {
+        chunks.push(withoutComment(lines[++i]));
+      }
+      try { cur[k] = [...chunks.join('\n').matchAll(new RegExp(stringToken, 'g'))].map(([s]) => unq(s)); } catch { cur[k] = []; }
+    }
+    else if (k === 'env') {
+      const entry = new RegExp(`(?:\\{|,)\\s*(${keyToken})\\s*=\\s*(${stringToken})\\s*(?=,|\\})`, 'g');
+      cur.env = Object.fromEntries([...v.matchAll(entry)].map(([, key, value]) => [unq(key), unq(value)]));
+    }
     else if (k === 'enabled' && v.trim() === 'false') cur.disabled = true;
   }
   for (const [n, s] of Object.entries(out)) if (s.disabled || (!s.url && !s.command)) delete out[n];
@@ -101,13 +113,20 @@ export function codexMcpArgs(servers) {
   if (servers == null) return { args, env };
   const envKey = (key) => process.platform === 'win32' ? key.toUpperCase() : key;
   const values = new Map(), conflicts = new Set();
+  const originalEnv = new Map(Object.entries(process.env).map(([k, v]) => [envKey(k), v]));
+  const requireValue = (key, value) => {
+    const k = envKey(key);
+    if (values.has(k) && values.get(k) !== value) conflicts.add(k);
+    values.set(k, value);
+  };
   for (const s of Object.values(servers)) {
-    if (s.url) continue;
-    for (const [key, value] of Object.entries(s.env || {})) {
-      const k = envKey(key), v = String(value);
-      if (values.has(k) && values.get(k) !== v) conflicts.add(k);
-      values.set(k, v);
+    if (s.source === 'codex') {
+      const required = s.url ? [s.bearer_token_env_var].filter(Boolean) : s.env_vars || [];
+      // Absence is a requirement too: an added server must not supply another server's missing credential.
+      for (const key of required) requireValue(key, originalEnv.get(envKey(key)));
     }
+    if (s.url) continue;
+    for (const [key, value] of Object.entries(s.env || {})) requireValue(key, String(value));
   }
   const q = (v) => JSON.stringify(String(v)).replace(/\x7f/g, '\\u007f');
   const table = (entries) => `{${Object.entries(entries).map(([k, v]) => `${q(k)}=${v}`).join(',')}}`;
