@@ -6,10 +6,7 @@ if ! command -v node >/dev/null; then echo "Node.js 22+ is required: https://nod
 major=$(node -p "process.versions.node.split('.')[0]")
 if [ "$major" -lt 22 ]; then echo "Node.js $major found; Conductor needs 22+"; exit 1; fi
 npm install --no-fund --no-audit
-cat > "$HOME/Desktop/conductor.sh" <<EOF
-#!/usr/bin/env bash
-cd "$(pwd)" && node bin/conductor.mjs start
-EOF
+printf '#!/usr/bin/env bash\ncd -- %q && node bin/conductor.mjs start\n' "$PWD" > "$HOME/Desktop/conductor.sh"
 chmod +x "$HOME/Desktop/conductor.sh"
 echo
 echo "Installed. Launcher: ~/Desktop/conductor.sh"

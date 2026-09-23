@@ -10,7 +10,7 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
-import { resolveNpmShim, winArgEscape, spawnCli } from '../../core/proc.mjs';
+import { resolveNpmShim, spawnCli } from '../../core/proc.mjs';
 import { shellDenied, runDescription, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';
@@ -113,13 +113,6 @@ test('D9: runEnv sets NoDefaultCurrentDirectoryInExePath so a cwd shim cannot sh
   assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');
   assert.equal(env.PATH, 'C:\\Windows');
   assert.equal(env.OTHER, 'keep');
-});
-
-test('winArgEscape wraps and caret-escapes cmd metacharacters', () => {
-  assert.equal(winArgEscape('plain'), '^"plain^"');
-  const e = winArgEscape('a&b|c>d');
-  assert.ok(e.startsWith('^"') && e.endsWith('^"'));
-  for (const m of ['&', '|', '>']) assert.ok(e.includes(`^${m}`), `metachar ${m} caret-escaped`);
 });
 
 test('resolveNpmShim + spawnCli deliver a malicious argument verbatim, no injection', { skip: !WIN }, async () => {

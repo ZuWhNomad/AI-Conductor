@@ -31,8 +31,9 @@ function tokenRuns(provider) {
 /** The current usage window: cumulative provider tokens spent since the last long gap (window start). */
 export function windowTokens(provider, now = Date.now()) {
   const runs = tokenRuns(provider);
+  const gap = gapMs(provider);
   let startIdx = 0;
-  for (let i = 1; i < runs.length; i++) if (runs[i].ts - runs[i - 1].ts > gapMs(provider)) startIdx = i;
+  for (let i = 1; i < runs.length; i++) if (runs[i].ts - runs[i - 1].ts > gap) startIdx = i;
   const startTs = runs.length ? runs[startIdx].ts : now;
   const spent = runs.slice(startIdx).reduce((s, r) => s + r.tokens, 0);
   return { spent, startTs, runs: runs.length - startIdx };

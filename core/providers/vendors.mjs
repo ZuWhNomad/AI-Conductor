@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli, quoteArg, trackProbe, resolveNpmShim } from '../proc.mjs';
+import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
@@ -66,7 +66,12 @@ export function capture(bin, args, { timeoutMs = 30_000, cwd } = {}) {
   const cmd = shim ? shim.command : bin;
   const argv = shim ? [...shim.args, ...args] : args;
   return new Promise((resolve) => {
-    const child = execFile(cmd, argv, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: false }, (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: !!err?.killed }));
+    let timedOut = false;
+    const child = execFile(cmd, argv, { cwd, detached: !WIN, windowsHide: true, maxBuffer: 2e6, encoding: 'utf8', shell: false }, (err, stdout, stderr) => {
+      clearTimeout(timer);
+      resolve({ code: err ? (err.code ?? 1) : 0, out: `${stdout || ''}${stderr || ''}`, timedOut: timedOut || !!err?.killed });
+    });
+    const timer = setTimeout(() => { timedOut = true; killTree(child); }, timeoutMs);
     trackProbe(child);
   });
 }
@@ -218,14 +223,14 @@ export const VENDORS = {
     probe: { args: ['--version'], signedOut: /never/, needsAuthFile: () => existsSync(join(home, '.qwen', 'oauth_creds.json')) },
     parseModels: () => ['qwen3-coder-plus', 'qwen3-coder-flash'].map((id) => ({ id, label: id })),
     efforts: [],
-    // Qwen Code 0.23 has no --resume <id>; --continue resumes the most recent session of the project.
+    // Qwen Code 0.23.3 supports --resume <id>; --continue resumes only the most recent project session.
     // Long prompts: omit the positional query; `--input-format text` (default) consumes stdin (qwen 0.23.3 --help:
     // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: grok's 8000.
     headlessArgs: (t) => {
       const long = !!(t.prompt && t.prompt.length > 8000);
       const args = long ? ['-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd]
         : [t.prompt, '-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd];
-      if (t.resumeThreadId) args.push('--continue');
+      if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
       if (t.model) args.push('-m', t.model);
       return { args, stdinPrompt: long };
     },

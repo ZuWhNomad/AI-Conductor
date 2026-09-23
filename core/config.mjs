@@ -254,7 +254,9 @@ function normalize(cfg) {
 }
 
 const SECRET_MASK = '••••';
-const secretFlag = (flag) => flag === '-H' || flag === '-t' || (/^--?[^=]+$/.test(flag) && /token|key|secret|pass|auth|bearer|credential|header/i.test(flag));
+const secretName = (name) => /token|key|secret|pass|auth|bearer|credential|header/i.test(name);
+const secretFlag = (flag) => flag === '-H' || flag === '-t' || (/^--?[^=]+$/.test(flag) && secretName(flag));
+const envAssignment = (arg) => { const m = /^([^=]+)=/.exec(arg); return m && secretName(m[1]) ? m[1] : null; };
 const hasMask = (value) => typeof value === 'string' && (value.includes(SECRET_MASK) || value.toLowerCase().includes(encodeURIComponent(SECRET_MASK).toLowerCase()));
 // Positional URLs and --endpoint=URL both occur in MCP launch arguments.
 const maskUrlArg = (arg) => arg.replace(/^((?:--?[^=]+=)?)([a-z][a-z\d+.-]*:\/\/.*)$/i, (_, flag, url) => flag + maskUrlSecrets(url));
@@ -263,6 +265,10 @@ function maskMcpArgs(args) {
   const out = [...args];
   for (let i = 0; i < out.length; i++) {
     const a = String(out[i] ?? '');
+    const env = /^(?:-e|--env)$/i.test(a) && envAssignment(String(out[i + 1] ?? ''));
+    if (env) { out[++i] = env + '=' + SECRET_MASK; continue; }
+    const inlineEnv = /^(--env=)([^=]+)=/i.exec(a);
+    if (inlineEnv && secretName(inlineEnv[2])) { out[i] = inlineEnv[1] + inlineEnv[2] + '=' + SECRET_MASK; continue; }
     const eq = a.indexOf('=');
     if (eq > 0 && secretFlag(a.slice(0, eq))) { out[i] = a.slice(0, eq + 1) + SECRET_MASK; continue; }
     if (secretFlag(a) && i + 1 < out.length) { out[++i] = SECRET_MASK; continue; }
@@ -277,6 +283,10 @@ function restoreMcpArgs(posted, stored) {
   const push = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
   for (let i = 0; i < stored.length; i++) {
     const a = String(stored[i] ?? '');
+    const env = /^(?:-e|--env)$/i.test(a) && envAssignment(String(stored[i + 1] ?? ''));
+    if (env) { push(split, `${a.toLowerCase()}=${env.toLowerCase()}`, stored[i + 1]); i++; continue; }
+    const inlineEnv = /^(--env=)([^=]+)=/i.exec(a);
+    if (inlineEnv && secretName(inlineEnv[2])) { push(eq, `${inlineEnv[1].toLowerCase()}${inlineEnv[2].toLowerCase()}=`, stored[i]); continue; }
     const eqAt = a.indexOf('=');
     if (eqAt > 0 && secretFlag(a.slice(0, eqAt))) { push(eq, a.slice(0, eqAt + 1).toLowerCase(), stored[i]); continue; }
     if (secretFlag(a) && i + 1 < stored.length) { push(split, a.toLowerCase(), stored[++i]); continue; }
@@ -288,6 +298,19 @@ function restoreMcpArgs(posted, stored) {
   const out = [];
   for (let i = 0; i < posted.length; i++) {
     const a = String(posted[i] ?? '');
+    const env = /^(?:-e|--env)$/i.test(a) && envAssignment(String(posted[i + 1] ?? ''));
+    if (env) {
+      const key = `${a.toLowerCase()}=${env.toLowerCase()}`, n = nth(splitSeen, key), next = posted[i + 1];
+      if (hasMask(next)) { const got = split.get(key)?.[n]; if (got != null && !hasMask(got)) out.push(a, got); i++; continue; }
+      out.push(a, next); i++; continue;
+    }
+    const inlineEnv = /^(--env=)([^=]+)=/i.exec(a);
+    if (inlineEnv && secretName(inlineEnv[2])) {
+      const key = `${inlineEnv[1].toLowerCase()}${inlineEnv[2].toLowerCase()}=`, n = nth(eqSeen, key);
+      if (hasMask(a)) { const got = eq.get(key)?.[n]; if (got != null && !hasMask(got)) out.push(got); }
+      else out.push(a);
+      continue;
+    }
     const eqAt = a.indexOf('=');
     if (eqAt > 0 && secretFlag(a.slice(0, eqAt))) {
       const key = a.slice(0, eqAt + 1).toLowerCase(), n = nth(eqSeen, key);

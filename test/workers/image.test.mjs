@@ -43,3 +43,13 @@ test('sd txt2img fetch is aborted by the task signal', { timeout: 5_000 }, async
   assert.equal(saw?.aborted, true);
   assert.match(r.error, /abort/i);
 });
+
+test('OpenAI image URL download rejects a non-success response', async (ctx) => {
+  ctx.mock.method(globalThis, 'fetch', async (url) => url === 'https://api.openai.com/v1/images/generations'
+    ? Response.json({ data: [{ url: 'https://images.test/missing.png' }] })
+    : new Response('denied', { status: 403 }));
+  const r = await runImage({ cwd: tmpDir('img-url-status'), provider: 'openai-images', prompt: 'x', apiKey: 'x' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /403 denied/);
+  assert.deepEqual(r.files, []);
+});

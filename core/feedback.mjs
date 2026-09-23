@@ -18,6 +18,7 @@ function safeUser() { try { return userInfo().username; } catch { return null; }
 /** Strip identifying strings from any text. Exported so the bundle can be tested. */
 export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   let s = String(text);
+  s = s.replace(/([a-z][a-z\d+.-]{0,63}:\/\/)[^\s/?#@]{0,2048}@/gi, '$1***@');
   for (const h of new Set([home, home.replace(/\\/g, '/'), home.replace(/\\/g, '\\\\')])) if (h) s = s.split(h).join('~');
   // RFC 5321 limits the local part to 64 and the domain to 255 octets. Bound each scan to avoid quadratic retries.
   s = s.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,255}/g, '<email>'); // before the user name, which is often the local part
@@ -41,8 +42,8 @@ export function feedbackBundle() {
     version: pkg().version, node: process.version, os: `${platform()} ${release()} ${arch()}`, at: new Date().toISOString(),
     conductor: { provider: cfg.conductor?.provider, model: cfg.conductor?.model, effort: cfg.conductor?.effort, permissionMode: cfg.conductor?.permissionMode },
     worker: { provider: cfg.worker?.provider, model: cfg.worker?.model, effort: cfg.worker?.effort },
-    providers: Object.fromEntries(Object.entries(reg.providers || {}).map(([k, v]) => [k, { status: v.status, plan: v.plan, installed: v.installed, loggedIn: v.loggedIn, error: v.error }])),
-    limits: Object.fromEntries(Object.entries(lim.providers || {}).map(([k, v]) => [k, { blocked: v.blocked, blockedReason: v.blockedReason, error: v.error, windows: (v.windows || []).map((w) => ({ id: w.id, label: w.label, usedPercent: w.usedPercent })) }])),
+    providers: Object.fromEntries(Object.entries(reg.providers || {}).map(([k, v]) => [k, { status: v.status, plan: v.plan, installed: v.installed, loggedIn: v.loggedIn }])),
+    limits: Object.fromEntries(Object.entries(lim.providers || {}).map(([k, v]) => [k, { blocked: v.blocked, windows: (v.windows || []).map((w) => ({ id: w.id, label: w.label, usedPercent: w.usedPercent })) }])),
     // Free text (including source and unknown kinds) can contain credentials that no regex can reliably redact.
     improvements: listImprovements({ includeResolved: true }).slice(-300).map(({ id, ts, kind, resolved }) => ({
       id, ts, kind: ['error', 'idea', 'friction'].includes(kind) ? kind : null, resolved: !!resolved,

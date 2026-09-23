@@ -28,7 +28,9 @@ export async function runImage(t) {
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 400)}`);
       const j = await r.json();
       for (const [i, d] of (j.data || []).entries()) {
-        const buf = d.b64_json ? Buffer.from(d.b64_json, 'base64') : Buffer.from(await (await fetch(d.url, { signal })).arrayBuffer());
+        let buf;
+        if (d.b64_json) buf = Buffer.from(d.b64_json, 'base64');
+        else { const image = await fetch(d.url, { signal }); if (!image.ok) throw new Error(`${image.status} ${(await image.text()).slice(0, 400)}`); buf = Buffer.from(await image.arrayBuffer()); }
         if (signal.aborted) throw new Error('aborted');
         const f = join(outDir, `${stamp}-${i + 1}.png`); writeFileSync(f, buf); files.push(f);
       }

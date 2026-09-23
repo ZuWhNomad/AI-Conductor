@@ -386,3 +386,12 @@ test('unparseable multi-host DB URLs fail closed and round-trip with and without
   saveConfig({ mcpServers: { unmatchedDb: { command: 'node', args: ['••••', '--endpoint=••••'] } } });
   assert.deepEqual(loadConfig().mcpServers.unmatchedDb.args, [], 'unmatched opaque URL masks are never persisted');
 });
+
+test('Docker-style secret environment arguments redact and restore', () => {
+  const args = ['run', '-e', 'API_KEY=secret-one', '--env', 'AUTH_TOKEN=secret-two', '--env=DB_PASSWORD=secret-three', 'image'];
+  saveConfig({ mcpServers: { docker: { command: 'docker', args } } });
+  const masked = publicConfig().mcpServers.docker.args;
+  assert.doesNotMatch(masked.join(' '), /secret-one|secret-two|secret-three/);
+  saveConfig({ mcpServers: { docker: { args: masked } } });
+  assert.deepEqual(loadConfig().mcpServers.docker.args, args);
+});

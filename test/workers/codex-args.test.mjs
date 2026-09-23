@@ -11,7 +11,7 @@ process.env.CONDUCTOR_CODEX = process.platform === 'win32' ? 'C:\\definitely\\mi
 after(() => { if (previous === undefined) delete process.env.CONDUCTOR_CODEX; else process.env.CONDUCTOR_CODEX = previous; });
 const { runCodex } = await import('../../core/workers/codex.mjs');
 const { runClaude } = await import('../../core/workers/claude.mjs');
-const { assertShellSafe, codexCommand } = await import('../../core/proc.mjs');
+const { codexCommand } = await import('../../core/proc.mjs');
 const cwd = tmpDir('codex-args');
 
 test('Codex argv disables inherited MCP servers excluded by category or removed in config', async (ctx) => {
@@ -103,12 +103,6 @@ test('already-aborted workers return without spawning', async () => {
     assert.equal(r.ok, false);
     assert.match(r.error, /aborted/);
   }
-});
-
-test('cmd shim guard rejects shell metacharacters', () => {
-  assert.throws(() => assertShellSafe(['-c', 'a="b"']), /unsafe argument/);
-  for (const char of ['\r', '\n', '&', '|', '<', '>', '^', '%', '!']) assert.throws(() => assertShellSafe([`a${char}b`]), /unsafe argument/);
-  assert.doesNotThrow(() => assertShellSafe(['exec', '-']));
 });
 
 test('app-server spawn failures reject without unhandled error events', async () => {

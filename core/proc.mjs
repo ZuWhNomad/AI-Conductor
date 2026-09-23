@@ -64,10 +64,6 @@ export function codexCommand() {
   return { command: found, args: [] };
 }
 
-export function quoteArg(a) {
-  return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
-}
-
 /**
  * A Windows npm/pnpm global .cmd shim ultimately runs `node "<pkg>/…/entry.js" %*`. Resolve it to that JS entry so
  * we can spawn `node <entry>` directly — no shell, no cmd re-parse of `%*` (which is where a prompt containing `&`,
@@ -86,23 +82,13 @@ export function resolveNpmShim(cmdPath) {
 }
 
 /**
- * Escape one argument for a Windows cmd.exe command line so its VALUE can never inject a command (used only for a
- * .cmd we could not unwrap). Two layers: MSVCRT quoting, then caret-escape every cmd metacharacter including the
- * quotes. `%` cannot be escaped on a cmd command line — literal %VAR% env expansion is the standard benign residue.
- */
-export function winArgEscape(s) {
-  const crt = '"' + String(s).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1') + '"';
-  return crt.replace(/[()!^"<>&|]/g, '^$&');
-}
-
-/**
  * Spawn any CLI. A real `.exe`/binary spawns without a shell, args as separate argv (no shell parsing at all). A
  * Windows `.cmd`/`.bat` can't be spawned directly on modern Node (EINVAL); when it's an npm shim we unwrap it to
  * `node <entry>` and still avoid the shell entirely. Refuse unresolved scripts: shell escaping cannot safely
  * preserve arbitrary arguments through cmd.exe and a script's own `%*` re-parse.
  */
 export function spawnCli(bin, args, opts = {}) {
-  const base = { windowsHide: true, ...opts, shell: false }; // callers may override window visibility, never shell safety
+  const base = { windowsHide: true, detached: !WIN, ...opts, shell: false }; // callers may override window visibility, never shell safety
   if (WIN && /\.(cmd|bat)$/i.test(bin)) {
     const shim = resolveNpmShim(bin);
     if (shim) return spawn(shim.command, [...shim.args, ...args], base); // no shell: argv passed verbatim, no re-parse
@@ -111,15 +97,10 @@ export function spawnCli(bin, args, opts = {}) {
   return spawn(bin, args, base);
 }
 
-export function assertShellSafe(args) {
-  if (args.some((a) => /["\r\n&|<>^%!]/.test(a))) throw new Error('unsafe argument for the codex .cmd shim; set CONDUCTOR_CODEX to the codex executable');
-}
-
 export function spawnCodex(args, opts = {}) {
   const c = codexCommand();
   if (!c) throw new Error('codex CLI not found on PATH. Install with: npm i -g @openai/codex');
-  const base = { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], ...opts };
-  if (c.shell) { assertShellSafe([c.command, ...args]); return spawn([c.command, ...args].map(quoteArg).join(' '), { ...base, shell: true }); }
+  const base = { windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'], ...opts };
   return spawn(c.command, [...c.args, ...args], base);
 }
 
@@ -128,7 +109,7 @@ export function killTree(child) {
   if (!child?.pid || child.exitCode !== null) return; // never spawned (ENOENT) or already gone
   try {
     if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    else child.kill('SIGTERM');
+    else process.kill(-child.pid, 'SIGTERM');
   } catch { try { child.kill(); } catch {} }
 }
 

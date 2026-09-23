@@ -171,7 +171,7 @@ async function makeTools(cwd, signal, deadline) {
       // false disables host execution; an array filters command names, without sandboxing the allowed programs.
       const deny = shellDenied(loadConfig().worker?.shell, command);
       if (deny) return res(deny);
-      const child = spawn(command, { cwd, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv() });
+      const child = spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv() });
       let out = ''; let err = ''; let why = '';
       const cap = (s) => (s.length > 40000 ? s.slice(-40000) : s);
       child.stdout.on('data', (d) => { out = cap(out + d); });

@@ -262,3 +262,10 @@ test('vendor runner sends the prompt on stdin when headlessArgs sets stdinPrompt
   assert.equal(r.ok, true, r.error);
   assert.equal(r.finalMessage, 'hello-stdin');
 });
+
+test('qwen-code resumes the requested thread id', () => {
+  const { args } = VENDORS['qwen-code'].headlessArgs({ prompt: 'x', cwd: 'F:/ws', resumeThreadId: 'session-123' });
+  assert.ok(args.includes('--resume'));
+  assert.equal(args[args.indexOf('--resume') + 1], 'session-123');
+  assert.ok(!args.includes('--continue'));
+});

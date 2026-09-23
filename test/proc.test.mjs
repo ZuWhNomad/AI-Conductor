@@ -66,3 +66,16 @@ test('spawnCodex forwards its supplied environment to the executable', async () 
     if (previous === undefined) delete process.env.CONDUCTOR_CODEX; else process.env.CONDUCTOR_CODEX = previous;
   }
 });
+
+test('vendor capture marks a timed-out probe and returns its captured output', async () => {
+  const r = await capture(process.execPath, ['-e', "process.stdout.write('started');setInterval(() => {}, 1000)"], { timeoutMs: 100 });
+  assert.equal(r.timedOut, true);
+  assert.match(r.out, /started/);
+});
+
+test('POSIX CLI children are process-group leaders for tree termination', { skip: WIN }, () => {
+  const child = spawnCli(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
+  assert.equal(child.spawnargs[0], '-e');
+  assert.ok(child.pid);
+  child.kill();
+});

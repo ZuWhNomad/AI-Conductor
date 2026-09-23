@@ -2,7 +2,7 @@ import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { feedbackBundle, writeFeedback } from '../core/feedback.mjs';
+import { feedbackBundle, redact, writeFeedback } from '../core/feedback.mjs';
 import { logImprovement, resolveImprovement } from '../core/improve.mjs';
 
 test('feedback exports only safe improvement metadata, never free text or context', () => {
@@ -17,4 +17,17 @@ test('feedback exports only safe improvement metadata, never free text or contex
   assert.deepEqual(feedbackBundle().improvements, expected);
   const written = JSON.parse(readFileSync(writeFeedback(HOME), 'utf8'));
   assert.deepEqual(written.improvements, expected);
+});
+
+test('feedback removes provider and limit free text and redacts URL userinfo', async () => {
+  const { getModels } = await import('../core/models.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  getModels().providers.fixture = { status: 'error', error: 'http://user:pass@localhost:1234' };
+  getLimits().providers.fixture = { blocked: true, blockedReason: 'http://user:pass@127.0.0.1', error: 'private' };
+  const bundle = feedbackBundle();
+  assert.deepEqual(bundle.providers.fixture, { status: 'error', plan: undefined, installed: undefined, loggedIn: undefined });
+  assert.deepEqual(bundle.limits.fixture, { blocked: true, windows: [] });
+  assert.equal(redact('http://user:pass@localhost:1234'), 'http://***@localhost:1234');
+  delete getModels().providers.fixture;
+  delete getLimits().providers.fixture;
 });
