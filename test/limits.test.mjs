@@ -935,6 +935,23 @@ test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset-requests
   } finally { delete getLimits().providers[id]; }
 });
 
+test('B6: parseResetAt keeps epoch milliseconds as ms; epoch seconds ×1000; small values are seconds from now', () => {
+  const now = Date.now();
+  const cases = [
+    ['b6-epoch-ms', String(now + 60_000), now + 60_000, 'epoch-ms header must not be multiplied again'],
+    ['b6-epoch-s', String(Math.round((now + 90_000) / 1000)), now + 90_000, 'epoch-seconds header still becomes ms'],
+    ['b6-from-now', '45', now + 45_000, 'small numeric values are seconds from now'],
+  ];
+  for (const [id, header, expected, msg] of cases) {
+    try {
+      noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': header });
+      const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
+      assert.ok(Math.abs(w.resetsAt - expected) < 2000, msg);
+    } finally { delete getLimits().providers[id]; }
+  }
+});
+
+
 test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset (ISO date string)', () => {
   const id = 'g2-reset-iso';
   const resetMs = Date.now() + 120_000;

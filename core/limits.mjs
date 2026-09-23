@@ -171,8 +171,10 @@ function parseResetAt(rawReset, now) {
   if (rawReset == null) return null;
   const asNum = Number(rawReset);
   if (Number.isFinite(asNum) && asNum > 0) {
-    // Values > 1e9 are Unix epoch seconds (current epoch ~1.758e9); smaller values are seconds-from-now.
-    return asNum > 1e9 ? asNum * 1000 : now + asNum * 1000;
+    // >= 1e12: epoch milliseconds; > 1e9: epoch seconds; else seconds from now.
+    if (asNum >= 1e12) return asNum;
+    if (asNum > 1e9) return asNum * 1000;
+    return now + asNum * 1000;
   }
   const parsed = Date.parse(rawReset);
   if (Number.isFinite(parsed) && parsed > now) return parsed;

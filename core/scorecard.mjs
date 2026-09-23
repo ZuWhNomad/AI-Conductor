@@ -140,19 +140,24 @@ const activeRunRows = (all) => {
   const voided = new Set(all.filter((r) => r.op === 'void').map((r) => r.taskId));
   return all.filter((r) => r.op === 'run' && !voided.has(r.taskId));
 };
-export function runRows() {
+function loadLedger() {
   try {
     const st = statSync(FILE());
-    if (_runRowsCache && _runRowsCache.mtimeMs === st.mtimeMs && _runRowsCache.size === st.size) return _runRowsCache.rows;
-    const rows = activeRunRows(readNdjson(FILE()));
-    _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, rows };
-    return rows;
-  } catch { return activeRunRows(readNdjson(FILE())); }
+    if (_runRowsCache && _runRowsCache.mtimeMs === st.mtimeMs && _runRowsCache.size === st.size) return _runRowsCache;
+    const all = readNdjson(FILE());
+    return _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, rows: activeRunRows(all), all };
+  } catch {
+    const all = readNdjson(FILE());
+    return { rows: activeRunRows(all), all };
+  }
 }
+export function runRows() { return loadLedger().rows; }
+// P3: reuse the same cached parse (rate/void rows live in `all`, not in runRows). Callers do not mutate.
+function allRows() { return loadLedger().all; }
 
 export function rootRuns({ source = null } = {}) {
   const runs = new Map(); const rates = new Map(); const voided = new Set();
-  const all = readNdjson(FILE());
+  const all = allRows();
   for (const r of all) if (r.op === 'void') voided.add(r.taskId);
   const allRuns = new Map(); // voided runs stay in the graph for linking (retryOf through them) but not in the aggregates
   for (const r of all) {
@@ -239,9 +244,16 @@ export function summarize({ source = null } = {}) {
     return g;
   };
   for (const c of rootRuns({ source })) {
-    if (!c.category || !c.difficulty) continue;
-    for (const a of c.attempts) { const g = add(a.sel, 1, c.category, c.difficulty, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort; }
-    if (c.attempts.length > 1) {
+    for (const a of c.attempts) {
+      // B3: score each attempt under its own category/difficulty; skip attempts without tags (an untagged
+      // head must not silence a tagged replacement). Fall back to chain tags only when the attempt lacks them.
+      const cat = a.category || c.category;
+      const diff = a.difficulty || c.difficulty;
+      if (!cat || !diff) continue;
+      const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort;
+    }
+    // The multi-step observed ladder row is chain-level: it must have chain-level tags.
+    if (c.attempts.length > 1 && c.category && c.difficulty) {
       const g = add(c.path.join('>'), c.attempts.length, c.category, c.difficulty, c);
       g._stepCosts ||= c.attempts.map(() => []);
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
@@ -298,13 +310,13 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
-  const reserve = (provider) => { const w = weight(provider, null); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + cfg.reservePct * w * gap; };
+  const reserve = (provider, model = null) => { const w = weight(provider, model); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + cfg.reservePct * w * gap; };
   const costOf = (g) => {
     const costs = g.stepCosts || [g];
     if (costs.some((c) => c.avgUsd == null)) return null;
     return costs.reduce((sum, c) => {
       const { provider, model } = parseSel(c.sel.split('>').at(-1));
-      return sum + (c.avgUsd + hourly * (c.avgDurationMs || 0) / 3.6e6) * weight(provider, model) * reserve(provider) * wasteDiscount(provider, cfg, model);
+      return sum + (c.avgUsd + hourly * (c.avgDurationMs || 0) / 3.6e6) * weight(provider, model) * reserve(provider, model) * wasteDiscount(provider, cfg, model);
     }, 0);
   };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
@@ -325,7 +337,11 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     for (const b of finals.filter((m) => m.steps === 1 && m.sel !== a.sel && costOf(m.ref) != null)) {
       if (bySel.has(`${a.sel}>${b.sel}`) && bySel.get(`${a.sel}>${b.sel}`).cells.length) continue; // observed ladder already a plan
       const pA = a.ref.accept;
-      plans.push({ steps: [a.sel, b.sel], quality: a.ref.quality + (1 - pA) * b.ref.quality, usd: costOf(a.ref) + (1 - pA) * costOf(b.ref), estimated: true, ref: a.ref, fallbackRef: b.ref });
+      const combinedQuality = a.ref.quality + (1 - pA) * b.ref.quality;
+      // H2/B1: only push the estimated pair when its combined quality clears the bar.
+      // A below-bar first step whose combination still clears the bar is allowed.
+      if (combinedQuality < cfg.quality) continue;
+      plans.push({ steps: [a.sel, b.sel], quality: combinedQuality, usd: costOf(a.ref) + (1 - pA) * costOf(b.ref), estimated: true, ref: a.ref, fallbackRef: b.ref });
     }
   }
   // OB7: unknown-cost plans are eligible but rank after every priced eligible plan. costUnknown marks them.
@@ -367,14 +383,15 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     best = plans.find((p) => p.utility > -Infinity && p.steps.length === 1) || plans.find((p) => p.utility > -Infinity) || null;
     bestClass = best ? classOf(best) : null;
   } else {
+    // B7: a class must be listed in classOrder to be eligible — no fallback for unlisted classes.
     for (const cls of cfg.classOrder || []) { best = plans.find((p) => p.utility > -Infinity && classOf(p) === cls); if (best) { bestClass = cls; break; } }
-    if (!best) best = plans.find((p) => p.utility > -Infinity) || null;
   }
   if (!best) {
     // A provider proven at this level exists but is capped/blocked/excluded: hand the task back (the conductor does it or
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
-    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && blockedSel(g.sel));
+    // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
+    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
     if (provenButCapped) return null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
@@ -385,7 +402,7 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   }
   const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
-  const describe = (p) => { const prov = p.steps[p.steps.length - 1].split(':')[0]; const rs = reserve(prov); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
+  const describe = (p) => { const lastSel = p.steps[p.steps.length - 1]; const { provider: prov, model: provModel } = parseSel(lastSel); const rs = reserve(prov, provModel); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
   const single = plans.find((p) => p.steps.length === 1);
   const alt = plans.slice(1, 4).map(describe);
   return {
@@ -445,14 +462,18 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? DEFAULTS.scorecard.wasteStrength));
   const discount = (ms, headroom) => (ms > 0 && ms <= horizon ? 1 - (1 - ms / horizon) * headroom * strength : 1); // proximity × unused headroom × strength
   let factor = 1;
+  // B4: track whether any real (non-session) window with a resetsAt exists for this provider.
+  let hasRealWindow = false;
   for (const w of providerWindows(provider, model)) {
     if (!w.resetsAt) continue;
     if (/hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)) continue; // ignore the 5-hour churn
+    hasRealWindow = true;
     factor = Math.min(factor, discount(w.resetsAt - now, Math.min(1, Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100)));
   }
   // Windowless provider (Grok, …): no real weekly window drove a discount, so fall back to a configured reset schedule.
+  // B4: apply the schedule fallback only when the provider has no real non-session window.
   // "Use till it fails" means we assume the quota is worth spending (full headroom) as its reset nears.
-  if (factor === 1) { const sched = nextScheduledReset(provider, cfg, now); if (sched) factor = discount(sched - now, 1); }
+  if (!hasRealWindow) { const sched = nextScheduledReset(provider, cfg, now); if (sched) factor = discount(sched - now, 1); }
   return factor;
 }
 
@@ -477,11 +498,17 @@ function scheduledReset(provider, cfg, now, dir) {
     // moves with it, no migration and no stored instant to go stale. Stepping by CALENDAR days rather than a fixed
     // millisecond period is what keeps 22:00 at 22:00 across a DST change.
     const step = s.resetDay != null ? 7 : 1;
+    const resetHour = Number(s.resetHour) || 0, resetMinute = Number(s.resetMinute) || 0;
     const d = new Date(now);
-    d.setHours(Number(s.resetHour) || 0, Number(s.resetMinute) || 0, 0, 0);
-    if (s.resetDay != null) { const delta = (((Number(s.resetDay) - d.getDay()) % 7) + 7) % 7; d.setDate(d.getDate() + delta); }
-    if (dir > 0) { while (d.getTime() <= now) d.setDate(d.getDate() + step); }        // first reset strictly after now
-    else { while (d.getTime() > now) d.setDate(d.getDate() - step); }                 // last reset at or before now
+    d.setHours(resetHour, resetMinute, 0, 0);
+    if (s.resetDay != null) {
+      const delta = (((Number(s.resetDay) - d.getDay()) % 7) + 7) % 7;
+      d.setDate(d.getDate() + delta);
+      // B10: re-apply setHours after setDate — DST spring-forward can shift the hour into the gap.
+      d.setHours(resetHour, resetMinute, 0, 0);
+    }
+    if (dir > 0) { while (d.getTime() <= now) { d.setDate(d.getDate() + step); d.setHours(resetHour, resetMinute, 0, 0); } }        // first reset strictly after now
+    else { while (d.getTime() > now) { d.setDate(d.getDate() - step); d.setHours(resetHour, resetMinute, 0, 0); } }                 // last reset at or before now
     return d.getTime();
   }
   const period = (Number(s.periodHours) || 0) * 3600e3; if (period <= 0) return null;
@@ -567,7 +594,10 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
     const sel = selOf({ provider: m.provider, model: m.id, effort });
     if (exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;
-    cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls: (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg)) });
+    const cls = (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg));
+    // B8: skip candidates whose class is not in classOrder (consistent with B7: unlisted = not eligible).
+    if (cls < 0) continue;
+    cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls });
   }
   cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
   const best = cands[0];

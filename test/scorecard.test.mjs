@@ -1117,3 +1117,167 @@ test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
     assert.equal(sc.summarize({ source }).find((g) => g.provider === 'ollama').avgUsd, 0);
   } finally { saveConfig({ scorecard: cfg }); }
 });
+
+test('H2/B1: estimated ladder is pushed only when combined quality clears the bar', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'H2B1';
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 3, quality: 0.75, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0 } });
+    for (const v of ['fixable', 'fixable', 'fixable']) {
+      const id = `${source}-local-${++n}`;
+      run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'search', difficulty: 2 });
+      sc.rateTask(id, v);
+    }
+    for (const v of ['pass', 'pass', 'fixable']) {
+      const id = `${source}-terra-${++n}`;
+      run({ id, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'search', difficulty: 2 });
+      sc.rateTask(id, v);
+    }
+    const r = sc.recommend({ category: 'search', difficulty: 2, source });
+    assert.equal(r.provider, 'codex');
+    assert.equal(r.model, 'gpt-5.6-terra');
+    assert.equal(r.plan.estimated, false);
+    assert.equal(r.plan.steps.length, 1);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B7: a class not listed in classOrder is not eligible (no any-plan fallback)', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'B7-class';
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classes: { ollama: 'special' }, classOrder: ['subscription', 'conductor'] } });
+    for (let i = 0; i < 3; i++) {
+      const id = `${source}-${i}`;
+      run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'read', difficulty: 2 });
+      sc.rateTask(id, 'pass');
+    }
+    assert.equal(sc.recommend({ category: 'read', difficulty: 2, source }), null, 'unlisted class must not win via fallback');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B8: cold-start prior sort skips candidates whose class is not in classOrder', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: true, classOrder: ['subscription'], classes: { codex: 'subscription' } } });
+    const r = sc.recommend({ category: 'design', difficulty: 1, summary: [] });
+    assert.ok(r);
+    assert.equal(r.provider, 'codex', 'free/unlisted class must not sort first via indexOf -1');
+    assert.match(r.reason, /prior only/);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B2: a ledger model no longer in the registry does not veto extrapolation', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits();
+  const prevOllama = limits.providers.ollama;
+  const cell = (sel, difficulty, extra = {}) => ({ sel, steps: 1, ...extra, category: 'implement', difficulty, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 });
+  const gone = cell('codex:gone:low', 4, { provider: 'codex', model: 'gone', effort: 'low' });
+  const live = cell('ollama:qwen:default', 2, { provider: 'ollama', model: 'qwen', effort: null });
+  const reg = { models: [{ provider: 'ollama', id: 'qwen', kind: 'agent' }], providers: { ollama: { status: 'ok' }, codex: { status: 'ok' } } };
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classes: { codex: 'subscription', ollama: null } } });
+    limits.providers.ollama = { provider: 'ollama', blocked: false, windows: [] };
+    // Removed model stays unusable as a plan (R2B2); it must not freeze provenButCapped either.
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 4, summary: [gone], reg }), null);
+    const r = sc.recommend({ category: 'implement', difficulty: 4, summary: [gone, live], reg });
+    assert.equal(r.provider, 'ollama');
+    assert.match(r.reason, /extrapolated from level 2/);
+  } finally { limits.providers.ollama = prevOllama; saveConfig({ scorecard: cfg }); }
+});
+
+test('B3: each retry attempt is scored under its own category/difficulty; untagged attempts are skipped', () => {
+  const source = 'B3-tags';
+  run({ id: `${source}-head`, source, category: null, difficulty: null });
+  run({ id: `${source}-retry`, source, retryOf: `${source}-head`, model: 'gpt-5.6-terra', effort: 'medium', category: 'debug', difficulty: 3 });
+  sc.rateTask(`${source}-retry`, 'pass');
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-head`);
+  assert.equal(chain.attempts.length, 2);
+  assert.ok(chain.usd > chain.attempts[0].usd && chain.usd > chain.attempts[1].usd, 'chain cost still sums both attempts');
+  const sum = sc.summarize({ source });
+  const tagged = sum.find((g) => g.steps === 1 && g.model === 'gpt-5.6-terra' && g.category === 'debug' && g.difficulty === 3);
+  assert.equal(tagged.pass, 1);
+  assert.equal(sum.find((g) => g.steps === 1 && g.model === 'gpt-5.6-luna'), undefined, 'untagged head is not summarized');
+});
+
+test('B5: reserve() weights the step model, not the busiest window across groups', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits();
+  const previous = limits.providers.antigravity;
+  const source = 'B5-reserve';
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0.5, hourlyUsd: 0, wasteStrength: 0, quotaPressurePct: 80, providerWeight: { antigravity: 0.1 }, classOrder: ['included'] } });
+    limits.providers.antigravity = { provider: 'antigravity', windows: [
+      { id: 'gemini', label: 'weekly Gemini', models: 'gemini', usedPercent: 90, resetsAt: Date.now() + 100 * 3600e3, windowMinutes: 10080 },
+      { id: 'flash', label: 'weekly Flash', models: 'flash', usedPercent: 10, resetsAt: Date.now() + 100 * 3600e3, windowMinutes: 10080 },
+    ] };
+    for (const difficulty of [1, 5]) for (let i = 0; i < 3; i++) {
+      run({ id: `${source}-${difficulty}-${i}`, source, provider: 'antigravity', model: 'flash', effort: null, category: 'docs', difficulty });
+      sc.rateTask(`${source}-${difficulty}-${i}`, 'pass');
+    }
+    const r = sc.recommend({ category: 'docs', difficulty: 1, source });
+    assert.equal(r.provider, 'antigravity');
+    assert.match(r.reason, /reserve ×1\.20/, 'model-scoped weight 0.1, not quota-pressure 1 from the other group');
+  } finally { limits.providers.antigravity = previous; saveConfig({ scorecard: cfg }); }
+});
+
+test('B4: usageResets schedule fallback applies only when the provider has no real non-session window', async () => {
+  const { wasteDiscount } = sc;
+  const { getLimits } = await import('../core/limits.mjs');
+  const limits = getLimits();
+  const previous = limits.providers.grok;
+  const now = Date.parse('2026-09-15T10:00:00');
+  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteHorizonHours: 48, wasteStrength: 0.9, providerWeight: {} };
+  try {
+    limits.providers.grok = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: now + 100 * 3600e3, windowMinutes: 10080 }] };
+    assert.equal(wasteDiscount('grok', cfg, null, now), 1, 'a real weekly window outside the horizon must not take the schedule discount');
+    limits.providers.grok = { windows: [{ id: '5h', label: '5-hour', usedPercent: 10, resetsAt: now + 1 * 3600e3, windowMinutes: 300 }] };
+    assert.ok(wasteDiscount('grok', cfg, null, now) < 0.5, 'session-only windows still allow the schedule fallback');
+  } finally { limits.providers.grok = previous; }
+});
+
+test('B10: scheduled reset hour is reapplied after setDate (DST spring-forward)', () => {
+  const local = (s) => new Date(s).getTime();
+  const at = local('2026-03-08T04:00:00');
+  // 2026-03-08 is the US spring-forward (02:00 is the gap). After the gap, the next 02:00 must
+  // not carry 03:00 from setHours-into-the-gap then setDate.
+  const weekly = new Date(sc.nextScheduledReset('spr', { usageResets: { spr: { resetDay: 0, resetHour: 2 } } }, at));
+  assert.equal(weekly.getHours(), 2);
+  assert.equal(weekly.getDay(), 0);
+  const daily = new Date(sc.nextScheduledReset('spr', { usageResets: { spr: { resetHour: 2 } } }, at));
+  assert.equal(daily.getHours(), 2);
+  assert.equal(daily.getDate(), 9);
+});
+
+test('P3: rootRuns reuses the runRows size/mtime cache', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const paths = await import('../core/paths.mjs');
+  const { syncBuiltinESMExports } = await import('node:module');
+  sc.runRows();
+  const orig = fs.readFileSync;
+  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file === statePath('scorecard.ndjson')) throw new Error('P3: cache miss re-read');
+    return orig.call(fs, file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => paths.readNdjson(statePath('scorecard.ndjson')), /P3: cache miss re-read/);
+    assert.doesNotThrow(() => sc.rootRuns());
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test('B9: kimi-k2 prior does not match kimi-k2.5', () => {
+  assert.equal(pr.priorFor('kimi', 'kimi-k2').tier, 'D');
+  assert.equal(pr.priorFor('kimi', 'kimi-k2.5'), null);
+  assert.equal(pr.priorFor('kimi', 'kimi-k3').tier, 'A');
+});
+
+test('B11: claude opus/default aliases are anchored so 4.x ids use the 4.x rules', () => {
+  assert.equal(pr.priorFor('claude', 'opus').tier, 'A');
+  assert.equal(pr.priorFor('claude', 'default').tier, 'A');
+  assert.equal(pr.priorFor('claude', 'claude-opus-5').tier, 'A');
+  assert.equal(pr.priorFor('claude', 'opus-5').tier, 'A');
+  assert.equal(pr.priorFor('claude', 'opus-4-6').tier, 'B');
+  assert.equal(pr.priorFor('claude', 'opus-4-5').tier, 'C');
+});
