@@ -23,6 +23,15 @@ test('quit has a font-independent icon and an accessible name', () => {
   assert.doesNotMatch(quit, /⏻/);
 });
 
+test('icon buttons have aria-labels, modal has dialog role, and favicon link is present', () => {
+  assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,[^"]*🎼[^"]*">/);
+  assert.match(html, /<button id="btn-settings"[^>]*aria-label="Settings"/);
+  assert.match(html, /<button id="btn-browse"[^>]*aria-label="Browse folders"/);
+  assert.match(html, /<button id="fleet-collapse"[^>]*aria-label="Collapse \/ expand fleet"/);
+  assert.match(html, /<button id="modal-close"[^>]*aria-label="Close dialog"/);
+  assert.match(html, /<div id="modal"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="modal-title"/);
+});
+
 test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable' }, async (t) => {
   const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run',
     '--remote-debugging-port=0', `--user-data-dir=${join(HOME, 'browser')}`, 'about:blank'],
@@ -161,6 +170,53 @@ test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWS
       assert.equal(row.color, row.meter, `${row.text} has the same urgency as its meter`);
       assert.ok(Number(row.weight) > Number(row.labelWeight), 'the percentage is emphasized');
     }
+  });
+  await t.test('Claude fallback effort list excludes ultra and matches Claude tiers', async () => {
+    const efforts = await evaluate(`
+      (() => {
+        S.providers = [{ id: 'claude', kind: 'claude' }];
+        S.models.models = [];
+        fillPicker('new-', { provider: 'claude', model: 'claude-3-7-sonnet' }, { all: false });
+        return [...$('#new-effort').options].map(o => o.value);
+      })();
+    `);
+    assert.deepEqual(efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
+    assert.ok(!efforts.includes('ultra'));
+  });
+  await t.test('U8: lastAction formats object input as JSON string', async () => {
+    const text = await evaluate(`
+      (() => {
+        S.workerLog.set('t-obj', [{ name: 'search', input: { query: 'conductor', limit: 5 } }]);
+        return lastAction({ id: 't-obj' });
+      })()
+    `);
+    assert.match(text, /"query":"conductor"/);
+    assert.doesNotMatch(text, /\[object Object\]/);
+  });
+  await t.test('U11: clearCurrent resets UI and disables model chip', async () => {
+    await evaluate(`
+      S.current = { id: 'test-session', provider: 'codex', model: 'test' };
+      renderChip();
+      clearCurrent();
+    `);
+    const chipDisabled = await evaluate(`$('#model-chip').disabled`);
+    const title = await evaluate(`$('#chat-title').textContent`);
+    assert.equal(chipDisabled, true);
+    assert.equal(title, 'No chat selected');
+  });
+  await t.test('U14: asBtn adds role=button and tabindex=0 to interactive items', async () => {
+    await evaluate(`
+      S.sessions = [{ id: 's1', title: 'Test Session', updatedAt: Date.now() }];
+      renderSessions();
+    `);
+    const sessionAttrs = await evaluate(`
+      (() => {
+        const item = $('#sessions .item');
+        return { role: item.getAttribute('role'), tabIndex: item.tabIndex };
+      })()
+    `);
+    assert.equal(sessionAttrs.role, 'button');
+    assert.equal(sessionAttrs.tabIndex, 0);
   });
   // Keep reviewable renders outside the product tree; show the phone's off-canvas sidebar too.
   await evaluate(`document.body.classList.remove('fleet-collapsed');`);

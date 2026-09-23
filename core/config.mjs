@@ -6,10 +6,10 @@ export const DEFAULTS = {
   port: 47474,
   openBrowser: true,
   pollMinutes: 15,                    // model + limit registry refresh cadence
-  // Providers-panel client-side auto-refresh; separate from pollMinutes (server registry poll). `detectMinutes` is a
-  // third, much cheaper thing: how often an INSTALLED BUT SIGNED-OUT provider is re-probed so a sign-in done outside
+  // `autoRefresh` turns on the server's model/limit poll (every pollMinutes; tabs follow its events). `detectMinutes` is a
+  // much cheaper thing: how often an INSTALLED BUT SIGNED-OUT provider is re-probed so a sign-in done outside
   // the app is noticed without pressing Refresh.
-  ui: { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 },
+  ui: { autoRefresh: false, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
     provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
     model: 'claude-opus-5-5[1m]',     // exact id, never an alias (aliases move when the CLI updates): move it to a new Opus on purpose
@@ -187,8 +187,6 @@ function normalize(cfg) {
   }
   if (!plain(cfg.ui)) cfg.ui = { ...DEFAULTS.ui };
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
-  if (!Number.isFinite(cfg.ui.autoRefreshMinutes) || cfg.ui.autoRefreshMinutes < 1) cfg.ui.autoRefreshMinutes = DEFAULTS.ui.autoRefreshMinutes;
-  else cfg.ui.autoRefreshMinutes = Math.min(1440, Math.floor(cfg.ui.autoRefreshMinutes));
   if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
   if (!plain(cfg.scorecard.windowTargets)) cfg.scorecard.windowTargets = { ...DEFAULTS.scorecard.windowTargets };
   // 0 is a documented OFF switch for these two, so it must survive: only garbage (negative, NaN) resets.

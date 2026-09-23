@@ -211,15 +211,10 @@ test('worker.escalationRounds defaults to 2, allows 0 (disable), rejects negativ
 });
 
 test('providers panel auto-refresh settings default and normalize', () => {
-  assert.deepEqual(loadConfig().ui, { autoRefresh: false, autoRefreshMinutes: 15, detectMinutes: 5 });
-  saveConfig({ ui: { autoRefresh: 'yes', autoRefreshMinutes: 0 } });
+  assert.deepEqual(loadConfig().ui, { autoRefresh: false, detectMinutes: 5 });
+  saveConfig({ ui: { autoRefresh: 'yes' } });
   assert.equal(loadConfig().ui.autoRefresh, true);
-  assert.equal(loadConfig().ui.autoRefreshMinutes, 15);
-  saveConfig({ ui: { autoRefreshMinutes: 2 } });
-  assert.equal(loadConfig().ui.autoRefreshMinutes, 2);
-  saveConfig({ ui: { autoRefreshMinutes: 99999 } });
-  assert.equal(loadConfig().ui.autoRefreshMinutes, 1440);
-  saveConfig({ ui: { autoRefresh: false, autoRefreshMinutes: 15 } });
+  saveConfig({ ui: { autoRefresh: false } });
 });
 
 test('grok weekly usage-reset day and hour persist as numbers and clamp', () => {

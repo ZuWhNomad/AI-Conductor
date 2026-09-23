@@ -62,6 +62,7 @@ test('static UI and state endpoint', async () => {
   assert.equal((await fetch(url + '/../package.json')).status, 404);
   const st = await get('/api/state');
   assert.equal(st.version, '2.0.0');
+  assert.equal(typeof st.improvementCount, 'number');
   assert.ok(Array.isArray(st.providers) && st.providers.some((p) => p.id === 'codex'));
   assert.equal(st.config.providers.deepseek.apiKey, null);
 });
@@ -82,6 +83,7 @@ test('sessions, tasks, browse and SSE replay', async () => {
   assert.equal(s.model, 'sonnet');
   const full = await get(`/api/sessions/${s.id}`);
   assert.deepEqual(full.messages, []);
+  assert.equal(typeof full.seq, 'number');
   const t = await post('/api/tasks', { sessionId: s.id, cwd, spec: 'write tests' });
   assert.equal(t.status, 'queued');
   assert.equal((await get(`/api/tasks?session=${s.id}`)).length, 1);

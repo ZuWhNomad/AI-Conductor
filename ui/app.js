@@ -10,7 +10,32 @@ const api = {
 async function ok(r) { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 
 const authTimers = new Map(); // one pending "stop waiting" timer per provider
-const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, stream: null, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
+const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { models: [], providers: {} }, limits: { providers: {} }, tasks: [], improvements: [], config: {}, providers: [], update: null, lastSeq: 0, tools: new Map(), pending: new Map(), taskEls: new Map(), workerLog: new Map(), scoreInfo: new Map() };
+let modalOpener = null;
+let newSessionPromise = null;
+
+function asBtn(element, action) {
+  element.tabIndex = 0;
+  element.setAttribute('role', 'button');
+  element.onclick = action;
+  element.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      action(e);
+    }
+  };
+  return element;
+}
+
+async function act(fn, revert) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (typeof revert === 'function') revert(err);
+    else if (revert && typeof revert === 'object' && 'checked' in revert) revert.checked = !revert.checked;
+    $('#stt-hint').textContent = err.message || String(err);
+  }
+}
 
 // ---------- markdown-lite ----------
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -39,10 +64,11 @@ function renderSessions() {
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
     const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
     const ren = el('span', 'x', '✎'); ren.title = 'Rename chat';
-    ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
+    asBtn(ren, (e) => { e.stopPropagation(); renameSession(s); });
     const x = el('span', 'x', '✕'); x.title = 'Delete chat';
-    x.onclick = async (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) { await api.del(`/api/sessions/${s.id}`); } };
-    it.append(t, st, ren, x); it.onclick = () => openSession(s.id);
+    asBtn(x, (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); });
+    it.append(t, st, ren, x);
+    asBtn(it, () => openSession(s.id));
     box.append(it);
   }
 }
@@ -122,7 +148,7 @@ function renderProviders() {
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
     box.append(d);
   }
-  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes}m · panel auto ${S.config?.ui?.autoRefresh ? (S.config.ui.autoRefreshMinutes) + 'm' : 'off'}`;
+  $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes}m · panel auto ${S.config?.ui?.autoRefresh ? 'on' : 'off'}`;
 }
 
 // ---------- budget headline ----------
@@ -184,7 +210,8 @@ function renderBudget() {
 // ---------- model chip (header) ----------
 function renderChip() {
   const t = $('#chip-text'); const chip = $('#model-chip'); if (!t) return;
-  if (!S.current) { t.textContent = 'No chat selected'; chip.classList.remove('live'); return; }
+  if (!S.current) { t.textContent = 'No chat selected'; chip.classList.remove('live'); chip.disabled = true; return; }
+  chip.disabled = false;
   const model = S.current.model && S.current.model !== 'default' ? S.current.model : 'default';
   t.textContent = `${S.current.provider || 'claude'} · ${model} · ${S.current.effort || 'high'}`;
   chip.classList.add('live');
@@ -192,6 +219,7 @@ function renderChip() {
 
 // ---------- conductor picker: provider : model : effort ----------
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const composite = (v) => `${v.provider}:${v.model || 'default'}:${v.effort || 'default'}`;
 const CONDUCT_KINDS = new Set(['claude', 'codex', 'ollama', 'openai-compat']);
 const ALL = '*';
@@ -200,7 +228,10 @@ function agentProviders({ conductOnly }) {
   const ps = S.providers.filter((p) => (conductOnly ? CONDUCT_KINDS.has(p.kind) : p.kind !== 'image'));
   return ps.length ? ps : [{ id: 'claude' }];
 }
-function modelsFor(provider) { return S.models.models.filter((m) => (provider === ALL || m.provider === provider) && m.kind === 'agent'); }
+function modelsFor(provider, opts = {}) {
+  const allowed = provider === ALL && opts.conductOnly !== false ? new Set(agentProviders({ conductOnly: true }).map((p) => p.id)) : null;
+  return S.models.models.filter((m) => (provider === ALL ? (!allowed || allowed.has(m.provider)) : m.provider === provider) && m.kind === 'agent');
+}
 // Labels already name the model an alias resolves to, and the selection line under the pickers spells the id out.
 const modelLabel = (m, withProvider) => `${withProvider ? m.provider + ' · ' : ''}${m.label}`;
 /** "Other…" asks for a model id and adds it to the select so it round-trips like any listed model. Only prompts on a user pick. */
@@ -236,7 +267,7 @@ function fillPicker(prefix, sel, opts = {}) {
   if (!P.value) P.selectedIndex = 0;
   P.dataset.filled = '1';
   const all = P.value === ALL;
-  const ms = modelsFor(P.value);
+  const ms = modelsFor(P.value, opts);
   M.innerHTML = '';
   if (!all && P.value === 'claude') M.append(new Option('Claude Code default', ''));
   if (all) M.append(new Option('claude · Claude Code default', 'claude:'));
@@ -247,7 +278,9 @@ function fillPicker(prefix, sel, opts = {}) {
   if (!match && sel.model && sel.model !== 'default') { const v = all ? `${sel.provider || 'claude'}:${sel.model}` : sel.model; M.append(new Option(`${all ? (sel.provider || 'claude') + ' · ' : ''}${sel.model}`, v)); M.value = v; } // keep an explicit id even if not listed yet
   M.append(new Option('Other… (type a model id)', '__other__'));
   const cur = ms.find((m) => (all ? `${m.provider}:${m.id}` : m.id) === M.value);
-  const efforts = cur?.efforts?.length ? cur.efforts : EFFORTS;
+  const prov = cur?.provider || (all ? (M.value.includes(':') ? M.value.split(':')[0] : 'claude') : P.value);
+  const fallbackEfforts = prov === 'claude' ? CLAUDE_EFFORTS : EFFORTS;
+  const efforts = cur?.efforts?.length ? cur.efforts : fallbackEfforts;
   E.innerHTML = ''; for (const e of efforts) E.append(new Option(e, e));
   E.value = efforts.includes(sel.effort) ? sel.effort : (efforts.includes('high') ? 'high' : efforts[0]);
 }
@@ -268,11 +301,12 @@ function refreshHeaderPicker(forceProvider = false) {
 // ---------- rendering: transcript ----------
 const T = () => $('#transcript');
 function scrollBottom() { const t = T(); if (t.scrollHeight - t.scrollTop - t.clientHeight < 240) t.scrollTop = t.scrollHeight; }
-function clearTranscript() { T().innerHTML = ''; S.stream = null; S.streams = new Map(); S.tools.clear(); S.pending.clear(); }
+function clearTranscript() { T().innerHTML = ''; S.streams = new Map(); S.tools.clear(); S.pending.clear(); }
 /** Streaming bubbles are tracked per parent (main thread = null, else the subagent's tool_use id) so interleaved subagent text never orphans a bubble. */
 function streamFor(parent) { S.streams = S.streams || new Map(); return S.streams.get(parent || null) || null; }
 function endStream(parent) { const st = streamFor(parent); if (st) { st.el.classList.remove('streaming'); S.streams.delete(parent || null); } }
 function endAllStreams() { for (const st of (S.streams || new Map()).values()) st.el.classList.remove('streaming'); S.streams = new Map(); }
+function stopSpinners() { for (const s of T().querySelectorAll('.tool .st.spin')) s.replaceWith(el('span', 'st', '–')); }
 
 function addUser(text) { const m = el('div', 'msg user'); m.textContent = text; T().append(m); scrollBottom(); }
 function addSys(text, cls = '') { const m = el('div', 'sysline ' + cls, text); T().append(m); scrollBottom(); return m; }
@@ -318,6 +352,7 @@ function addToolResult(msg) {
 }
 function addResult(msg) {
   endAllStreams();
+  stopSpinners();
   if (S.thinkingLine) { S.thinkingLine.el.remove(); S.thinkingLine = null; }
   const cost = msg.costUsd ? ` · $${msg.costUsd.toFixed(3)}` : '';
   addSys(`${msg.isError ? 'error: ' + (msg.text || msg.subtype) : 'done'} · ${msg.numTurns ?? '?'} turns · ${Math.round((msg.durationMs || 0) / 1000)}s${cost}`, msg.isError ? 'err' : '');
@@ -352,13 +387,14 @@ function renderHistory(messages) {
 }
 
 // ---------- fleet dock ----------
+const FLEET_CAP = 30;
 // scope: 'all' when no chat is open, else the remembered choice (default 'mine' = this chat only). sessionless tasks (CLI/API) always show.
 function fleetScope() { return S.current ? (localStorage.getItem('fleetScope') || 'mine') : 'all'; }
 function inFleet(t) { return fleetScope() === 'all' || t.sessionId === S.current?.id || t.sessionId == null; }
 function myTasks() { return S.tasks.filter(inFleet); }
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
-  for (const t of myTasks().slice(0, 30)) box.append(taskCard(t));
+  for (const t of myTasks().slice(0, FLEET_CAP)) box.append(taskCard(t));
   renderFleetHead();
 }
 function since(iso) { if (!iso) return ''; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`; }
@@ -387,7 +423,7 @@ function taskCard(t) {
   if (t.status === 'running') { const p = el('div', 'prog indet'); p.append(el('i')); c.append(p); }
   const foot = cardFoot(t);
   if (foot) c.append(el('div', 'sub', foot));
-  c.onclick = () => openTask(t.id);
+  asBtn(c, () => openTask(t.id));
   S.taskEls.set(t.id, c);
   return c;
 }
@@ -409,7 +445,11 @@ function renderFleetHead() {
 }
 function lastAction(t) {
   const log = S.workerLog.get(t.id);
-  if (log?.length) { const i = log[log.length - 1]; return i.command ? `$ ${i.command}` : i.name ? `${i.name} ${i.input || ''}` : i.text ? i.text : i.type; }
+  if (log?.length) {
+    const i = log[log.length - 1];
+    const inp = i.input != null ? (typeof i.input === 'string' ? i.input : JSON.stringify(i.input)) : '';
+    return i.command ? `$ ${i.command}` : i.name ? `${i.name} ${inp}` : i.text ? i.text : i.type;
+  }
   if (t.error) return t.error;
   return t.result?.finalMessage ? t.result.finalMessage.slice(0, 120) : t.specPreview || '';
 }
@@ -417,9 +457,18 @@ function updateTask(t) {
   const i = S.tasks.findIndex((x) => x.id === t.id);
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
   if (inFleet(t)) {
+    const box = $('#tasks');
     const existing = S.taskEls.get(t.id);
     const fresh = taskCard(t);
-    if (existing) existing.replaceWith(fresh); else $('#tasks').prepend(fresh);
+    if (existing) existing.replaceWith(fresh);
+    else {
+      box.prepend(fresh);
+      while (box.children.length > FLEET_CAP) {
+        const last = box.lastElementChild;
+        if (last?.dataset?.id) S.taskEls.delete(last.dataset.id);
+        last?.remove();
+      }
+    }
   }
   renderFleetHead();
   renderSessions();
@@ -431,17 +480,38 @@ async function openTask(id) {
   body.append(el('div', 'muted', `${t.provider}${t.model ? '/' + t.model : ''} · ${t.status}${t.threadId ? ' · thread ' + t.threadId : ''}${t.error ? ' · ' + t.error : ''}`));
   body.append(el('h4', null, 'Spec')); body.append(el('pre', null, t.spec || ''));
   if (t.changedFiles?.length) { body.append(el('h4', null, 'Changed files')); body.append(el('pre', null, t.changedFiles.join('\n') + (t.diffStat ? '\n\n' + t.diffStat : ''))); }
-  body.append(el('h4', null, 'Actions')); body.append(el('pre', null, (t.result?.items?.length ? t.result.items : log).map((i) => i.command ? `$ ${i.command}\n${(i.output || '').slice(0, 400)}` : i.name ? `→ ${i.name} ${i.input || ''}` : i.text ? i.text : i.type).join('\n') || '(none yet)'));
+  body.append(el('h4', null, 'Actions'));
+  const items = t.result?.items?.length ? t.result.items : log;
+  body.append(el('pre', null, items.map((i) => {
+    if (i.command) return `$ ${i.command}\n${(i.output || '').slice(0, 400)}`;
+    if (i.name) {
+      const inp = i.input != null ? (typeof i.input === 'string' ? i.input : JSON.stringify(i.input)) : '';
+      return `→ ${i.name} ${inp.slice(0, 400)}`;
+    }
+    return i.text ? i.text : i.type;
+  }).join('\n') || '(none yet)'));
   if (t.result?.finalMessage) { body.append(el('h4', null, 'Worker report')); const r = el('div', 'msg assistant'); r.innerHTML = md(t.result.finalMessage); body.append(r); }
   const row = el('div', 'row');
-  if (!['done', 'failed', 'canceled'].includes(t.status)) { const b = el('button', 'sm danger', 'Cancel task'); b.onclick = async () => { await api.post(`/api/tasks/${id}/cancel`); closeModal(); }; row.append(b); }
+  if (!['done', 'failed', 'canceled'].includes(t.status)) { const b = el('button', 'sm danger', 'Cancel task'); b.onclick = () => act(async () => { await api.post(`/api/tasks/${id}/cancel`); closeModal(); }); row.append(b); }
   body.append(row);
   openModal(`Task ${t.id}: ${t.title}`, body);
 }
 
 // ---------- sessions ----------
 async function openSession(id) {
-  const s = await api.get(`/api/sessions/${id}`);
+  S.opening = id;
+  S.bufferedEvents = [];
+  let s;
+  try {
+    s = await api.get(`/api/sessions/${id}`);
+  } catch (e) {
+    if (S.opening === id) { S.opening = null; S.bufferedEvents = null; }
+    throw e;
+  }
+  if (S.opening !== id) return;
+  S.opening = null;
+  const buffered = S.bufferedEvents || [];
+  S.bufferedEvents = null;
   S.current = s; localStorage.setItem('lastSession', id);
   $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = `${s.cwd} · ${s.selection || ''}`;
   refreshHeaderPicker(); renderChip(); renderBudget(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi; if ($('#parallel')) $('#parallel').checked = !!s.parallelOverride;
@@ -451,28 +521,51 @@ async function openSession(id) {
   renderSessions(); renderTasks();
   document.body.classList.remove('nav-open'); // close the mobile drawer after picking a chat
   $('#input').focus();
+  for (const ev of buffered) {
+    if (s.seq && ev.seq && ev.seq <= s.seq) continue;
+    onSessionEvent(ev);
+  }
+}
+function clearCurrent() {
+  S.current = null;
+  try { localStorage.removeItem('lastSession'); } catch {}
+  $('#chat-title').textContent = 'No chat selected';
+  $('#chat-cwd').textContent = '';
+  renderChip();
+  renderBudget();
+  setStatus('idle');
+  clearTranscript();
+  const em = el('div', 'empty');
+  em.append(document.createTextNode('Pick a project folder, choose the conductor model, and start a chat.'), el('br'), el('span', 'muted', 'The conductor plans and reviews; workers (Astra via Codex, local Ollama models, API models) do the typing.'));
+  T().append(em);
+  renderTasks();
+  renderSessions();
 }
 function setStatus(st) {
   const p = $('#status'); p.textContent = st; p.className = 'pill' + (st === 'running' ? ' running' : st === 'error' ? ' error' : '');
   $('#btn-stop').disabled = st !== 'running';
+  if (st === 'idle' || st === 'error') stopSpinners();
 }
 async function newSession() {
-  const cwd = $('#cwd').value.trim();
-  if (!cwd) { $('#stt-hint').textContent = 'Pick a project folder first (left panel).'; $('#cwd').focus(); return; }
-  localStorage.setItem('cwd', cwd);
-  const sel = pickerValue('new-');
-  localStorage.setItem('conductorSel', JSON.stringify(sel));
-  api.post('/api/settings', { conductor: { provider: sel.provider, model: sel.model || null, effort: sel.effort } }).catch(() => {}); // remember as default
-  let s;
-  try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked, parallelOverride: !!$('#new-parallel')?.checked }); }
-  catch (e) { $('#stt-hint').textContent = e.message; return; }
-  $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
-  await refreshSessions(); await openSession(s.id);
+  if (newSessionPromise) return newSessionPromise;
+  return (newSessionPromise = (async () => {
+    const cwd = $('#cwd').value.trim();
+    if (!cwd) { $('#stt-hint').textContent = 'Pick a project folder first (left panel).'; $('#cwd').focus(); return; }
+    localStorage.setItem('cwd', cwd);
+    const sel = pickerValue('new-');
+    localStorage.setItem('conductorSel', JSON.stringify(sel));
+    api.post('/api/settings', { conductor: { provider: sel.provider, model: sel.model || null, effort: sel.effort } }).catch(() => {}); // remember as default
+    let s;
+    try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked, parallelOverride: !!$('#new-parallel')?.checked }); }
+    catch (e) { $('#stt-hint').textContent = e.message; return; }
+    $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
+    await refreshSessions(); await openSession(s.id);
+  })().finally(() => { newSessionPromise = null; }));
 }
 async function refreshSessions() { S.sessions = await api.get('/api/sessions'); renderSessions(); }
 // Slash commands that send straight to a worker (zero conductor tokens). The send() matcher is built from this table (one source of truth).
 const COMMANDS = [
-  { cmd: 'worker', args: '<spec>', help: 'Auto-picked worker (no conductor tokens)' },
+  { cmd: 'worker', args: '<spec>', help: 'Default worker (no conductor tokens)' },
   { cmd: 'astra', args: '<spec>', help: 'Astra — Codex worker' },
   { cmd: 'codex', args: '<spec>', help: 'Codex worker' },
   { cmd: 'ollama', args: '<model> <spec>', help: 'Local Ollama model' },
@@ -481,8 +574,11 @@ const COMMANDS = [
 const DIRECT_RE = new RegExp(`^\\/(${COMMANDS.map((c) => c.cmd).join('|')})(?:\\s+(\\S+))?\\s+([\\s\\S]+)$`);
 async function send() {
   const ta = $('#input'); const text = ta.value.trim(); if (!text) return;
-  if (!S.current) { await newSession(); if (!S.current) return; }
   ta.value = ''; ta.style.height = '';
+  if (!S.current) {
+    try { await newSession(); } catch {}
+    if (!S.current) { if (!ta.value) ta.value = text; return; }
+  }
   // "/worker <spec>" (or "/astra", "/ollama <model> <spec>") sends straight to a worker: zero conductor tokens.
   const direct = text.match(DIRECT_RE);
   if (direct) {
@@ -492,10 +588,12 @@ async function send() {
     if (kind === 'worker' && arg) { const m = S.models.models.find((x) => x.id === arg || x.resolved === arg); if (m) { provider = m.provider; model = m.id; } } // /worker <model> targets it; otherwise arg is prepended to the spec (below)
     const body = { sessionId: S.current.id, cwd: S.current.cwd, spec: model ? spec : (arg ? `${arg} ${spec}` : spec), provider, model };
     addUser(text);
-    try { const t = await api.post('/api/tasks', body); addSys(`worker task ${t.id} queued (${t.provider}${t.model ? '/' + t.model : ''})`); } catch (e) { addSys(`task failed: ${e.message}`, 'err'); }
+    try { const t = await api.post('/api/tasks', body); addSys(`worker task ${t.id} queued (${t.provider}${t.model ? '/' + t.model : ''})`); }
+    catch (e) { if (!ta.value) ta.value = text; addSys(`task failed: ${e.message}`, 'err'); }
     return;
   }
-  try { await api.post(`/api/sessions/${S.current.id}/messages`, { text }); } catch (e) { addSys(`send failed: ${e.message}`, 'err'); }
+  try { await api.post(`/api/sessions/${S.current.id}/messages`, { text }); }
+  catch (e) { if (!ta.value) ta.value = text; addSys(`send failed: ${e.message}`, 'err'); }
 }
 function cmdMenuOpen() { return !$('#cmd-menu').hidden; }
 function closeCmdMenu() { const m = $('#cmd-menu'); m.hidden = true; m.innerHTML = ''; S.cmdItems = []; S.cmdSel = 0; }
@@ -557,22 +655,21 @@ async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
-  $('#improve-count').textContent = S.improvements.length;
+  $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
   renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
-  if (!S.bypassTouched) $('#new-bypass').checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; // settings default; a manual toggle sticks
-  if (!S.overflowTouched) $('#new-overflow').checked = !!S.config?.conductor?.overflowApi;
+  seedNewChatDefaults();
   if (S.current) await openSession(S.current.id);
 }
 /** Coalesce bursts (e.g. replayed events) into one refetch per key. */
 const pendingRefetch = new Map();
 function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => {}); }, ms)); }
-let autoRefreshTimer = null;
 function applyAutoRefresh() {
-  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
   const on = !!S.config?.ui?.autoRefresh;
-  const min = S.config.ui.autoRefreshMinutes;
   const cb = $('#auto-refresh'); if (cb) cb.checked = on;
-  if (on) autoRefreshTimer = setInterval(() => { api.post('/api/models/refresh').catch(() => {}); api.post('/api/limits/refresh').catch(() => {}); }, min * 60_000);
+}
+function seedNewChatDefaults() {
+  if (!S.bypassTouched) { const cb = $('#new-bypass'); if (cb) cb.checked = S.config?.conductor?.permissionMode === 'bypassPermissions'; }
+  if (!S.overflowTouched) { const cb = $('#new-overflow'); if (cb) cb.checked = !!S.config?.conductor?.overflowApi; }
 }
 function connect() {
   const es = new EventSource(`/api/events?since=${S.lastSeq}`);
@@ -586,8 +683,18 @@ function connect() {
   on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
   on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
-  on('model_pull', (ev) => { $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`; });
-  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); }));
+  on('model_pull', (ev) => {
+    if (ev.error) $('#stt-hint').textContent = `pull ${ev.model}: ${ev.error}`;
+    else $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`;
+  });
+  on('plan', (ev) => {
+    if (!S.current || ev.sessionId !== S.current.id) return;
+    if (ev.kind === 'stage') addSys(`plan stage ${ev.stage}: starting ${ev.tasks} task${ev.tasks === 1 ? '' : 's'}${ev.round ? ` (round ${ev.round + 1})` : ''}`);
+    else if (ev.kind === 'stage_done') addSys(`plan stage ${ev.stage}: finished (${ev.findings ?? 0} findings)`);
+    else if (ev.kind === 'stage_incomplete') addSys(`plan stage ${ev.stage}: incomplete`, 'warn');
+    else if (ev.kind === 'done' || ev.kind === 'incomplete') addSys(`plan ${ev.kind}`);
+  });
+  on('settings', () => coalesce('settings', async () => { S.config = await api.get('/api/settings'); renderProviders(); renderBudget(); applyAutoRefresh(); seedNewChatDefaults(); }));
   on('update', (ev) => { // remote ahead, an update was applied, a relaunch started, or a relaunch failed
     if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); return; }
     noteUpdate(ev); // updated / relaunching / relaunchFailed — merged into one line
@@ -595,8 +702,14 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
-  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') { refreshSessions(); if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) { S.current = null; clearTranscript(); $('#chat-title').textContent = 'No chat selected'; } if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); renderBudget(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; } return; }
+  if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') {
+    refreshSessions();
+    if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) clearCurrent();
+    if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); renderBudget(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; }
+    return;
+  }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
+  if (S.opening && ev.sessionId === S.opening) { S.bufferedEvents?.push(ev); return; }
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {
     case 'user': addUser(ev.text); $('#chat-title').textContent = S.current.title = (S.current.title === 'New chat' ? ev.text.slice(0, 60) : S.current.title); break;
@@ -616,8 +729,23 @@ function onSessionEvent(ev) {
 }
 
 // ---------- modals ----------
-function openModal(title, body) { document.body.classList.remove('nav-open'); $('#modal-title').textContent = title; const b = $('#modal-body'); b.innerHTML = ''; b.append(body); $('#modal').hidden = false; }
-function closeModal() { $('#modal').hidden = true; }
+function openModal(title, body) {
+  modalOpener = document.activeElement;
+  document.body.classList.remove('nav-open');
+  $('#modal-title').textContent = title;
+  const b = $('#modal-body');
+  b.innerHTML = '';
+  b.append(body);
+  $('#modal').hidden = false;
+  $('#modal-close').focus();
+}
+function closeModal() {
+  $('#modal').hidden = true;
+  if (modalOpener && typeof modalOpener.focus === 'function') {
+    modalOpener.focus();
+    modalOpener = null;
+  }
+}
 async function browse(path) {
   const r = await api.get(`/api/browse?path=${encodeURIComponent(path || localStorage.getItem('cwd') || '')}`);
   const body = el('div', 'dirs');
@@ -625,15 +753,15 @@ async function browse(path) {
   const use = el('button', 'primary sm', 'Use this folder'); use.onclick = () => { $('#cwd').value = r.path; localStorage.setItem('cwd', r.path); closeModal(); };
   head.append(inp, go, use); body.append(head);
   body.append(el('div', 'tiny muted', `${r.hasGit ? 'git repo · ' : ''}${r.hasClaudeMd ? 'has CLAUDE.md' : 'no CLAUDE.md'}`));
-  if (r.parent) { const up = el('div', 'd', '⬆ ..'); up.onclick = () => browse(r.parent); body.append(up); }
-  for (const d of r.dirs) { const x = el('div', 'd', '📁 ' + d); x.onclick = () => browse(r.path.replace(/[\\/]$/, '') + (r.path.includes('\\') ? '\\' : '/') + d); body.append(x); }
+  if (r.parent) { const up = el('div', 'd', '⬆ ..'); asBtn(up, () => browse(r.parent)); body.append(up); }
+  for (const d of r.dirs) { const x = el('div', 'd', '📁 ' + d); asBtn(x, () => browse(r.path.replace(/[\\/]$/, '') + (r.path.includes('\\') ? '\\' : '/') + d)); body.append(x); }
   openModal('Choose project folder', body);
 }
 function openSettings() {
   const c = S.config; const body = el('div');
   const grokReset = () => (Number(c.scorecard?.usageResets?.grok?.periodHours) > 0 ? c.scorecard.usageResets.grok : null); // periodHours 0 / absent = not set
   const grid = el('div', 'grid');
-  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') i.placeholder = value ? '(saved)' : 'paste key'; grid.append(l, i); return i; };
+  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
   const selectField = (label, id, value, opts) => { grid.append(el('label', null, label)); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
   const pickerRow = (label, prefix, sel, opts) => {
     grid.append(el('label', null, label));
@@ -663,7 +791,6 @@ function openSettings() {
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
-  field('Providers panel auto-refresh every (min)', 'ui.autoRefreshMinutes', c.ui.autoRefreshMinutes, 'number', 'When the "auto" box next to ↻ Refresh is checked, the browser panel re-fetches models+limits this often. Separate from the server registry poll above. Minimum 1 minute.');
   // Grok reset: "not set" is the default and means Conductor assumes NO reset (no "resets …" on the bar, no
   // use-it-or-lose-it discount) — a guessed reset time is worse than none. Set it once you know yours.
   { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok weekly reset day')); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
@@ -686,7 +813,13 @@ function openSettings() {
     for (const i of grid.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
       const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'number' ? Number(i.value) : i.value;
-      if (i.type === 'password') { if (!v || v === '••••') continue; }
+      if (i.type === 'password') {
+        if (v === '••••') continue;
+        if (!v) {
+          if (i.dataset.initial === '••••') v = '';
+          else continue;
+        }
+      }
       if (i.id === 'cfg-conductor.overflowApi') v = v === 'true';
       if (i.id === 'cfg-grok-reset-day' || i.id === 'cfg-grok-reset-hour') continue; // handled below: "not set" must stay not set
       let o = patch; for (const k of path.slice(0, -1)) o = o[k] = o[k] || {}; o[path.at(-1)] = v;
@@ -699,6 +832,7 @@ function openSettings() {
     const wk = pickerValue('wk-'); const cd = pickerValue('cd-');
     patch.worker = { ...(patch.worker || {}), provider: wk.provider, model: wk.model || null, effort: wk.effort };
     patch.conductor = { ...(patch.conductor || {}), provider: cd.provider, model: cd.model || null, effort: cd.effort };
+    try { localStorage.setItem('conductorSel', JSON.stringify({ provider: cd.provider, model: cd.model || '', effort: cd.effort })); } catch {}
     S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); applyAutoRefresh(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
   };
   body.append(save);
@@ -723,16 +857,18 @@ async function openImprovements(showResolved = false) {
   const shown = showResolved ? all.filter((e) => e.resolved) : S.improvements;
   for (const e of [...shown].reverse()) {
     const d = el('div', 'imp'); d.append(el('div', 'k', `${e.kind} · ${e.source} · ${new Date(e.ts).toLocaleString()}${e.resolved ? ' · resolved' : ''}`), el('div', 'm', e.message));
-    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = async () => { await api.post(`/api/improvements/${e.id}/resolve`); openImprovements(showResolved); }; d.append(r); }
+    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = () => act(async () => { await api.post(`/api/improvements/${e.id}/resolve`); openImprovements(showResolved); }); d.append(r); }
     body.append(d);
   }
   if (!shown.length) body.append(el('div', 'muted', showResolved ? 'Nothing resolved yet.' : 'Nothing logged. Errors are captured automatically; the conductor and you can add ideas.'));
   openModal('Improvement log', body);
 }
 async function runReview() {
-  closeModal();
-  const s = await api.post('/api/review', { model: composite(pickerValue('new-')) });
-  await refreshSessions(); await openSession(s.id);
+  act(async () => {
+    closeModal();
+    const s = await api.post('/api/review', { model: composite(pickerValue('new-')) });
+    await refreshSessions(); await openSession(s.id);
+  });
 }
 
 // ---------- quit / misc ----------
@@ -773,8 +909,8 @@ async function boot() {
   S.boot = st.boot; S.lastSeq = st.seq || 0; // the transcript is rendered from state; only newer events stream in
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
   $('#cwd').value = localStorage.getItem('cwd') || '';
-  $('#improve-count').textContent = S.improvements.length;
-  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
+  $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
+  refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh(); seedNewChatDefaults(); renderChip();
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
@@ -782,7 +918,7 @@ async function boot() {
   $('#btn-new').onclick = newSession;
   $('#btn-browse').onclick = () => browse($('#cwd').value);
   $('#btn-send').onclick = send;
-  $('#btn-stop').onclick = () => S.current && api.post(`/api/sessions/${S.current.id}/interrupt`);
+  $('#btn-stop').onclick = () => S.current && act(() => api.post(`/api/sessions/${S.current.id}/interrupt`));
   $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
   $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
   $('#btn-settings').onclick = openSettings;
@@ -815,13 +951,40 @@ async function boot() {
   $('#new-model').onchange = () => { resolveOther('new-', true); refreshNewPicker(true, true); };
   $('#new-effort').onchange = () => refreshNewPicker(true, true);
   $('#provider').onchange = (e) => { const v = e.target.value; const cur = { provider: S.current?.provider || 'claude', model: S.current?.model || '', effort: S.current?.effort || 'high' }; fillPicker('', v === ALL ? cur : { ...cur, provider: v, model: v === cur.provider ? cur.model : '' }, { forceProvider: v !== ALL }); };
-  $('#model').onchange = () => { if (!S.current) return; resolveOther('', true); const v = pickerValue(''); if (v.provider !== S.current.provider) { $('#stt-hint').textContent = 'Provider can only be chosen for a new chat; the model switched within ' + S.current.provider + ' only if it belongs to it.'; refreshHeaderPicker(true); return; } api.post(`/api/sessions/${S.current.id}/model`, { model: v.model || null }); fillPicker('', v, { forceProvider: true }); };
-  $('#effort').onchange = () => S.current && api.post(`/api/sessions/${S.current.id}/effort`, { effort: pickerValue('').effort });
+  $('#model').onchange = (e) => {
+    if (!S.current) return;
+    resolveOther('', true);
+    const v = pickerValue('');
+    if (v.provider !== S.current.provider) {
+      $('#stt-hint').textContent = 'Provider can only be chosen for a new chat; the model switched within ' + S.current.provider + ' only if it belongs to it.';
+      refreshHeaderPicker(true);
+      return;
+    }
+    act(async () => {
+      await api.post(`/api/sessions/${S.current.id}/model`, { model: v.model || null });
+      S.current.model = v.model || null;
+      renderChip();
+      fillPicker('', v, { forceProvider: true });
+    }, () => {
+      refreshHeaderPicker(true);
+    });
+  };
+  $('#effort').onchange = (e) => {
+    if (!S.current) return;
+    const prev = S.current.effort || 'high';
+    act(async () => {
+      await api.post(`/api/sessions/${S.current.id}/effort`, { effort: e.target.value });
+      S.current.effort = e.target.value;
+      renderChip();
+    }, () => {
+      e.target.value = prev;
+    });
+  };
   $('#new-bypass').onchange = () => { S.bypassTouched = true; };
   $('#new-overflow').onchange = () => { S.overflowTouched = true; };
-  $('#overflow').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/overflow`, { overflowApi: e.target.checked });
-  $('#parallel').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/parallel`, { parallelOverride: e.target.checked });
-  $('#bypass').onchange = (e) => S.current && api.post(`/api/sessions/${S.current.id}/mode`, { permissionMode: e.target.checked ? 'bypassPermissions' : 'acceptEdits' });
+  $('#overflow').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/overflow`, { overflowApi: e.target.checked }), e.target);
+  $('#parallel').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/parallel`, { parallelOverride: e.target.checked }), e.target);
+  $('#bypass').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/mode`, { permissionMode: e.target.checked ? 'bypassPermissions' : 'acceptEdits' }), e.target);
   $('#cwd').onchange = (e) => localStorage.setItem('cwd', e.target.value.trim());
   const ta = $('#input');
   ta.addEventListener('keydown', (e) => {

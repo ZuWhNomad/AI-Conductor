@@ -35,7 +35,6 @@ function render(config = structuredClone(DEFAULTS)) {
 test('Settings shows the configured update policy and no guessed Grok hour', async () => {
   const view = render();
   assert.equal(view.field('conductor.autoUpdate').value, DEFAULTS.conductor.autoUpdate);
-  assert.equal(view.field('ui.autoRefreshMinutes').value, String(DEFAULTS.ui.autoRefreshMinutes));
   assert.equal(view.field('grok-reset-day').value, '-1');
   assert.equal(view.field('grok-reset-hour').value, '');
   await view.save();
@@ -65,4 +64,18 @@ test('saved update policy and reset hour are displayed and preserved', async () 
   assert.equal(view.field('grok-reset-hour').value, '9');
   await view.save();
   assert.deepEqual(view.posts[0].patch.scorecard.usageResets.grok, config.scorecard.usageResets.grok);
+});
+
+test('emptying a saved API key sends apiKey: "", untouched mask is omitted', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.providers.deepseek = { apiKey: '••••' };
+  config.providers.moonshot = { apiKey: '••••' };
+  config.providers.xai = { apiKey: null };
+  const view = render(config);
+  assert.equal(view.field('providers.deepseek.apiKey').value, '••••');
+  view.field('providers.deepseek.apiKey').value = '';
+  await view.save();
+  assert.equal(view.posts[0].patch.providers?.deepseek?.apiKey, '');
+  assert.equal(view.posts[0].patch.providers?.moonshot, undefined);
+  assert.equal(view.posts[0].patch.providers?.xai, undefined);
 });

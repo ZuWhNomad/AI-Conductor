@@ -160,7 +160,10 @@ async function route(req, res, url) {
   if (seg[0] === 'mcp' && seg[1]) return mcpRoute(req, res, seg);
   if (seg[0] !== 'api') return false;
 
-  if (m === 'GET' && p === '/api/state') return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: listImprovements().slice(-50), update: lastUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
+  if (m === 'GET' && p === '/api/state') {
+    const imps = listImprovements();
+    return json(res, 200, { version: VERSION, boot: BOOT, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
+  }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
     setTimeout(() => { try { stopBackgroundWork(); } catch {} try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
@@ -183,7 +186,7 @@ async function route(req, res, url) {
     if (m === 'GET' && !seg[2]) return json(res, 200, conductor.listSessions());
     if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, conductor.createSession({ ...b, overflowApi: b.overflowApi == null ? null : !!b.overflowApi, parallelOverride: !!b.parallelOverride })); }
     const id = seg[2];
-    if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, s) : json(res, 404, { error: 'not found' }); }
+    if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, { ...s, seq: bus.seq }) : json(res, 404, { error: 'not found' }); }
     if (m === 'DELETE' && !seg[3]) return json(res, 200, { ok: conductor.deleteSession(id) });
     const b = m === 'POST' ? await readBody(req) : {};
     if (m === 'POST' && seg[3] === 'messages') return json(res, 200, await conductor.sendMessage(id, String(b.text || '')));

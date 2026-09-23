@@ -9,7 +9,7 @@
 </head>
 <body>
 <aside id="sidebar">
-  <div class="brand"><span class="logo">🎼</span> <b>Conductor</b> <span class="muted">2.0</span> <button id="btn-quit" class="icon quit" title="Quit — stop the Conductor server" aria-label="Quit"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 2.2v5.6"/><path d="M4.6 4.9a5 5 0 1 0 6.8 0"/></svg></button> <button id="btn-settings" class="icon" title="Settings">⚙</button></div>
+  <div class="brand"><span class="logo">🎼</span> <b>Conductor</b> <span class="muted">2.0</span> <button id="btn-quit" class="icon quit" title="Quit — stop the Conductor server" aria-label="Quit"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 2.2v5.6"/><path d="M4.6 4.9a5 5 0 1 0 6.8 0"/></svg></button> <button id="btn-settings" class="icon" title="Settings" aria-label="Settings">⚙</button></div>
 
   <section class="panel budget-panel">
     <div class="row between"><label class="lbl">Budget</label><button id="btn-budget-details" class="linkish tiny" title="Show full providers &amp; limits">details ▸</button></div>
@@ -22,7 +22,7 @@
       <label class="lbl">Project folder</label>
       <div class="row">
         <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false">
-        <button id="btn-browse" class="sm" title="Browse folders">…</button>
+        <button id="btn-browse" class="sm" title="Browse folders" aria-label="Browse folders">…</button>
       </div>
       <label class="lbl" style="margin-top:6px">Conductor (provider : model : effort)</label>
       <div class="row picker">
@@ -105,7 +105,7 @@
 
 <aside id="fleet">
   <div class="fleet-head">
-    <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock">⟨</button></div>
+    <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock" aria-label="Collapse / expand fleet">⟨</button></div>
     <div id="fleet-counts" class="tiny muted">no workers yet</div>
     <div id="fleet-scope" class="seg" role="group" aria-label="Show workers for this chat or all chats">
       <button type="button" data-scope="mine">This chat</button>
@@ -118,7 +118,7 @@
 
 <div id="scrim"></div>
 
-<div id="modal" class="modal" hidden><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon">✕</button></div><div id="modal-body" class="modal-body"></div></div></div>
+<div id="modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon" aria-label="Close dialog" title="Close">✕</button></div><div id="modal-body" class="modal-body"></div></div></div>
 
 <script type="module" src="/app.js"></script>
 </body>

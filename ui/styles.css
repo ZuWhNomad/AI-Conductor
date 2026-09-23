@@ -89,7 +89,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .list .item.active { background: var(--bg3); outline: 1px solid var(--line); }
 .list .item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list .item .x { visibility: hidden; color: var(--muted); }
-.list .item:hover .x { visibility: visible; }
+.list .item:hover .x, .list .item:focus-within .x { visibility: visible; }
+@media (hover: none) {
+  .list .item .x { visibility: visible; }
+}
+.list .item:focus-visible, .task:focus-visible, .cmd-item:focus-visible, .dirs .d:focus-visible { outline: 1px solid var(--accent); }
 .providers .prov { padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .providers .prov:last-child { border-bottom: none; }
 .providers .name { display: flex; justify-content: space-between; font-size: 12px; }
