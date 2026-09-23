@@ -59,6 +59,46 @@ test('git observes content edits to already-dirty tracked files with unchanged s
   assert.deepEqual(await _git.changedSince(cwd, before), [name]);
 });
 
+test('git status walks parent directories so a subdirectory cwd is still a repo', { skip: !git }, async () => {
+  const cwd = tmpDir('git-sub');
+  const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  writeFileSync(join(cwd, 'root.txt'), 'root');
+  run('add', '--', 'root.txt');
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  const sub = join(cwd, 'nested', 'deep');
+  mkdirSync(sub, { recursive: true });
+  const before = await _git.gitStatus(sub);
+  assert.ok(before, 'a cwd inside a repo must get a git snapshot');
+  writeFileSync(join(sub, 'new.txt'), 'new');
+  const changed = await _git.changedSince(sub, before);
+  assert.equal(changed.length, 1);
+  assert.ok(changed[0].endsWith('new.txt'), changed);
+});
+
+test('git fingerprints tracked files at or above 8 MiB by mtime and size, not content', { skip: !git }, async () => {
+  const cwd = tmpDir('git-large');
+  const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  const name = 'big.bin';
+  const file = join(cwd, name);
+  const size = 8 * 1024 * 1024;
+  writeFileSync(file, Buffer.alloc(size, 1));
+  run('add', '--', name);
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  writeFileSync(file, Buffer.alloc(size, 2));
+  const pinned = new Date(Math.floor(Date.now() / 1000) * 1000);
+  utimesSync(file, pinned, pinned);
+  const before = await _git.gitStatus(cwd);
+  assert.ok(before.has(name));
+  writeFileSync(file, Buffer.alloc(size, 3));
+  utimesSync(file, pinned, pinned);
+  assert.deepEqual(await _git.changedSince(cwd, before), [], 'same size and mtime is not a change for a large file');
+  const later = new Date(pinned.getTime() + 2000);
+  utimesSync(file, later, later);
+  assert.deepEqual(await _git.changedSince(cwd, before), [name]);
+});
+
 test('git detects new and modified untracked files and includes them in the summary', { skip: !git }, async () => {
   const cwd = tmpDir('git');
   execFileSync(git, ['init', '--quiet'], { cwd, windowsHide: true });

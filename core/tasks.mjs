@@ -165,7 +165,7 @@ export function awaitTask(id, timeoutMs) {
     timeoutMs = (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000;
   }
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== done)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, timeoutMs);
+    const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== done)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, Math.min(2 ** 31 - 1, timeoutMs));
     const done = (task) => { clearTimeout(timer); resolve(publicTask(task)); };
     waiters.set(id, [...(waiters.get(id) || []), done]);
   });
@@ -275,7 +275,8 @@ async function run(t) {
     const wcfg = loadConfig().worker;
     const providerKind = PROVIDERS[t.provider]?.kind;
     const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
-    const r = await runWorker({ ...t, prompt, timeoutMs: (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000 }, { signal: ac.signal });
+    const r = await runWorker({ ...t, prompt, timeoutMs: Math.min(2 ** 31 - 1, (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000) }, { signal: ac.signal });
+    const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
@@ -301,7 +302,7 @@ async function run(t) {
       await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
     }
     if (t.status === 'canceled') { /* keep */ }
-    else if (shuttingDown && ac.signal.aborted) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
+    else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || r.limitHit)) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit) {
       const next = failover(t);
       if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
@@ -380,9 +381,21 @@ export const flushRecords = () => Promise.allSettled([...pendingRecords]);
 // --- git helpers (best effort; silent when not a repo or git is missing). All async: they run on the dispatch path,
 // and a synchronous git call per task (up to 10 s each) stalled every chat and poll when tasks started together. ---
 const execFileP = promisify(execFile);
+// E4: walk parent directories to find a .git file or directory (so a cwd in a repo subdirectory also gets git status).
+// Stops at the filesystem root. Returns null without spawning if no .git found.
+function findGitRoot(cwd) {
+  let dir = cwd;
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = resolve(dir, '..');
+    if (parent === dir) return null; // filesystem root
+    dir = parent;
+  }
+}
 let gitBin;
 async function git(cwd, args) {
-  if (!existsSync(join(cwd, '.git'))) return null;
+  const root = findGitRoot(cwd);
+  if (!root) return null;
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) return null;
   try { return (await execFileP(gitBin, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
@@ -402,7 +415,21 @@ async function gitStatus(cwd) {
   // An untracked file carries its mtime+size, so an edit to it counts as a change too.
   await Promise.all(untracked.map(async (name) => { try { const s = await stat(join(cwd, name)); statusMap.set(name, `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
   // Porcelain stays " M" when a worker edits an already-dirty file; compare its content too.
-  await Promise.all(tracked.map(async (name) => { try { const hash = createHash('sha256').update(await readFile(join(cwd, name))).digest('hex'); statusMap.set(name, `${statusMap.get(name)} ${hash}`); } catch {} }));
+  // E5: files above 8 MiB use mtime+size to avoid hashing large files on the main thread (twice per task).
+  // Same-size same-mtime edits are detectable for small files only; the spec pins this at 8 MiB.
+  const LARGE_FILE_BYTES = 8 * 1024 * 1024;
+  await Promise.all(tracked.map(async (name) => {
+    try {
+      const s = await stat(join(cwd, name));
+      let fingerprint;
+      if (s.size >= LARGE_FILE_BYTES) {
+        fingerprint = `${s.mtimeMs}:${s.size}`;
+      } else {
+        fingerprint = createHash('sha256').update(await readFile(join(cwd, name))).digest('hex');
+      }
+      statusMap.set(name, `${statusMap.get(name)} ${fingerprint}`);
+    } catch {}
+  }));
   return statusMap;
 }
 /** Pure: files whose status differs between two snapshots (everything, when there was no before). */

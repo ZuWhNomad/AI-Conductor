@@ -818,6 +818,55 @@ test('failover passes the access-gate provider restriction intersected with the 
   }
 });
 
+test('graceful shutdown after the worker returns does not requeue a finished run', { skip: !git }, async (ctx) => {
+  const cwd = tmpDir('e1-finished');
+  mkdirSync(join(cwd, '.git'));
+  let statusCalls = 0;
+  const enteredAfter = Promise.withResolvers(), afterStatus = Promise.withResolvers();
+  const tk = await tasksWithGit(ctx, async (_bin, args) => {
+    if (args[0] === 'status') {
+      statusCalls++;
+      if (statusCalls === 2) { enteredAfter.resolve(); await afterStatus.promise; }
+    }
+    return { stdout: '' };
+  });
+  ctx.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] })));
+  const lim = await import('../core/limits.mjs'); delete lim.getLimits().providers.deepseek;
+  let task;
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    task = tk.createTask({ cwd, provider: 'deepseek', spec: 'x' });
+    tk.schedule();
+    await enteredAfter.promise;
+    assert.equal(tk.getTask(task.id).status, 'running');
+    tk.abortRunning({ requeue: true });
+    afterStatus.resolve();
+    const done = await tk.awaitTask(task.id, 15000);
+    assert.equal(done.status, 'done', done.error);
+    assert.equal(done.resume, false);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    afterStatus.resolve();
+    tk.abortRunning();
+    if (task) tk.cancelTask(task.id);
+    await tk.flushRecords();
+  }
+});
+
+test('awaitTask and worker timeoutMs are clamped to the Node timer maximum', async (ctx) => {
+  const waits = [];
+  ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => { waits.push(ms); queueMicrotask(fn); return {}; });
+  const queued = createTask({ cwd: tmpDir('e8-await'), spec: 'x' });
+  await awaitTask(queued.id, 2 ** 40);
+  cancelTask(queued.id);
+  assert.equal(waits.at(-1), 2 ** 31 - 1);
+
+  // Config clamps timeoutMinutes to 1440, so the worker path cannot be driven past 2^31-1 through saveConfig.
+  // Assert the runWorker call site still applies the same clamp to whatever minutes loadConfig returns.
+  const src = readFileSync(new URL('../core/tasks.mjs', import.meta.url), 'utf8');
+  assert.match(src, /timeoutMs:\s*Math\.min\(2 \*\* 31 - 1,\s*\(wcfg\.timeoutByCategory\[t\.category\] \?\? wcfg\.timeoutMinutes\) \* 60_000\)/);
+});
+
 test('GP7: a noFailover task that parks on a limit hit is scored after a successful resume', async (ctx) => {
   const { runRows } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');

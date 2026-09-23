@@ -28,7 +28,7 @@ const sessions = new Map();
 let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
 
-for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null });
+for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null, inboxCount: 0 });
 // The routing flags the delegate tools read live in a side map (no import cycle). Seed it from every session, not only
 // when a toggle is clicked: a chat created with API overflow on, or any chat after a restart, used to read it as off.
 const syncFlags = (s) => setSessionFlags(s.id, { overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride });
@@ -74,6 +74,12 @@ export function parseSelection(sel, fallback = {}) {
   return out;
 }
 
+/** U13: for the claude runtime, clamp an effort not in the model's listed efforts (or 'ultra') to 'max'. */
+const clampClaudeEffort = (provider, model, effort) => {
+  const listed = findModel(provider, model)?.efforts;
+  return effort && (effort === 'ultra' || (listed?.length && !listed.includes(effort))) ? 'max' : effort;
+};
+
 /** A model whose registry entry lists no efforts must never carry one (same guard as createTask): Ollama answers 400 "does not support thinking". */
 const honoredEffort = (provider, model, effort) => (findModel(provider, model)?.efforts?.length === 0 ? null : effort);
 
@@ -88,7 +94,11 @@ export function listSessions() {
 
 export async function getSession(id) {
   const s = sessions.get(id); if (!s) return null;
-  if (!s.messages.length) await loadHistory(s);
+  // E12: avoid duplicate pushMessage when two concurrent getSession calls race on an empty messages array.
+  if (!s.messages.length) {
+    if (!s.historyLoad) s.historyLoad = loadHistory(s).finally(() => { s.historyLoad = null; });
+    await s.historyLoad;
+  }
   return { ...publicSession(s), messages: s.messages, pending: [...s.pending.values()].map((p) => p.request) };
 }
 
@@ -124,10 +134,12 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     if (!sel.model && runtime !== 'claude') sel.model = defaultModelFor(sel.provider);
     if (!sel.model && runtime !== 'claude') throw new Error(`No model known for provider ${sel.provider}; refresh models or pick one explicitly`);
   } catch (e) { throw Object.assign(e, { status: 400 }); }
+  const hon = honoredEffort(sel.provider, sel.model, sel.effort);
   const s = {
-    id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model, effort: honoredEffort(sel.provider, sel.model, sel.effort),
+    id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
+    effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null,
+    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, inboxCount: 0,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -190,6 +202,8 @@ function stop(s) {
   try { s.inbox?.close(); } catch {}
   try { s.abort?.abort(); } catch {}
   try { s.turnAbort?.abort(); } catch {}
+  s.turnAbort = null; // E9: clear so mine() returns false; the aborted turn's finally won't repersist history
+  s.inboxCount = 0; // E6: a stopped process answers nothing still queued in it
   s.query = null; s.inbox = null; s.abort = null;
   for (const p of s.pending.values()) p.resolve({ behavior: 'deny', message: 'session stopped' });
   s.pending.clear();
@@ -228,16 +242,21 @@ async function pump(s, q) {
           }
         }
       } else if (m.type === 'result') {
-        s.status = 'idle'; s.costUsd = m.total_cost_usd || s.costUsd; s.updatedAt = nowIso(); persistAll();
+        // E6: only go idle when the inbox is empty (no queued user messages waiting); if more are pending,
+        // keep status 'running' so setEffort/setPermissionMode don't call stop() and close the inbox.
+        s.inboxCount = Math.max(0, (s.inboxCount || 0) - 1);
+        const hasMoreMessages = s.inboxCount > 0;
+        if (!hasMoreMessages) s.status = 'idle';
+        s.costUsd = m.total_cost_usd || s.costUsd; s.updatedAt = nowIso(); persistAll();
         const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' ? '' : (m.errors || [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
         if (s.interrupted) { s.interrupted = false; msg.subtype = 'interrupted'; msg.text = 'interrupted by user'; }
         pushMessage(s, msg); emit(s, 'result', msg); emit(s, 'status', { status: s.status });
         if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text}`, { sessionId: s.id });
-        if (s.restartPending) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
+        if (s.restartPending && !hasMoreMessages) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
           s.restartPending = false;
           const pending = s.inbox?.drain() || [];
           stop(s);
-          if (pending.length) { start(s); for (const q2 of pending) s.inbox.push(q2); s.status = 'running'; emit(s, 'status', { status: 'running' }); }
+          if (pending.length) { start(s); for (const q2 of pending) s.inbox.push(q2); s.inboxCount = pending.length; s.status = 'running'; emit(s, 'status', { status: 'running' }); }
         }
       } else if (m.type === 'rate_limit_event') {
         bus.publish('rate_limit', { provider: 'claude', info: m.rate_limit_info });
@@ -339,16 +358,18 @@ async function runTurn(s, text) {
     // Loop runtimes already record 429s via the http_rate event (with retry-after); only Codex needs an explicit note.
     if (r.limitHit && s.runtime === 'codex') bus.publish('rate_limit', { provider: s.provider, info: { status: 'rejected', rateLimitType: 'codex', resetsAt: r.retryAfterMs ? (Date.now() + r.retryAfterMs) / 1000 : undefined } });
     const msg = { role: 'result', subtype: r.ok ? 'success' : 'error', isError: !r.ok, text: r.ok ? '' : (r.error || 'turn failed'), costUsd: 0, durationMs: Date.now() - t0, numTurns: 1, usage: r.usage ? { [s.model || s.provider]: { inputTokens: r.usage.input_tokens, outputTokens: r.usage.output_tokens, cacheReadInputTokens: r.usage.cached_input_tokens || 0 } } : null };
-    pushMessage(s, msg); emit(s, 'result', msg);
+    if (sessions.has(s.id)) { pushMessage(s, msg); emit(s, 'result', msg); }
     if (!r.ok && !ac.signal.aborted) logImprovement('error', `conductor:${s.runtime}`, `turn failed: ${r.error}`, { sessionId: s.id, model: s.model });
   } catch (e) {
     const m = String(e?.message || e);
-    if (!ac.signal.aborted) { emit(s, 'error', { message: m }); logImprovement('error', `conductor:${s.runtime}`, m, { sessionId: s.id }); }
+    if (!ac.signal.aborted && sessions.has(s.id)) { emit(s, 'error', { message: m }); logImprovement('error', `conductor:${s.runtime}`, m, { sessionId: s.id }); }
     const msg = { role: 'result', subtype: 'error', isError: true, text: ac.signal.aborted ? 'interrupted' : m, durationMs: Date.now() - t0, numTurns: 1 };
-    pushMessage(s, msg); emit(s, 'result', msg);
+    if (sessions.has(s.id)) { pushMessage(s, msg); emit(s, 'result', msg); }
   } finally {
+    // E9: if the session was deleted mid-turn (mine() is false because stop() cleared turnAbort),
+    // do not rewrite history files or emit events for the deleted id.
     if (mine()) { s.turnAbort = null; s.status = 'idle'; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' }); }
-    writeJson(HIST(s.id, 'messages'), s.messages);
+    if (sessions.has(s.id)) writeJson(HIST(s.id, 'messages'), s.messages);
   }
 }
 
@@ -357,12 +378,16 @@ export async function sendMessage(sessionId, text) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
   if (s.status === 'running' && s.runtime !== 'claude') throw Object.assign(new Error('the conductor is still working on the previous message; wait or press Stop'), { status: 409 });
   if (s.runtime === 'claude' && !s.query) start(s);
-  if (s.title === 'New chat') { s.title = text.trim().slice(0, 60) || 'New chat'; }
+  const autoTitle = s.title === 'New chat';
+  if (autoTitle) s.title = text.trim().slice(0, 60) || 'New chat';
   s.status = 'running'; s.updatedAt = nowIso(); persistAll();
+  if (autoTitle) emit(s, 'updated', { session: publicSession(s) }); // U7: persist then emit, same as setTitle
   const msg = { role: 'user', text };
   pushMessage(s, msg); emit(s, 'user', msg); emit(s, 'status', { status: 'running' });
-  if (s.runtime === 'claude') s.inbox.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
-  else void runTurn(s, text);
+  if (s.runtime === 'claude') {
+    s.inboxCount = (s.inboxCount || 0) + 1; // E6: track queued messages; result handler decrements
+    s.inbox.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
+  } else void runTurn(s, text);
   return publicSession(s);
 }
 
@@ -385,8 +410,11 @@ export async function setModel(sessionId, model) {
 /** Effort has no live control in the SDK: apply it by restarting the process (resumes the same session). */
 export function setEffort(sessionId, effort) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
-  s.effort = effort || null; persistAll();
-  if (s.runtime === 'claude' && s.query) { if (s.status === 'running') s.restartPending = true; else stop(s); }
+  // U13: clamp unsupported effort (including 'ultra') to 'max' for claude runtime.
+  s.effort = s.runtime === 'claude' ? clampClaudeEffort(s.provider, s.model, effort || null) : (effort || null);
+  persistAll();
+  // E6: treat messages queued but not yet processed the same as 'running' — use restartPending so stop() is not called while inbox has items.
+  if (s.runtime === 'claude' && s.query) { if (s.status === 'running' || (s.inboxCount || 0) > 0) s.restartPending = true; else stop(s); }
   emit(s, 'updated', { session: publicSession(s) });
 }
 
@@ -425,7 +453,8 @@ export async function setPermissionMode(sessionId, mode) {
   // bypass needs a fresh process (canUseTool wiring differs); other modes switch live. A running turn is
   // never killed for this: the restart happens after its result, like an effort change.
   if (s.runtime === 'claude' && s.query) {
-    if (mode === 'bypassPermissions' || was === 'bypassPermissions') { if (s.status === 'running') s.restartPending = true; else stop(s); }
+    // E6: treat messages queued but not yet processed the same as 'running'.
+    if (mode === 'bypassPermissions' || was === 'bypassPermissions') { if (s.status === 'running' || (s.inboxCount || 0) > 0) s.restartPending = true; else stop(s); }
     else { try { await s.query.setPermissionMode(mode); } catch (e) { emit(s, 'error', { message: `setPermissionMode failed: ${e.message}` }); } }
   }
   emit(s, 'updated', { session: publicSession(s) });
