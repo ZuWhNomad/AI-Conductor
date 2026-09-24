@@ -2,7 +2,7 @@
 // measured tokens into shadow dollars (one currency across subscription, API and local providers);
 // tiers are an *expectation* to compare the scorecard against, and an opt-in routing fallback before
 // any measured data exists. Routing itself stays empirical. Override or add prices in config:
-//   scorecard.prices["provider:model"] = { in, out, cached }   ($ per million tokens)
+//   scorecard.prices["provider:model"] = { in, out, cached, write }   ($ per million tokens; write defaults to in*1.25)
 import { loadConfig } from './config.mjs';
 
 export const AS_OF = '2026-09-09';
@@ -25,8 +25,6 @@ export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: '
 // way (pass / close / fail, table DRAFTING below), and the auto-pick routes only a recorded PASS for either
 // category. Explicit pins are not gated, so several models can still be tried on a drawing to collect evidence.
 export const MODELING = {
-  caveat: 'Only a model with a recorded PASS may take 3D-modeling/STL work (currently codex:gpt-6-astra at ultra, and codex:gpt-5.6-sol at ultra when given the image->3D recipe); "close" results waste tokens exactly like fails. If no passing model is available (limit, class cap), tell the user and stop rather than trying a weaker model. Trace the reference image; never draw from a description alone.',
-  best: ['codex:gpt-6-astra', 'codex:gpt-5.6-sol'], // models with a recorded pass (with the effort that passed, see results)
   // Recorded verdicts from cookie-cutter 2026-09-11. `re` matches provider:model lowercased (like PRIORS), so
   // both the alias (claude:opus) and the resolved id (claude:opus-5) resolve to the same verdict.
   results: [
@@ -37,7 +35,7 @@ export const MODELING = {
     { re: /^antigravity:gemini-3\.1-pro/, model: 'antigravity:gemini-3.1-pro', verdict: 'fail', effort: 'high' },
     { re: /^claude:(sonnet$|.*sonnet-5)/, model: 'claude:sonnet-5', verdict: 'fail', effort: 'medium' },
     { re: /^codex:.*5\.3-codex-spark/, model: 'codex:gpt-5.3-codex-spark', verdict: 'fail', effort: 'medium' },
-    // 2026-09-12: the Codex mid-tier at its highest efforts — all clear the gate, all fail the visual comparison.
+    // 2026-09-12: Sol at ultra PASSES with the image->3D recipe; Terra/Luna at their highest efforts fail the visual comparison.
     { re: /^codex:.*5\.6-sol/, model: 'codex:gpt-5.6-sol', verdict: 'pass', effort: 'ultra' }, // 2026-09-12 rerun WITH the image->3D recipe: PASS (one-shot fail before it)
     { re: /^codex:.*5\.6-terra/, model: 'codex:gpt-5.6-terra', verdict: 'fail', effort: 'ultra' },
     { re: /^codex:.*5\.6-luna/, model: 'codex:gpt-5.6-luna', verdict: 'fail', effort: 'max' },
@@ -47,7 +45,6 @@ export const MODELING = {
 // 2-D line art from the reference photos (cookie-cutter drafting rounds, benchmarks repo runs/2026-09-20-drafting and
 // runs/2026-09-21-drafting-panel), judged by eye on the same pass / close / fail scale as the builds.
 export const DRAFTING = {
-  caveat: 'Only a model with a recorded drafting PASS may be auto-picked for line art (currently codex:gpt-6-astra at xhigh); "close" drawings waste the geometry built on them. To try other models, pin them explicitly.',
   results: [
     { re: /^codex:gpt-6-astra/, model: 'codex:gpt-6-astra', verdict: 'pass', effort: 'xhigh' },            // good x3: mountain, pine trees, penguin
     { re: /^claude:claude-fable-5-1/, model: 'claude:claude-fable-5-1', verdict: 'close', effort: 'high' }, // faithful, but detail finer than a 1.4 mm wall holds at 100 mm
@@ -62,31 +59,30 @@ export const DRAFTING = {
 // routes nothing for it until a pass is recorded here.
 const VERDICT_TABLES = { modeling: MODELING, drafting: DRAFTING };
 
-// Verdict → prior tier for the visual kind. `fail` and unknown collapse to null so they are not routed on a
-// public-code prior they never earned; `close` stays modest (ceiling 2) so nothing is trusted at high difficulty.
-// Until models get better at this, only a recorded PASS is routable: 'close' wastes tokens just like 'fail'.
+// Verdict → prior tier for the visual kind. Only a recorded PASS is routable (`close` and `fail` are both null);
+// a close result wastes tokens the same as a fail and is not given a modest ceiling.
 const VISUAL_TIER = { pass: 'A', close: null, fail: null };
 
 // Order matters: first matching rule wins. `re` is tested against `provider:model` lowercased.
 // Sources: Terminal-Bench 2.1 (llm-stats.com), SWE-bench Verified + GDPval-AA (benchlm.ai), MRCR
 // (vellum GPT-5.6 tier guide), OpenAI/Anthropic/Google/Moonshot/xAI/DeepSeek/Alibaba pricing pages.
 export const PRIORS = [
-  { re: /^codex:.*astra/, tier: 'A', price: { in: 10, out: 50, cached: 1 }, note: 'leads Terminal-Bench 4.0; ~1/3 of Sol tokens; #2 BenchLM composite' },
+  { re: /^codex:.*astra/, tier: 'A', price: { in: 10, out: 50, cached: 1 } }, // leads Terminal-Bench 4.0; ~1/3 of Sol tokens; #2 BenchLM composite
   { re: /^codex:gpt-5\.6-sol/, tier: 'A', tb21: 88.8, swev: 96.2, gdpval: 1743, mrcr: 91.5, price: { in: 5, out: 30, cached: 0.5 } },
   { re: /^codex:gpt-5\.6-terra/, tier: 'B', tb21: 87.4, gdpval: 1583, mrcr: 89.6, price: { in: 2, out: 12, cached: 0.2 } },
-  { re: /^codex:gpt-5\.6-luna/, tier: 'B', tiers: { read: 'D' }, tb21: 84.7, gdpval: 1582, mrcr: 41.3, price: { in: 0.2, out: 1.2, cached: 0.02 }, note: 'weak long-context recall (MRCR 41%)' },
+  { re: /^codex:gpt-5\.6-luna/, tier: 'B', tiers: { read: 'D' }, tb21: 84.7, gdpval: 1582, mrcr: 41.3, price: { in: 0.2, out: 1.2, cached: 0.02 } }, // weak long-context recall (MRCR 41%)
   { re: /^codex:gpt-5\.5/, tier: 'A', tb21: 88.0, price: { in: 5, out: 30, cached: 0.5 } },
-  { re: /^codex:gpt-5\.3-codex-spark/, tier: 'C', tb20: 77.3, price: null, note: 'own rate-limit bucket; no public API price' },
+  { re: /^codex:gpt-5\.3-codex-spark/, tier: 'C', tb20: 77.3, price: null }, // own rate-limit bucket; no public API price
   { re: /^codex:/, tier: null, price: null },
   { re: /^claude:.*(fable-5|mythos-5)/, tier: 'A', tb21: 91.4, swev: 95, gdpval: 1853, price: { in: 10, out: 50, cached: 0.25 } },
   { re: /^claude:(opus$|.*opus-5|default$)/, tier: 'A', tb21: 89.1, swev: 96, gdpval: 1862, price: { in: 5, out: 25, cached: 0.5 } },
-  { re: /^claude:.*opus-4-[678]/, tier: 'B', tiers: { read: 'A' }, tb21: 74.6, swev: 88.6, gdpval: 1593, price: { in: 5, out: 25, cached: 0.5 }, note: 'Opus 4.6 led MRCR 8-needle at 1M' },
+  { re: /^claude:.*opus-4-[678]/, tier: 'B', tiers: { read: 'A' }, tb21: 74.6, swev: 88.6, gdpval: 1593, price: { in: 5, out: 25, cached: 0.5 } }, // Opus 4.6 led MRCR 8-needle at 1M
   { re: /^claude:.*opus-4-5/, tier: 'C', price: { in: 5, out: 25, cached: 0.5 } },
   { re: /^claude:(sonnet$|.*sonnet-5)/, tier: 'C', tb21: 80.4, swev: 85.2, gdpval: 1603, price: { in: 2, out: 10, cached: 0.2 } },
   { re: /^claude:.*sonnet-4-6/, tier: 'C', price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^claude:.*sonnet-4-5/, tier: 'C', price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^claude:.*haiku/, tier: 'D', swev: 73.3, price: { in: 1, out: 5, cached: 0.1 } },
-  { re: /^antigravity:gemini-3\.8-flash/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 89.4, gdpval: 1545, price: { in: 0.75, out: 3.75, cached: 0.075 }, note: 'intro price through 2026-12-31' },
+  { re: /^antigravity:gemini-3\.8-flash/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 89.4, gdpval: 1545, price: { in: 0.75, out: 3.75, cached: 0.075 } }, // intro price through 2026-12-31
   { re: /^antigravity:gemini-3\.7-flash/, tier: 'B', tb21: 85.8, price: { in: 0.75, out: 3.75, cached: 0.075 } },
   { re: /^antigravity:gemini-3\.6-flash/, tier: 'C', tb21: 78.0, price: { in: 0.75, out: 3.75, cached: 0.075 } },
   { re: /^antigravity:gemini-3\.1-pro/, tier: 'D', swev: 54.2, price: { in: 2, out: 12, cached: 0.2 } },
@@ -95,12 +91,12 @@ export const PRIORS = [
   { re: /^antigravity:gpt-oss/, tier: 'D', price: null },
   { re: /^kimi:kimi-k3/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 88.3, swev: 93.4, gdpval: 1668, price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^kimi:kimi-k2$/, tier: 'D', swev: 76.8, price: null },
-  { re: /^grok:grok-4\.6/, tier: 'D', tiers: { read: 'B', reason: 'B' }, gdpval: 1730, price: { in: 2, out: 6, cached: 0.5 }, note: 'strong knowledge work (GDPval 1730); no TB2.1 score found' },
-  { re: /^deepseek:(deepseek-flash|.*v4(.1)?-flash|deepseek-chat)/, tier: 'B', tb21: 82.7, swev: 79, price: { in: 0.30, out: 1.20, cached: 0.006 }, note: 'deepseek-flash = V4.1 Flash (284B MoE, 13B active, 1M ctx); peak rate, off-peak is half; 92GB+ to run locally' },
-  { re: /^deepseek:.*v4-pro|^deepseek:deepseek-reasoner/, tier: 'A', tb21: 87.9, swev: 80.6, price: { in: 1.32, out: 3.96, cached: 0.044 }, note: 'routes to V4.1 Flash at Flash pricing from 2026-09-14' },
+  { re: /^grok:grok-4\.6/, tier: 'D', tiers: { read: 'B', reason: 'B' }, gdpval: 1730, price: { in: 2, out: 6, cached: 0.5 } }, // strong knowledge work (GDPval 1730); no TB2.1 score found
+  { re: /^deepseek:(deepseek-flash|.*v4(.1)?-flash|deepseek-chat)/, tier: 'B', tb21: 82.7, swev: 79, price: { in: 0.30, out: 1.20, cached: 0.006 } }, // deepseek-flash = V4.1 Flash (284B MoE, 13B active, 1M ctx); peak rate, off-peak is half; 92GB+ to run locally
+  { re: /^deepseek:.*v4-pro|^deepseek:deepseek-reasoner/, tier: 'A', tb21: 87.9, swev: 80.6, price: { in: 1.32, out: 3.96, cached: 0.044 } }, // routes to V4.1 Flash at Flash pricing from 2026-09-14
   { re: /^(qwen|qwen-code):qwen3-coder-plus/, tier: 'D', price: { in: 0.65, out: 3.25, cached: 0.065 } },
   { re: /^(qwen|qwen-code):/, tier: 'D', price: null },
-  { re: /^ollama:/, tier: 'D', price: { in: 0, out: 0, cached: 0 }, note: 'local; no per-token cost' },
+  { re: /^ollama:/, tier: 'D', price: { in: 0, out: 0, cached: 0 } }, // local; no per-token cost
 ];
 
 const key = (provider, model) => `${provider}:${model || ''}`.toLowerCase();
@@ -113,7 +109,7 @@ export function priorFor(provider, model, category = null) {
   if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
     const table = VERDICT_TABLES[category]; // each judged workload has its own verdicts; none recorded = nothing routable
     const r = table?.results.find((x) => x.re.test(k));
-    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: table?.caveat || null };
+    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: null };
   }
   if (!p) return null;
   const tier = (kind && p.tiers?.[kind]) || p.tier || null;
@@ -138,8 +134,8 @@ export function offPeakFactor(provider, now = new Date()) {
   return peak ? 1 : 0.5;
 }
 
-/** Shadow dollars for one run's tokens ({in: uncached input, out, cached}). null when unpriced. */
+/** Shadow dollars for one run's tokens ({in: uncached input, out, cached, write}). null when unpriced. Cache-write tokens use `price.write ?? price.in*1.25`. */
 export function usdFor(tokens, price) {
   if (!tokens || !price) return null;
-  return ((tokens.in || 0) * price.in + (tokens.out || 0) * price.out + (tokens.cached || 0) * (price.cached ?? price.in / 10)) / 1e6;
+  return ((tokens.in || 0) * price.in + (tokens.out || 0) * price.out + (tokens.cached || 0) * (price.cached ?? price.in / 10) + (tokens.write || 0) * (price.write ?? price.in * 1.25)) / 1e6;
 }

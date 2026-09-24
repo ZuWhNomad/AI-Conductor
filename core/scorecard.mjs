@@ -4,7 +4,7 @@
 // (cheap model first, stronger model on fail), chosen by utility = value-of-quality - expected cost.
 import { statSync } from 'node:fs';
 import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
-import { getLimits, modelBlockedUntil, providerWindows } from './limits.mjs';
+import { getLimits, modelBlockedUntil, providerWindows, isSession, withLimitsSnapshot } from './limits.mjs';
 export { providerWindows } from './limits.mjs';
 import { findModel, getModels } from './models.mjs';
 import { loadConfig, DEFAULTS } from './config.mjs';
@@ -58,13 +58,15 @@ export function normalizeUsage(u) {
   const own = ['input_tokens', 'inputTokens', 'output_tokens', 'outputTokens'].some((k) => k in u);
   const entries = own ? [u] : Object.values(u).filter((v) => v && typeof v === 'object');
   if (!entries.length) return null;
-  const t = { in: 0, out: 0, cached: 0, v: 2 };
+  const t = { in: 0, out: 0, cached: 0, write: 0, v: 2 };
   for (const e of entries) {
     const cached = Number(e.cached_input_tokens ?? e.cache_read_input_tokens ?? e.cacheReadInputTokens) || 0;
+    const write = Number(e.cache_creation_input_tokens ?? e.cacheCreationInputTokens) || 0;
     const input = Number(e.input_tokens ?? e.inputTokens) || 0;
     t.in += 'inputTokens' in e || e.exclusive ? input : Math.max(0, input - cached); // exclusive: input already excludes cache reads
     t.out += Number(e.output_tokens ?? e.outputTokens) || 0;
     t.cached += cached;
+    t.write += write;
   }
   return t;
 }
@@ -109,7 +111,7 @@ export function voidTask(taskId, reason = '') {
  * being recommended. Idempotent: a row already voided is skipped, so repeated boots append nothing. Returns the count.
  */
 export function migrateScorecard() {
-  let all; try { all = readNdjson(FILE()); } catch { return 0; }
+  let all; try { all = allRows(); } catch { return 0; }
   const voided = new Set(); for (const r of all) if (r.op === 'void') voided.add(r.taskId);
   let n = 0;
   for (const r of all) {
@@ -125,7 +127,7 @@ export function migrateScorecard() {
 const maxPct = (pct) => (pct ? Math.max(...Object.values(pct)) : null);
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const meanKnown = (xs) => mean(xs.filter((x) => x != null)); // unknown costs are skipped, not poison
-const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached']) a[k] += b[k] || 0; };
+const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached', 'write']) a[k] += b[k] || 0; };
 
 /**
  * Fold the log into chains. An *attempt* is a task plus its fix rounds (followUpOf); a *chain* is the
@@ -171,7 +173,7 @@ export function rootRuns({ source = null } = {}) {
     const root = follow(r, 'followUpOf');
     let a = attempts.get(root.taskId);
     if (!a) {
-      a = { ...root, sel: selOf(root), tokens: { in: 0, out: 0, cached: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
+      a = { ...root, sel: selOf(root), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
       a.price = priceFor(root.provider, root.model, cfg);
       attempts.set(root.taskId, a);
     }
@@ -214,7 +216,7 @@ export function rootRuns({ source = null } = {}) {
     const chainRate = last.verdict ? null : [...c.ids].filter((id) => voided.has(id)).map((id) => rates.get(id)).find(Boolean);
     if (chainRate) { last.verdict = chainRate.verdict; last.notes = chainRate.notes || null; }
     c.verdict = last.verdict; c.notes = last.notes;
-    c.tokens = { in: 0, out: 0, cached: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
+    c.tokens = { in: 0, out: 0, cached: 0, write: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
     let usd = 0, priced = 0;
     for (const a of c.attempts) { addTok(c.tokens, a.tokens); c.durationMs += a.durationMs; c.rounds += a.rounds; if (a.usd != null) { usd += a.usd; priced++; } if (a.pct) { c.pct = c.pct || {}; for (const [k, v] of Object.entries(a.pct)) c.pct[k] = (c.pct[k] || 0) + v; } }
     c.usd = priced ? usd : null;
@@ -290,12 +292,16 @@ export function errorRates({ source = null } = {}) {
  * quality bar, observed ladders, and estimated ladders (cheap first step, qualified fallback; assumes
  * independent failures). Returns null when nothing measured qualifies (then the prior fallback, if enabled).
  */
-export function recommend({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null } = {}) {
+export function recommend(opts = {}) { return withLimitsSnapshot(() => recommendPlan(opts)); }
+
+function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null } = {}) {
   const cfg = loadConfig().scorecard;
+  const taskDifficulty = _taskDifficulty ?? difficulty;
   // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
   const avail = memo((provider, model) => providerAvailable(provider, { overflowApi, cfg, model }));
   const weight = memo((provider, model) => providerWeight(provider, cfg, model));
+  const waste = memo((provider, model) => wasteDiscount(provider, cfg, model));
   const lambda = cfg.qualityValueUsd, hourly = cfg.hourlyUsd;
   const excluded = (sel) => sel.split('>').some((s) => { const { provider, model } = parseSel(s); return exclude.includes(s) || exclude.includes(`${provider}:${model || 'default'}`); });
   const blockedSel = (sel) => sel.split('>').some((s) => {
@@ -310,13 +316,14 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
-  const reserve = (provider, model = null) => { const w = weight(provider, model); const gap = Math.max(0, (ceiling.get(provider) || 0) - difficulty); return 1 + cfg.reservePct * w * gap; };
+  const reserve = (provider, model = null) => { const w = weight(provider, model); const gap = Math.max(0, (ceiling.get(provider) || 0) - taskDifficulty); return 1 + cfg.reservePct * w * gap; };
   const costOf = (g) => {
     const costs = g.stepCosts || [g];
     if (costs.some((c) => c.avgUsd == null)) return null;
     return costs.reduce((sum, c) => {
       const { provider, model } = parseSel(c.sel.split('>').at(-1));
-      return sum + (c.avgUsd + hourly * (c.avgDurationMs || 0) / 3.6e6) * weight(provider, model) * reserve(provider, model) * wasteDiscount(provider, cfg, model);
+      const scale = weight(provider, model) * reserve(provider, model) * waste(provider, model);
+      return sum + c.avgUsd * scale + hourly * (c.avgDurationMs || 0) / 3.6e6;
     }, 0);
   };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
@@ -332,10 +339,28 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
   const evidence = [...bySel.values()].filter((m) => m.cells.length).map((m) => ({ ...m, ref: pool(m.cells.sort((a, b) => a.difficulty - b.difficulty), cfg.minSamples) })).filter((m) => m.ref.rated >= cfg.minSamples);
   const finals = evidence.filter((m) => m.ref.quality >= cfg.quality && !failedBelow.has(m.sel) && !failedBelow.has(m.sel.split('>').at(-1)));
   const plans = [];
-  for (const m of finals) plans.push({ steps: m.ref.sel.split('>'), quality: m.ref.quality, usd: costOf(m.ref), estimated: false, ref: m.ref });
+  for (const m of finals) {
+    if (m.steps === 1) {
+      plans.push({ steps: m.ref.sel.split('>'), quality: m.ref.quality, usd: costOf(m.ref), estimated: false, ref: m.ref });
+      continue;
+    }
+    // Observed A>B is B given A failed (and costs both steps). Combine with A's single-step stats.
+    const aSel = m.sel.split('>')[0];
+    const aEv = evidence.find((x) => x.steps === 1 && x.sel === aSel);
+    if (!aEv) {
+      plans.push({ steps: m.ref.sel.split('>'), quality: m.ref.quality, usd: costOf(m.ref), estimated: false, ref: m.ref });
+      continue;
+    }
+    const pA = aEv.ref.accept ?? 0;
+    const quality = aEv.ref.quality + (1 - pA) * m.ref.quality;
+    const cA = costOf(aEv.ref);
+    const cB = m.ref.stepCosts?.length > 1 ? costOf({ ...m.ref, stepCosts: m.ref.stepCosts.slice(1) }) : (cA != null && costOf(m.ref) != null ? costOf(m.ref) - cA : null);
+    const usd = cA == null || cB == null ? null : cA + (1 - pA) * cB;
+    plans.push({ steps: m.ref.sel.split('>'), quality, usd, estimated: false, ref: m.ref });
+  }
   for (const a of evidence.filter((m) => m.steps === 1 && costOf(m.ref) != null)) {
     for (const b of finals.filter((m) => m.steps === 1 && m.sel !== a.sel && costOf(m.ref) != null)) {
-      if (bySel.has(`${a.sel}>${b.sel}`) && bySel.get(`${a.sel}>${b.sel}`).cells.length) continue; // observed ladder already a plan
+      if (evidence.some((m) => m.sel === `${a.sel}>${b.sel}`)) continue; // observed ladder has minSamples — keep the estimate only while it does not
       const pA = a.ref.accept;
       const combinedQuality = a.ref.quality + (1 - pA) * b.ref.quality;
       // H2/B1: only push the estimated pair when its combined quality clears the bar.
@@ -392,13 +417,14 @@ export function recommend({ category, difficulty = 2, exclude = [], source = nul
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
     // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
     const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
-    if (provenButCapped) return null;
+    if (provenButCapped) return _noExtrap ? { capped: true } : null;
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommend({ category, difficulty: d, exclude, source, summary, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow });
+      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty });
+      if (lower?.capped) return null;
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
-    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow });
+    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow, escalate });
   }
   const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
@@ -428,7 +454,7 @@ export function providerClass(provider, cfg = loadConfig().scorecard) {
 
 /** Busiest window % of a provider (0 when unknown). `sessionOnly` looks at short (session/5-hour) windows only. */
 export function providerUsedPct(provider, { sessionOnly = false, model = null } = {}) {
-  const ws = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > Date.now()) && (!sessionOnly || /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)));
+  const ws = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > Date.now()) && (!sessionOnly || isSession(w)));
   return Math.max(0, ...ws.map((w) => Number(w.usedPercent) || 0));
 }
 
@@ -466,7 +492,7 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   let hasRealWindow = false;
   for (const w of providerWindows(provider, model)) {
     if (!w.resetsAt) continue;
-    if (/hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600)) continue; // ignore the 5-hour churn
+    if (isSession(w)) continue; // ignore the 5-hour churn
     hasRealWindow = true;
     factor = Math.min(factor, discount(w.resetsAt - now, Math.min(1, Math.max(0, 100 - (Number(w.usedPercent) || 0)) / 100)));
   }
@@ -552,12 +578,11 @@ function pool(cells, floor) {
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 // Desired cold-start effort per difficulty. Hard tasks deserve more thinking; the measured path takes over
 // (and can down-shift on cost via effort dominance) once verdicts exist. Clamped to what the model offers.
-const DIFFICULTY_EFFORT = { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'xhigh' };
 /** Cold-start effort: the highest effort the model offers that does not exceed the difficulty's target. */
 export function priorEffort(efforts, difficulty) {
   const ranked = EFFORTS.filter((e) => (efforts || []).includes(e));
   if (!ranked.length) return null;
-  const map = { ...DIFFICULTY_EFFORT, ...(loadConfig().scorecard?.difficultyEffort || {}) };
+  const map = loadConfig().scorecard?.difficultyEffort || DEFAULTS.scorecard.difficultyEffort;
   const wantIdx = EFFORTS.indexOf(map[difficulty] || 'medium');
   let pick = ranked[0];
   for (const e of ranked) if (EFFORTS.indexOf(e) <= wantIdx) pick = e;
@@ -580,7 +605,7 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
  * Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level).
  * Visual work always takes this path, restricted by the pass gate: its benchmark verdicts are our own evidence, not a public prior.
  */
-function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow }) {
+function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow, escalate = false }) {
   if (!cfg.usePriors && KIND[category] !== 'visual') return null;
   const gate = passGate(category, reg);
   const cands = [];
@@ -599,7 +624,9 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (cls < 0) continue;
     cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls });
   }
-  cands.sort((a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // class walk first, then price
+  cands.sort(escalate
+    ? (a, b) => a.tier.localeCompare(b.tier) || a.cls - b.cls || a.proxy - b.proxy
+    : (a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // escalate: best tier first; else class walk, then price
   const best = cands[0];
   if (!best) return null;
   return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): ${KIND[category] === 'visual' ? `cheapest model with a recorded ${category} PASS, at the effort that passed (${best.effort})` : `cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`}`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
@@ -615,7 +642,7 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
 let shortMemo = null;
 export function formatScoresShort({ source = null } = {}) {
   const cfg = loadConfig().scorecard;
-  let key = source + '|' + JSON.stringify(cfg) + '|' + (getLimits().updatedAt || '') + '|' + (getModels().updatedAt || '');
+  let key = source + '|' + JSON.stringify(cfg) + '|' + (getLimits().updatedAt || '') + '|' + (getModels().updatedAt || '') + '|' + Math.floor(Date.now() / 3600e3);
   try { const st = statSync(FILE()); key += '|' + st.size + ':' + st.mtimeMs; } catch { key += '|none'; }
   if (shortMemo?.key === key) return shortMemo.text;
   const all = summarize({ source });

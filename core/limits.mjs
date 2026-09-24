@@ -26,11 +26,24 @@ function observe(provider, key) {
 
 function fileMtime() { try { const st = statSync(FILE()); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; } } // mtime alone misses two writes in the same tick
 
+/** Session/5-hour windows (the conductor's classCap applies to these; weekly/budget windows do not). */
+export const isSession = (w) => /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
+
+let restatHold = 0;
 /** The registry, re-read when another process (a smoke run, `conductor limits`, a helper script) wrote limits.json since we last did. */
 export function getLimits() {
-  const m = fileMtime();
-  if (m !== seenMtime) { seenMtime = m; const fresh = readJson(FILE(), null); if (fresh?.providers) { cache.updatedAt = fresh.updatedAt; cache.providers = fresh.providers; } }
+  if (!restatHold) {
+    const m = fileMtime();
+    if (m !== seenMtime) { seenMtime = m; const fresh = readJson(FILE(), null); if (fresh?.providers) { cache.updatedAt = fresh.updatedAt; cache.providers = fresh.providers; } }
+  }
   return cache;
+}
+/** Refresh once, then reuse the in-memory registry until `fn` returns (nested calls share the snapshot). */
+export function withLimitsSnapshot(fn) {
+  getLimits();
+  restatHold++;
+  try { return fn(); }
+  finally { restatHold--; }
 }
 
 function save(publish = true) {
@@ -136,6 +149,12 @@ export function noteRateLimitEvent(providerId, info) {
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   if (w) {
     if (info.status === 'rejected' && !w.resetsAt) w.resetsAt = Date.now() + blockedMs();
+    const prev = (p.windows || []).find((x) => x.id === w.id);
+    // Bundled CLI omits utilization on most events; dropping it would zero providerUsedPct until the next poll.
+    if (w.usedPercent == null && prev?.usedPercent != null) {
+      const rejectedToAllowed = prev.status === 'rejected' && (info.status === 'allowed' || info.status === 'allowed_warning');
+      if (!rejectedToAllowed) w.usedPercent = prev.usedPercent;
+    }
     p.windows = [...(p.windows || []).filter((x) => x.id !== w.id), w];
     observe(providerId, w.id);
   }
@@ -211,7 +230,7 @@ export function noteHttp(providerId, status, headers = {}) {
       if (status === 429) resetsAt = p.blockedUntil; // Retry-After deadline, so the window does not become a 30-min park
       else if (Number(rem) === 0) resetsAt = now + 60_000; // same brief backoff as a header-less 429
     }
-    const reqWindow = { id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt };
+    const reqWindow = { id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt, rate: true };
     const wasRequestBlock = p.blocked && !p.blockedReason && (p.windows || []).some((w) => w.id === 'requests' && globalWindowBlocks(w));
     // Merge by id — other windows (e.g. DeepSeek budget) must not be discarded.
     p.windows = [...(p.windows || []).filter((w) => w.id !== 'requests'), reqWindow];

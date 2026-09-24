@@ -161,7 +161,7 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         poll.resolve({ provider: id, blocked: false, windows: [] });
         await refresh;
         assert.equal(modelBlockedUntil(id, 'sonnet'), now + loadConfig().scorecard.blockedMinutes * 60_000);
-        assert.equal(getLimits().providers[id].windows[0].usedPercent, null);
+        assert.equal(getLimits().providers[id].windows[0].usedPercent, 0); // L15: missing utilization carries the previous allowed 0%, not a wipe to null
 
         noteRateLimitEvent(id, allowed);
         poll = Promise.withResolvers();
@@ -1083,4 +1083,52 @@ test('R: OpenAI x-ratelimit-reset-requests duration strings parse', () => {
       assert.ok(Math.abs(w.resetsAt - now - ms) < 2000, `${raw}: expected ~${ms}ms from now, got ${w.resetsAt - now}`);
     } finally { delete getLimits().providers[id]; }
   }
+});
+
+test('L15: missing utilization keeps the previous usedPercent, except rejected → allowed', () => {
+  const id = 'l15-carry';
+  try {
+    noteRateLimitEvent(id, { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.42, resetsAt: Math.floor(Date.now() / 1000) + 600 });
+    assert.equal(getLimits().providers[id].windows[0].usedPercent, 42);
+    noteRateLimitEvent(id, { status: 'allowed_warning', rateLimitType: 'five_hour', resetsAt: Math.floor(Date.now() / 1000) + 600 });
+    assert.equal(getLimits().providers[id].windows[0].usedPercent, 42, 'warning without utilization keeps 42');
+    noteRateLimitEvent(id, { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Math.floor(Date.now() / 1000) + 600 });
+    assert.equal(getLimits().providers[id].windows[0].usedPercent, 42, 'rejection without utilization keeps 42');
+    noteRateLimitEvent(id, { status: 'allowed', rateLimitType: 'five_hour' });
+    assert.equal(getLimits().providers[id].windows[0].usedPercent, null, 'rejected → allowed without utilization does not carry');
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('P2: noteHttp requests windows are tagged rate:true', () => {
+  const id = 'p2-rate';
+  try {
+    noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '50', 'x-ratelimit-limit-requests': '100' });
+    const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
+    assert.equal(w.rate, true);
+    assert.equal(w.usedPercent, 50);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('I13: isSession is the session-window predicate', async () => {
+  const { isSession } = await import('../core/limits.mjs');
+  assert.equal(isSession({ label: '5-hour' }), true);
+  assert.equal(isSession({ label: 'session' }), true);
+  assert.equal(isSession({ windowMinutes: 300 }), true);
+  assert.equal(isSession({ label: 'weekly', windowMinutes: 10080 }), false);
+  assert.equal(isSession({ label: 'requests' }), false);
+});
+
+test('P7: withLimitsSnapshot skips restat until the callback returns', async () => {
+  const { withLimitsSnapshot } = await import('../core/limits.mjs');
+  const { writeFileSync, utimesSync } = await import('node:fs');
+  const { statePath } = await import('../core/paths.mjs');
+  getLimits();
+  const f = statePath('limits.json');
+  const inside = withLimitsSnapshot(() => {
+    writeFileSync(f, JSON.stringify({ updatedAt: 'snap', providers: { 'p7-ext': { provider: 'p7-ext', windows: [] } } }));
+    const t = new Date(Date.now() + 5000); utimesSync(f, t, t);
+    return getLimits().providers['p7-ext'];
+  });
+  assert.equal(inside, undefined, 'in-flight snapshot does not pick up an external write');
+  assert.ok(getLimits().providers['p7-ext'], 'after the snapshot, the next getLimits restats');
 });

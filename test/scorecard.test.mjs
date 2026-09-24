@@ -62,8 +62,8 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
 });
 
 test('usage shapes normalize to uncached in / out / cached', () => {
-  assert.deepEqual(sc.normalizeUsage({ input_tokens: 100, cached_input_tokens: 40, output_tokens: 20 }), { in: 60, out: 20, cached: 40, v: 2 });
-  assert.deepEqual(sc.normalizeUsage({ 'claude-x': { inputTokens: 5, outputTokens: 6, cacheReadInputTokens: 7 }, 'claude-y': { inputTokens: 1, outputTokens: 1 } }), { in: 6, out: 7, cached: 7, v: 2 });
+  assert.deepEqual(sc.normalizeUsage({ input_tokens: 100, cached_input_tokens: 40, output_tokens: 20 }), { in: 60, out: 20, cached: 40, write: 0, v: 2 });
+  assert.deepEqual(sc.normalizeUsage({ 'claude-x': { inputTokens: 5, outputTokens: 6, cacheReadInputTokens: 7 }, 'claude-y': { inputTokens: 1, outputTokens: 1 } }), { in: 6, out: 7, cached: 7, write: 0, v: 2 });
   assert.equal(sc.normalizeUsage(null), null);
   assert.equal(sc.normalizeUsage({}), null);
 });
@@ -85,7 +85,7 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   sc.rateTask('root', 'pass', 'fine');
   c = sc.rootRuns().find((r) => r.taskId === 'root');
   assert.equal(c.verdict, 'pass');
-  assert.deepEqual(c.tokens, { in: 50_500, out: 10_100, cached: 50_000 });
+  assert.deepEqual(c.tokens, { in: 50_500, out: 10_100, cached: 50_000, write: 0 });
   assert.equal(c.rounds, 1);
   assert.equal(c.durationMs, 1500);
   assert.deepEqual(c.pct, { 'codex:primary': 2, 'codex:secondary': 0 });
@@ -734,8 +734,8 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
       const r = sc.recommend({ category: 'edit', difficulty: 2, summary });
       assert.deepEqual(r.plan.steps, ['claude:paid:default', `${provider}:${model}:default`]);
       assert.equal(r.plan.estimated, false);
-      const paid = (2 + 0.002) * 0.5 * (1 + 0.5 * 0.5 * (5 - 2));
-      const fallback = provider === 'ollama' ? 0 : (4 + 0.004) * 0.2 * (1 - (1 - 6 / 48) * 0.8 * 0.9); // thin cells do not establish a provider ceiling
+      const paid = 2 * 0.5 * (1 + 0.5 * 0.5 * (5 - 2)) + 0.002; // hourly is not scaled by weight/reserve/waste
+      const fallback = provider === 'ollama' ? 0.004 : 4 * 0.2 * (1 - (1 - 6 / 48) * 0.8 * 0.9) + 0.004; // thin cells do not establish a provider ceiling
       assert.ok(Math.abs(r.plan.usd - paid - fallback) < 1e-9, `${provider}: ${r.plan.usd} vs ${paid + fallback}`);
       assert.deepEqual(summary.filter((g) => g.steps === 2).map((g) => g.avgUsd), [3, 7.5], 'display keeps raw shadow dollars');
     }
@@ -1280,4 +1280,172 @@ test('B11: claude opus/default aliases are anchored so 4.x ids use the 4.x rules
   assert.equal(pr.priorFor('claude', 'opus-5').tier, 'A');
   assert.equal(pr.priorFor('claude', 'opus-4-6').tier, 'B');
   assert.equal(pr.priorFor('claude', 'opus-4-5').tier, 'C');
+});
+
+test('L13: cache-write tokens are counted and priced at write ?? in*1.25', () => {
+  assert.deepEqual(sc.normalizeUsage({ inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 }), { in: 10, out: 2, cached: 3, write: 4, v: 2 });
+  assert.deepEqual(sc.normalizeUsage({ input_tokens: 100, cache_creation_input_tokens: 20, output_tokens: 5 }), { in: 100, out: 5, cached: 0, write: 20, v: 2 });
+  assert.ok(Math.abs(pr.usdFor({ in: 1e6, write: 1e6 }, { in: 1, out: 0, cached: 0 }) - 2.25) < 1e-9);
+  assert.ok(Math.abs(pr.usdFor({ in: 1e6, write: 1e6 }, { in: 1, out: 0, cached: 0, write: 2 }) - 3) < 1e-9);
+});
+
+test('L11: a thin observed ladder keeps the estimate; a sampled one combines with A', () => {
+  const cfg = loadConfig().scorecard;
+  const lunaUsd = pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, pr.priceFor('codex', 'gpt-5.6-luna'));
+  const terraUsd = pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, pr.priceFor('codex', 'gpt-5.6-terra'));
+  const rate = (id, source, model, effort, verdict, extra = {}) => {
+    run({ id, source, provider: 'codex', model, effort, category: 'read', difficulty: 2, ...extra });
+    sc.rateTask(id, verdict);
+  };
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 3, quality: 0.75, qualityValueUsd: 1, reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const thin = 'L11-thin';
+    for (const [i, v] of ['pass', 'pass', 'fail'].entries()) rate(`${thin}-luna-${i}`, thin, 'gpt-5.6-luna', 'low', v);
+    for (const i of [0, 1, 2]) rate(`${thin}-terra-${i}`, thin, 'gpt-5.6-terra', 'medium', 'pass');
+    rate(`${thin}-chain-a`, thin, 'gpt-5.6-luna', 'low', 'fail');
+    rate(`${thin}-chain-b`, thin, 'gpt-5.6-terra', 'medium', 'pass', { retryOf: `${thin}-chain-a` });
+    const thinPick = sc.recommend({ category: 'read', difficulty: 2, source: thin });
+    assert.deepEqual(thinPick.plan.steps, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
+    assert.equal(thinPick.plan.estimated, true, 'one observed chain must not drop the estimate');
+
+    const sampled = 'L11-sampled';
+    for (const i of [1, 2, 3]) rate(`${sampled}-solo-${i}`, sampled, 'gpt-5.6-luna', 'low', 'pass');
+    for (const i of [1, 2, 3]) {
+      rate(`${sampled}-a${i}`, sampled, 'gpt-5.6-luna', 'low', 'fail');
+      rate(`${sampled}-b${i}`, sampled, 'gpt-5.6-terra', 'medium', 'pass', { retryOf: `${sampled}-a${i}` });
+    }
+    const r = sc.recommend({ category: 'read', difficulty: 2, source: sampled });
+    assert.equal(r.plan.estimated, false);
+    assert.deepEqual(r.plan.steps, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
+    // qA = 0.5, pA = 0.5, q(A>B) = 1 → q = 1; usd = cA + 0.5·cB
+    assert.ok(Math.abs(r.plan.quality - 1) < 1e-9);
+    assert.ok(Math.abs(r.plan.usd - (lunaUsd + 0.5 * terraUsd)) < 1e-6, `combined usd ${r.plan.usd} vs ${lunaUsd + 0.5 * terraUsd}`);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('L12: a proven-but-capped level stops extrapolation instead of descending further', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits();
+  const previous = limits.providers.codex;
+  const source = 'L12-capped';
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0 } });
+    for (let i = 0; i < 3; i++) {
+      run({ id: `${source}-terra-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 3 });
+      sc.rateTask(`${source}-terra-${i}`, 'pass');
+      run({ id: `${source}-qwen-${i}`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'implement', difficulty: 2 });
+      sc.rateTask(`${source}-qwen-${i}`, 'pass');
+    }
+    limits.providers.codex = { ...(previous || {}), provider: 'codex', blocked: true, blockedUntil: Date.now() + 3.6e6, windows: previous?.windows || [] };
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 4, source }), null, 'must not fall through to the level-2 model');
+  } finally {
+    limits.providers.codex = previous;
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('L38: extrapolation reserves against the original difficulty, not the evidence level', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'L38-reserve';
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0.5, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 0.6 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    for (let i = 0; i < 3; i++) {
+      run({ id: `${source}-docs-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'docs', difficulty: 2 });
+      sc.rateTask(`${source}-docs-${i}`, 'pass');
+      run({ id: `${source}-ceil-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'test', difficulty: 5 });
+      sc.rateTask(`${source}-ceil-${i}`, 'pass');
+    }
+    const r = sc.recommend({ category: 'docs', difficulty: 4, source });
+    assert.match(r.reason, /extrapolated from level 2/);
+    assert.match(r.reason, /reserve ×1\.30/, 'gap is ceiling 5 − original 4, not − evidence 2');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('L40: escalation prior fallback sorts by tier, not cheapest price', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: true } });
+    const value = sc.recommend({ category: 'design', difficulty: 2, summary: [] });
+    assert.equal(value.model, 'gpt-5.6-luna', 'value walk still picks the cheapest covering tier');
+    const esc = sc.recommend({ category: 'design', difficulty: 2, summary: [], escalate: true });
+    assert.equal(esc.model, 'gpt-6-astra', 'escalate picks the best public tier');
+    assert.match(esc.reason, /prior only/);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('L42: formatScoresShort memo key includes an hourly bucket', async (t) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits();
+  const previous = limits.providers.codex;
+  const source = 'L42-memo';
+  const now = Date.parse('2026-09-23T10:30:00');
+  try {
+    saveConfig({ scorecard: { usePriors: false, classCap: { subscription: 80 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    limits.providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 10, resetsAt: now + 8 * 3600e3 }] };
+    for (let i = 0; i < 3; i++) {
+      run({ id: `${source}-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'review', difficulty: 1 });
+      sc.rateTask(`${source}-${i}`, 'pass');
+    }
+    t.mock.method(Date, 'now', () => now);
+    const a = sc.formatScoresShort({ source });
+    assert.match(a, /gpt-5\.6-terra/);
+    const stamp = limits.updatedAt;
+    limits.providers.codex.windows[0].usedPercent = 99;
+    limits.updatedAt = stamp;
+    assert.equal(sc.formatScoresShort({ source }), a, 'same hour keeps the memo');
+    t.mock.method(Date, 'now', () => now + 3600e3);
+    const b = sc.formatScoresShort({ source });
+    assert.ok(!b.includes('gpt-5.6-terra') || b !== a, 'new hour misses the memo so a capped window can drop the pick');
+    assert.equal(b.includes('gpt-5.6-terra'), false);
+  } finally {
+    limits.providers.codex = previous;
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('P6: extrapolation reuses the already-folded summary', () => {
+  const cell = { sel: 'codex:gpt-5.6-terra:medium', steps: 1, provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 };
+  const r = sc.recommend({ category: 'implement', difficulty: 4, summary: [cell], source: 'P6-absent' });
+  assert.equal(r.model, 'gpt-5.6-terra');
+  assert.match(r.reason, /extrapolated from level 2/);
+});
+
+test('P16: migrateScorecard reads the ledger cache via allRows', async (t) => {
+  const fs = (await import('node:fs')).default;
+  const paths = await import('../core/paths.mjs');
+  const { syncBuiltinESMExports } = await import('node:module');
+  sc.runRows();
+  const orig = fs.readFileSync;
+  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file === paths.statePath('scorecard.ndjson')) throw new Error('P16: cache miss re-read');
+    return orig.call(fs, file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => paths.readNdjson(paths.statePath('scorecard.ndjson')), /P16: cache miss re-read/);
+    assert.doesNotThrow(() => sc.migrateScorecard());
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test('I11: dead conductor-facing priors text is gone; results still route', () => {
+  assert.equal(pr.MODELING.best, undefined);
+  assert.equal(pr.MODELING.caveat, undefined);
+  assert.equal(pr.DRAFTING.caveat, undefined);
+  assert.equal(pr.priorFor('codex', 'gpt-6-astra', 'modeling').tier, 'A');
+  assert.equal(pr.priorFor('codex', 'gpt-6-astra').note, null);
+});
+
+test('I14: cold-start effort map comes from config with DEFAULTS fallback', () => {
+  const cfg = loadConfig().scorecard;
+  assert.equal(sc.priorEffort(['low', 'medium', 'high', 'xhigh', 'max'], 5), 'xhigh');
+  saveConfig({ scorecard: { difficultyEffort: { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'max' } } });
+  assert.equal(sc.priorEffort(['low', 'medium', 'high', 'xhigh', 'max'], 5), 'max');
+  saveConfig({ scorecard: { difficultyEffort: cfg.difficultyEffort } });
+});
+
+test('D1: visual close is not a modest tier; Sol modeling is a pass', () => {
+  assert.equal(pr.priorFor('claude', 'opus', 'modeling').tier, null);
+  assert.equal(pr.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, 'A');
 });
