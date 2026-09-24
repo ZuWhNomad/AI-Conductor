@@ -62,6 +62,7 @@ test('static UI and state endpoint', async () => {
   assert.equal((await fetch(url + '/../package.json')).status, 404);
   const st = await get('/api/state');
   assert.equal(st.version, '2.0.0');
+  assert.equal(st.pid, process.pid);
   assert.equal(typeof st.improvementCount, 'number');
   assert.ok(Array.isArray(st.providers) && st.providers.some((p) => p.id === 'codex'));
   assert.equal(st.config.providers.deepseek.apiKey, null);
@@ -144,6 +145,14 @@ test('SSE hello exposes the oldest retained event when the replay cursor has fal
     const hello = JSON.parse(chunk.split('\n')[1].slice(6));
     assert.equal(hello.oldest, cursor + 2);
     assert.equal(hello.boot, (await get('/api/state')).boot);
+    bus.publish('live-after-gap');
+    while (!chunk.includes('live-after-gap') && !chunk.includes('replay-test')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunk += new TextDecoder().decode(value);
+    }
+    assert.doesNotMatch(chunk, /replay-test/, 'skip replay when oldest > since+1; the client resyncs');
+    assert.match(chunk, /live-after-gap/);
   } finally { await reader.cancel(); }
 });
 
@@ -196,13 +205,13 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
   assert.match(v.message, /p99=900ms/); assert.equal(v.context.running, 3);
   const previousCodex = process.env.CONDUCTOR_CODEX;
   process.env.CONDUCTOR_CODEX = process.execPath; // deterministic resolution; version execution is stubbed below
-  ctx.mock.method(childProcess, 'execFileSync', (_command, args) => {
-    assert.deepEqual(args, ['--version']);
-    return 'test-version';
-  });
-  ctx.mock.method(childProcess, 'execSync', (command) => {
-    assert.match(command, / --version$/);
-    return 'test-version';
+  ctx.mock.method(childProcess, 'execFile', (command, args, opts, callback) => {
+    if (typeof opts === 'function') { callback = opts; opts = {}; }
+    const argv = Array.isArray(args) ? args : [];
+    assert.ok(argv.includes('--version') || argv[argv.length - 1] === '--version' || command === process.execPath);
+    const stdout = 'test-version';
+    if (typeof callback === 'function') queueMicrotask(() => callback(null, stdout, ''));
+    return { stdout };
   });
   syncBuiltinESMExports();
   try {
@@ -266,10 +275,14 @@ test('saving settings replaces the update interval and off or shutdown clears it
   ctx.mock.method(globalThis, 'clearInterval', (timer) => { if (timer) timer.cleared = true; });
   delete process.env.CONDUCTOR_NO_POLL;
   try {
+    await post('/api/settings', { conductor: { autoUpdate: 'off' } });
     const initial = await post('/api/settings', { conductor: DEFAULTS.conductor });
     assert.equal(initial.conductor.autoUpdate, 'auto');
     const first = timers.find((t) => t.ms === DEFAULTS.conductor.updateCheckHours * 3_600_000);
     assert.ok(first, 'uses the default interval');
+    const uncleared = timers.filter((t) => !t.cleared).length;
+    await post('/api/settings', { pollMinutes: 20 });
+    assert.equal(timers.filter((t) => !t.cleared).length, uncleared, 'unrelated settings do not re-arm update timers');
     await post('/api/settings', { conductor: { updateCheckHours: 2.5 } });
     assert.equal(first.cleared, true);
     const second = timers.find((t) => t.ms === 2.5 * 3_600_000);
@@ -417,4 +430,86 @@ test('stopped update checks do not pull or relaunch from an in-flight run', asyn
   await startedApply;
   assert.equal(applyCalls, 1, 'in-flight pull already started');
   assert.equal(relaunches, 0, 'does not relaunch after stop during apply');
+});
+
+test('cross-site GET is 403 when sec-fetch-site is present and not same-origin/none', async () => {
+  const port = new URL(url).port;
+  const status = (headers) => new Promise((resolve, reject) => {
+    const req = request(url + '/api/state', { headers }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(await status({ 'sec-fetch-site': 'cross-site' }), 403);
+  assert.equal(await status({ 'sec-fetch-site': 'same-origin' }), 200);
+  assert.equal(await status({ 'sec-fetch-site': 'none' }), 200);
+  assert.equal(await status({ Host: `127.0.0.1:${port}` }), 200);
+  const unc = await fetch(url + '/api/browse?path=' + encodeURIComponent('//host/share'));
+  assert.equal(unc.status, 400);
+  const uncWin = await fetch(url + '/api/browse?path=' + encodeURIComponent('\\\\host\\share'));
+  assert.equal(uncWin.status, 400);
+});
+
+test('session mode/effort/model routes and provider ids reject invalid enums with 400', async () => {
+  const cwd = tmpDir('enums');
+  const s = await post('/api/sessions', { cwd, model: 'sonnet', effort: 'low' });
+  const send = (p, body) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await send(`/api/sessions/${s.id}/mode`, { permissionMode: 'bogus' })).status, 400);
+  assert.equal((await send(`/api/sessions/${s.id}/effort`, { effort: 'ludicrous' })).status, 400);
+  assert.equal((await send(`/api/sessions/${s.id}/model`, { model: 12 })).status, 400);
+  assert.equal((await send(`/api/sessions/${s.id}/effort`, { effort: 'high' })).status, 200);
+  assert.equal((await send('/api/providers/not-a-vendor/usage', { pct: 10 })).status, 400);
+  assert.equal((await send('/api/providers/not-a-vendor/login', {})).status, 400);
+  await fetch(url + `/api/sessions/${s.id}`, { method: 'DELETE' });
+});
+
+test('POST /api/tasks defaults parallelOverride and overflowApi from the session', async () => {
+  const cwd = tmpDir('flags');
+  const s = await post('/api/sessions', { cwd, parallelOverride: true, overflowApi: true });
+  const t = await post('/api/tasks', { sessionId: s.id, cwd, spec: 'inherit flags' });
+  assert.equal(t.parallelOverride, true);
+  assert.equal(t.overflowApi, true);
+  const off = await post('/api/sessions', { cwd, parallelOverride: false, overflowApi: false });
+  const explicit = await post('/api/tasks', { sessionId: off.id, cwd, spec: 'explicit', parallelOverride: true, overflowApi: true });
+  assert.equal(explicit.parallelOverride, true);
+  assert.equal(explicit.overflowApi, true);
+  await post(`/api/tasks/${t.id}/cancel`);
+  await post(`/api/tasks/${explicit.id}/cancel`);
+});
+
+test('GET /api/scores returns only the text the UI reads', async () => {
+  const sc = await get('/api/scores');
+  assert.equal(typeof sc.text, 'string');
+  assert.equal(sc.summary, undefined);
+});
+
+test('POST /api/ollama/pull is gone', async () => {
+  const pull = await fetch(url + '/api/ollama/pull', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(pull.status, 404);
+});
+
+test('relogin chains logout and login with ; on POSIX and & on Windows', () => {
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  assert.match(src, /process\.platform === 'win32' \? '&' : ';'/);
+});
+
+test('/mcp/<session> JSON-RPC initialize, tools/list, tools/call', async () => {
+  const cwd = tmpDir('mcp');
+  const s = await post('/api/sessions', { cwd });
+  const rpc = (method, params = {}, id = 1) => fetch(url + `/mcp/${s.id}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+  }).then((r) => r.json());
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  assert.match(src, /maxBlockMs = \(\(loadConfig\(\)\.mcp\?\.toolTimeoutSec \?\? 3600\) - 60\) \* 1000/);
+  const init = await rpc('initialize');
+  assert.equal(init.result.serverInfo.name, 'conductor');
+  const listed = await rpc('tools/list');
+  assert.ok(listed.result.tools.some((t) => t.name === 'list_tasks'));
+  const called = await rpc('tools/call', { name: 'list_tasks', arguments: {} });
+  assert.equal(called.result.isError, false);
+  assert.match(called.result.content[0].text, /no tasks yet/);
+  const { toolsAsFunctions, conductorToolDefs } = await import('../../core/tools.mjs');
+  const fns = toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd }));
+  assert.ok(fns.some((f) => f.def.name === 'list_tasks' && typeof f.impl === 'function'));
+  assert.equal((await fetch(url + '/mcp/no-such-session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"jsonrpc":"2.0","id":1,"method":"ping"}' })).status, 404);
+  await fetch(url + `/api/sessions/${s.id}`, { method: 'DELETE' });
 });

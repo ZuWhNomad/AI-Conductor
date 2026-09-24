@@ -15,8 +15,10 @@
 // averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
 // A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
-import { runRows, prevScheduledReset } from './scorecard.mjs';
+import { runRows, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
+import { getLimits } from './limits.mjs';
+import { PROVIDERS } from './providers/index.mjs';
 
 const FILE = () => statePath('usage-observations.ndjson');
 // A gap this long in a provider's own activity starts a fresh usage window. Per-provider via config
@@ -159,4 +161,32 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
     return { pct: round1(raw), rate, ratePctPerMToken: pctPerM(rate), spent, basis: 'fit', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
   }
   return null;
+}
+
+/** Serve limits with a synthetic "estimated" window for subscription providers whose CLI reports no window (Grok):
+ *  usage is estimated from token spend, calibrated by the user's check-ins (POST /api/providers/:id/usage). */
+const pct1 = (n) => Math.round(n * 10) / 10; // %/M tokens, one decimal
+export function limitsWithEstimates() {
+  const lim = getLimits();
+  const out = { ...lim, providers: { ...lim.providers } };
+  for (const id of Object.keys(PROVIDERS)) {
+    const p = out.providers[id] || {};
+    if ((p.windows || []).length) continue; // real windows win
+    const budgetTokens = loadConfig().scorecard?.usageBudgets?.[id] || null;
+    const resetsAt = nextScheduledReset(id) || null; // from the configured reset schedule (usageResets), so the estimate shows a reset + drives the waste discount
+    const est = estimateUsage(id, { budgetTokens, resetsAt });
+    // Show the bar whenever we can produce ANY estimate — even before a real check-in (a flat token budget is a
+    // sensible uncalibrated fallback) — so a subscription CLI like Grok never sits blank. It is clearly marked as an
+    // estimate; a check-in refines it. Providers with neither a budget nor a check-in still produce no estimate.
+    if (!est) continue;
+    const note = est.needsCheck
+      ? `past projected limit (~${est.rawPct}%) but still running — did it reset early, or is the budget too low? Re-check the real usage and calibrate.`
+      : est.calibrated
+        ? `${est.anchorPct}% ${est.anchorFrom === 'reset' ? 'at the scheduled reset' : 'recorded'}${est.anchorAt ? ` ${new Date(est.anchorAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''} + ~${est.ratePctPerMToken}%/M tokens since${est.rateBasis === 'runs' ? ` (${est.runs} measured run${est.runs > 1 ? 's' : ''}${est.runs > 1 ? `, ${pct1(est.rateLo * 1e6)}–${pct1(est.rateHi * 1e6)}` : ''})` : ' — burn rate not measured yet, record a second, higher % to learn it'}`
+        : budgetTokens
+          ? `uncalibrated estimate against a ${(budgetTokens / 1e6).toLocaleString()}M-token budget — record a real usage % to calibrate`
+          : 'uncalibrated estimate — record a real usage % to calibrate';
+    out.providers[id] = { ...p, provider: id, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: est.pct, resetsAt: est.resetsAt, estimated: true, calibrated: !!est.calibrated, needsCheck: !!est.needsCheck, note }] };
+  }
+  return out;
 }

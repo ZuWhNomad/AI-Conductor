@@ -2,7 +2,7 @@ import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendNdjson, statePath } from '../core/paths.mjs';
-const { windowTokens, recordUsage, estimateUsage, learnedRate } = await import('../core/usage-estimate.mjs');
+const { windowTokens, recordUsage, estimateUsage, learnedRate, limitsWithEstimates } = await import('../core/usage-estimate.mjs');
 const { saveConfig, loadConfig } = await import('../core/config.mjs');
 const { nextScheduledReset, prevScheduledReset } = await import('../core/scorecard.mjs');
 
@@ -164,4 +164,12 @@ test('the last reset is never in the future, whatever shape the schedule is in',
     assert.ok(prev <= now, `prev in the future for ${JSON.stringify(s)}`);
     assert.ok(next > now, `next not in the future for ${JSON.stringify(s)}`);
   }
+});
+
+test('limitsWithEstimates adds a synthetic grok window when the CLI reports none', () => {
+  const lim = limitsWithEstimates();
+  const w = (lim.providers.grok?.windows || []).find((x) => x.id === 'grok:estimated');
+  assert.ok(w, 'grok has a synthetic estimated window');
+  assert.equal(w.estimated, true);
+  assert.equal(typeof w.usedPercent, 'number');
 });

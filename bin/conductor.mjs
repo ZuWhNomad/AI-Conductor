@@ -37,13 +37,21 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor review [--model M]               headless self-review of this workbench from the improvement log
   conductor share                            zip the committed files (what git tracks) to your Desktop
   conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
+  conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
   conductor help`;
 
 function openBrowser(url) {
-  const cmdline = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  const cmdline = process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   try { spawn(cmdline[0], cmdline[1], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); } catch {}
+}
+
+function desktopDir() {
+  const candidates = [join(homedir(), 'Desktop')];
+  if (process.env.ONEDRIVE) candidates.push(join(process.env.ONEDRIVE, 'Desktop'));
+  candidates.push(join(homedir(), 'OneDrive', 'Desktop'), homedir());
+  return candidates.find((p) => existsSync(p)) || homedir();
 }
 
 if (flags.help || cmd === 'help') { console.log(HELP); process.exit(0); }
@@ -68,17 +76,33 @@ if (cmd === 'start') {
   const stop = () => { clearPidFile(); try { stopBackgroundWork(); } catch {} abortRunning({ requeue: true }); setTimeout(() => process.exit(0), 1500); }; // in-flight tasks resume on next start
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  process.on('SIGHUP', stop);
 } else if (cmd === 'stop') {
-  // Kill a running conductor server started with `conductor start` (its pid is in the state dir); /T covers its process tree, so no extra cleanup is needed.
+  const cfgPort = loadConfig().port;
   let info = null;
   try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
-  if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port 47474.`); process.exit(1); }
+  if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port ${cfgPort}.`); process.exit(1); }
+  const port = info.port || cfgPort;
+  const base = info.url || `http://127.0.0.1:${port}`;
+  const stopped = () => { console.log(`Stopped conductor (pid ${info.pid}, port ${port}).`); process.exit(0); };
   try {
-    if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(info.pid), '/T', '/F'], { stdio: 'ignore' });
-    else process.kill(info.pid, 'SIGTERM');
-    clearPidFile();
-    console.log(`Stopped conductor (pid ${info.pid}${info.port ? `, port ${info.port}` : ''}).`);
-  } catch (e) { console.error(`could not stop pid ${info.pid}: ${e.message} (already gone?)`); clearPidFile(); process.exit(1); }
+    const r = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    if (r.ok) { clearPidFile(); stopped(); }
+  } catch {}
+  try {
+    const r = await fetch(`${base}/api/state`);
+    if (r.ok) {
+      const body = await r.json().catch(() => ({}));
+      if (body.pid == null || body.pid === info.pid) {
+        if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(info.pid), '/T', '/F'], { stdio: 'ignore' });
+        else process.kill(info.pid, 'SIGTERM');
+        clearPidFile();
+        stopped();
+      }
+    }
+  } catch {}
+  clearPidFile();
+  console.error(`stale pid file removed (${PID_FILE()}); nothing matching pid ${info.pid} was listening at ${base}.`);
   process.exit(0);
 } else if (cmd === 'doctor') {
   const { doctorReport } = await import('../server/index.mjs');
@@ -93,7 +117,12 @@ if (cmd === 'start') {
   const { getLimits, refreshLimits } = await import('../core/limits.mjs');
   const { formatModels, formatLimits } = await import('../core/tools.mjs');
   if (cmd === 'models') { const r = flags.refresh || !getModels().updatedAt ? await refreshModels() : getModels(); console.log(flags.json ? JSON.stringify(r, null, 2) : formatModels(r)); }
-  else { const r = flags.refresh || !getLimits().updatedAt ? await refreshLimits() : getLimits(); console.log(flags.json ? JSON.stringify(r, null, 2) : formatLimits(r)); }
+  else {
+    const { limitsWithEstimates } = await import('../core/usage-estimate.mjs');
+    if (flags.refresh || !getLimits().updatedAt) await refreshLimits();
+    const r = limitsWithEstimates();
+    console.log(flags.json ? JSON.stringify(r, null, 2) : formatLimits(r));
+  }
   process.exit(0);
 } else if (cmd === 'bench') {
   const { dueForBench, runBench, formatBench } = await import('../core/bench.mjs');
@@ -193,13 +222,13 @@ if (cmd === 'start') {
   process.exit(st.error && st.git ? 1 : 0);
 } else if (cmd === 'feedback') {
   const { writeFeedback, issuesUrl } = await import('../core/feedback.mjs');
-  const f = writeFeedback();
+  const f = writeFeedback(desktopDir());
   const url = issuesUrl();
   console.log(`Wrote ${f}\n(no keys, paths or e-mail addresses in it — open it and check if you like)`);
   if (url) { console.log(`Attach it to a new issue: ${url}/new?title=Feedback`); if (!flags['no-open']) openBrowser(`${url}/new?title=Feedback&body=${encodeURIComponent('What happened / what would help:\n\n\n(attach the Conductor-feedback-*.json from your Desktop)')}`); }
   process.exit(0);
 } else if (cmd === 'share') {
-  const out = join(homedir(), 'Desktop', 'Conductor-2.0-share.zip');
+  const out = join(desktopDir(), 'Conductor-2.0-share.zip');
   // Zip what git tracks at HEAD, never the disk: local state (.state/), *.local.* files and anything untracked cannot ship.
   const { findCli } = await import('../core/proc.mjs');
   try { execFileSync(findCli('git') || 'git', ['-C', REPO_ROOT, 'archive', '--format=zip', '-o', out, 'HEAD'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); }

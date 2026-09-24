@@ -107,7 +107,7 @@ static class Launcher
         }
 
         Application.EnableVisualStyles();
-        Application.Run(new StatusForm(foundUrl, proc, tail, logPath));
+        Application.Run(new StatusForm(foundUrl, proc, tail, logPath, stateDir));
         KillTree(proc);
         log.WriteLine("---- " + DateTime.Now.ToString("s") + " stopped");
         return 0;
@@ -127,7 +127,21 @@ static class Launcher
         return 47474;
     }
 
-    static bool IsUp(string url)
+    public static int ReadPid(string pidPath)
+    {
+        try
+        {
+            if (File.Exists(pidPath))
+            {
+                Match m = Regex.Match(File.ReadAllText(pidPath), "\"pid\"\\s*:\\s*(\\d+)");
+                if (m.Success) return int.Parse(m.Groups[1].Value);
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    public static bool IsUp(string url)
     {
         try
         {
@@ -188,14 +202,18 @@ static class Launcher
 
 class StatusForm : Form
 {
-    readonly Process proc;
+    Process proc;
     readonly StringBuilder tail;
     readonly string logPath;
+    readonly string url;
+    readonly string pidPath;
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+    DateTime followUntil = DateTime.MinValue;
 
-    public StatusForm(string url, Process proc, StringBuilder tail, string logPath)
+    public StatusForm(string url, Process proc, StringBuilder tail, string logPath, string stateDir)
     {
-        this.proc = proc; this.tail = tail; this.logPath = logPath;
+        this.proc = proc; this.tail = tail; this.logPath = logPath; this.url = url;
+        this.pidPath = Path.Combine(stateDir, "server.pid");
         Text = "Conductor 2.0";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -217,16 +235,46 @@ class StatusForm : Form
         Controls.Add(stop);
 
         timer.Interval = 1000;
-        timer.Tick += delegate
-        {
-            if (proc.HasExited)
-            {
-                timer.Stop();
-                string t; lock (tail) t = tail.ToString();
-                MessageBox.Show("Conductor stopped unexpectedly (exit code " + proc.ExitCode + ").\n\n" + Launcher.Last(t, 1500) + "\n\nFull log: " + logPath, "Conductor 2.0", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                Close();
-            }
-        };
+        timer.Tick += delegate { OnTick(); };
         timer.Start();
+    }
+
+    void OnTick()
+    {
+        if (!proc.HasExited) { followUntil = DateTime.MinValue; return; }
+        if (proc.ExitCode != 0)
+        {
+            timer.Stop();
+            string t; lock (tail) t = tail.ToString();
+            MessageBox.Show("Conductor stopped unexpectedly (exit code " + proc.ExitCode + ").\n\n" + Launcher.Last(t, 1500) + "\n\nFull log: " + logPath, "Conductor 2.0", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Close();
+            return;
+        }
+        // Exit 0: Quit, or an update relaunch. Probe /api/state up to the child's bind budget (20 s, same as CONDUCTOR_RELAUNCH_WAIT).
+        if (followUntil == DateTime.MinValue) followUntil = DateTime.Now.AddSeconds(20);
+        if (TryFollow()) { followUntil = DateTime.MinValue; return; }
+        if (DateTime.Now >= followUntil) { timer.Stop(); Close(); }
+    }
+
+    bool TryFollow()
+    {
+        if (!Launcher.IsUp(url)) return false;
+        int pid = Launcher.ReadPid(pidPath);
+        if (pid <= 0) return false;
+        try
+        {
+            Process next = Process.GetProcessById(pid);
+            if (next.HasExited) return false;
+            proc = next;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        timer.Stop();
+        Launcher.KillTree(proc);
+        base.OnFormClosed(e);
     }
 }

@@ -6,8 +6,9 @@ working notes belong in the user's notes location, **never in this repo** — a 
 **Purpose.** One file, `conductor.mjs`: the `conductor` command. It parses argv, calls into `core/` and `server/`, and
 prints. No logic lives here that a route or a core module could not also use — the UI and the CLI must agree.
 
-**Entry points.** `conductor start` (boots `server/index.mjs`), plus `doctor`, `models`, `limits`, `scores` (`--csv`),
-`smoke`, `bench`, `review`, `feedback`, `share`, `update`, `stop`.
+**Entry points.** `conductor start` (boots `server/index.mjs`), plus `doctor`, `models`, `limits` (same estimated
+windows as the UI), `scores` (`--csv`), `smoke`, `bench`, `review`, `feedback`, `share`, `update`, `stop` (POST
+`/api/shutdown` first; pid-file taskkill only if `/api/state` matches).
 
 **Invariants.**
 - Every command works headless: no prompt, no colour codes the user's terminal must support.

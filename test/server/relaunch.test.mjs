@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
-import { writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,11 @@ test('scheduleRelaunch spawns a detached same-port conductor with THIS process e
   assert.match(args[0].replaceAll('\\', '/'), /bin\/conductor\.mjs$/);   // ... running the CLI entry
   assert.deepEqual(args.slice(1), ['start', '--no-open', '--port', '47474']); // same port, don't reopen the browser
   assert.equal(opts.detached, true);
-  assert.equal(opts.stdio, 'ignore');
+  assert.equal(Array.isArray(opts.stdio) ? opts.stdio[0] : opts.stdio, 'ignore');
+  if (Array.isArray(opts.stdio)) { assert.equal(typeof opts.stdio[1], 'number'); assert.equal(opts.stdio[2], opts.stdio[1]); }
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  assert.match(src, /shutdownSessions\?\.\(\)/);
+  assert.match(src, /reloadSessions\?\.\(\)/);
   assert.equal(opts.env.CONDUCTOR_RELAUNCH_WAIT, '20000');               // child tolerates the port not being free yet
   assert.equal(opts.env.CONDUCTOR_HOME, process.env.CONDUCTOR_HOME);     // inherits the server's own env, not an ambient shell
   assert.equal(exited, 0);                                               // no exit until the child confirms it started

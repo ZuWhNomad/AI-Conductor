@@ -209,3 +209,66 @@ test('update: failed npm install reaches the HTTP response and UI without relaun
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test('POST /api/update defers relaunch when work is in flight unless force:true', { skip: !git && 'git not installed' }, async (ctx) => {
+  const { EventEmitter } = await import('node:events');
+  const { a, b } = setup();
+  writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
+  const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
+  const { server, url } = await startServer({ port: 0 });
+  const exec = childProcess.execFile, read = fs.readFileSync;
+  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
+  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
+    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
+    callback(null, '', '');
+  });
+  const fake = Object.assign(new EventEmitter(), { unref() {}, kill() {} });
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => fake);
+  syncBuiltinESMExports();
+  try {
+    const cwd = tmpDir('update-busy');
+    const queued = await fetch(url + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, spec: 'keep the journal open' }) });
+    assert.equal(queued.status, 200);
+    const deferred = await fetch(url + '/api/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(deferred.status, 200);
+    const d = await deferred.json();
+    assert.equal(d.updated, true);
+    assert.equal(d.relaunching, 'when idle');
+    assert.equal(spawn.mock.callCount(), 0);
+  } finally {
+    ctx.mock.restoreAll(); syncBuiltinESMExports();
+    stopBackgroundWork();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('POST /api/update force:true relaunches even when a task is open', { skip: !git && 'git not installed' }, async (ctx) => {
+  const { EventEmitter } = await import('node:events');
+  const { a, b } = setup();
+  writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
+  const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
+  const { server, url } = await startServer({ port: 0 });
+  const exec = childProcess.execFile, read = fs.readFileSync;
+  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
+  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
+    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
+    callback(null, '', '');
+  });
+  const fake = Object.assign(new EventEmitter(), { unref() {}, kill() {} });
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => fake);
+  syncBuiltinESMExports();
+  try {
+    const cwd = tmpDir('update-force');
+    assert.equal((await fetch(url + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, spec: 'open' }) })).status, 200);
+    const response = await fetch(url + '/api/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ force: true }) });
+    assert.equal(response.status, 200);
+    const r = await response.json();
+    assert.equal(r.updated, true);
+    assert.equal(r.relaunching, true);
+    assert.equal(spawn.mock.callCount(), 1);
+  } finally {
+    ctx.mock.restoreAll(); syncBuiltinESMExports();
+    stopBackgroundWork();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});

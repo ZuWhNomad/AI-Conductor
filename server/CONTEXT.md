@@ -25,15 +25,17 @@ state of its own: every route is a thin call into a `core/` module.
 | `GET /api/scores`, `GET /api/bench` | scorecard table; models due a re-benchmark | `scorecard`, `bench` |
 | `GET\|POST /api/settings` | config (redacted by `publicConfig`); a save re-applies polling, update checks + `schedule()` | `config` |
 | `/api/improvements[/<id>/resolve]`, `POST /api/review` | improvement log; open a self-review session | `improve` |
-| `POST /api/ollama/pull`, `GET /api/browse` | pull a local model; folder picker | `providers/ollama` |
+| `GET /api/browse` | folder picker (async; UNC refused) | — |
 | `GET\|POST /api/update` | update status; pull + self-restart | `update` |
 | `GET /api/doctor`, `POST /api/shutdown` | environment check; the UI Quit button | — |
 | `POST /mcp/<session>` | MCP (JSON-RPC over HTTP) exposing the conductor tools to a Codex conductor | `tools` |
 | anything else | static file from `ui/` (`serveStatic`; path must stay inside `ui/`) | — |
 
 **Invariants.**
-- Host must be `127.0.0.1` / `localhost` / `[::1]` on the bound port, a present Origin must match, and a `POST` must be
-  `application/json` (403 / 403 / 415). Bodies over 5 MB get a real 413. Keep these checks in front of `route()`.
+- Host must be `127.0.0.1` / `localhost` / `[::1]` on the bound port, a present Origin must match, a present
+  `sec-fetch-site` must be `same-origin` or `none`, and a `POST` must be `application/json` (403 / 403 / 403 / 415).
+  Bodies over 5 MB get a real 413. Keep these checks in front of `route()`.
+- `/api/browse` is async fs and refuses UNC paths (`\\host` / `//host`).
 - Errors thrown by a route become `{ error }` with `e.status || 500`; 5xx are logged to the improvement log.
 - The UI is served from `REPO_ROOT/ui` with a MIME map that has `.js` but no `.mjs`: browser modules stay `.js`.
 - Background work (polling, scheduled review, update checks) starts only when `CONDUCTOR_NO_POLL` is unset.
