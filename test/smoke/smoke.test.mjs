@@ -1,7 +1,7 @@
 import { HOME, tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, readFileSync } from 'node:fs';
+import { rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { BATTERY } = await import('../../core/smoke/battery.mjs');
@@ -32,7 +32,7 @@ test('runSmoke rates each run from its check and the rows reach the scorecard as
   const execute = async (spec) => {
     const b = BATTERY.find((x) => x.spec === spec.spec);
     const solved = n++ % 2 === 0 ? b.solve(spec.cwd) || {} : {};
-    const t = { id: `smoke${n}`, ...spec, status: 'done', result: { finalMessage: solved.finalMessage || 'done', usage: { input_tokens: 100, output_tokens: 10 }, durationMs: 5 } };
+    const t = { id: `smoke${n}`, ...spec, status: 'done', attempts: 1, result: { finalMessage: solved.finalMessage || 'done', usage: { input_tokens: 100, output_tokens: 10 }, durationMs: 5 } };
     recordRun(t);
     return t;
   };
@@ -48,10 +48,17 @@ test('runSmoke rates each run from its check and the rows reach the scorecard as
 });
 
 test('a task that did not finish is rated fail with the reason', async () => {
-  const execute = async (spec) => ({ id: 'late', ...spec, status: 'canceled', timedOut: true, result: null });
+  const execute = async (spec) => ({ id: 'late', ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null });
   const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'fail');
   assert.equal(r.notes, 'timeout');
+});
+
+test('a smoke task that never dispatched is skipped and not rated', async () => {
+  const execute = async (spec) => ({ id: 'queued', ...spec, status: 'canceled', attempts: 0, error: 'skipped', result: null });
+  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
+  assert.equal(r.verdict, 'skipped');
+  assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'queued' && a.verdict)), 'never rateTask when attempts is 0');
 });
 
 test('smoke timeouts are per invocation and bench probes never write config, even on failure', async (ctx) => {
@@ -85,7 +92,7 @@ test('smoke timeouts are per invocation and bench probes never write config, eve
 });
 
 test('an environment failure is voided immediately, not left as a failed attempt', async () => {
-  const execute = async (spec) => { const t = { id: 'envfail', ...spec, status: 'failed', error: 'getaddrinfo ENOTFOUND api.example', result: null }; recordRun(t); return t; };
+  const execute = async (spec) => { const t = { id: 'envfail', ...spec, status: 'failed', attempts: 1, error: 'getaddrinfo ENOTFOUND api.example', result: null }; recordRun(t); return t; };
   const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'error');
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'envfail')), 'voided at detection time');
@@ -131,10 +138,21 @@ test('timeouts immediately before a provider limit surfaces are voided as the sa
   let n = 0;
   const execute = async (spec) => {
     n++;
-    const t = n <= 2 ? { id: `stall${n}`, ...spec, status: 'canceled', timedOut: true, result: null } : { id: `lim${n}`, ...spec, status: 'canceled', error: 'canceled', limitHit: true, result: null };
+    const t = n <= 2 ? { id: `stall${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `lim${n}`, ...spec, status: 'canceled', error: 'canceled', limitHit: true, attempts: 1, result: null };
     recordRun(t); return t;
   };
   const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
   assert.deepEqual(rs.map((r) => r.verdict), ['error', 'error', 'skipped']);
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => /^stall/.test(a.taskId) && a.verdict)), 'stalled timeouts do not count as failures');
+});
+
+test('importing a worker module that process.exit does not kill the check', async () => {
+  const b = BATTERY.find((x) => x.id === 'edit-1');
+  const dir = tmpDir('smoke-s5');
+  b.setup(dir);
+  writeFileSync(join(dir, 'src/math.mjs'), 'process.exit(0);\nexport function add() { return 0; }\n');
+  const r = await b.check(dir);
+  assert.equal(r.pass, false);
+  assert.match(r.notes, /import did not finish|import failed/);
+  rmSync(dir, { recursive: true, force: true });
 });

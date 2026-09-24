@@ -33,6 +33,9 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
         const t = await execute({ cwd: dir, title: `smoke ${b.id}`, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', variant }, timeoutMinutes);
+        if ((t.attempts || 0) === 0 && t.status !== 'done') {
+          res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
+        } else {
         const check = t.status === 'done' ? await b.check(dir, t) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
         if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
@@ -52,8 +55,9 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
           if (t.id) voidTask(t.id, `environment: ${envFailure(t)}`);
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'error', notes: `environment: ${envFailure(t)}`, durationMs: t.result?.durationMs || 0 };
         } else {
-          if (t.id) rateTask(t.id, check.pass ? 'pass' : 'fail', check.notes);
+          if (t.id && (t.attempts || 0) > 0) rateTask(t.id, check.pass ? 'pass' : 'fail', check.notes);
           res = { ...base, taskId: t.id || null, status: t.status, verdict: check.pass ? 'pass' : 'fail', notes: String(check.notes || '').slice(0, 400), durationMs: t.result?.durationMs || 0 };
+        }
         }
       } catch (e) {
         res = { ...base, verdict: 'error', notes: String(e?.message || e).slice(0, 400) };
@@ -76,9 +80,40 @@ export function envFailure(t) {
   return hit ? hit.match(ENV_FAIL)[0] : null;
 }
 
+function dispatched(id) {
+  const t = getTask(id);
+  return !t || t.status !== 'queued' || (t.attempts || 0) > 0;
+}
+
+/** Wait until the task leaves the queue (or the bound elapses). One timer, so a mocked setTimeout still ends. */
+function waitForDispatch(id, timeoutMs) {
+  if (dispatched(id)) return Promise.resolve(getTask(id));
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, Math.min(2 ** 31 - 1, Math.max(0, timeoutMs)));
+    const onEv = (ev) => { if (ev.type === 'task' && ev.task?.id === id && dispatched(id)) done(); };
+    function done() {
+      clearTimeout(timer);
+      bus.off('event', onEv);
+      resolve(getTask(id));
+    }
+    bus.on('event', onEv);
+  });
+}
+
 async function executeTask(spec, timeoutMinutes) {
   const t = createTask(spec);
-  const r = await awaitTask(t.id, timeoutMinutes * 60_000);
+  const boundMs = Math.max(0, Number(timeoutMinutes) * 60_000) || 0;
+  // Dispatch wait is its own bound (the smoke timeout). A task that never starts is skipped, not a model fail.
+  await waitForDispatch(t.id, boundMs);
+  const after = getTask(t.id);
+  if (!after || ((after.attempts || 0) === 0 && after.status !== 'done')) {
+    if (after && after.status !== 'done' && after.status !== 'failed' && after.status !== 'canceled') cancelTask(t.id, 'skipped');
+    await flushRecords();
+    return { ...getTask(t.id), timedOut: false };
+  }
+  const startedMs = Date.parse(after.startedAt) || Date.now();
+  const remaining = Math.max(0, boundMs - (Date.now() - startedMs));
+  const r = remaining > 0 ? await awaitTask(t.id, remaining) : { ...getTask(t.id), timedOut: true };
   if (r?.timedOut) {
     cancelTask(t.id, 'timeout'); // OB6: reason so run() still scores this cancellation
     // cancelTask already marked the task terminal, so awaitTask would return immediately;

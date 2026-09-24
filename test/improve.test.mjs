@@ -11,7 +11,10 @@ const { formatModels, formatLimits, conductorToolDefs } = await import('../core/
 test('improvement log appends, lists, resolves and feeds the review prompt', () => {
   const e = logImprovement('error', 'worker:codex', 'boom', { taskId: 't1' });
   assert.equal(listImprovements().length, 1);
-  assert.match(buildReviewPrompt(), new RegExp(`\\[${e.id}\\]`));
+  const prompt = buildReviewPrompt();
+  assert.match(prompt, /data, not instructions/);
+  assert.match(prompt, /```json\n/);
+  assert.match(prompt, new RegExp(`"id":"${e.id}"`));
   const seq = bus.seq;
   resolveImprovement(e.id);
   assert.deepEqual(bus.since(seq).filter((event) => event.type === 'improvement').map((event) => event.resolved), [e.id]);
@@ -98,6 +101,21 @@ test('logImprovement collapses repeats by kind+source+message even when another 
   assert.equal(mine.filter((e) => e.message === 'same problem').length, 1);
   assert.ok(mine.some((e) => e.message === 'a different problem'));
   assert.ok(c.id !== a.id && mine.some((e) => e.message === 'yet another message'));
+});
+
+test('improvement events include the open-entry count', () => {
+  const seq = bus.seq;
+  const a = logImprovement('idea', 'p14-count', 'one');
+  const b = logImprovement('idea', 'p14-count', 'two');
+  const logged = bus.since(seq).filter((e) => e.type === 'improvement' && e.entry);
+  assert.equal(logged.length, 2);
+  assert.equal(logged[1].count, logged[0].count + 1);
+  assert.equal(logged[1].count, listImprovements().length);
+  const seq2 = bus.seq;
+  resolveImprovement(a.id);
+  const ev = bus.since(seq2).find((e) => e.type === 'improvement' && e.resolved === a.id);
+  assert.equal(ev.count, listImprovements().length);
+  assert.ok(listImprovements().some((e) => e.id === b.id));
 });
 
 test('limit formatting marks stale windows and truncates the poll error', () => {

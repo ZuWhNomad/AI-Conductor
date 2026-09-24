@@ -1,6 +1,7 @@
 // User configuration: defaults merged with ~/.conductor2/config.json.
-import { statSync } from 'node:fs';
-import { readJson, writeJson, statePath } from './paths.mjs';
+import { statSync, copyFileSync } from 'node:fs';
+import { tryReadJson, writeJson, statePath } from './paths.mjs';
+import { logImprovement } from './improve.mjs';
 
 export const DEFAULTS = {
   port: 47474,
@@ -11,14 +12,14 @@ export const DEFAULTS = {
   // the app is noticed without pressing Refresh.
   ui: { autoRefresh: false, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
-    provider: 'claude',               // only Claude models can conduct (Agent SDK harness)
+    provider: 'claude',               // default conductor; Codex and API/Ollama can conduct too
     model: 'claude-opus-5-5[1m]',     // exact id, never an alias (aliases move when the CLI updates): move it to a new Opus on purpose
     effort: 'high',
     permissionMode: 'acceptEdits',    // 'acceptEdits' (ask for the rest) | 'bypassPermissions'
     overflowApi: false,               // new chats: may the router spend pay-per-token APIs once subscriptions are capped?
     maxWorkerConcurrency: 100,        // effectively uncapped: provider limits and the budget gate are the real budget,
                                       // and a low cap silently starves a fan-out (a cap of 3 left a queued model never run)
-    budgetGate: true,                 // gate ALL task dispatch on per-window budget targets (session 95% / weekly 100%); park until reset when a provider is tapped out
+    budgetGate: true,                 // admit against per-window targets (session 95% / weekly 100%); over target, sequential per provider — not park-until-reset. A real provider limit fails over or parks. parallelOverride skips the gate. Windowless providers are not gated.
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
@@ -31,7 +32,7 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
-    recipeChars: 6000,                // log recipes over this character budget (the full recipe is still appended)
+    recipeChars: 9401,                // log recipes over this character budget (the full recipe is still appended). 9401 is the longest shipped recipe (image-to-3d-model.b.md, measured).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
@@ -144,10 +145,28 @@ function deepMerge(a, b, path = '') {
 // The overrides file is read once per change (stat, not read+parse, on every call): loadConfig() sits on every hot
 // path. Callers still get a fresh merged object each time, so mutating it never leaks.
 let fileCache = { key: null, value: {} };
+let notedBrokenKey = null;
+function noteBrokenConfig() {
+  const src = FILE();
+  try { copyFileSync(src, `${src}.bad`); } catch {}
+  let key = 'x';
+  try { const s = statSync(src); key = `${s.size}:${s.mtimeMs}`; } catch {}
+  if (notedBrokenKey === key) return;
+  notedBrokenKey = key;
+  try { logImprovement('error', 'config', 'config.json exists but cannot be parsed; saves are refused until it is fixed or removed', { backup: 'config.json.bad' }); } catch {}
+}
+
 function overrides() {
   let key = 'none';
   try { const s = statSync(FILE()); key = `${s.size}:${s.mtimeMs}`; } catch {}
-  if (key !== fileCache.key) fileCache = { key, value: key === 'none' ? {} : readJson(FILE(), {}) };
+  if (key !== fileCache.key) {
+    if (key === 'none') fileCache = { key, value: {} };
+    else {
+      const parsed = tryReadJson(FILE());
+      if (!parsed.ok) { noteBrokenConfig(); fileCache = { key, value: {} }; }
+      else fileCache = { key, value: parsed.value };
+    }
+  }
   return fileCache.value;
 }
 
@@ -227,6 +246,9 @@ function normalize(cfg) {
   cfg.scorecard.wasteHorizonHours = Math.max(1, cfg.scorecard.wasteHorizonHours);
   cfg.scorecard.wasteStrength = Math.max(0, Math.min(1, cfg.scorecard.wasteStrength));
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
+  if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(cfg.conductor.permissionMode)) cfg.conductor.permissionMode = DEFAULTS.conductor.permissionMode;
+  if (!['auto', 'ask', 'off'].includes(cfg.conductor.autoUpdate)) cfg.conductor.autoUpdate = DEFAULTS.conductor.autoUpdate;
+  if (!SANDBOXES.includes(cfg.worker.codexSandbox)) cfg.worker.codexSandbox = DEFAULTS.worker.codexSandbox;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
   if (!Number.isFinite(cfg.scorecard.effortSlackPct) || cfg.scorecard.effortSlackPct < 0) cfg.scorecard.effortSlackPct = DEFAULTS.scorecard.effortSlackPct;
@@ -340,7 +362,12 @@ function restoreMcpArgs(posted, stored) {
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
   const clean = structuredClone(patch);
-  const raw = readJson(FILE(), {});
+  const parsed = tryReadJson(FILE());
+  if (!parsed.ok && !parsed.missing) {
+    noteBrokenConfig();
+    throw Object.assign(new Error('config.json exists but cannot be parsed; refusing to overwrite. A copy is at config.json.bad. Fix or delete config.json, then save again.'), { status: 409 });
+  }
+  const raw = parsed.ok ? parsed.value : {};
   const stored = plain(raw) ? raw : {};
   // Never let a redaction sentinel from publicConfig round-trip back and overwrite the real secret with the mask.
   for (const p of Object.values(clean.providers || {})) if (p && typeof p === 'object' && p.apiKey === SECRET_MASK) delete p.apiKey;

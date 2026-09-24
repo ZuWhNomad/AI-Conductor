@@ -1,5 +1,5 @@
 // State directory + tiny persistence helpers. Everything on disk is written atomically.
-import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, unlinkSync } from 'node:fs';
+import fs, { mkdirSync, readFileSync, writeFileSync, appendFileSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -19,8 +19,25 @@ export function stateDir() {
 
 export const statePath = (...p) => join(stateDir(), ...p);
 
+/** Parse JSON from disk. Strips a leading U+FEFF. Distinguishes missing from exists-but-unparseable. */
+export function tryReadJson(file) {
+  let text;
+  try { text = readFileSync(file, 'utf8'); }
+  catch (e) {
+    if (e.code === 'ENOENT') return { ok: false, missing: true };
+    return { ok: false, missing: false, error: e };
+  }
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  try { return { ok: true, value: JSON.parse(text) }; }
+  catch (e) { return { ok: false, missing: false, error: e }; }
+}
+
 export function readJson(file, fallback = null) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return fallback; }
+  try {
+    const r = tryReadJson(file);
+    if (r.ok) return r.value;
+    return fallback;
+  } catch { return fallback; }
 }
 
 export function writeJson(file, obj) {
@@ -31,10 +48,14 @@ export function writeJson(file, obj) {
   // reader, an AV scan). The rename is atomic, so retry it; never fall back to a direct overwrite of the destination
   // — a mid-write failure there (ENOSPC) would truncate the good file. On persistent failure leave the destination
   // untouched (old data still valid) and the tmp in place for recovery, then surface the error.
+  const pause = new Int32Array(new SharedArrayBuffer(4));
   for (let i = 0; ; i++) {
-    try { renameSync(tmp, file); return; }
+    try { fs.renameSync(tmp, file); return; }
     catch (e) {
-      if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code) && i < 8) continue; // transient holder; retry the atomic rename
+      if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code) && i < 8) {
+        Atomics.wait(pause, 0, 0, 1 + i); // backoff across the existing 8 retries so a transient Windows handle can drop
+        continue;
+      }
       if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) { try { unlinkSync(tmp); } catch {} } // real error: don't leave a stray tmp
       throw Object.assign(e, { message: `writeJson: could not atomically replace ${file} (${e.code}); original left intact${['EPERM', 'EACCES', 'EBUSY'].includes(e.code) ? `, new content in ${tmp}` : ''}` });
     }

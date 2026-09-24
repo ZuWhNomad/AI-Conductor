@@ -5,24 +5,44 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
+
+const execFileAsync = promisify(execFile);
 
 const write = (dir, files) => { for (const [rel, body] of Object.entries(files)) { const f = join(dir, rel); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, body); } };
 const read = (dir, rel) => { try { return readFileSync(join(dir, rel), 'utf8'); } catch { return null; } };
 const sha = (s) => createHash('sha1').update(s || '').digest('hex');
-const load = (dir, rel) => import(`${pathToFileURL(join(dir, rel)).href}?v=${Date.now()}-${Math.random()}`);
 const unchanged = (dir, rel, body) => sha(read(dir, rel)) === sha(body);
 const answer = (t) => String(t?.result?.finalMessage || t?.finalMessage || '');
 
-function nodeTest(dir) {
+async function nodeTest(dir) {
   // A nested `node --test` inherits the parent test runner's NODE_TEST_CONTEXT and then reports as a
   // child instead of exiting non-zero on failure; drop it so the exit code is trustworthy.
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-  try { return { ok: true, out: execFileSync(process.execPath, ['--test'], { cwd: dir, env, encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }) }; }
-  catch (e) { return { ok: false, out: `${e.stdout || ''}\n${e.stderr || ''}`.trim().slice(-1500) }; }
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ['--test'], { cwd: dir, env, encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, out: stdout };
+  } catch (e) { return { ok: false, out: `${e.stdout || ''}\n${e.stderr || ''}`.trim().slice(-1500) }; }
 }
-const testsPass = (dir) => { const r = nodeTest(dir); return { pass: r.ok, notes: r.ok ? '' : r.out }; };
+const testsPass = async (dir) => { const r = await nodeTest(dir); return { pass: r.ok, notes: r.ok ? '' : r.out }; };
+
+// Import worker-written modules in a child so a top-level process.exit or busy loop cannot kill the server.
+// Timeout matches nodeTest (same class of untrusted worker output).
+async function importCheck(dir, rel, expr) {
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const href = pathToFileURL(join(dir, rel)).href;
+  const src = `const m = await import(${JSON.stringify(href)});\nprocess.stdout.write('OK' + JSON.stringify(!!(${expr})));`;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', src], { cwd: dir, env, encoding: 'utf8', timeout: 60_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (stdout.startsWith('OK') && stdout.slice(2) === 'true') return { pass: true, notes: '' };
+    return { pass: false, notes: stdout.startsWith('OK') ? 'exports missing or wrong' : `import did not finish: ${String(stdout).slice(-200)}` };
+  } catch (e) {
+    if (e.killed) return { pass: false, notes: 'import timed out' };
+    return { pass: false, notes: `import failed: ${`${e.stdout || ''}\n${e.stderr || e.message}`.trim().slice(-200)}` };
+  }
+}
 const VERIFY = 'Verify with `node --test` in the project root before you report.';
 
 // --- fixtures ---
@@ -361,11 +381,8 @@ export const BATTERY = [
     spec: 'Add an exported function clamp(x, lo, hi) to src/math.mjs that returns x limited to the range [lo, hi]. Keep the existing exports unchanged. Verify: node -e "import(\'./src/math.mjs\').then(m=>{if(m.clamp(5,0,3)!==3||m.clamp(-1,0,3)!==0||m.clamp(2,0,3)!==2||m.add(1,2)!==3)process.exit(1)})"',
     setup(dir) { write(dir, { 'src/math.mjs': MATH }); },
     async check(dir) {
-      try {
-        const m = await load(dir, 'src/math.mjs');
-        const ok = typeof m.clamp === 'function' && m.clamp(5, 0, 3) === 3 && m.clamp(-1, 0, 3) === 0 && m.clamp(2, 0, 3) === 2 && m.add(1, 2) === 3 && m.mul(2, 3) === 6;
-        return { pass: ok, notes: ok ? '' : 'clamp missing or wrong, or an existing export broke' };
-      } catch (e) { return { pass: false, notes: `import failed: ${e.message}` }; }
+      const r = await importCheck(dir, 'src/math.mjs', 'typeof m.clamp === "function" && m.clamp(5, 0, 3) === 3 && m.clamp(-1, 0, 3) === 0 && m.clamp(2, 0, 3) === 2 && m.add(1, 2) === 3 && m.mul(2, 3) === 6');
+      return r.pass ? r : { pass: false, notes: r.notes.startsWith('import') ? r.notes : 'clamp missing or wrong, or an existing export broke' };
     },
     solve(dir) { write(dir, { 'src/math.mjs': `${MATH}export function clamp(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }\n` }); },
   },
@@ -399,8 +416,8 @@ export const BATTERY = [
       const code = readdirSync(join(dir, 'src')).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs')).map((f) => read(dir, `src/${f}`)).join('\n');
       const defs = (code.match(/(?:function\s+formatMoney\b|(?:const|let|var)\s+formatMoney\s*=)/g) || []).length;
       if (defs !== 1) return { pass: false, notes: `${defs} formatMoney definitions (want 1)` };
-      try { const m = await load(dir, 'src/money.mjs'); if (typeof m.formatMoney !== 'function') return { pass: false, notes: 'money.mjs does not export formatMoney' }; }
-      catch (e) { return { pass: false, notes: `import failed: ${e.message}` }; }
+      const exp = await importCheck(dir, 'src/money.mjs', 'typeof m.formatMoney === "function"');
+      if (!exp.pass) return { pass: false, notes: exp.notes.startsWith('import') ? exp.notes : 'money.mjs does not export formatMoney' };
       return testsPass(dir);
     },
     solve(dir) { write(dir, { 'src/money.mjs': MONEY, 'src/invoice.mjs': INVOICE_REF, 'src/receipt.mjs': RECEIPT_REF }); },
@@ -435,13 +452,13 @@ export const BATTERY = [
     id: 'test-4', category: 'test', difficulty: 4, title: 'write tests that catch mutants',
     spec: `src/range.mjs exports parseRange(spec, max); read its comment. Write src/range.test.mjs (node:test, node:assert/strict) covering: single indices, closed ranges, open-ended ranges ("7-" runs to max), whitespace around items, overlapping ranges (result sorted, no duplicates), and errors for an empty spec, reversed ranges, out-of-range values and malformed items. Your suite will also be run against subtly broken copies of the module and should fail on each of them. Do not modify src/range.mjs. ${VERIFY}`,
     setup(dir) { write(dir, { 'src/range.mjs': RANGE }); },
-    check(dir) {
+    async check(dir) {
       if (!unchanged(dir, 'src/range.mjs', RANGE)) return { pass: false, notes: 'range.mjs modified' };
       if (!read(dir, 'src/range.test.mjs')) return { pass: false, notes: 'no src/range.test.mjs' };
-      const ok = nodeTest(dir);
+      const ok = await nodeTest(dir);
       if (!ok.ok) return { pass: false, notes: `suite fails on the correct module: ${ok.out}` };
       const survivors = [];
-      for (const [name, body] of Object.entries(RANGE_MUTANTS)) { write(dir, { 'src/range.mjs': body }); if (nodeTest(dir).ok) survivors.push(name); }
+      for (const [name, body] of Object.entries(RANGE_MUTANTS)) { write(dir, { 'src/range.mjs': body }); if ((await nodeTest(dir)).ok) survivors.push(name); }
       write(dir, { 'src/range.mjs': RANGE });
       return survivors.length ? { pass: false, notes: `suite does not catch: ${survivors.join('; ')}` } : { pass: true, notes: '' };
     },

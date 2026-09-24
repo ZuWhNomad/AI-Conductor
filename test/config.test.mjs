@@ -1,7 +1,7 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { loadConfig, saveConfig, publicConfig, DEFAULTS } = await import('../core/config.mjs');
@@ -191,7 +191,7 @@ test('timer and loop settings accept positive finite numbers and otherwise use D
 });
 
 test('the live prompt budgets are settings; the retired shared budget is absent', () => {
-  assert.equal(DEFAULTS.worker.recipeChars, 6000);
+  assert.equal(DEFAULTS.worker.recipeChars, 9401);
   assert.equal(DEFAULTS.worker.toolLineChars, 1500);
   assert.ok(!('specAppendChars' in DEFAULTS.worker));
   saveConfig({ worker: { recipeChars: 7000, toolLineChars: 2000 } });
@@ -380,6 +380,39 @@ test('unparseable multi-host DB URLs fail closed and round-trip with and without
   assert.equal(restored.multiHostQuery.url, uris[1]);
   saveConfig({ mcpServers: { unmatchedDb: { command: 'node', args: ['••••', '--endpoint=••••'] } } });
   assert.deepEqual(loadConfig().mcpServers.unmatchedDb.args, [], 'unmatched opaque URL masks are never persisted');
+});
+
+test('a BOM-prefixed config.json loads; a broken file is backed up and saveConfig refuses', () => {
+  const previous = process.env.CONDUCTOR_HOME;
+  process.env.CONDUCTOR_HOME = tmpDir('config-l3');
+  try {
+    const file = join(process.env.CONDUCTOR_HOME, 'config.json');
+    writeFileSync(file, '\uFEFF' + JSON.stringify({ worker: { effort: 'high' } }));
+    assert.equal(loadConfig().worker.effort, 'high');
+
+    const broken = '{not json';
+    writeFileSync(file, broken);
+    const cfg = loadConfig();
+    assert.equal(cfg.worker.effort, DEFAULTS.worker.effort, 'unparseable file does not apply overrides');
+    assert.equal(readFileSync(file, 'utf8'), broken, 'load does not rewrite the broken file');
+    assert.ok(existsSync(file + '.bad'));
+    assert.equal(readFileSync(file + '.bad', 'utf8'), broken);
+    assert.throws(() => saveConfig({ worker: { effort: 'low' } }), { status: 409 });
+    assert.equal(readFileSync(file, 'utf8'), broken, 'saveConfig does not overwrite the broken file');
+  } finally { process.env.CONDUCTOR_HOME = previous; }
+});
+
+test('normalize resets unknown enum values to defaults', () => {
+  saveConfig({ conductor: { permissionMode: 'yolo', autoUpdate: 'sometimes' }, worker: { codexSandbox: 'yolo' } });
+  const c = loadConfig();
+  assert.equal(c.conductor.permissionMode, DEFAULTS.conductor.permissionMode);
+  assert.equal(c.conductor.autoUpdate, DEFAULTS.conductor.autoUpdate);
+  assert.equal(c.worker.codexSandbox, DEFAULTS.worker.codexSandbox);
+  saveConfig({ conductor: { permissionMode: 'bypassPermissions', autoUpdate: 'off' }, worker: { codexSandbox: 'read-only' } });
+  const c2 = loadConfig();
+  assert.equal(c2.conductor.permissionMode, 'bypassPermissions');
+  assert.equal(c2.conductor.autoUpdate, 'off');
+  assert.equal(c2.worker.codexSandbox, 'read-only');
 });
 
 test('Docker-style secret environment arguments redact and restore', () => {
