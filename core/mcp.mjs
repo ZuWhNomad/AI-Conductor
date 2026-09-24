@@ -27,21 +27,31 @@ function withoutComment(line) {
   return line.trim();
 }
 
+const inlineTable = (v) => {
+  const entry = new RegExp(`(?:\\{|,)\\s*(${keyToken})\\s*=\\s*(${stringToken})\\s*(?=,|\\})`, 'g');
+  return Object.fromEntries([...v.matchAll(entry)].map(([, key, value]) => [unq(key), unq(value)]));
+};
+
 /** Parse `[mcp_servers.NAME]` tables, including inherited process-env requirements, from a Codex config.toml. */
 export function parseCodexToml(text) {
-  const out = {}; let cur = null, env = null;
-  const header = new RegExp(`^\\[mcp_servers\\.(${keyToken})(\\.env)?\\]$`);
+  const out = {}; let cur = null, sub = null;
+  const header = new RegExp(`^\\[mcp_servers\\.(${keyToken})(\\.env|\\.http_headers|\\.env_http_headers)?\\]$`);
   const keyValue = new RegExp(`^(${keyToken})\\s*=\\s*(.+)$`);
   const lines = String(text || '').split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = withoutComment(lines[i]);
     const h = header.exec(line);
-    if (h) { const name = unq(h[1]); cur = out[name] = out[name] || {}; env = h[2] ? (cur.env = cur.env || {}) : null; continue; }
-    if (/^\[/.test(line)) { cur = null; env = null; continue; }
+    if (h) {
+      const name = unq(h[1]); cur = out[name] = out[name] || {};
+      const field = h[2] ? h[2].slice(1) : null;
+      sub = field ? (cur[field] = cur[field] || {}) : null;
+      continue;
+    }
+    if (/^\[/.test(line)) { cur = null; sub = null; continue; }
     if (!cur) continue;
     const kv = keyValue.exec(line); if (!kv) continue;
     const k = unq(kv[1]), v = kv[2];
-    if (env) { env[k] = unq(v); continue; }
+    if (sub) { sub[k] = unq(v); continue; }
     if (k === 'url' || k === 'command' || k === 'bearer_token_env_var') cur[k] = unq(v);
     else if (k === 'args' || k === 'env_vars') {
       const chunks = [v];
@@ -51,10 +61,7 @@ export function parseCodexToml(text) {
       }
       try { cur[k] = [...chunks.join('\n').matchAll(new RegExp(stringToken, 'g'))].map(([s]) => unq(s)); } catch { cur[k] = []; }
     }
-    else if (k === 'env') {
-      const entry = new RegExp(`(?:\\{|,)\\s*(${keyToken})\\s*=\\s*(${stringToken})\\s*(?=,|\\})`, 'g');
-      cur.env = Object.fromEntries([...v.matchAll(entry)].map(([, key, value]) => [unq(key), unq(value)]));
-    }
+    else if (k === 'env' || k === 'http_headers' || k === 'env_http_headers') cur[k] = inlineTable(v);
     else if (k === 'enabled' && v.trim() === 'false') cur.disabled = true;
   }
   for (const [n, s] of Object.entries(out)) if (s.disabled || (!s.url && !s.command)) delete out[n];
@@ -65,7 +72,14 @@ export function parseCodexToml(text) {
 export function readClaudeJson(file = join(homedir(), '.claude.json')) {
   try {
     const j = JSON.parse(readFileSync(file, 'utf8')); const out = {};
-    for (const [n, s] of Object.entries(j.mcpServers || {})) { if (s.url) out[n] = { url: s.url }; else if (s.command) out[n] = { command: s.command, args: s.args || [], env: s.env || {} }; }
+    for (const [n, s] of Object.entries(j.mcpServers || {})) {
+      if (s.url) {
+        const e = { url: s.url };
+        if (s.type === 'sse' || s.type === 'http') e.type = s.type;
+        if (s.headers && typeof s.headers === 'object' && !Array.isArray(s.headers)) e.headers = s.headers;
+        out[n] = e;
+      } else if (s.command) out[n] = { command: s.command, args: s.args || [], env: s.env || {} };
+    }
     return out;
   } catch { return {}; }
 }
@@ -98,8 +112,20 @@ export function mcpServersFor(category, cfg = loadConfig()) {
   return Object.fromEntries(Object.entries(all).filter(([, s]) => !Array.isArray(s.categories) || !s.categories.length || s.categories.includes(category)));
 }
 
+/** Agent SDK HTTP/SSE shape. Prefer `${VAR}` header values over literal secrets (SDK config is serialized onto argv). headersHelper is a marketplace-only SDK field, not McpHttpServerConfig. */
+function sdkHttp(s) {
+  const headers = { ...(s.headers || {}), ...(s.http_headers || {}) };
+  if (s.env_http_headers && typeof s.env_http_headers === 'object') {
+    for (const [k, v] of Object.entries(s.env_http_headers)) if (v) headers[k] = `\${${v}}`;
+  }
+  if (s.bearer_token_env_var) headers.Authorization = `Bearer \${${s.bearer_token_env_var}}`;
+  const out = { type: s.type === 'sse' ? 'sse' : 'http', url: s.url };
+  if (Object.keys(headers).length) out.headers = headers;
+  return out;
+}
+
 /** Agent SDK shape. `skip` drops sources the SDK already loads itself (a conductor session with settingSources 'user' has ~/.claude.json). */
-export const forClaudeSdk = (servers, { skip = [] } = {}) => Object.fromEntries(Object.entries(servers || {}).filter(([, s]) => !skip.includes(s.source)).map(([n, s]) => [n, s.url ? { type: 'http', url: s.url } : { command: s.command, args: s.args || [], env: s.env || {} }]));
+export const forClaudeSdk = (servers, { skip = [] } = {}) => Object.fromEntries(Object.entries(servers || {}).filter(([, s]) => !skip.includes(s.source)).map(([n, s]) => [n, s.url ? sdkHttp(s) : { command: s.command, args: s.args || [], env: s.env || {} }]));
 
 /**
  * `codex exec -c` overrides. Servers Codex already knows (source 'codex') only get the approval mode

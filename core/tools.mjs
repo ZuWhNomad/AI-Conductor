@@ -11,12 +11,22 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask } from './scorecard.mjs';
+import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
-import { runPlan, SANDBOX_VALUES } from './plans.mjs';
+import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
-import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched } from './capabilities.mjs';
+import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
+import { RECIPE_VARIANTS } from './recipes.mjs';
+
+const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
+const checkVariant = (category, variant) => {
+  if (!variant) return null;
+  const known = variantsOf(category);
+  if (Object.hasOwn(known, variant)) return null;
+  const names = Object.keys(known);
+  return `unknown variant "${variant}" for ${category || 'this category'}${names.length ? `; known: ${names.join(', ')}` : ''}`;
+};
 
 const offered = new Map(); // sessionId -> Set of capability names already offered in that chat
 
@@ -78,12 +88,18 @@ export function formatLimits(reg = getLimits()) {
 /**
  * The tool table for one conductor session. Each entry: { name, description, schema (zod object), handler(args) -> string }.
  */
-export function conductorToolDefs({ sessionId, cwd }) {
-  const cfg = loadConfig();
+export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
   const effortDesc = 'Reasoning effort: low|medium|high|xhigh|max (Codex also: ultra). Default from settings.';
+  const capWait = (minutes) => {
+    const want = minutes == null ? undefined : minutes * 60_000;
+    if (maxBlockMs == null) return want;
+    if (want == null) return maxBlockMs;
+    return Math.min(want, maxBlockMs);
+  };
+  const stillRunning = '\n(still running — call await_task)';
   const finish = async (t, minutes) => {
-    const done = await awaitTask(t.id, minutes == null ? undefined : minutes * 60_000);
-    return describeTask(getTask(t.id)) + (done?.timedOut ? '\n(still running — call await_task again)' : '');
+    const done = await awaitTask(t.id, capWait(minutes));
+    return describeTask(getTask(t.id)) + (done?.timedOut ? stillRunning : '');
   };
   return [
     {
@@ -96,16 +112,20 @@ export function conductorToolDefs({ sessionId, cwd }) {
         difficulty: z.number().int().min(1).max(5).optional().describe('1 mechanical single-file edit/lookup · 2 small feature from a precise spec, one module · 3 multi-file or needs surrounding understanding · 4 ambiguous, debugging, cross-cutting · 5 design-heavy, high blast radius'),
         exclude: z.array(z.string()).optional().describe('provider:model[:effort] selections the auto-pick must skip'),
         retry_of: z.string().optional().describe('Task id of the failed attempt this replaces. Its model is excluded from the auto-pick, category/difficulty are inherited, and the cost of both attempts is scored as one chain (this is how ladders get measured).'),
-        provider: z.string().optional().describe(`Provider id (${Object.keys(PROVIDERS).join(', ')}). Omit with model to auto-pick; fallback default: ${cfg.worker.provider}`),
+        provider: z.string().optional().describe(`Provider id (${Object.keys(PROVIDERS).join(', ')}). Omit with model to auto-pick; fallback default: ${loadConfig().worker.provider}`),
         model: z.string().optional().describe('Model id for that provider; see list_models'),
         effort: z.string().optional().describe(effortDesc),
+        variant: z.string().optional().describe('Recipe variant for this category (e.g. recipe-c, video-finance). Must be one of the variants registered for the category.'),
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
         timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
         sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
-        let { provider, model, effort, category, difficulty } = a; let pick = null;
+        const cfg = loadConfig(); // L47: settings must not be captured once per Claude session
+        let { provider, model, effort, category, difficulty, variant } = a; let pick = null;
+        const badVariant = checkVariant(category, variant);
+        if (badVariant) return badVariant;
         const failed = a.retry_of ? getTask(a.retry_of) : null;
         if (a.retry_of && !failed) return `unknown task ${a.retry_of} (retry_of)`;
         const exclude = [...(a.exclude || [])];
@@ -114,7 +134,9 @@ export function conductorToolDefs({ sessionId, cwd }) {
           // Count attempts once, keeping the latest review rounds while resolving each attempt's retry link.
           const visited = new Set();
           for (let f = failed; f && !visited.has(f.id);) {
-            depth++; root = f;
+            const failover = !!f.retryOf && getTask(f.retryOf)?.failedOverTo === f.id; // created by failover(), not by the conductor
+            // L22: a provider-limit failover is not a model switch — skip both depth++ and root = f.
+            if (!failover) { depth++; root = f; }
             while (f && !visited.has(f.id)) {
               visited.add(f.id); exclude.push(selOf(f));
               if (!f.followUpOf) break;
@@ -124,6 +146,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
             f = f?.retryOf ? getTask(f.retryOf) : null;
           }
           category = category || failed.category || undefined; difficulty = difficulty || failed.difficulty || undefined;
+          variant = variant || failed.variant || undefined;
         }
         // Review → escalation ladder (see escalationState). First delegate: best VALUE. Once the worker's review
         // rounds are spent — or after a prior model switch — a retry_of escalates to the best AVAILABLE model by
@@ -137,16 +160,30 @@ export function conductorToolDefs({ sessionId, cwd }) {
           // from the auto-pick, so a worker that is already the ceiling would be "escalated" to a weaker model.
           if (escalate && failed) {
             const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || [])], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
-            if (atCeiling(top, failed)) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(failed)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
+            // L44: compare top against every selection in the chain, not only the latest attempt.
+            if (top && (exclude.includes(selOf(top)) || atCeiling(top, failed))) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(top)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
           }
           pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
           if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
-          if (!pick) return `No worker is available for ${category}@${difficulty || 2} under the current budget rules (subscription classes capped or unproven at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
+          if (!pick) {
+            const d = difficulty || 2;
+            const bar = cfg.scorecard?.quality ?? 0.75;
+            const proven = summarize().some((g) => g.category === category && g.difficulty >= d && g.rated > 0 && (g.quality ?? 0) >= bar);
+            // I2: split unproven from capped. I12: the old "configured default" branch is unreachable.
+            if (!proven) return `No worker is available for ${category}@${d}: nothing is proven at this level yet. Pin a provider/model explicitly (which always runs and seeds the scorecard) or run smoke_test.`;
+            return `No worker is available for ${category}@${d} under the current budget rules (subscription classes capped at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
+          }
           // Visual passes prove a model AND its effort; effort-only overrides cannot change an automatic pick.
-          if (pick) { provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort; }
+          provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort;
+          difficulty = difficulty || 2; // L19: persist the routed level when auto-picked
         }
         if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
-        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
+        if (failed) {
+          const resolvedProvider = provider || cfg.worker.provider;
+          const resolved = { provider: resolvedProvider, model: model || (resolvedProvider === cfg.worker.provider ? cfg.worker.model : null), effort: effort || cfg.worker.effort };
+          if (exclude.includes(selOf(resolved))) return `retry_of ${failed.id} would re-run ${selOf(resolved)}, which is already in the chain. Name a different provider/model, or tag category so the scorecard can pick.`;
+        }
+        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
@@ -156,9 +193,16 @@ export function conductorToolDefs({ sessionId, cwd }) {
         const offerNote = offer.length ? `\nNot installed on this machine but would make ${category} work cheaper or better: ${offer.map((e) => `${e.name} (${e.purpose.split('. ')[0]}; installer: ${e.install.url}${e.install.command ? `, or \`${e.install.command}\`` : ''})`).join('; ')}. Tell the user once; never install it yourself.` : '';
         if (shouldResearch(category)) {
           const rt = createTask({ sessionId, cwd, title: `research: programs for ${category} work`, spec: researchSpec(category, a.title), category: 'search', difficulty: 2, noFailover: true });
-          awaitTask(rt.id, 20 * 60_000).then((done) => { const found = parseResearched(done?.result?.finalMessage || '', category); if (found.length) saveConfig({ tools: { index: Object.fromEntries(found.map((e) => [e.name, e])) } }); logImprovement('idea', 'capabilities', found.length ? `research proposed ${found.map((e) => e.name).join(', ')} for ${category} work — review them (conductor doctor) and set tools.index.<name>.approved = true to use them` : `research found no program for ${category} work`, { taskId: rt.id }); }).catch(() => {});
+          awaitTask(rt.id, 20 * 60_000).then((done) => {
+            if (done?.timedOut) { logImprovement('idea', 'capabilities', 'research did not finish', { taskId: rt.id }); return; }
+            const found = parseResearched(done?.result?.finalMessage || '', category);
+            const indexed = new Set(loadIndex().map((e) => e.name));
+            const fresh = found.filter((e) => !indexed.has(e.name));
+            if (fresh.length) saveConfig({ tools: { index: Object.fromEntries(fresh.map((e) => [e.name, e])) } });
+            logImprovement('idea', 'capabilities', fresh.length ? `research proposed ${fresh.map((e) => e.name).join(', ')} for ${category} work — review them (conductor doctor) and set tools.index.<name>.approved = true to use them` : found.length ? `research proposed only names already indexed for ${category} work` : `research found no program for ${category} work`, { taskId: rt.id });
+          }).catch(() => {});
         }
-        const chosen = (pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : category && !a.provider && !a.model ? `\nWorker: configured default ${t.provider}:${t.model || 'default'} (scorecard has no qualified plan for ${category}@${difficulty || 2} yet)` : '') + offerNote;
+        const chosen = (pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : '') + offerNote;
         if (a.background) return `Task ${t.id} queued (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
         return (await finish(t, a.timeout_minutes)) + chosen;
       },
@@ -177,7 +221,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
       name: 'await_task',
       description: 'Wait for a background task to finish and return its report.',
       schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional() }),
-      handler: async (a) => { const r = await awaitTask(a.task_id, a.timeout_minutes == null ? undefined : a.timeout_minutes * 60_000); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? '\n(still running)' : '') : `unknown task ${a.task_id}`; },
+      handler: async (a) => { const r = await awaitTask(a.task_id, capWait(a.timeout_minutes)); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
     },
     {
       name: 'task_status',
@@ -192,7 +236,7 @@ export function conductorToolDefs({ sessionId, cwd }) {
     { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => (cancelTask(a.task_id) ? `Task ${a.task_id} canceled.` : `unknown task ${a.task_id}`) },
     {
       name: 'allow_command',
-      description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad, cmake, pytest). Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
+      description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad). Allowed programs are trusted: they run with the worker\'s privileges and are not sandboxed. Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
       schema: z.object({ command: z.string().describe('Bare command name to allow, e.g. "openscad" (no path, no arguments, no shell operators)') }),
       handler: async (a) => {
         const raw = String(a.command || '').trim();
@@ -204,13 +248,14 @@ export function conductorToolDefs({ sessionId, cwd }) {
           'cscript', 'wscript', 'mshta', 'rundll32', 'regsvr32',
           'bunx', 'npx', 'npm', 'pnpm', 'pnpx', 'yarn', 'exec',
           'pip', 'pip3', 'pipx', 'uv', 'uvx',
-          'sudo', 'runas', 'osascript']);
+          'sudo', 'runas', 'osascript',
+          'start', 'call', 'forfiles']);
         // S3: also deny by pattern — catches versioned interpreters (python3.12, python3.12w) and their w suffixes.
         const DENIED_PATTERN = /^(python|py|node|nodejs|ruby|perl|php|lua|pwsh|powershell|deno|bun|java|osascript)[\d.]*w?$/i;
         if (DENIED_EXACT.has(base.toLowerCase()) || DENIED_PATTERN.test(base)) return `refused: "${base}" is a shell, interpreter, or script host — allowing it would re-enable arbitrary execution and defeat the boundary.`;
         const shell = loadConfig().worker?.shell;
         if (shell === true) return 'worker.shell is already unrestricted (true); no allow-list to extend.';
-        if (shell === false || shell === 'off') return 'worker.shell is off (the run tool is disabled). Turn it into an allow-list in Settings first.';
+        if (shell === false || shell === 'off') return 'worker.shell is off (the run tool is disabled). Set worker.shell to an allow-list array in config.json (or POST /api/settings) first.';
         const list = Array.isArray(shell) ? shell : [];
         if (list.some((x) => x.replace(/\.(exe|cmd|bat|com|ps1)$/i, '') === base)) return `"${base}" is already on the allow-list.`;
         saveConfig({ worker: { shell: [...list, base] } });
@@ -295,13 +340,13 @@ export function conductorToolDefs({ sessionId, cwd }) {
       description: 'Execute a multi-stage plan deterministically (the orchestration playbook: planner pass, fan-out finders, adversarial refuters with votes, judge panels, until-dry loops, completeness critic). Stages run in order; each stage\'s tasks run in parallel on any providers YOU choose (leave provider/model empty to auto-pick). Findings flow between stages: ask finder tasks to end with a ```json {"findings":[{title,file,line,severity,detail,fix}]} block; refuter/judge tasks with {"real":true|false,"reason":...}. Returns a per-stage report; verify it yourself.',
       schema: z.object({
         goal: z.string().describe('One line: what the plan is for'),
-        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional().describe('Defaults for every task (a task may override)'),
+        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional().describe('Defaults for every task (a task may override)'),
         stages: z.array(z.object({
           id: z.string(), title: z.string().optional(),
-          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
-          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.string().optional(), difficulty: z.number().optional() })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
+          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional(),
+          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
           for_each: z.string().optional().describe('Run the task template once per finding of an earlier stage: "<stage>" (its findings) or "<stage>.confirmed" / "<stage>.rejected"'),
-          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.string().optional(), difficulty: z.number().optional() }).optional(),
+          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional(),
           votes: z.number().optional().describe('for_each: independent verdicts per item (1-7); with lenses[] each vote gets a different lens'),
           lenses: z.array(z.string()).optional(),
           pass: z.enum(['majority', 'any', 'all']).optional(),
@@ -310,8 +355,37 @@ export function conductorToolDefs({ sessionId, cwd }) {
         timeout_minutes: z.number().max(1440).optional(),
       }),
       handler: async (a) => {
-        const r = await runPlan(a, { sessionId, cwd, recommend, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
-        return `Plan ${r.id} — ${r.goal}\n\n${r.report}\n\nFull record: ${statePath('plans', `${r.id}.json`)}`;
+        const picks = [
+          a.defaults,
+          ...(a.stages || []).flatMap((s) => [s.defaults, s.task, ...(s.tasks || [])]),
+        ].filter(Boolean);
+        for (const p of picks) {
+          const bad = checkVariant(p.category || a.defaults?.category, p.variant);
+          if (bad) return bad;
+        }
+        let planId;
+        const pending = runPlan(a, { sessionId, cwd, recommend, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride, onId: (id) => { planId = id; } });
+        const format = (r) => `Plan ${r.id} — ${r.goal}\n\n${r.report}\n\nFull record: ${statePath('plans', `${r.id}.json`)}`;
+        if (maxBlockMs == null) return format(await pending);
+        let timer;
+        try {
+          const winner = await Promise.race([
+            pending.then((r) => ({ r })),
+            new Promise((resolve) => { timer = setTimeout(() => resolve({}), maxBlockMs); }),
+          ]);
+          if (winner.r) return format(winner.r);
+          return `Plan ${planId} still running — call plan_status with plan_id ${planId}.`;
+        } finally { clearTimeout(timer); }
+      },
+    },
+    {
+      name: 'plan_status',
+      description: 'Status and report of a run_plan: the in-flight record if still running, else the journaled result.',
+      schema: z.object({ plan_id: z.string() }),
+      handler: async (a) => {
+        const p = getPlan(a.plan_id);
+        if (!p) return `unknown plan ${a.plan_id}`;
+        return `Plan ${p.id} — ${p.status}${p.goal ? ` — ${p.goal}` : ''}\n\n${p.report || '(still running)'}${p.startedAt ? `\nstartedAt: ${p.startedAt}` : ''}${p.finishedAt ? `\nfinishedAt: ${p.finishedAt}` : ''}`;
       },
     },
   ];
@@ -320,14 +394,13 @@ export function conductorToolDefs({ sessionId, cwd }) {
 const jsonSchema = (schema) => { const s = z.toJSONSchema(schema); delete s.$schema; return s; };
 
 /** Claude Agent SDK in-process MCP server. */
-export function conductorTools({ sessionId, cwd }) {
-  const cfg = loadConfig();
+export function conductorTools({ sessionId, cwd, maxBlockMs }) {
   return createSdkMcpServer({
     name: 'conductor',
     version: '2.0.0',
     alwaysLoad: true, // delegation tools are the point; never hide them behind tool search
     instructions: `Workbench tools. Worker selection is empirical: tag delegate calls with category + difficulty and omit provider/model to let the scorecard pick; when the scorecard has no qualified plan the delegate is refused — name a provider/model explicitly (which always runs and seeds the scorecard) or do small work yourself. Rate finished tasks with rate_task. Tasks run in ${cwd}.`,
-    tools: conductorToolDefs({ sessionId, cwd }).map((d) => tool(d.name, d.description, d.schema.shape, async (args) => ({ content: [{ type: 'text', text: String(await d.handler(args)) }] }))),
+    tools: conductorToolDefs({ sessionId, cwd, maxBlockMs }).map((d) => tool(d.name, d.description, d.schema.shape, async (args) => ({ content: [{ type: 'text', text: String(await d.handler(args)) }] }))),
   });
 }
 

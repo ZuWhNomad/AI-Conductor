@@ -26,8 +26,9 @@ conductor (bin)  -> server/  -> browser UI (SSE stream + JSON API) + /mcp/<sessi
                         codex  : one `codex exec` turn per message (thread resumed); tools via /mcp/<session>
                         loop   : OpenAI-compatible tool loop (Ollama / API models) with the same tools as functions
                         tools (core/tools.mjs, defined once): delegate, follow_up, await_task, task_status,
-                          cancel_task, list_tasks, list_models, limits, log_improvement, context_tree,
-                          install_model, generate_image
+                          cancel_task, allow_command, rate_task, model_scores, smoke_test, list_tasks,
+                          list_models, limits, log_improvement, context_tree, install_model, generate_image,
+                          run_plan, plan_status
                  -> core/workers/*  : codex | claude-sdk | openai-compat | ollama | image | vendor-cli
                  -> core/providers/*: detect / listModels / pollLimits per vendor
                     providers/vendors.mjs: one spec per subscription CLI (Antigravity `agy`, Grok, Qwen Code,
@@ -86,7 +87,7 @@ scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
 share/                   install.cmd, install.sh (for friends)
 test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/), the rest flat
-docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, ROADMAP-capabilities
+docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, video-briefing-finance-prompt
 ```
 
 Every folder above also holds a `CONTEXT.md` — purpose, entry points, invariants, how to test — which is what an

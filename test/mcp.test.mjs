@@ -86,6 +86,47 @@ test('Agent SDK shape and source skipping', () => {
   assert.deepEqual(Object.keys(forClaudeSdk(reg, { skip: ['claude'] })), ['b']);
 });
 
+test('L24: Claude type/headers and Codex bearer/http_headers reach the Agent SDK as ${VAR} expansions, not literal secrets', () => {
+  const previous = claudeFixture;
+  try {
+    claudeFixture = { mcpServers: {
+      quantgpt: { type: 'http', url: 'https://mcp.quantgpt.test', headers: { Authorization: 'Bearer ${QUANTGPT_KEY}' } },
+      sse_svc: { type: 'sse', url: 'https://sse.test/mcp', headers: { 'X-Trace': '1' } },
+    } };
+    const claude = readClaudeJson();
+    assert.equal(claude.quantgpt.type, 'http');
+    assert.equal(claude.quantgpt.headers.Authorization, 'Bearer ${QUANTGPT_KEY}');
+    assert.equal(claude.sse_svc.type, 'sse');
+    const sdk = forClaudeSdk({
+      quantgpt: { ...claude.quantgpt, source: 'claude' },
+      sse_svc: { ...claude.sse_svc, source: 'claude' },
+      warehouse: { url: 'https://example.test/mcp', bearer_token_env_var: 'WAREHOUSE_TOKEN', http_headers: { 'X-Region': 'us' }, env_http_headers: { 'X-Api-Key': 'WAREHOUSE_API_KEY' }, source: 'codex' },
+    });
+    assert.deepEqual(sdk.quantgpt, { type: 'http', url: 'https://mcp.quantgpt.test', headers: { Authorization: 'Bearer ${QUANTGPT_KEY}' } });
+    assert.deepEqual(sdk.sse_svc, { type: 'sse', url: 'https://sse.test/mcp', headers: { 'X-Trace': '1' } });
+    assert.equal(sdk.warehouse.type, 'http');
+    assert.equal(sdk.warehouse.headers.Authorization, 'Bearer ${WAREHOUSE_TOKEN}');
+    assert.equal(sdk.warehouse.headers['X-Region'], 'us');
+    assert.equal(sdk.warehouse.headers['X-Api-Key'], '${WAREHOUSE_API_KEY}');
+    assert.doesNotMatch(JSON.stringify(sdk), /sk-|secret|literal-token/);
+  } finally { claudeFixture = previous; }
+
+  const parsed = parseCodexToml(`[mcp_servers.figma]
+url = "https://mcp.figma.test"
+bearer_token_env_var = "FIGMA_OAUTH_TOKEN"
+http_headers = { "X-Figma-Region" = "us-east-1" }
+env_http_headers = { "X-User" = "FIGMA_USER" }
+[mcp_servers.custom.http_headers]
+"X-Organization-ID" = "org-123"
+[mcp_servers.custom]
+url = "https://custom.test/mcp"
+`);
+  assert.equal(parsed.figma.bearer_token_env_var, 'FIGMA_OAUTH_TOKEN');
+  assert.equal(parsed.figma.http_headers['X-Figma-Region'], 'us-east-1');
+  assert.equal(parsed.figma.env_http_headers['X-User'], 'FIGMA_USER');
+  assert.equal(parsed.custom.http_headers['X-Organization-ID'], 'org-123');
+});
+
 test('Codex env forwarding keeps secrets off argv except conflicting per-server values', () => {
   const overridden = codexMcpArgs({ node_repl: { command: 'node', env: { NODE_PATH: 'replacement-secret' } } });
   assert.ok(overridden.args.includes('mcp_servers.node_repl.env={}'), 'clear inherited literal values before forwarding replacements');

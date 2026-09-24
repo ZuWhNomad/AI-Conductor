@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readJson, writeJson, statePath } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 
-const { validatePlan, extractJson, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan } = await import('../core/plans.mjs');
+const { validatePlan, extractJson, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan, abortPlans, getPlan } = await import('../core/plans.mjs');
 
 test('plan IDs avoid persisted journals and simultaneous active plans', async (ctx) => {
   const diskId = (0.125).toString(36).slice(2, 10), file = statePath('plans', `${diskId}.json`);
@@ -242,7 +242,8 @@ test('stages expand with templates, per-item votes and lenses, and inherited def
   assert.match(refuters[0].spec, /Bug A/); assert.match(refuters[0].spec, /via read/); assert.match(refuters[1].spec, /via reproduce/);
   assert.equal(refuters[3].item.id, 'f2'); assert.equal(refuters[3].vote, 1);
   const critic = expandStage({ id: 'critic', tasks: [{ spec: 'Given:\n{{results:find}}\nWhat is missing?' }] }, ctx);
-  assert.match(critic[0].spec, /two findings/);
+  assert.match(critic[0].spec, /Bug A/);
+  assert.match(critic[0].spec, /"file": "a.js"/);
   assert.deepEqual(expandStage({ id: 'v2', for_each: 'find.confirmed', task: { spec: 'x' } }, ctx), []);
 });
 
@@ -410,15 +411,14 @@ test('a mixed stage awaits eligible inputs and preserves explicit and recommende
   const pending = runPlan({ stages: [
     { id: 'find', tasks: [
       { spec: 'explicit', category: 'explicit', provider: 'pinned', model: 'chosen', effort: 'high' },
-      { spec: 'refused', category: 'refused' },
       { spec: 'automatic', category: 'auto', difficulty: 4, exclude: ['excluded'] },
       { spec: 'automatic with effort', category: 'auto', effort: 'low' },
     ] },
-    { id: 'later', tasks: [{ spec: 'must not start' }] },
+    { id: 'later', tasks: [{ spec: 'after' }] },
   ] }, {
     recommend(input) {
       recommendations.push(input);
-      return input.category === 'refused' ? null : { provider: 'recommended', model: 'qualified', effort: 'medium' };
+      return { provider: 'recommended', model: 'qualified', effort: 'medium' };
     },
     taskRuntime: {
       createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
@@ -438,17 +438,15 @@ test('a mixed stage awaits eligible inputs and preserves explicit and recommende
     ]);
     assert.deepEqual(waited, ['task-1', 'task-2', 'task-3']);
     assert.deepEqual(recommendations, [
-      { category: 'refused', difficulty: 2, exclude: [], overflowApi: false },
       { category: 'auto', difficulty: 4, exclude: ['excluded'], overflowApi: false },
       { category: 'auto', difficulty: 2, exclude: [], overflowApi: false },
     ]);
   } finally { terminal.resolve(); }
   const out = await pending;
-  assert.equal(out.status, 'incomplete');
-  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['done', 'no_worker', 'done', 'done']);
-  assert.deepEqual(out.stages.find.tasks.map((t) => t.id), ['task-1', null, 'task-2', 'task-3']);
-  assert.deepEqual(out.stages.find.findings, []);
-  assert.equal(out.stages.later, undefined);
+  assert.equal(out.status, 'done');
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['done', 'done', 'done']);
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.id), ['task-1', 'task-2', 'task-3']);
+  assert.equal(out.stages.later.tasks.length, 1);
 });
 
 test('finder rounds accumulate unique findings that survive dedupe and receive every refuter vote', async () => {
@@ -552,7 +550,7 @@ const urls = Object.fromEntries(['tools', 'plans', 'tasks', 'scorecard', 'capabi
 const sources = {
   tasks: `export * from ${JSON.stringify(urls.tasks)}; export const awaitTask = (...args) => globalThis.toolFixtures.awaitTask(...args);`,
   scorecard: `export * from ${JSON.stringify(urls.scorecard)}; export const recommend = (...args) => globalThis.toolFixtures.recommend(...args);`,
-  capabilities: 'export const accessProviders = () => null, missingFor = () => [], shouldResearch = () => false, researchSpec = () => "", parseResearched = () => [];',
+  capabilities: 'export const accessProviders = () => null, missingFor = () => [], shouldResearch = () => false, researchSpec = () => "", parseResearched = () => [], loadIndex = () => [];',
 };
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -844,4 +842,173 @@ test('timeout_minutes is bounded to 1440 at the tool schema and in runPlan', asy
   } });
   assert.equal(out.status, 'done');
   assert.equal(waits[0], 1440 * 60_000);
+});
+
+test('L2: for_each tallies by item object reference, never by worker-supplied id', async () => {
+  const a = { id: 'F1', title: 'Bug A', file: 'a.js' }, b = { id: 'F1', title: 'Bug B', file: 'b.js' };
+  let n = 0;
+  const out = await runPlan({ stages: [
+    { id: 'find', tasks: [{ spec: 'find' }] },
+    { id: 'vote', for_each: 'find', votes: 1, task: { spec: 'vote {{item}}' } },
+  ] }, { taskRuntime: {
+    createTask() { return { id: `t${++n}` }; },
+    async awaitTask(id) {
+      if (id === 't1') return { id, status: 'done', result: { finalMessage: JSON.stringify({ findings: [a, b] }) } };
+      return { id, status: 'done', result: { finalMessage: JSON.stringify({ real: id === 't2' }) } };
+    },
+    getTask() { assert.fail('use terminal snapshots'); },
+  } });
+  assert.equal(out.status, 'done');
+  assert.equal(out.stages.vote.confirmed.length, 1);
+  assert.equal(out.stages.vote.rejected.length, 1);
+  assert.equal(out.stages.vote.confirmed[0].title, 'Bug A');
+  assert.equal(out.stages.vote.rejected[0].title, 'Bug B');
+});
+
+test('L16: {{results}} is bounded findings JSON (location/line/evidence/fix); {{seen}} prints location', async () => {
+  const finding = { title: 'Null deref', location: 'src/a.js:3', line: 3, evidence: 'ptr is null', fix: 'check ptr', severity: 'high' };
+  const created = [];
+  await runPlan({ stages: [
+    { id: 'find', tasks: [{ spec: 'find' }] },
+    { id: 'next', tasks: [{ spec: 'seen:\n{{seen}}\nresults:\n{{results:find}}' }] },
+  ] }, { taskRuntime: {
+    createTask(input) { created.push(input); return { id: `t${created.length}` }; },
+    async awaitTask(id) {
+      return { id, status: 'done', result: { finalMessage: id === 't1' ? JSON.stringify({ findings: [finding] }) : 'ok' } };
+    },
+    getTask() { assert.fail('use terminal snapshots'); },
+  } });
+  assert.match(created[1].spec, /src\/a\.js:3/);
+  assert.match(created[1].spec, /ptr is null/);
+  assert.match(created[1].spec, /check ptr/);
+  assert.match(created[1].spec, /"line": 3/);
+  assert.match(created[1].spec, /seen:\n- Null deref \(src\/a\.js:3\)/);
+});
+
+test('L17: a planner report with fenced non-finding JSON keeps the full summary', async () => {
+  const report = 'Plan: do the thing.\n' + 'step '.repeat(200) + '\n```json\n["step1","step2"]\n```';
+  const out = await runPlan({ stages: [{ id: 'plan', tasks: [{ spec: 'plan' }] }] }, { taskRuntime: {
+    createTask() { return { id: 'p1' }; },
+    async awaitTask() { return { id: 'p1', status: 'done', result: { finalMessage: report } }; },
+    getTask() { assert.fail('use the awaitTask snapshot'); },
+  } });
+  assert.equal(out.stages.plan.summary, report.slice(0, 4000));
+  assert.ok(out.stages.plan.summary.length > 140);
+});
+
+test('L18: lastFenced want-predicate: a trailing fence without findings/verdict does not win', () => {
+  const findings = '```json\n{"findings":[{"title":"Bug","file":"a.js"}]}\n```\n```json\n{"timeout":30}\n```';
+  assert.equal(findingsOf(findings, 't')[0].title, 'Bug');
+  const verdict = '```json\n{"real":true,"reason":"reproduced"}\n```\n```json\n{"timeout":30}\n```';
+  assert.equal(parseVerdict(verdict).real, true);
+  const prose = parseVerdict('```json\n{"note":"this is real and confirmed"}\n```');
+  assert.equal(prose.real, false);
+  assert.match(prose.reason, /note/);
+});
+
+test('X3: abortPlans cancels the current stage and does not dispatch later stages', async () => {
+  const created = [];
+  const hang = Promise.withResolvers();
+  const pending = runPlan({ stages: [
+    { id: 'a', tasks: [{ spec: 'one' }] },
+    { id: 'b', tasks: [{ spec: 'must not start' }] },
+  ] }, { sessionId: 'abort-me', taskRuntime: {
+    createTask(input) { created.push(input); return { id: `t${created.length}` }; },
+    async awaitTask(id) { await hang.promise; return { id, status: 'canceled' }; },
+    getTask() { return { id: 't1', status: 'canceled' }; },
+  } });
+  await new Promise(setImmediate);
+  assert.equal(created.length, 1);
+  abortPlans('abort-me');
+  hang.resolve();
+  const out = await pending;
+  assert.equal(out.status, 'incomplete');
+  assert.match(out.report, /aborted/);
+  assert.equal(out.stages.b, undefined);
+  assert.equal(getPlan(out.id).status, 'incomplete');
+});
+
+test('L45: findings without title/file fall back to issue/summary and a content key', () => {
+  assert.notEqual(findingKey({ issue: 'alpha-bug' }), findingKey({ issue: 'beta-bug' }));
+  assert.notEqual(findingKey({ summary: 'one' }), findingKey({ summary: 'two' }));
+  assert.notEqual(findingKey({ extra: 'unique-payload-1' }), findingKey({ extra: 'unique-payload-2' }));
+  assert.equal(findingKey({ location: 'A.JS', issue: 'Null   deref' }), 'a.js|null deref');
+});
+
+test('L48: startedAt is captured first; for_each cannot target itself; until_dry rejects for_each', async () => {
+  assert.throws(() => validatePlan({ stages: [{ id: 'a', for_each: 'a', task: { spec: 'x' } }] }), /unknown earlier stage/);
+  assert.throws(() => validatePlan({ stages: [{ id: 'a', tasks: [{ spec: 'x' }] }, { id: 'v', for_each: 'a', task: { spec: 'y' } }], until_dry: { stage: 'v' } }), /for_each/);
+  const out = await runPlan({ stages: [{ id: 'a', tasks: [{ spec: 'x' }] }] }, { taskRuntime: {
+    createTask() { return { id: 't' }; },
+    async awaitTask() { return { id: 't', status: 'done', result: { finalMessage: 'ok' } }; },
+    getTask() { assert.fail('use terminal snapshots'); },
+  } });
+  assert.ok(out.startedAt);
+  assert.ok(out.finishedAt);
+  assert.ok(out.startedAt <= out.finishedAt);
+});
+
+test('P10: an unroutable input does not dispatch siblings', async () => {
+  const created = [];
+  const out = await runPlan({ stages: [
+    { id: 'find', tasks: [
+      { spec: 'explicit', provider: 'pinned', model: 'chosen' },
+      { spec: 'refused', category: 'refused' },
+      { spec: 'automatic', category: 'auto' },
+    ] },
+    { id: 'later', tasks: [{ spec: 'must not start' }] },
+  ] }, {
+    recommend(input) { return input.category === 'refused' ? null : { provider: 'recommended', model: 'qualified', effort: 'medium' }; },
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
+      awaitTask() { assert.fail('no task was created'); },
+      getTask() { assert.fail('no task was created'); },
+    },
+  });
+  assert.equal(created.length, 0);
+  assert.equal(out.status, 'incomplete');
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['no_worker', 'no_worker', 'no_worker']);
+  assert.equal(out.stages.later, undefined);
+  assert.match(out.report, /Incomplete: no worker/);
+});
+
+test('L22: failover hops skip depth++ and root, so the first retry is not an escalation', async () => {
+  const original = attempt();
+  const failover = attempt({ title: `FAILOVER: ${original.title}`, model: 'other', retryOf: original.id });
+  original.failedOverTo = failover.id; // what tasks.mjs failover() records on the exhausted task
+  calls.length = 0;
+  await delegate(failover);
+  assert.equal(calls.at(-1).escalate, false, 'failover must not count as a prior model switch');
+});
+
+test('L43: retry_of that resolves to a selection already in the chain is refused', async () => {
+  const failed = attempt();
+  const report = await handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, provider: 'stub', model: 'original', effort: 'low', background: true });
+  assert.match(report, /already in the chain|would re-run/);
+});
+
+test('L44: at-ceiling compares top against every selection in the chain, not only the latest', async (t) => {
+  const original = attempt();
+  const retry = attempt({ model: 'fallback', retryOf: original.id });
+  t.mock.method(globalThis.toolFixtures, 'recommend', (input) => {
+    calls.push(input);
+    return { provider: 'stub', model: 'original', effort: 'low', reason: 'top' };
+  });
+  calls.length = 0;
+  const report = await delegate(retry);
+  assert.match(report, /Already at the ceiling/);
+  assert.equal(calls.length, 1); // ceiling query only; no downward pick
+});
+
+test('L19: auto-pick persists difficulty 2 when omitted', async () => {
+  const created = [];
+  await runPlan({ stages: [{ id: 'a', tasks: [{ spec: 'x', category: 'implement' }] }] }, {
+    recommend() { return { provider: 'stub', model: 'm', effort: 'low' }; },
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: 't1' }; },
+      async awaitTask() { return { id: 't1', status: 'done', result: { finalMessage: 'ok' } }; },
+      getTask() { assert.fail(); },
+    },
+  });
+  assert.equal(created[0].difficulty, 2);
 });

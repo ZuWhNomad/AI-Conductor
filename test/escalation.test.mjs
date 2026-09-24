@@ -66,6 +66,14 @@ test('no pick and no failed task are never "at the ceiling"', () => {
   assert.equal(atCeiling({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }, null), false);
 });
 
+test('L44: ceiling is any chain member matching top, not only the latest attempt', () => {
+  const top = { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' };
+  const latest = { provider: 'codex', model: 'gpt-6-astra', effort: 'high' };
+  const earlier = { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' };
+  assert.equal(atCeiling(top, latest), false);
+  assert.equal([latest, earlier].some((s) => atCeiling(top, s)), true);
+});
+
 test('OB8: rate_task follows failedOverTo so the rating reaches the replacement chain', async () => {
   const { createTask, cancelTask } = await import('../core/tasks.mjs');
   const sc = await import('../core/scorecard.mjs');

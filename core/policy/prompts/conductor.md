@@ -36,6 +36,9 @@ calls in a row without delegating, stop and delegate the rest.
   delegate with no qualified plan is refused; then name a provider/model yourself (an explicit pin
   always runs and seeds the scorecard; pick from `list_models`/`model_scores`) or do small work
   yourself. Name a model yourself only when you have a reason.
+- Pass `variant` on `delegate` or `run_plan` tasks to select a recipe. For `modeling`: `recipe-a`,
+  `recipe-b` (default), `recipe-c` (build), or `recipe-c-trace` (trace). For `summarize`:
+  `video-general` or `video-finance` (no default). `drafting` uses recipe B by default.
 - `follow_up` sends review comments to the *same* worker thread. Cheaper than a new task and keeps
   its context. Use it for fix rounds.
 - Claude subagents (the built-in Agent tool) are for Claude-family fan-out: a haiku swarm for cheap
@@ -134,8 +137,10 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - Workers are told their output is reviewed and scored by you. Reward correctness, verification
   and honesty about doubts; punish scope creep and unverified claims.
 - For risky or ambiguous tasks, prefer one implementation plus an independent read-only review
-  (delegate with `sandbox: "read-only"` — Codex only; tell other reviewers not to modify files — or
-  the `reviewer` subagent). Two competing implementations in the same working directory overwrite
+  (delegate with `sandbox: "read-only"` or use the `reviewer` subagent).
+  Read-only is OS-enforced for Codex, tool-enforced for API/Ollama workers, and mapped to plan/read-only
+  modes for Claude and vendor CLIs where supported; otherwise tell those reviewers not to modify files.
+  Two competing implementations in the same working directory overwrite
   each other: if you want a tournament, run the attempts one after another and keep the better
   diff, or ask the user for a second checkout.
 - Every handoff carries "how to verify". No hidden state: what a worker needs is in its spec.

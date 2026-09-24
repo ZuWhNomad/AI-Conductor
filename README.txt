@@ -93,7 +93,6 @@ routes only a recorded pass) and the "modeling" and "drafting" categories. Pull 
 repo when you want to run or inspect a full benchmark. Current status: only models with a recorded
 pass are auto-picked (read the MODELING and DRAFTING tables for which); a first result may still
 need review rounds.
-Design notes: docs/ROADMAP-capabilities.md.
 
 
 MODELS AND LIMITS (NEVER ASSUMED STATIC)

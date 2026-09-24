@@ -2,7 +2,7 @@
 // executed on the task scheduler. Model-agnostic: every task carries whatever provider/model/effort
 // the conductor chose (or nothing, for the auto-pick). Pure helpers are exported for tests.
 import { createTask, awaitTask, getTask, cancelTask } from './tasks.mjs';
-import { statePath, writeJson, nowIso, shortId } from './paths.mjs';
+import { statePath, writeJson, readJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
 import { existsSync } from 'node:fs';
@@ -12,6 +12,7 @@ export const SANDBOX_VALUES = /** @type {const} */ (['read-only', 'workspace-wri
 
 const MAX_TASKS = 200;
 const activePlans = new Set();
+const livePlans = new Map(); // id -> in-flight record (plan_status + abortPlans)
 
 /** Validate and normalize a plan; throws on structural errors. */
 export function validatePlan(plan) {
@@ -19,15 +20,20 @@ export function validatePlan(plan) {
   const ids = new Set();
   for (const [i, s] of plan.stages.entries()) {
     s.id = String(s.id || `stage${i + 1}`);
+    // L48: check for_each before ids.add so a stage cannot target itself.
+    if (s.for_each && !ids.has(String(s.for_each).split('.')[0])) throw new Error(`stage ${s.id}: for_each refers to unknown earlier stage ${s.for_each}`);
     if (ids.has(s.id)) throw new Error(`duplicate stage id ${s.id}`);
     ids.add(s.id);
-    if (s.for_each && !ids.has(String(s.for_each).split('.')[0])) throw new Error(`stage ${s.id}: for_each refers to unknown earlier stage ${s.for_each}`);
     if (s.for_each && !s.task?.spec) throw new Error(`stage ${s.id}: for_each needs a task template with a spec`);
     if (!s.for_each && !(Array.isArray(s.tasks) && s.tasks.length)) throw new Error(`stage ${s.id}: needs tasks[] or for_each`);
     for (const t of s.tasks || []) if (!t.spec) throw new Error(`stage ${s.id}: every task needs a spec`);
     s.votes = Math.max(1, Math.min(7, Number(s.votes) || 1));
   }
-  if (plan.until_dry && !ids.has(plan.until_dry.stage)) throw new Error('until_dry.stage must name a stage');
+  if (plan.until_dry) {
+    if (!ids.has(plan.until_dry.stage)) throw new Error('until_dry.stage must name a stage');
+    const target = plan.stages.find((s) => s.id === plan.until_dry.stage);
+    if (target?.for_each) throw new Error('until_dry cannot target a for_each stage');
+  }
   return plan;
 }
 
@@ -66,9 +72,11 @@ function lastBalancedObject(text, want = () => true) {
   return best;
 }
 
-function lastFenced(text) {
+function lastFenced(text, want = () => true) {
   const fences = [...String(text).matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1].trim()).reverse();
-  for (const f of fences) { try { return JSON.parse(f); } catch {} }
+  for (const f of fences) {
+    try { const v = JSON.parse(f); if (want(v)) return v; } catch {}
+  }
 }
 
 function hasVerdictKey(o) {
@@ -82,10 +90,15 @@ function verdictOf(j) {
   if (typeof j.score === 'number') return { real: j.score >= (j.threshold ?? 5), reason: j.reason || '', score: j.score };
 }
 
-/** Fenced JSON, else an unfenced object with findings[]. */
+const isFindingsShape = (o) => {
+  const arr = Array.isArray(o?.findings) ? o.findings : Array.isArray(o) ? o : null;
+  return Array.isArray(arr) && arr.some((f) => f && typeof f === 'object');
+};
+
+/** Fenced JSON that looks like findings, else an unfenced object with findings[]. */
 function structuredOf(report) {
   if (!report) return undefined;
-  const fenced = lastFenced(report);
+  const fenced = lastFenced(report, isFindingsShape);
   if (fenced !== undefined) return fenced;
   return lastBalancedObject(String(report), (o) => Array.isArray(o.findings)) ?? undefined;
 }
@@ -105,11 +118,39 @@ export function findingsOf(report, taskId) {
   return report?.trim() ? [{ id: `${taskId}-1`, title: report.trim().slice(0, 140), detail: report.trim(), source: taskId }] : [];
 }
 
-export const findingKey = (f) => `${String(f.file || f.location || '').toLowerCase().replace(/\\/g, '/')}|${String(f.title || f.detail || '').toLowerCase().replace(/\s+/g, ' ').slice(0, 60)}`;
+const locOf = (f) => f.file || f.location || '';
+const titleOf = (f) => f.title || f.detail || f.issue || f.summary || '';
+const findingLine = (f, extra = '') => `- [${f.severity || '?'}] ${locOf(f) ? locOf(f) + ': ' : ''}${titleOf(f)}${extra}`;
+// Same 4000-char cap already used for a single free-text stage summary.
+const RESULTS_CHARS = 4000;
+const findingFields = (f) => {
+  const o = {};
+  for (const k of ['id', 'title', 'detail', 'issue', 'summary', 'file', 'location', 'line', 'severity', 'evidence', 'fix']) {
+    if (f[k] != null && f[k] !== '') o[k] = f[k];
+  }
+  return o;
+};
+function resultsText(r) {
+  if (r.findings?.length) {
+    const json = JSON.stringify(r.findings.map(findingFields), null, 1);
+    return json.length > RESULTS_CHARS ? json.slice(0, RESULTS_CHARS) + '…' : json;
+  }
+  return r.summary || '';
+}
+
+export const findingKey = (f) => {
+  const loc = String(locOf(f)).toLowerCase().replace(/\\/g, '/');
+  const title = String(titleOf(f)).toLowerCase().replace(/\s+/g, ' ').slice(0, 60);
+  if (loc || title) return `${loc}|${title}`;
+  try { return JSON.stringify(f).toLowerCase().slice(0, 80); } catch { return '|'; }
+};
 
 /** Verdict from a refuter/judge report: {real:boolean} / {verdict:'real'|'refuted'} / {score}. */
 export function parseVerdict(report) {
   const t = String(report || '');
+  const withKey = t ? lastFenced(t, hasVerdictKey) : undefined;
+  if (withKey !== undefined) return verdictOf(withKey);
+  // L18: a fenced object with no verdict key is still "not real" (not a prose fallback).
   const fenced = t ? lastFenced(t) : undefined;
   if (fenced !== undefined) {
     const j = fenced && typeof fenced === 'object' && !Array.isArray(fenced) ? fenced : {};
@@ -130,8 +171,8 @@ const fill = (tpl, vars) => String(tpl).replace(/\{\{\s*([\w.:-]+)\s*\}\}/g, (_,
 
 /** Expand a stage into concrete task inputs given prior results (pure). */
 export function expandStage(stage, ctx) {
-  const vars = { goal: ctx.goal || '', seen: ctx.seen?.length ? ctx.seen.map((f) => `- ${f.title || f.detail || ''}${f.file ? ` (${f.file})` : ''}`).join('\n') : '(nothing yet)' };
-  for (const [id, r] of Object.entries(ctx.results || {})) vars[`results:${id}`] = r.summary || '';
+  const vars = { goal: ctx.goal || '', seen: ctx.seen?.length ? ctx.seen.map((f) => `- ${titleOf(f)}${locOf(f) ? ` (${locOf(f)})` : ''}`).join('\n') : '(nothing yet)' };
+  for (const [id, r] of Object.entries(ctx.results || {})) vars[`results:${id}`] = resultsText(r);
   const base = { ...(ctx.defaults || {}), ...(stage.defaults || {}) };
   if (!stage.for_each) return (stage.tasks || []).map((t, i) => ({ ...base, ...t, title: t.title || `${stage.id} #${i + 1}`, spec: fill(t.spec, vars) }));
   const [srcId, field] = String(stage.for_each).split('.');
@@ -140,16 +181,17 @@ export function expandStage(stage, ctx) {
   const out = [];
   for (const item of items) for (let v = 0; v < stage.votes; v++) {
     const lens = Array.isArray(stage.lenses) && stage.lenses.length ? stage.lenses[v % stage.lenses.length] : '';
-    out.push({ ...base, ...stage.task, item, vote: v, title: `${stage.task.title || stage.id}: ${(item.title || item.detail || '').slice(0, 50)}${stage.votes > 1 ? ` [${v + 1}/${stage.votes}]` : ''}`, spec: fill(stage.task.spec, { ...vars, item: JSON.stringify(item, null, 1), lens }) });
+    out.push({ ...base, ...stage.task, item, vote: v, title: `${stage.task.title || stage.id}: ${titleOf(item).slice(0, 50)}${stage.votes > 1 ? ` [${v + 1}/${stage.votes}]` : ''}`, spec: fill(stage.task.spec, { ...vars, item: JSON.stringify(item, null, 1), lens }) });
   }
   return out;
 }
 
-async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride }) {
-  const created = [];
-  let createError = null;
+async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live }) {
+  // P10: resolve every selection before creating any task.
+  const resolved = [];
   for (const inp of inputs) {
     let { provider, model, effort } = inp;
+    let difficulty = inp.difficulty, variant = inp.variant;
     if (!provider && !model && inp.category && recommend) {
       let pick, noWorker = 'No worker available for this input.';
       try {
@@ -158,19 +200,29 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
         pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi, ...(providers ? { providers } : {}) });
       }
       catch { noWorker = 'Worker recommendation failed.'; }
-      if (!pick) { created.push({ input: inp, id: null, noWorker }); continue; }
+      if (!pick) { resolved.push({ input: inp, noWorker }); continue; }
       // Preserve the proven visual effort even when plan/stage defaults supply an effort-only override.
       provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
+      difficulty = inp.difficulty || 2; // L19: persist the routed level when auto-picked
     }
+    resolved.push({ input: inp, provider, model, effort, difficulty, variant });
+  }
+  if (resolved.some((r) => r.noWorker)) {
+    return resolved.map((c) => ({ ...c, id: null, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false }));
+  }
+  const created = [];
+  let createError = null;
+  for (const r of resolved) {
     let t;
     try {
-      t = taskRuntime.createTask({ sessionId, cwd, title: inp.title, spec: inp.spec, provider, model, effort, sandbox: inp.sandbox, paths: inp.paths, category: inp.category, difficulty: inp.difficulty, overflowApi, parallelOverride });
+      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, category: r.input.category, difficulty: r.difficulty, variant: r.variant, overflowApi, parallelOverride });
     } catch (err) {
       createError = String(err?.message || err);
       for (const c of created) { if (c.id) cancelTask(c.id); }
       break;
     }
-    created.push({ input: inp, id: t.id });
+    created.push({ ...r, id: t.id });
+    if (live && t.id) live.taskIds.push(t.id);
   }
   if (createError) {
     return created.map((c) => ({ ...c, taskIds: c.id ? [c.id] : [], task: { status: 'canceled' }, complete: true, report: '', ok: false, noWorker: c.noWorker }))
@@ -201,10 +253,29 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
  */
 export async function runPlan(plan, options = {}) {
   validatePlan(plan);
-  const id = shortId((id) => activePlans.has(id) || existsSync(statePath('plans', `${id}.json`)));
+  const id = shortId((id) => activePlans.has(id) || existsSync(statePath('plans', `${id}.json`)) || livePlans.has(id));
   activePlans.add(id);
+  options.onId?.(id);
   try { return await executePlan(id, plan, options); }
-  finally { activePlans.delete(id); }
+  finally { activePlans.delete(id); livePlans.delete(id); }
+}
+
+/** Snapshot of an in-flight or journaled plan (plan_status). */
+export function getPlan(planId) {
+  if (!planId) return null;
+  if (livePlans.has(planId)) return livePlans.get(planId);
+  const file = statePath('plans', `${planId}.json`);
+  return existsSync(file) ? readJson(file, null) : null;
+}
+
+/** Abort every in-flight plan for this session: cancel its tasks, stop later stages. */
+export function abortPlans(sessionId) {
+  if (!sessionId) return;
+  for (const p of livePlans.values()) {
+    if (p.sessionId !== sessionId) continue;
+    p.aborted = true;
+    for (const tid of p.taskIds || []) cancelTask(tid);
+  }
 }
 
 async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false }) {
@@ -213,16 +284,25 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
   const ctx = { goal: plan.goal, defaults: plan.defaults || {}, results: {}, seen: [] };
   const seenKeys = new Set();
   let total = 0;
+  const startedAt = nowIso();
+  const live = { id, sessionId, status: 'running', goal: plan.goal, startedAt, stages: {}, report: '', taskIds: [], aborted: false };
+  livePlans.set(id, live);
+  const aborted = () => live.aborted;
   const publish = (kind, data) => bus.publish('plan', { planId: id, sessionId, kind, ...data });
   publish('started', { goal: plan.goal, stages: plan.stages.map((s) => s.id) });
 
   const runStage = async (stage, outputKeys, round = 0) => {
+    if (aborted()) return { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
     const inputs = expandStage(stage, ctx);
     if (!inputs.length) return { tasks: [], findings: [], confirmed: [], rejected: [], summary: '(no inputs)' };
     if (total + inputs.length > MAX_TASKS) return { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: `Incomplete: plan exceeds ${MAX_TASKS} tasks` };
     total += inputs.length;
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
-    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride });
+    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live });
+    if (aborted()) {
+      for (const d of done) if (d.id) cancelTask(d.id);
+      return { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status || 'canceled' })), findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
+    }
     const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
     if (done.some((d) => !d.complete)) {
       result.incomplete = true;
@@ -237,10 +317,11 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     }
     if (stage.for_each) {
       const groups = new Map();
-      for (const d of done) { const k = d.input.item.id || findingKey(d.input.item); if (!groups.has(k)) groups.set(k, { item: d.input.item, votes: [] }); groups.get(k).votes.push({ ...parseVerdict(d.report), taskId: d.id, ok: d.ok }); }
+      // L2: group by the item object reference expandStage passed, never by a worker-supplied id.
+      for (const d of done) { const k = d.input.item; if (!groups.has(k)) groups.set(k, { item: d.input.item, votes: [] }); groups.get(k).votes.push({ ...parseVerdict(d.report), taskId: d.id, ok: d.ok }); }
       for (const g of groups.values()) { const t = tally(g.votes, stage.pass || 'majority'); const entry = { ...g.item, votes: g.votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)), tally: `${t.real}/${t.total}` }; (t.confirmed ? result.confirmed : result.rejected).push(entry); }
       result.findings = result.confirmed;
-      result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''} (${f.tally})`).join('\n');
+      result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => findingLine(f, ` (${f.tally})`)).join('\n');
     } else {
       if (done.every((d) => !d.ok)) {
         result.incomplete = true;
@@ -255,25 +336,32 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
         if (!outputKeys.has(k)) { outputKeys.add(k); result.findings.push(f); }
       }
       result.fresh = fresh;
-      result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
-      if (done.length === 1 && done[0].ok && structuredOf(done[0].report) === undefined) result.summary = done[0].report.slice(0, 4000); // single free-text task (planner, critic)
+      result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => findingLine(f)).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
+      // L17: keep the full report unless real finding objects were extracted.
+      if (done.length === 1 && done[0].ok && !isFindingsShape(structuredOf(done[0].report))) result.summary = done[0].report.slice(0, RESULTS_CHARS); // single free-text task (planner, critic)
     }
     return result;
   };
 
   for (const stage of plan.stages) {
+    if (aborted()) {
+      ctx.results[stage.id] = { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
+      publish('stage_incomplete', { stage: stage.id, tasks: 0 });
+      break;
+    }
     const outputKeys = new Set();
     let res = await runStage(stage, outputKeys);
     if (!res.incomplete && plan.until_dry?.stage === stage.id) {
       let dry = res.fresh ? 0 : 1; const max = Math.max(1, Number(plan.until_dry.max_rounds) || 3); const k = Math.max(1, Number(plan.until_dry.dry_rounds) || 1);
       let rounds = 1;
       for (let round = 1; round < max && dry < k; round++) {
+        if (aborted()) { res.incomplete = true; res.summary += '\nIncomplete: plan aborted.'; break; }
         rounds = round + 1;
         const again = await runStage(stage, outputKeys, round);
         res.tasks.push(...again.tasks);
         if (again.incomplete) { res.incomplete = true; res.summary += `\n${again.summary}`; break; }
         res.findings.push(...again.findings);
-        res.summary = `${res.findings.length} findings after ${round + 1} rounds\n` + res.findings.map((f) => `- [${f.severity || '?'}] ${f.file ? f.file + ': ' : ''}${f.title || f.detail || ''}`).join('\n');
+        res.summary = `${res.findings.length} findings after ${round + 1} rounds\n` + res.findings.map((f) => findingLine(f)).join('\n');
         dry = again.fresh ? 0 : dry + 1;
       }
       if (!res.incomplete) {
@@ -283,13 +371,16 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
       }
     }
     ctx.results[stage.id] = res;
+    live.stages = ctx.results;
     if (res.incomplete) { publish('stage_incomplete', { stage: stage.id, tasks: res.tasks.length }); break; }
     publish('stage_done', { stage: stage.id, tasks: res.tasks.length, findings: res.findings.length });
   }
 
   const report = plan.stages.filter((s) => ctx.results[s.id]).map((s) => `## ${s.title || s.id}\ntasks: ${ctx.results[s.id].tasks.map((t) => `${t.taskIds?.join(' -> ') || t.id}[${t.status}]${t.timedOut ? ' (timed out)' : ''} ${t.model}`).join(', ')}\n${ctx.results[s.id].summary}`).join('\n\n');
   const status = Object.values(ctx.results).some((r) => r.incomplete) ? 'incomplete' : 'done';
-  const out = { id, status, goal: plan.goal, startedAt: nowIso(), stages: ctx.results, report };
+  const finishedAt = nowIso();
+  const out = { id, status, goal: plan.goal, startedAt, finishedAt, stages: ctx.results, report };
+  Object.assign(live, { status, report, stages: ctx.results, finishedAt });
   writeJson(statePath('plans', `${id}.json`), { ...out, plan });
   publish(status, { report: report.slice(0, 2000) });
   return out;

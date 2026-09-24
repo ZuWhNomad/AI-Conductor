@@ -1,6 +1,6 @@
 // Recipe registry (hand-curated): a coarse task category → an instruction set the worker gets with its spec.
 // Recipes are distilled from runs that passed a benchmark where others failed; they say *how* to approach the
-// kind of work, not what the task is. See docs/ROADMAP-capabilities.md (phase 2).
+// kind of work, not what the task is.
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT } from './paths.mjs';

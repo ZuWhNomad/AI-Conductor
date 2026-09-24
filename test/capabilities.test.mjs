@@ -73,6 +73,20 @@ test('unknown programs and MCP entries are absent until detected; access notes r
   }
 });
 
+test('L20: research proposals whose name is already indexed are dropped; timeout logs did not finish', () => {
+  const src = readFileSync(new URL('../core/tools.mjs', import.meta.url), 'utf8');
+  assert.match(src, /did not finish/);
+  assert.match(src, /indexed\.has\(e\.name\)/);
+  const [tesseract] = cap.parseResearched('```json\n' + JSON.stringify([{
+    name: 'tesseract', kind: 'cli', purpose: 'OCR', invoke: 'tesseract',
+    install: { url: 'https://github.com/tesseract-ocr/tesseract' },
+  }]) + '\n```', 'read');
+  const indexed = new Set(cap.loadIndex({ tools: { index: {} } }).map((e) => e.name));
+  assert.ok(indexed.has('tesseract'));
+  assert.equal(tesseract.name, 'tesseract');
+  assert.equal([tesseract].filter((e) => !indexed.has(e.name)).length, 0);
+});
+
 test('research on a miss is opt-in, once per category per 30 days; reports parse into unapproved proposals', () => {
   assert.equal(cap.shouldResearch('docs', { tools: { researchOnMiss: false, index: {} } }), false);
   const cfg = { tools: { researchOnMiss: true, index: {} } };

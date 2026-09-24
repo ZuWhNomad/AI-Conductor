@@ -11,6 +11,7 @@ import { bus } from './bus.mjs';
 import { mcpServers, forClaudeSdk } from './mcp.mjs';
 import { setSessionFlags, sessionFlags } from './session-flags.mjs';
 import { conductorTools, conductorToolDefs, toolsAsFunctions, CONDUCTOR_AGENTS } from './tools.mjs';
+import { abortPlans } from './plans.mjs';
 import { logImprovement } from './improve.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
@@ -155,6 +156,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
 
 export function deleteSession(id) {
   const s = sessions.get(id); if (!s) return false;
+  abortPlans(id); // X3: a deleted chat's plans stop dispatching
   stop(s);
   sessions.delete(id); persistAll();
   for (const kind of ['messages', 'loop']) { try { rmSync(HIST(id, kind), { force: true }); } catch {} }
@@ -406,6 +408,7 @@ export async function sendMessage(sessionId, text) {
 
 export async function interrupt(sessionId) {
   const s = sessions.get(sessionId); if (!s) return false;
+  abortPlans(sessionId); // X3: Stop also stops the chat's run_plan stages
   if (s.runtime !== 'claude') { s.turnAbort?.abort(); return !!s.turnAbort; }
   if (!s.query || s.status !== 'running') return false;
   s.interrupted = true; // the SDK reports an interrupt as an error result; label it instead of logging it
@@ -474,6 +477,7 @@ export async function setPermissionMode(sessionId, mode) {
 
 export function stopSession(sessionId) {
   const s = sessions.get(sessionId); if (!s) return false;
+  abortPlans(sessionId);
   stop(s); s.status = 'idle'; emit(s, 'status', { status: 'idle' });
   return true;
 }

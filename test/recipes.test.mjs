@@ -39,6 +39,47 @@ test('recipe variants still resolve, and an unknown category gets nothing', asyn
   assert.equal(recipeFor('nonsense-category'), null);
 });
 
+test('L25: delegate and run_plan schemas expose variant', async () => {
+  const { conductorToolDefs } = await import('../core/tools.mjs');
+  const defs = conductorToolDefs({ sessionId: 'l25', cwd: process.cwd() });
+  assert.equal(defs.find((d) => d.name === 'delegate').schema.parse({ title: 't', spec: 's', variant: 'recipe-c' }).variant, 'recipe-c');
+  const parsed = defs.find((d) => d.name === 'run_plan').schema.parse({
+    goal: 'g',
+    defaults: { variant: 'recipe-c', category: 'modeling' },
+    stages: [{
+      id: 'a',
+      defaults: { variant: 'recipe-a', category: 'modeling' },
+      tasks: [{ spec: 'x', variant: 'recipe-b', category: 'modeling' }],
+      task: { spec: 'y', variant: 'video-finance', category: 'summarize' },
+    }],
+  });
+  assert.equal(parsed.defaults.variant, 'recipe-c');
+  assert.equal(parsed.stages[0].defaults.variant, 'recipe-a');
+  assert.equal(parsed.stages[0].tasks[0].variant, 'recipe-b');
+  assert.equal(parsed.stages[0].task.variant, 'video-finance');
+});
+
+test('every shipped recipe fits the default recipeChars budget', async () => {
+  const { DEFAULTS } = await import('../core/config.mjs');
+  const { recipeFor, RECIPES, RECIPE_VARIANTS } = await import('../core/recipes.mjs');
+  const seen = [];
+  for (const [category, file] of Object.entries(RECIPES)) {
+    const text = recipeFor(category);
+    assert.ok(text, file);
+    assert.ok(text.length <= DEFAULTS.worker.recipeChars, `${file} is ${text.length} chars, default is ${DEFAULTS.worker.recipeChars}`);
+    seen.push(file);
+  }
+  for (const [category, map] of Object.entries(RECIPE_VARIANTS)) {
+    for (const [variant, file] of Object.entries(map)) {
+      const text = recipeFor(category, variant);
+      assert.ok(text, `${category}/${variant} (${file})`);
+      assert.ok(text.length <= DEFAULTS.worker.recipeChars, `${file} is ${text.length} chars, default is ${DEFAULTS.worker.recipeChars}`);
+      seen.push(file);
+    }
+  }
+  assert.ok(seen.length, 'at least one shipped recipe');
+});
+
 test('recipe listing includes configured categories and reports overridden files', async () => {
   const { saveConfig } = await import('../core/config.mjs');
   const { recipeFor, listRecipes } = await import('../core/recipes.mjs');

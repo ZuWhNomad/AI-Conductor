@@ -12,7 +12,6 @@ what to do next, or what went wrong on one machine) → the notes location.
 | `ARCHITECTURE.md` | The codebase overview: goal, how it works, directory map, external programs. **Current state only** — update it in the same commit as the change it describes. |
 | `DRIVE-CONDUCTOR.md` | How another agent drives a running Conductor over HTTP. No machine-specific values. |
 | `REVIEW-FRAMEWORK.md` | How a review pass is run (the method, not any one review's findings). |
-| `ROADMAP-capabilities.md` | Where the capability index is going. |
 | `video-briefing-finance-prompt.md` | Operator-facing prompt that pairs with `core/policy/recipes/video-briefing-finance.md`. |
 
 **Invariants.** No absolute paths, user names, machine names or e-mail addresses — the hub's leak hook rejects a push
