@@ -28,7 +28,10 @@ const sessions = new Map();
 let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
 
-for (const s of readJson(FILE(), [])) sessions.set(s.id, { ...s, runtime: s.runtime || runtimeFor(s.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null });
+function hydrateSession(rec) {
+  return { ...rec, runtime: rec.runtime || runtimeFor(rec.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null, historyLoaded: false };
+}
+for (const rec of readJson(FILE(), [])) sessions.set(rec.id, hydrateSession(rec));
 // The routing flags the delegate tools read live in a side map (no import cycle). Seed it from every session, not only
 // when a toggle is clicked: a chat created with API overflow on, or any chat after a restart, used to read it as off.
 const syncFlags = (s) => setSessionFlags(s.id, { overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride });
@@ -49,7 +52,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0 };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0 };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -92,13 +95,16 @@ export function listSessions() {
   return [...sessions.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).map(publicSession);
 }
 
+async function ensureHistory(s) {
+  if (s.historyLoaded) return;
+  // E12: one in-flight load, shared by getSession and sendMessage.
+  if (!s.historyLoad) s.historyLoad = loadHistory(s).finally(() => { s.historyLoad = null; s.historyLoaded = true; });
+  await s.historyLoad;
+}
+
 export async function getSession(id) {
   const s = sessions.get(id); if (!s) return null;
-  // E12: avoid duplicate pushMessage when two concurrent getSession calls race on an empty messages array.
-  if (!s.messages.length) {
-    if (!s.historyLoad) s.historyLoad = loadHistory(s).finally(() => { s.historyLoad = null; });
-    await s.historyLoad;
-  }
+  await ensureHistory(s);
   return { ...publicSession(s), messages: s.messages, pending: [...s.pending.values()].map((p) => p.request) };
 }
 
@@ -139,7 +145,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
     effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null,
+    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -218,11 +224,19 @@ async function pump(s, q) {
         emit(s, 'init', { sdkSessionId: m.session_id, model: m.model, permissionMode: m.permissionMode, tools: m.tools?.length || 0, agents: m.agents || [] });
       } else if (m.type === 'stream_event') {
         const e = m.event;
-        if (e.type === 'content_block_start') { streaming = { block: e.content_block?.type, text: '', parent: m.parent_tool_use_id }; }
-        else if (e.type === 'content_block_delta') {
+        if (e.type === 'content_block_start') {
+          streaming = { block: e.content_block?.type, text: '', parent: m.parent_tool_use_id };
+          if (streaming.block === 'thinking') emit(s, 'delta', { block: 'thinking', text: '', parent: streaming.parent });
+        } else if (e.type === 'content_block_delta') {
           const d = e.delta;
-          const piece = d?.type === 'text_delta' ? d.text : d?.type === 'thinking_delta' ? d.thinking : null;
-          if (piece != null) { streaming = streaming || { block: d.type === 'thinking_delta' ? 'thinking' : 'text', text: '', parent: m.parent_tool_use_id }; streaming.text += piece; emit(s, 'delta', { block: streaming.block, text: piece, parent: m.parent_tool_use_id }); }
+          if (d?.type === 'thinking_delta') {
+            if (!streaming) { streaming = { block: 'thinking', text: '', parent: m.parent_tool_use_id }; emit(s, 'delta', { block: 'thinking', text: '', parent: streaming.parent }); }
+            streaming.text += d.thinking || '';
+          } else if (d?.type === 'text_delta' && d.text != null) {
+            streaming = streaming || { block: 'text', text: '', parent: m.parent_tool_use_id };
+            streaming.text += d.text;
+            emit(s, 'delta', { block: streaming.block, text: d.text, parent: m.parent_tool_use_id });
+          }
         } else if (e.type === 'content_block_stop') { streaming = null; }
       } else if (m.type === 'assistant') {
         const blocks = (m.message.content || []).map((b) => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input } : b.type === 'thinking' ? { type: 'thinking', text: b.thinking || '' } : { type: b.type });
@@ -283,7 +297,8 @@ function askPermission(s, toolName, input, o) {
     const request = { id, toolName, input, description: o.description || o.title || '', decisionReason: o.decisionReason || '', agentID: o.agentID || null, ts: Date.now() };
     s.pending.set(id, { request, resolve });
     emit(s, 'permission', { request });
-    o.signal?.addEventListener('abort', () => { if (s.pending.delete(id)) { resolve({ behavior: 'deny', message: 'request aborted' }); emit(s, 'permission_resolved', { id }); } }, { once: true });
+    emit(s, 'updated', { session: publicSession(s) });
+    o.signal?.addEventListener('abort', () => { if (s.pending.delete(id)) { resolve({ behavior: 'deny', message: 'request aborted' }); emit(s, 'permission_resolved', { id }); emit(s, 'updated', { session: publicSession(s) }); } }, { once: true });
   });
 }
 
@@ -293,6 +308,7 @@ export function answerPermission(sessionId, requestId, { allow, message = 'denie
   s.pending.delete(requestId);
   p.resolve(allow ? { behavior: 'allow', updatedInput: p.request.input } : { behavior: 'deny', message });
   emit(s, 'permission_resolved', { id: requestId, allow });
+  emit(s, 'updated', { session: publicSession(s) });
   return true;
 }
 
@@ -348,7 +364,7 @@ async function runTurn(s, text) {
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
       r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(loadConfig().conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: loadConfig().conductor.maxTurns, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes) * 60_000 });
       if (mine()) { s.history = r.messages || s.history; writeJson(HIST(s.id, 'loop'), s.history); }
-      if (r.error && /context|too many tokens|maximum.*length|token limit/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
+      if (r.error && /context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
       if (r.ok && r.finalMessage && !s.messages.some((m) => m.role === 'assistant' && m.blocks?.[0]?.text === r.finalMessage)) onEvent('item', { item: { type: 'agent_message', text: r.finalMessage }, phase: 'completed' });
     }
     // Loop runtimes already record 429s via the http_rate event (with retry-after); only Codex needs an explicit note.
@@ -372,10 +388,12 @@ async function runTurn(s, text) {
 // ---------------------------------------------------------------- shared API
 export async function sendMessage(sessionId, text) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
+  await ensureHistory(s);
   if (s.status === 'running' && s.runtime !== 'claude') throw Object.assign(new Error('the conductor is still working on the previous message; wait or press Stop'), { status: 409 });
   if (s.runtime === 'claude' && !s.query) start(s);
   const autoTitle = s.title === 'New chat';
   if (autoTitle) s.title = text.trim().slice(0, 60) || 'New chat';
+  if (s.status !== 'running') s.interrupted = false;
   s.status = 'running'; s.updatedAt = nowIso(); persistAll();
   if (autoTitle) emit(s, 'updated', { session: publicSession(s) }); // U7: persist then emit, same as setTitle
   const msg = { role: 'user', text };
@@ -389,7 +407,7 @@ export async function sendMessage(sessionId, text) {
 export async function interrupt(sessionId) {
   const s = sessions.get(sessionId); if (!s) return false;
   if (s.runtime !== 'claude') { s.turnAbort?.abort(); return !!s.turnAbort; }
-  if (!s.query) return false;
+  if (!s.query || s.status !== 'running') return false;
   s.interrupted = true; // the SDK reports an interrupt as an error result; label it instead of logging it
   try { await s.query.interrupt(); } catch (e) { s.interrupted = false; emit(s, 'error', { message: `interrupt failed: ${e.message}` }); }
   return true;
@@ -442,6 +460,7 @@ export function setOverflow(sessionId, on) {
 
 export async function setPermissionMode(sessionId, mode) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
+  if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(mode)) throw Object.assign(new Error('invalid permissionMode'), { status: 400 });
   const was = s.permissionMode;
   s.permissionMode = mode; persistAll();
   // bypass needs a fresh process (canUseTool wiring differs); other modes switch live. A running turn is
@@ -457,6 +476,25 @@ export function stopSession(sessionId) {
   const s = sessions.get(sessionId); if (!s) return false;
   stop(s); s.status = 'idle'; emit(s, 'status', { status: 'idle' });
   return true;
+}
+
+/** Stop every live runtime and flush codex/loop transcripts (handoff before a relaunch). */
+export function shutdownSessions() {
+  for (const s of sessions.values()) {
+    stop(s);
+    // Only flush a transcript we have loaded — writing [] would wipe disk history for unopened chats.
+    if ((s.runtime === 'codex' || s.runtime === 'loop') && s.historyLoaded) writeJson(HIST(s.id, 'messages'), s.messages);
+  }
+}
+
+/** Pick up sessions written to disk after this process imported sessions.json (relaunch child). */
+export function reloadSessions() {
+  for (const rec of readJson(FILE(), [])) {
+    if (sessions.has(rec.id)) continue;
+    const s = hydrateSession(rec);
+    sessions.set(s.id, s);
+    syncFlags(s);
+  }
 }
 
 /** Session context for the /mcp endpoint (Codex conductors). */
@@ -489,7 +527,7 @@ async function loadHistory(s) {
 export async function runOnce({ cwd, prompt: text, model, effort, onText }) {
   const s = createSession({ cwd, model, effort, title: text.slice(0, 60) });
   const done = new Promise((resolve) => {
-    const h = (e) => { if (e.type !== 'session' || e.sessionId !== s.id) return; if (e.kind === 'delta' && e.block === 'text') onText?.(e.text); if (e.kind === 'assistant' && s.runtime !== 'claude') for (const b of e.blocks || []) if (b.type === 'text') onText?.(b.text + '\n'); if (e.kind === 'result' || e.kind === 'error') { bus.off('event', h); resolve(e); } };
+    const h = (e) => { if (e.type !== 'session' || e.sessionId !== s.id) return; if (e.kind === 'delta' && e.block === 'text') onText?.(e.text); if (e.kind === 'assistant' && s.runtime !== 'claude') for (const b of e.blocks || []) if (b.type === 'text') onText?.(b.text + '\n'); if (e.kind === 'result' || (e.kind === 'status' && e.status === 'idle')) { bus.off('event', h); resolve(e); } };
     bus.on('event', h);
   });
   await sendMessage(s.id, text);

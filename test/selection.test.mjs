@@ -7,7 +7,7 @@ import { bus } from '../core/bus.mjs';
 
 // The registry is loaded at import time: seed the one model the no-effort test needs (no Codex models, on purpose).
 writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'ollama', id: 'qwen2.5:3b', kind: 'agent', cost: 'free-local', efforts: [] }] });
-const { parseSelection, createSession, deleteSession, setTitle, setEffort, sendMessage } = await import('../core/conductor.mjs');
+const { parseSelection, createSession, deleteSession, setTitle, setEffort, sendMessage, setPermissionMode, getSession } = await import('../core/conductor.mjs');
 
 test('provider:model:effort parsing', () => {
   const cfg = { provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'high' };
@@ -118,4 +118,41 @@ test('a model that lists no efforts never carries one: not on the session, not i
   assert.equal(body.model, 'qwen2.5:3b');
   assert.equal('reasoning_effort' in body, false);
   deleteSession(s.id);
+});
+
+test('S11: setPermissionMode accepts SDK modes and 400s anything else', async () => {
+  const cwd = tmpDir('s11');
+  const s = createSession({ cwd, permissionMode: 'dontAsk' });
+  await setPermissionMode(s.id, 'default');
+  await setPermissionMode(s.id, 'plan');
+  await setPermissionMode(s.id, 'acceptEdits');
+  await setPermissionMode(s.id, 'bypassPermissions');
+  assert.equal((await getSession(s.id)).permissionMode, 'bypassPermissions');
+  await assert.rejects(() => setPermissionMode(s.id, 'dontAsk'), { status: 400 });
+  await assert.rejects(() => setPermissionMode(s.id, 'auto'), { status: 400 });
+  await assert.rejects(() => setPermissionMode(s.id, 'bogus'), { status: 400 });
+  assert.equal((await getSession(s.id)).permissionMode, 'bypassPermissions');
+  deleteSession(s.id);
+});
+
+test('I8: loop conductor rewrites only context-length errors', async (ctx) => {
+  const cwd = tmpDir('i8');
+  const hint = /history no longer fits this model/;
+  let apiError = '';
+  ctx.mock.method(globalThis, 'fetch', async (url) => {
+    if (!String(url).endsWith('/chat/completions')) return Response.json({ version: 'test' });
+    return new Response(JSON.stringify({ error: { message: apiError } }), { status: 400, headers: { 'content-type': 'application/json' } });
+  });
+  const run = async (message) => {
+    apiError = message;
+    const s = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b', title: 'i8' });
+    const idle = new Promise((r) => bus.on('event', function f(e) { if (e.sessionId === s.id && e.kind === 'status' && e.status === 'idle') { bus.off('event', f); r(); } }));
+    await sendMessage(s.id, 'hello');
+    await idle;
+    const text = (await getSession(s.id)).messages.find((m) => m.role === 'result')?.text || '';
+    deleteSession(s.id);
+    return text;
+  };
+  assert.equal(hint.test(await run('context deadline exceeded')), false);
+  assert.equal(hint.test(await run('context_length_exceeded')), true);
 });
