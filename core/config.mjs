@@ -122,7 +122,7 @@ export const DEFAULTS = {
     reservePct: 0.5,
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
-  smoke: { timeoutMinutes: 10 },      // per smoke-battery task
+  smoke: { timeoutMinutes: 20 },      // per smoke-battery task
   tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
     index: {},                        // machine-specific entries by name: { kind, categories, purpose, invoke, detect, install, platforms }; null removes a shared one; extra fields tag it
     researchOnMiss: false,            // a category with no entry at all → one bounded background search task proposes programs (unapproved until you set approved: true)

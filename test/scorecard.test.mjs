@@ -284,7 +284,7 @@ test('scorecard config is normalized', () => {
   assert.equal(bad.scorecard.hourlyUsd, 0);
   assert.deepEqual(bad.scorecard.prices, {});
   assert.equal(bad.scorecard.usePriors, true);
-  assert.equal(bad.smoke.timeoutMinutes, 10);
+  assert.equal(bad.smoke.timeoutMinutes, 20);
   saveConfig({ scorecard: { usePriors: false } });
 });
 
