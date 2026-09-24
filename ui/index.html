@@ -21,14 +21,14 @@
     <div id="newchat-form" class="newchat-form" hidden>
       <label class="lbl">Project folder</label>
       <div class="row">
-        <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false">
+        <input id="cwd" type="text" placeholder="F:\my-project" spellcheck="false" aria-label="Project folder">
         <button id="btn-browse" class="sm" title="Browse folders" aria-label="Browse folders">…</button>
       </div>
       <label class="lbl" style="margin-top:6px">Conductor (provider : model : effort)</label>
       <div class="row picker">
-        <select id="new-provider" title="Provider"></select>
-        <select id="new-model" title="Model"></select>
-        <select id="new-effort" title="Effort"></select>
+        <select id="new-provider" title="Provider" aria-label="Conductor provider"></select>
+        <select id="new-model" title="Model" aria-label="Conductor model"></select>
+        <select id="new-effort" title="Effort" aria-label="Conductor effort"></select>
       </div>
       <div class="row between"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label><label class="chk" title="Run this chat’s workers in parallel: skip the budget gate that holds a provider to one task at a time. Real provider limits still apply."><input id="new-parallel" type="checkbox"> parallel</label></div>
       <button id="btn-new" class="primary wide">Start chat</button>
@@ -36,12 +36,12 @@
   </section>
 
   <section class="panel grow">
-    <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="text" placeholder="🔍 filter" spellcheck="false"></div>
+    <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="text" placeholder="🔍 filter" spellcheck="false" aria-label="Filter chats"></div>
     <div id="sessions" class="list"></div>
   </section>
 
   <section class="system-panel">
-    <button id="system-toggle" class="system-head wide"><span class="lbl">System</span><span class="caret muted">▸</span></button>
+    <button id="system-toggle" class="system-head wide" aria-expanded="false"><span class="lbl">System</span><span class="caret muted">▸</span></button>
     <div id="system-body" class="system-body" hidden>
       <section class="panel providers-panel">
         <div class="row between"><label class="lbl">Providers &amp; limits</label><span class="row"><label class="chk" title="Auto-refresh models & limits on the interval in ⚙ settings"><input id="auto-refresh" type="checkbox"> auto</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></span></div>
@@ -65,13 +65,13 @@
     <div class="title"><span id="chat-title">No chat selected</span> <span id="chat-cwd" class="muted tiny"></span></div>
     <div class="controls">
       <div class="chipwrap">
-        <button id="model-chip" class="chip" title="Conductor model — click to change"><span id="chip-text" class="muted">No chat selected</span> <span class="caret muted">▾</span></button>
+        <button id="model-chip" class="chip" title="Conductor model — click to change" aria-haspopup="dialog" aria-expanded="false"><span id="chip-text" class="muted">No chat selected</span> <span class="caret muted">▾</span></button>
         <div id="model-pop" class="popover" hidden>
           <label class="lbl">Conductor (provider : model : effort)</label>
           <div class="row picker">
-            <select id="provider" title="Conductor provider"></select>
-            <select id="model" title="Conductor model (switches live)"></select>
-            <select id="effort" title="Effort (applies from the next message)"></select>
+            <select id="provider" title="Conductor provider" aria-label="Conductor provider"></select>
+            <select id="model" title="Conductor model (switches live)" aria-label="Conductor model"></select>
+            <select id="effort" title="Effort (applies from the next message)" aria-label="Effort"></select>
           </div>
           <div class="row wrap chips-toggles">
             <label class="chk" title="Bypass permission prompts"><input id="bypass" type="checkbox"> auto-approve</label>
@@ -95,11 +95,11 @@
     <div id="cmd-menu" class="cmd-menu" hidden></div>
     <div id="interim" class="interim" hidden></div>
     <div class="row">
-      <textarea id="input" rows="2" placeholder="Tell the conductor what to do…  (Enter to send, Shift+Enter for newline, / for commands, Ctrl+M to dictate)"></textarea>
+      <textarea id="input" rows="2" placeholder="Tell the conductor what to do…  (Enter to send, Shift+Enter for newline, / for commands, Ctrl+M to dictate)" aria-label="Message prompt"></textarea>
       <button id="btn-mic" class="mic" title="Speech to text (Ctrl+M)">🎤</button>
       <button id="btn-send" class="primary" title="Send (Enter)">Send</button>
     </div>
-    <div id="stt-hint" class="muted tiny"></div>
+    <div id="stt-hint" class="muted tiny" aria-live="polite"></div>
   </div>
 </main>
 

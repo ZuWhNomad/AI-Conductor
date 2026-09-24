@@ -63,11 +63,16 @@ function renderSessions() {
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
     const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
-    const ren = el('span', 'x', '✎'); ren.title = 'Rename chat';
-    asBtn(ren, (e) => { e.stopPropagation(); renameSession(s); });
-    const x = el('span', 'x', '✕'); x.title = 'Delete chat';
-    asBtn(x, (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); });
-    it.append(t, st, ren, x);
+    const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', 'approve') : null;
+    if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
+    const ren = el('span', 'x', '✎'); ren.title = 'Rename chat'; ren.tabIndex = 0; ren.setAttribute('aria-label', 'Rename chat');
+    ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
+    ren.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); renameSession(s); } };
+    const x = el('span', 'x', '✕'); x.title = 'Delete chat'; x.tabIndex = 0; x.setAttribute('aria-label', 'Delete chat');
+    x.onclick = (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); };
+    x.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); } };
+    if (appPill) it.append(t, appPill, st, ren, x);
+    else it.append(t, st, ren, x);
     asBtn(it, () => openSession(s.id));
     box.append(it);
   }
@@ -98,7 +103,11 @@ function renderProviders() {
     const action = st.installed === false && p.canInstall ? 'install' : st.installed !== false && st.loggedIn === false && p.canLogin ? 'login' : null;
     const controls = el('span', 'row');
     const runAction = (act) => async (e) => {
-      e.stopPropagation(); const b = e.target; b.disabled = true;
+      e.stopPropagation();
+      if (act === 'relogin' && (['claude', 'grok', 'kimi'].includes(p.id) || p.auth?.logout)) {
+        if (!confirm(`Re-authenticating ${p.id} will log out of the current account first. Continue?`)) return;
+      }
+      const b = e.target; b.disabled = true;
       try {
         const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command;
         if (r.ok) { S.awaitingAuth.add(p.id); renderProviders(); clearTimeout(authTimers.get(p.id)); authTimers.set(p.id, setTimeout(() => { S.awaitingAuth.delete(p.id); authTimers.delete(p.id); renderProviders(); }, 5 * 60_000)); }
@@ -197,9 +206,12 @@ function renderBudget() {
   for (const p of S.providers || []) {
     if (p.id === prov) continue; // the selected provider is already shown in full above
     if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
-    const w = (S.limits.providers[p.id]?.windows || [])[0];
-    if (w && w.usedPercent != null) parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
-    else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
+    const windows = (S.limits.providers[p.id]?.windows || []).filter((w) => w.usedPercent != null);
+    if (windows.length) {
+      const w = windows.reduce((max, cur) => ((Number(cur.usedPercent) || 0) > (Number(max.usedPercent) || 0) ? cur : max), windows[0]);
+      const wLbl = w.label || w.scope || windowScope(w) || '';
+      parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id}${wLbl ? ` (${wLbl})` : ''} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
+    } else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
   }
   if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
   if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
@@ -280,9 +292,20 @@ function fillPicker(prefix, sel, opts = {}) {
   const cur = ms.find((m) => (all ? `${m.provider}:${m.id}` : m.id) === M.value);
   const prov = cur?.provider || (all ? (M.value.includes(':') ? M.value.split(':')[0] : 'claude') : P.value);
   const fallbackEfforts = prov === 'claude' ? CLAUDE_EFFORTS : EFFORTS;
-  const efforts = cur?.efforts?.length ? cur.efforts : fallbackEfforts;
-  E.innerHTML = ''; for (const e of efforts) E.append(new Option(e, e));
-  E.value = efforts.includes(sel.effort) ? sel.effort : (efforts.includes('high') ? 'high' : efforts[0]);
+  const hasEffortList = cur && Array.isArray(cur.efforts);
+  const efforts = hasEffortList ? cur.efforts : (!cur ? fallbackEfforts : []);
+  E.innerHTML = '';
+  if (!efforts.length) {
+    const opt = new Option('default', 'default');
+    opt.disabled = true;
+    E.append(opt);
+    E.value = 'default';
+    E.disabled = true;
+  } else {
+    E.disabled = false;
+    for (const e of efforts) E.append(new Option(e, e));
+    E.value = efforts.includes(sel.effort) ? sel.effort : (efforts.includes('high') ? 'high' : efforts[0]);
+  }
 }
 function savedSelection() {
   try { const s = JSON.parse(localStorage.getItem('conductorSel') || 'null'); if (s?.model !== undefined) return s; } catch {}
@@ -301,42 +324,83 @@ function refreshHeaderPicker(forceProvider = false) {
 // ---------- rendering: transcript ----------
 const T = () => $('#transcript');
 function scrollBottom() { const t = T(); if (t.scrollHeight - t.scrollTop - t.clientHeight < 240) t.scrollTop = t.scrollHeight; }
-function clearTranscript() { T().innerHTML = ''; S.streams = new Map(); S.tools.clear(); S.pending.clear(); }
+let scrollPending = false;
+function requestScrollBottom() {
+  if (scrollPending) return;
+  scrollPending = true;
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      scrollPending = false;
+      scrollBottom();
+    });
+  } else {
+    scrollPending = false;
+    scrollBottom();
+  }
+}
+function clearTranscript() { T().innerHTML = ''; S.streams = new Map(); S.tools.clear(); S.pending.clear(); if (S.thinkingLines) S.thinkingLines.clear(); }
 /** Streaming bubbles are tracked per parent (main thread = null, else the subagent's tool_use id) so interleaved subagent text never orphans a bubble. */
 function streamFor(parent) { S.streams = S.streams || new Map(); return S.streams.get(parent || null) || null; }
 function endStream(parent) { const st = streamFor(parent); if (st) { st.el.classList.remove('streaming'); S.streams.delete(parent || null); } }
 function endAllStreams() { for (const st of (S.streams || new Map()).values()) st.el.classList.remove('streaming'); S.streams = new Map(); }
-function stopSpinners() { for (const s of T().querySelectorAll('.tool .st.spin')) s.replaceWith(el('span', 'st', '–')); }
+function stopSpinners(root = T()) { for (const s of root.querySelectorAll('.tool .st.spin')) s.replaceWith(el('span', 'st', '–')); }
 
-function addUser(text) { const m = el('div', 'msg user'); m.textContent = text; T().append(m); scrollBottom(); }
-function addSys(text, cls = '') { const m = el('div', 'sysline ' + cls, text); T().append(m); scrollBottom(); return m; }
-function ensureStream(parent) {
+function addUser(text, container) { const m = el('div', 'msg user'); m.textContent = text; (container || T()).append(m); if (!container) scrollBottom(); }
+function addSys(text, cls = '', container) { const m = el('div', 'sysline ' + cls, text); (container || T()).append(m); if (!container) scrollBottom(); return m; }
+function ensureStream(parent, container) {
   const have = streamFor(parent);
   if (have) return have;
-  const m = el('div', 'msg assistant streaming' + (parent ? ' sub' : '')); T().append(m);
-  const st = { el: m, text: '', parent: parent || null };
+  const m = el('div', 'msg assistant streaming' + (parent ? ' sub' : ''));
+  const tn = document.createTextNode('');
+  m.append(tn);
+  (container || T()).append(m);
+  const st = { el: m, tn, text: '', parent: parent || null };
   S.streams.set(parent || null, st);
   return st;
 }
 function addDelta(block, text, parent) {
-  if (block !== 'text') { if (!S.thinkingLine || S.thinkingLine.parent !== parent) { S.thinkingLine = { el: addSys('thinking…'), parent }; } return; }
-  const st = ensureStream(parent); st.text += text; st.el.textContent = st.text; scrollBottom();
+  const pKey = parent || null;
+  S.thinkingLines = S.thinkingLines || new Map();
+  if (block !== 'text') {
+    if (!S.thinkingLines.has(pKey)) {
+      const lineEl = addSys('thinking…', pKey ? 'sub' : '');
+      S.thinkingLines.set(pKey, lineEl);
+    }
+    return;
+  }
+  const th = S.thinkingLines.get(pKey);
+  if (th) {
+    th.remove();
+    S.thinkingLines.delete(pKey);
+  }
+  const st = ensureStream(parent);
+  st.text += text;
+  if (st.tn && typeof st.tn.appendData === 'function') {
+    st.tn.appendData(text);
+  } else {
+    st.el.textContent = st.text;
+  }
+  requestScrollBottom();
 }
-function addAssistant(msg) {
-  if (S.thinkingLine) { S.thinkingLine.el.remove(); S.thinkingLine = null; }
+function addAssistant(msg, container) {
+  const pKey = msg.parent || null;
+  if (S.thinkingLines?.has(pKey)) {
+    S.thinkingLines.get(pKey).remove();
+    S.thinkingLines.delete(pKey);
+  }
   for (const b of msg.blocks || []) {
     if (b.type === 'text') {
-      const st = ensureStream(msg.parent || null);
+      const st = ensureStream(msg.parent || null, container);
       st.el.innerHTML = md(b.text); endStream(msg.parent || null);
     } else if (b.type === 'tool_use') {
       endStream(msg.parent || null);
       const d = el('details', 'tool' + (msg.parent ? ' sub' : ''));
       const sum = el('summary'); sum.append(el('span', null, '🔧'), el('span', 'n', b.name.replace('mcp__conductor__', 'conductor:')), el('span', 'muted', summarize(b.input)), el('span', 'st spin'));
       const body = el('div', 'body'); const pin = el('pre', null, JSON.stringify(b.input, null, 2)); body.append(pin);
-      d.append(sum, body); T().append(d); S.tools.set(b.id, d);
+      d.append(sum, body); (container || T()).append(d); S.tools.set(b.id, d);
     }
   }
-  scrollBottom();
+  if (!container) scrollBottom();
 }
 function summarize(input) {
   if (!input || typeof input !== 'object') return '';
@@ -350,12 +414,24 @@ function addToolResult(msg) {
   if (msg.isError) d.classList.add('err');
   const pre = el('pre', null, msg.text || '(no output)'); d.querySelector('.body').append(pre);
 }
-function addResult(msg) {
+function addResult(msg, container) {
   endAllStreams();
-  stopSpinners();
-  if (S.thinkingLine) { S.thinkingLine.el.remove(); S.thinkingLine = null; }
+  stopSpinners(container || T());
+  if (S.thinkingLines) {
+    for (const lineEl of S.thinkingLines.values()) lineEl.remove();
+    S.thinkingLines.clear();
+  }
   const cost = msg.costUsd ? ` · $${msg.costUsd.toFixed(3)}` : '';
-  addSys(`${msg.isError ? 'error: ' + (msg.text || msg.subtype) : 'done'} · ${msg.numTurns ?? '?'} turns · ${Math.round((msg.durationMs || 0) / 1000)}s${cost}`, msg.isError ? 'err' : '');
+  const dur = `${Math.round((msg.durationMs || 0) / 1000)}s${cost}`;
+  if (msg.subtype === 'history') {
+    addSys(`failed to load history: ${msg.text || 'unknown error'}`, 'err', container);
+    return;
+  }
+  if (msg.subtype === 'interrupted' || msg.interrupted) {
+    addSys(`interrupted · ${msg.numTurns ?? '?'} turns · ${dur}`, '', container);
+    return;
+  }
+  addSys(`${msg.isError ? 'error: ' + (msg.text || msg.subtype) : 'done'} · ${msg.numTurns ?? '?'} turns · ${dur}`, msg.isError ? 'err' : '', container);
 }
 function addPermission(req) {
   const card = el('div', 'perm'); card.dataset.id = req.id;
@@ -365,10 +441,18 @@ function addPermission(req) {
   if (req.decisionReason) card.append(el('div', 'tiny muted', req.decisionReason));
   const row = el('div', 'row');
   const allow = el('button', 'primary sm', 'Allow'); const deny = el('button', 'sm danger', 'Deny');
+  const answer = (a) => act(async () => {
+    allow.disabled = true; deny.disabled = true;
+    try {
+      await api.post(`/api/sessions/${S.current.id}/permission`, { requestId: req.id, allow: a });
+    } finally {
+      allow.disabled = false; deny.disabled = false;
+    }
+  });
   allow.onclick = () => answer(true); deny.onclick = () => answer(false);
   row.append(allow, deny); card.append(row);
-  const answer = async (a) => { await api.post(`/api/sessions/${S.current.id}/permission`, { requestId: req.id, allow: a }); };
-  T().append(card); S.pending.set(req.id, card); scrollBottom();
+  T().append(card); S.pending.set(req.id, card);
+  scrollBottom();
 }
 function resolvePermission(id, allow) {
   const c = S.pending.get(id); if (!c) return; S.pending.delete(id);
@@ -377,13 +461,16 @@ function resolvePermission(id, allow) {
 
 function renderHistory(messages) {
   clearTranscript();
+  const frag = document.createDocumentFragment();
   for (const m of messages) {
-    if (m.role === 'user') addUser(m.text);
-    else if (m.role === 'assistant') addAssistant(m);
+    if (m.role === 'user') addUser(m.text, frag);
+    else if (m.role === 'assistant') addAssistant(m, frag);
     else if (m.role === 'tool_result') addToolResult(m);
-    else if (m.role === 'result') addResult(m);
+    else if (m.role === 'result') addResult(m, frag);
   }
-  if (!messages.length) T().append(el('div', 'empty', 'Say what you want done. The conductor will plan, delegate, and review.'));
+  if (!messages.length) frag.append(el('div', 'empty', 'Say what you want done. The conductor will plan, delegate, and review.'));
+  T().append(frag);
+  scrollBottom();
 }
 
 // ---------- fleet dock ----------
@@ -411,6 +498,15 @@ function cardFoot(t) {
   if (info.verdict) parts.push(`rated ${info.verdict}`);
   return parts.join(' · ');
 }
+function refreshRunningCards() {
+  for (const t of S.tasks) {
+    if (t.status !== 'running') continue;
+    const card = S.taskEls.get(t.id);
+    if (!card) continue;
+    const sub = card.querySelector('.sub');
+    if (sub) sub.textContent = `${t.provider}${t.model ? '/' + t.model : ''} · ${t.category || '?'}${t.difficulty ? '@' + t.difficulty : ''} · ${statusPhrase(t)}`;
+  }
+}
 function taskCard(t) {
   const c = el('div', 'task ' + t.status); c.dataset.id = t.id;
   const h = el('div', 'h');
@@ -423,7 +519,7 @@ function taskCard(t) {
   if (t.status === 'running') { const p = el('div', 'prog indet'); p.append(el('i')); c.append(p); }
   const foot = cardFoot(t);
   if (foot) c.append(el('div', 'sub', foot));
-  asBtn(c, () => openTask(t.id));
+  asBtn(c, () => act(() => openTask(t.id)));
   S.taskEls.set(t.id, c);
   return c;
 }
@@ -434,14 +530,46 @@ function renderFleetHead() {
   const doneToday = mine.filter((t) => t.status === 'done' && isToday(t.finishedAt || t.updatedAt)).length;
   $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${doneToday} done today` : 'no workers yet';
   const scope = fleetScope();
-  for (const b of $('#fleet-scope').querySelectorAll('button')) b.classList.toggle('on', b.dataset.scope === scope);
+  for (const b of $('#fleet-scope').querySelectorAll('button')) {
+    const on = b.dataset.scope === scope;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
   const todays = mine.filter((t) => (t.status === 'done' || t.status === 'failed') && isToday(t.finishedAt || t.updatedAt));
-  const usd = todays.reduce((a, t) => a + (t.result?.costUsd || 0), 0);
-  const wk = todays.reduce((a, t) => a + (t.pctWindow || 0), 0);
   const box = $('#fleet-budget'); box.innerHTML = '';
-  const bl = el('div', 'bl'); bl.append(el('span', null, 'spent today'), el('span', null, `${wk ? wk.toFixed(1) + '% · ' : ''}$${usd.toFixed(2)}`));
-  const m = el('div', 'meter'); const i = el('i'); i.style.width = Math.min(100, wk) + '%'; m.append(i);
-  box.append(bl, m);
+  if (!todays.length) {
+    const bl = el('div', 'bl'); bl.append(el('span', null, 'spent today'), el('span', null, '$0.00'));
+    box.append(bl);
+    return;
+  }
+  const byProv = new Map();
+  for (const t of todays) {
+    const p = t.provider || 'other';
+    if (!byProv.has(p)) byProv.set(p, []);
+    byProv.get(p).push(t);
+  }
+  for (const [prov, provTasks] of byProv.entries()) {
+    const usd = provTasks.reduce((a, t) => a + (t.result?.costUsd || 0), 0);
+    const wk = provTasks.reduce((a, t) => {
+      if (!t.pctWindow) return a;
+      const tStart = Date.parse(t.startedAt || t.updatedAt || 0);
+      const tEnd = Date.parse(t.finishedAt || t.updatedAt || 0);
+      let conc = 1;
+      if (tStart && tEnd && tEnd > tStart) {
+        const overlaps = provTasks.filter((o) => {
+          const oStart = Date.parse(o.startedAt || o.updatedAt || 0);
+          const oEnd = Date.parse(o.finishedAt || o.updatedAt || 0);
+          return oStart && oEnd && Math.max(tStart, oStart) < Math.min(tEnd, oEnd);
+        }).length;
+        if (overlaps > 0) conc = overlaps;
+      }
+      return a + (t.pctWindow / conc);
+    }, 0);
+    const bl = el('div', 'bl');
+    bl.append(el('span', null, `${prov} today`), el('span', null, `${wk > 0 ? wk.toFixed(1) + '% · ' : ''}$${usd.toFixed(2)}`));
+    const m = el('div', 'meter'); const i = el('i'); i.style.width = Math.min(100, wk) + '%'; m.append(i);
+    box.append(bl, m);
+  }
 }
 function lastAction(t) {
   const log = S.workerLog.get(t.id);
@@ -454,6 +582,7 @@ function lastAction(t) {
   return t.result?.finalMessage ? t.result.finalMessage.slice(0, 120) : t.specPreview || '';
 }
 function updateTask(t) {
+  if (['done', 'failed', 'canceled'].includes(t.status)) S.workerLog.delete(t.id);
   const i = S.tasks.findIndex((x) => x.id === t.id);
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
   if (inFleet(t)) {
@@ -561,10 +690,14 @@ async function newSession() {
     localStorage.setItem('cwd', cwd);
     const sel = pickerValue('new-');
     localStorage.setItem('conductorSel', JSON.stringify(sel));
-    api.post('/api/settings', { conductor: { provider: sel.provider, model: sel.model || null, effort: sel.effort } }).catch(() => {}); // remember as default
     let s;
     try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked, parallelOverride: !!$('#new-parallel')?.checked }); }
     catch (e) { $('#stt-hint').textContent = e.message; return; }
+    const curCd = S.config?.conductor || {};
+    const modelOrNull = sel.model || null;
+    if (sel.provider !== curCd.provider || modelOrNull !== (curCd.model || null) || sel.effort !== (curCd.effort || 'high')) {
+      api.post('/api/settings', { conductor: { provider: sel.provider, model: modelOrNull, effort: sel.effort } }).catch(() => {});
+    }
     $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
     await refreshSessions(); await openSession(s.id);
   })().finally(() => { newSessionPromise = null; }));
@@ -603,7 +736,7 @@ async function send() {
   catch (e) { if (!ta.value) ta.value = text; addSys(`send failed: ${e.message}`, 'err'); }
 }
 function cmdMenuOpen() { return !$('#cmd-menu').hidden; }
-function closeCmdMenu() { const m = $('#cmd-menu'); m.hidden = true; m.innerHTML = ''; S.cmdItems = []; S.cmdSel = 0; }
+function closeCmdMenu() { const m = $('#cmd-menu'); if (!m) return; m.hidden = true; m.innerHTML = ''; S.cmdItems = []; S.cmdSel = 0; }
 /** Items for the current query: matching COMMANDS, then matching registry agent models as `/worker <id>`. */
 function cmdItemsFor(query) {
   const q = query.toLowerCase(); const items = [];
@@ -642,6 +775,7 @@ function renderUpdate(st = S.update) {
 function updateMessage(o) {
   const v = `${o.from} → ${o.to}${o.npmInstalled ? ' (dependencies installed)' : ''}`;
   if (o.relaunchFailed) return { text: `Update applied, but the new version failed to start (${o.why}); still running the previous version. Fix it, then restart by hand.`, cls: 'err' };
+  if (o.relaunching === 'when idle') return { text: `Updated ${v}. Conductor restarts to apply it as soon as the current work finishes.`, cls: '' };
   if (o.relaunching) return { text: `Updated ${v}. Restarting Conductor to apply — this tab reconnects automatically…`, cls: '' };
   if (o.npmError) return { text: `Updated ${o.from} → ${o.to}, but npm install failed (${o.npmError}): run "npm install" in the Conductor folder, then restart.`, cls: 'warn' };
   if (o.updated) return { text: `Updated ${v}. Restart Conductor to run the new version.`, cls: '' };
@@ -650,6 +784,7 @@ function updateMessage(o) {
 /** Merge each update signal (they arrive as up to two separate events/responses) and render into ONE reused line, so the
  *  applied→relaunching sequence never leaves a contradictory message and arrival order does not matter. */
 function noteUpdate(o) {
+  if (o.to && S.updateState?.to && o.to !== S.updateState.to) S.updateState = null;
   S.updateState = { ...(S.updateState || {}), ...o };
   if (S.updateState.updated || S.updateState.relaunching) { S.update = null; const b = $('#btn-update'); if (b) { b.hidden = true; b.classList.remove('flash'); } }
   const m = updateMessage(S.updateState); if (!m) return;
@@ -679,17 +814,44 @@ function seedNewChatDefaults() {
   if (!S.overflowTouched) { const cb = $('#new-overflow'); if (cb) cb.checked = !!S.config?.conductor?.overflowApi; }
 }
 function connect() {
+  if (S.stopped) return;
   const es = new EventSource(`/api/events?since=${S.lastSeq}`);
+  S.eventSource = es;
   // A restart or an evicted replay range requires fresh state (and its seq) before reconnecting.
-  es.addEventListener('hello', (e) => { const { boot, oldest } = JSON.parse(e.data); if ((S.boot && boot !== S.boot) || (S.lastSeq && oldest > S.lastSeq + 1)) { S.boot = boot; es.close(); resync().catch(() => {}).then(() => setTimeout(connect, 500)); } else S.boot = boot; });
-  const on = (type, fn) => es.addEventListener(type, (e) => { const ev = JSON.parse(e.data); S.lastSeq = Math.max(S.lastSeq, ev.seq); fn(ev); });
+  es.addEventListener('hello', (e) => {
+    if (S.stopped) { es.close(); return; }
+    const { boot, oldest } = JSON.parse(e.data);
+    if (S.boot && boot !== S.boot) { S.updateState = null; S.updateLine = null; }
+    if ((S.boot && boot !== S.boot) || (S.lastSeq && oldest > S.lastSeq + 1)) {
+      S.boot = boot; es.close(); resync().catch(() => {}).then(() => setTimeout(connect, 500));
+    } else S.boot = boot;
+  });
+  const on = (type, fn) => es.addEventListener(type, (e) => {
+    if (S.stopped) return;
+    const ev = JSON.parse(e.data);
+    S.lastSeq = Math.max(S.lastSeq, ev.seq);
+    fn(ev);
+  });
   on('session', onSessionEvent);
   on('task', (ev) => updateTask(ev.task));
-  on('worker', (ev) => { const log = S.workerLog.get(ev.taskId) || []; if (ev.item) { log.push(ev.item); if (log.length > 200) log.shift(); S.workerLog.set(ev.taskId, log); } if (ev.error) { log.push({ type: 'error', text: ev.error }); S.workerLog.set(ev.taskId, log); } const c = S.taskEls.get(ev.taskId); if (c) { const l = c.querySelector('.last'); if (l) l.textContent = lastAction({ id: ev.taskId }); } });
+  on('worker', (ev) => {
+    if (String(ev.taskId || '').startsWith('conductor:')) return;
+    const log = S.workerLog.get(ev.taskId) || [];
+    if (ev.item) { log.push(ev.item); if (log.length > 200) log.shift(); S.workerLog.set(ev.taskId, log); }
+    if (ev.error) { log.push({ type: 'error', text: ev.error }); S.workerLog.set(ev.taskId, log); }
+    const c = S.taskEls.get(ev.taskId);
+    if (c) { const l = c.querySelector('.last'); if (l) l.textContent = lastAction({ id: ev.taskId }); }
+  });
   on('score', (ev) => { const s = S.scoreInfo.get(ev.taskId) || {}; if (ev.verdict) s.verdict = ev.verdict; if (ev.pct && typeof ev.pct === 'object') { const vals = Object.values(ev.pct); if (vals.length) s.pct = Math.round(Math.max(...vals) * 10) / 10; } S.scoreInfo.set(ev.taskId, s); const t = S.tasks.find((x) => x.id === ev.taskId); if (t) updateTask(t); });
   on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
-  on('improvement', () => coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; }));
+  on('improvement', (ev) => {
+    if (ev?.count != null) {
+      $('#improve-count').textContent = ev.count;
+      return;
+    }
+    coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; });
+  });
   on('model_pull', (ev) => {
     if (ev.error) $('#stt-hint').textContent = `pull ${ev.model}: ${ev.error}`;
     else $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`;
@@ -706,13 +868,23 @@ function connect() {
     if (ev.behind) { S.update = { git: true, behind: ev.behind, head: ev.head }; renderUpdate(); return; }
     noteUpdate(ev); // updated / relaunching / relaunchFailed — merged into one line
   });
-  es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+  es.onerror = () => { es.close(); if (!S.stopped) setTimeout(connect, 2000); };
 }
 function onSessionEvent(ev) {
   if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') {
     refreshSessions();
     if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) clearCurrent();
-    if (ev.kind === 'updated' && S.current?.id === ev.sessionId) { S.current = { ...S.current, ...ev.session }; refreshHeaderPicker(); renderChip(); renderBudget(); $('#chat-title').textContent = S.current.title || 'New chat'; $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`; }
+    if (ev.kind === 'updated' && S.current?.id === ev.sessionId) {
+      S.current = { ...S.current, ...ev.session };
+      refreshHeaderPicker();
+      renderChip();
+      renderBudget();
+      $('#chat-title').textContent = S.current.title || 'New chat';
+      $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`;
+      if ($('#bypass')) $('#bypass').checked = S.current.permissionMode === 'bypassPermissions';
+      if ($('#overflow')) $('#overflow').checked = !!S.current.overflowApi;
+      if ($('#parallel')) $('#parallel').checked = !!S.current.parallelOverride;
+    }
     return;
   }
   if (ev.kind === 'status') { const s = S.sessions.find((x) => x.id === ev.sessionId); if (s) { s.status = ev.status; renderSessions(); } }
@@ -737,7 +909,7 @@ function onSessionEvent(ev) {
 
 // ---------- modals ----------
 function openModal(title, body) {
-  modalOpener = document.activeElement;
+  if ($('#modal').hidden) modalOpener = document.activeElement;
   document.body.classList.remove('nav-open');
   $('#modal-title').textContent = title;
   const b = $('#modal-body');
@@ -756,12 +928,18 @@ function closeModal() {
 async function browse(path) {
   const r = await api.get(`/api/browse?path=${encodeURIComponent(path || localStorage.getItem('cwd') || '')}`);
   const body = el('div', 'dirs');
-  const head = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.value = r.path; const go = el('button', 'sm', 'Go'); go.onclick = () => browse(inp.value); inp.onkeydown = (e) => { if (e.key === 'Enter') browse(inp.value); };
+  const head = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.value = r.path || ''; inp.setAttribute('aria-label', 'Folder path');
+  const go = el('button', 'sm', 'Go'); go.onclick = () => act(() => browse(inp.value)); inp.onkeydown = (e) => { if (e.key === 'Enter') act(() => browse(inp.value)); };
   const use = el('button', 'primary sm', 'Use this folder'); use.onclick = () => { $('#cwd').value = r.path; localStorage.setItem('cwd', r.path); closeModal(); };
   head.append(inp, go, use); body.append(head);
-  body.append(el('div', 'tiny muted', `${r.hasGit ? 'git repo · ' : ''}${r.hasClaudeMd ? 'has CLAUDE.md' : 'no CLAUDE.md'}`));
-  if (r.parent) { const up = el('div', 'd', '⬆ ..'); asBtn(up, () => browse(r.parent)); body.append(up); }
-  for (const d of r.dirs) { const x = el('div', 'd', '📁 ' + d); asBtn(x, () => browse(r.path.replace(/[\\/]$/, '') + (r.path.includes('\\') ? '\\' : '/') + d)); body.append(x); }
+  if (r.error) {
+    use.disabled = true;
+    body.append(el('div', 'sysline err', `Cannot open folder: ${r.error}`));
+  } else {
+    body.append(el('div', 'tiny muted', `${r.hasGit ? 'git repo · ' : ''}${r.hasClaudeMd ? 'has CLAUDE.md' : 'no CLAUDE.md'}`));
+  }
+  if (r.parent) { const up = el('div', 'd', '⬆ ..'); asBtn(up, () => act(() => browse(r.parent))); body.append(up); }
+  for (const d of (r.dirs || [])) { const x = el('div', 'd', '📁 ' + d); asBtn(x, () => act(() => browse(r.path.replace(/[\\/]$/, '') + (r.path.includes('\\') ? '\\' : '/') + d))); body.append(x); }
   openModal('Choose project folder', body);
 }
 function openSettings() {
@@ -778,7 +956,7 @@ function openSettings() {
     setTimeout(() => {
       fillPicker(prefix, sel, opts);
       $(`#${prefix}provider`).onchange = (e) => { const v = e.target.value; fillPicker(prefix, v === ALL ? pickerValue(prefix) : { ...pickerValue(prefix), provider: v, model: '' }, { ...opts, forceProvider: true }); };
-      $(`#${prefix}model`).onchange = () => fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true });
+      $(`#${prefix}model`).onchange = () => { resolveOther(prefix, true); fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
     }, 0);
   };
   body.append(el('h4', null, 'Default worker (the grunt coder) — provider : model : effort'));
@@ -789,7 +967,14 @@ function openSettings() {
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
   body.append(el('h4', null, 'Worker behaviour'));
-  selectField('Codex sandbox', 'worker.codexSandbox', c.worker.codexSandbox, ['read-only', 'workspace-write', 'danger-full-access']);
+  const sbxRow = el('div', 'row');
+  const sbxSel = el('select'); sbxSel.id = 'cfg-worker.codexSandbox';
+  for (const o of ['read-only', 'workspace-write', 'danger-full-access']) sbxSel.append(new Option(o, o));
+  sbxSel.value = c.worker.codexSandbox;
+  const sbxOverride = c.worker?.codexSandboxByModel?.[c.worker?.model];
+  const sbxNote = el('span', 'tiny muted', sbxOverride ? ` (default worker ${c.worker.model}: ${sbxOverride})` : '');
+  sbxRow.append(sbxSel, sbxNote);
+  grid.append(Object.assign(el('label', null, 'Codex sandbox'), { title: 'worker.codexSandboxByModel overrides this per model' }), sbxRow);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
   field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API/Ollama conductors; big projects need thousands.');
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
@@ -813,9 +998,10 @@ function openSettings() {
   upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; if (st.behind) { $('#btn-update').hidden = false; $('#btn-update').textContent = `⬇ Update (${st.behind})`; } } catch (e) { updOut.textContent = e.message; } };
   body.append(upd, updOut);
   const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
-  doc.onclick = async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } };
+  doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
   body.append(doc, docOut);
-  const save = el('button', 'primary', 'Save'); save.onclick = async () => {
+  const prevProviders = c.providers || {};
+  const save = el('button', 'primary', 'Save'); save.onclick = () => act(async () => {
     const patch = {};
     for (const i of grid.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
@@ -840,8 +1026,17 @@ function openSettings() {
     patch.worker = { ...(patch.worker || {}), provider: wk.provider, model: wk.model || null, effort: wk.effort };
     patch.conductor = { ...(patch.conductor || {}), provider: cd.provider, model: cd.model || null, effort: cd.effort };
     try { localStorage.setItem('conductorSel', JSON.stringify({ provider: cd.provider, model: cd.model || '', effort: cd.effort })); } catch {}
-    S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); applyAutoRefresh(); refreshNewPicker(false, true); api.post('/api/models/refresh').catch(() => {});
-  };
+    const changedProviders = [];
+    if (patch.providers) {
+      for (const [id, prov] of Object.entries(patch.providers)) {
+        if ('apiKey' in prov || ('baseUrl' in prov && prov.baseUrl !== prevProviders[id]?.baseUrl)) {
+          changedProviders.push(id);
+        }
+      }
+    }
+    S.config = await api.post('/api/settings', patch); closeModal(); renderProviders(); applyAutoRefresh(); refreshNewPicker(false, true);
+    if (changedProviders.length > 0) api.post('/api/models/refresh', { only: changedProviders }).catch(() => {});
+  });
   body.append(save);
   // Quit: stop the server process from the browser (also available top-left in the brand row).
   const quit = el('button', 'sm danger', 'Quit conductor (stop the server)');
@@ -857,8 +1052,8 @@ async function openImprovements(showResolved = false) {
   const tabs = el('div', 'row');
   for (const [label, v] of [['Open', false], ['Resolved', true]]) { const b = el('button', v === showResolved ? 'primary sm' : 'sm', label); b.onclick = () => openImprovements(v); tabs.append(b); }
   body.append(tabs);
-  const form = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.placeholder = 'Log an idea or annoyance…'; const add = el('button', 'sm', 'Add');
-  add.onclick = async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; openImprovements(); } };
+  const form = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.placeholder = 'Log an idea or annoyance…'; inp.setAttribute('aria-label', 'Log an idea or annoyance'); const add = el('button', 'sm', 'Add');
+  add.onclick = () => act(async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; openImprovements(); } });
   form.append(inp, add); body.append(form);
   const run = el('button', 'primary sm', 'Run self-review now'); run.onclick = runReview; body.append(run);
   const shown = showResolved ? all.filter((e) => e.resolved) : S.improvements;
@@ -871,9 +1066,11 @@ async function openImprovements(showResolved = false) {
   openModal('Improvement log', body);
 }
 async function runReview() {
+  const model = composite(pickerValue('new-'));
+  if (!confirm(`Start a paid self-review session with ${model} on the Conductor repo?`)) return;
   act(async () => {
     closeModal();
-    const s = await api.post('/api/review', { model: composite(pickerValue('new-')) });
+    const s = await api.post('/api/review', { model });
     await refreshSessions(); await openSession(s.id);
   });
 }
@@ -882,12 +1079,19 @@ async function runReview() {
 /** Stop the server process (destructive: gated behind a confirm). Used by the top-left Quit and the Settings Quit. */
 async function quitServer(btn) {
   if (!confirm('Stop the Conductor server? In-flight tasks resume next time you start it. This tab stops working until you restart it.')) return false;
+  S.stopped = true;
+  if (S.eventSource) { try { S.eventSource.close(); } catch {} S.eventSource = null; }
   if (btn) btn.disabled = true;
   try { await api.post('/api/shutdown', {}); } catch {}
   document.body.innerHTML = '<div style="padding:2rem;font:14px system-ui">Conductor stopped. Restart it with <code>conductor start</code>, then reload this page.</div>';
   return true;
 }
-function toggleModelPop(force) { const pop = $('#model-pop'); if (!pop) return; pop.hidden = force != null ? !force : !pop.hidden; }
+function toggleModelPop(force) {
+  const pop = $('#model-pop'); if (!pop) return;
+  const show = force != null ? force : pop.hidden;
+  pop.hidden = !show;
+  $('#model-chip')?.setAttribute('aria-expanded', String(show));
+}
 /** SYSTEM drawer: providers, self-improvement, benchmarks, settings out of the primary flow. */
 function openSystem(open) {
   const b = $('#system-body'); if (!b) return;
@@ -895,6 +1099,7 @@ function openSystem(open) {
   b.hidden = !isOpen;
   localStorage.setItem('systemOpen', isOpen ? '1' : '0');
   const car = $('#system-toggle .caret'); if (car) car.textContent = isOpen ? '▾' : '▸';
+  $('#system-toggle')?.setAttribute('aria-expanded', String(isOpen));
 }
 /** "details ▸" on the budget headline opens the SYSTEM drawer at Providers & limits. */
 function revealProviders() { openSystem(true); $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
@@ -921,12 +1126,13 @@ async function boot() {
   connect();
   const last = localStorage.getItem('lastSession');
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
+  setInterval(refreshRunningCards, 15000);
 
   $('#btn-new').onclick = newSession;
-  $('#btn-browse').onclick = () => browse($('#cwd').value);
+  $('#btn-browse').onclick = () => act(() => browse($('#cwd').value));
   $('#btn-send').onclick = send;
   $('#btn-stop').onclick = () => S.current && act(() => api.post(`/api/sessions/${S.current.id}/interrupt`));
-  $('#btn-refresh').onclick = async (e) => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } };
+  $('#btn-refresh').onclick = (e) => act(async () => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } });
   $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
   $('#btn-settings').onclick = openSettings;
   $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);

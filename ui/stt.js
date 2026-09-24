@@ -5,37 +5,42 @@ export function createSTT({ onFinal, onInterim, onState, lang } = {}) {
   if (!SR) return { supported: false, toggle() {}, stop() {}, get active() { return false; } };
   let rec = null;
   let wantActive = false;
+  let failed = false;
 
   function start() {
-    rec = new SR();
+    failed = false;
+    const r = new SR();
+    rec = r;
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = lang || navigator.language || 'en-US';
     rec.onresult = (e) => {
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) onFinal?.(r[0].transcript.trim());
-        else interim += r[0].transcript;
+        const item = e.results[i];
+        if (item.isFinal) onFinal?.(item[0].transcript.trim());
+        else interim += item[0].transcript;
       }
       onInterim?.(interim.trim());
     };
     rec.onerror = (e) => {
       // 'no-speech' and 'aborted' are routine; permission errors end the session.
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') { wantActive = false; onState?.({ active: false, error: e.error }); }
-      else if (e.error !== 'no-speech' && e.error !== 'aborted') onState?.({ active: wantActive, error: e.error });
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') { wantActive = false; failed = true; onState?.({ active: false, error: e.error }); }
+      else if (e.error !== 'no-speech' && e.error !== 'aborted') { failed = true; onState?.({ active: wantActive, error: e.error }); }
     };
     rec.onend = () => {
+      if (rec !== r) return;
       onInterim?.('');
-      if (wantActive) { try { rec.start(); } catch { setTimeout(() => wantActive && start(), 300); } }
-      else onState?.({ active: false });
+      if (wantActive) { try { r.start(); } catch { setTimeout(() => wantActive && rec === r && start(), 300); } }
+      else if (!failed) onState?.({ active: false }); // U2: keep a fatal error visible instead of clearing it
     };
-    try { rec.start(); onState?.({ active: true }); }
-    catch (e) { wantActive = false; onState?.({ active: false, error: e.message }); }
+    try { r.start(); onState?.({ active: true }); }
+    catch (e) { wantActive = false; failed = true; onState?.({ active: false, error: e.message }); }
   }
 
   function stop() {
     wantActive = false;
+    failed = false;
     try { rec?.stop(); } catch {}
     onInterim?.('');
     onState?.({ active: false });

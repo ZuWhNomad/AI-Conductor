@@ -26,6 +26,7 @@ function render(config = structuredClone(DEFAULTS)) {
     S: { config, providers: [] }, el, $: (selector) => nodes.find((n) => '#' + n.id === selector),
     Option: function (text, value) { const n = el('option', null, text); n.value = value; return n; },
     setTimeout() {}, openModal() {}, closeModal() {}, renderProviders() {}, applyAutoRefresh() {}, refreshNewPicker() {},
+    act: (fn) => fn(),
     pickerValue: (prefix) => prefix === 'wk-' ? config.worker : config.conductor,
     api: { post: async (path, patch) => { posts.push({ path, patch: structuredClone(patch) }); return config; } },
   });
@@ -78,4 +79,21 @@ test('emptying a saved API key sends apiKey: "", untouched mask is omitted', asy
   assert.equal(view.posts[0].patch.providers?.deepseek?.apiKey, '');
   assert.equal(view.posts[0].patch.providers?.moonshot, undefined);
   assert.equal(view.posts[0].patch.providers?.xai, undefined);
+});
+
+test('P21: Settings save refreshes only providers whose key or URL changed', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.providers.deepseek = { apiKey: '••••' };
+  const view = render(config);
+  view.field('providers.deepseek.apiKey').value = 'sk-new';
+  await view.save();
+  assert.equal(view.posts.length, 2);
+  assert.deepEqual(view.posts[1], { path: '/api/models/refresh', patch: { only: ['deepseek'] } });
+});
+
+test('U5: Settings reveals effective sandbox for astra worker', () => {
+  const config = structuredClone(DEFAULTS);
+  config.worker = { provider: 'codex', model: 'gpt-6-astra', effort: 'high', codexSandbox: 'workspace-write' };
+  const view = render(config);
+  assert.equal(view.field('worker.codexSandbox').value, 'workspace-write');
 });

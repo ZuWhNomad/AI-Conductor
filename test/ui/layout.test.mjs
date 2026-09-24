@@ -218,6 +218,64 @@ test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWS
     assert.equal(sessionAttrs.role, 'button');
     assert.equal(sessionAttrs.tabIndex, 0);
   });
+  await t.test('I4: pendingCount shows approve pill in sidebar row', async () => {
+    await evaluate(`
+      S.sessions = [{ id: 's2', title: 'Pending Chat', pendingCount: 2, updatedAt: Date.now() }];
+      renderSessions();
+    `);
+    const pillText = await evaluate(`$('#sessions .item .pill.warn')?.textContent`);
+    assert.equal(pillText, 'approve');
+  });
+  await t.test('U12: session updated event resyncs checkboxes', async () => {
+    await evaluate(`
+      S.current = { id: 's-live', permissionMode: 'acceptEdits', overflowApi: false, parallelOverride: false };
+      onSessionEvent({ kind: 'updated', sessionId: 's-live', session: { id: 's-live', permissionMode: 'bypassPermissions', overflowApi: true, parallelOverride: true } });
+    `);
+    const states = await evaluate(`({
+      bypass: $('#bypass')?.checked,
+      overflow: $('#overflow')?.checked,
+      parallel: $('#parallel')?.checked
+    })`);
+    assert.deepEqual(states, { bypass: true, overflow: true, parallel: true });
+  });
+  await t.test('U13: re-opening modal keeps outer modalOpener', async () => {
+    const retained = await evaluate(`
+      const btn = $('#btn-settings');
+      btn.focus();
+      openModal('First', el('div'));
+      const opener1 = modalOpener;
+      openModal('Second', el('div'));
+      const same = modalOpener === opener1;
+      closeModal();
+      same;
+    `);
+    assert.equal(retained, true);
+  });
+  await t.test('P18 + U15: thinking deltas keyed by parent', async () => {
+    await evaluate(`
+      clearTranscript();
+      addDelta('thinking', '', 'sub-1');
+      addDelta('thinking', '', 'sub-2');
+    `);
+    const count = await evaluate(`$('#transcript').querySelectorAll('.sysline').length`);
+    assert.equal(count, 2);
+    await evaluate(`
+      addDelta('text', 'hello from sub-1', 'sub-1');
+    `);
+    const countAfter = await evaluate(`$('#transcript').querySelectorAll('.sysline').length`);
+    assert.equal(countAfter, 1);
+    await evaluate(`clearTranscript();`);
+  });
+  await t.test('P20: terminal task evicts workerLog', async () => {
+    const evicted = await evaluate(`
+      (() => {
+        S.workerLog.set('task-t1', [{ text: 'done' }]);
+        updateTask({ id: 'task-t1', status: 'done', title: 'Done task' });
+        return !S.workerLog.has('task-t1');
+      })()
+    `);
+    assert.equal(evicted, true);
+  });
   // Keep reviewable renders outside the product tree; show the phone's off-canvas sidebar too.
   await evaluate(`document.body.classList.remove('fleet-collapsed');`);
   for (const width of [1920, 1000, 375]) {
