@@ -126,3 +126,15 @@ test('L19: auto-picked delegate persists difficulty 2', async () => {
   assert.throws(() => schema.parse({ title: 't', spec: 's', difficulty: 0 }));
   assert.throws(() => schema.parse({ title: 't', spec: 's', difficulty: 6 }));
 });
+
+test('L23: cancel_task follows a failover to the live replacement and reports an already-finished task', async () => {
+  const dir = cwd();
+  const original = createTask({ cwd: dir, spec: 'x', provider: 'ollama', model: 'qwen' });
+  const replacement = createTask({ cwd: dir, spec: 'x', provider: 'ollama', model: 'qwen', retryOf: original.id });
+  Object.assign(getTask(original.id), { status: 'failed', failedOverTo: replacement.id });
+  const msg = await handler('cancel_task')({ task_id: original.id });
+  assert.match(msg, new RegExp(`Canceled ${replacement.id}`));
+  assert.equal(getTask(replacement.id).status, 'canceled');
+  assert.match(await handler('cancel_task')({ task_id: replacement.id }), /already canceled/);
+  assert.match(await handler('cancel_task')({ task_id: 'nope' }), /unknown task/);
+});

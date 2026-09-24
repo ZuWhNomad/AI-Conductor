@@ -3,7 +3,7 @@
 // tools (Ollama / API-model conductors).
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { createTask, awaitTask, getTask, cancelTask, listTasks, describeTask } from './tasks.mjs';
+import { createTask, awaitTask, getTask, cancelChain, listTasks, describeTask } from './tasks.mjs';
 import { getModels, refreshModels } from './models.mjs';
 import { getLimits, refreshLimits } from './limits.mjs';
 import { logImprovement, resolveImprovement } from './improve.mjs';
@@ -233,7 +233,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         return describeTask(t) + (last ? `\nRecent actions:\n${last}` : '');
       },
     },
-    { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => (cancelTask(a.task_id) ? `Task ${a.task_id} canceled.` : `unknown task ${a.task_id}`) },
+    { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => { const r = cancelChain(a.task_id); if (!r) return `unknown task ${a.task_id}`; return r.canceled.length ? `Canceled ${r.canceled.join(', ')}${r.canceled[0] !== a.task_id ? ` (the live replacement of ${a.task_id})` : ''}.` : `Task ${a.task_id} is already ${r.already}; nothing to cancel.`; } },
     {
       name: 'allow_command',
       description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad). Allowed programs are trusted: they run with the worker\'s privileges and are not sandboxed. Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
