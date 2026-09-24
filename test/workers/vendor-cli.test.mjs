@@ -1,6 +1,10 @@
 import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFileSync, readFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 
 const { runVendorCli } = await import('../../core/workers/vendor-cli.mjs');
 const { VENDORS, providerFor } = await import('../../core/providers/vendors.mjs');
@@ -17,9 +21,9 @@ const AGY = [
 ];
 
 /** A spec whose "binary" is node printing the given lines — exercises the runner end to end. */
-function fakeSpec(lines, { exitCode = 0, parse = VENDORS.antigravity.parse, parseText, stderr = '' } = {}) {
+function fakeSpec(lines, { exitCode = 0, parse = VENDORS.antigravity.parse, parseText, stderr = '', onClose, env } = {}) {
   const script = `const L=${JSON.stringify(lines)};for(const l of L)console.log(typeof l==='string'?l:JSON.stringify(l));${stderr ? `console.error(${JSON.stringify(stderr)});` : ''}process.exit(${exitCode})`;
-  return { id: 'fake', label: 'Fake CLI', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], threadId: null }), parse, parseText, loginHint: 'fake login' };
+  return { id: 'fake', label: 'Fake CLI', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], threadId: null }), parse, parseText, onClose, env, loginHint: 'fake login' };
 }
 
 test('vendor runner folds agy stream-json into the common result', async () => {
@@ -268,4 +272,139 @@ test('qwen-code resumes the requested thread id', () => {
   assert.ok(args.includes('--resume'));
   assert.equal(args[args.indexOf('--resume') + 1], 'session-123');
   assert.ok(!args.includes('--continue'));
+});
+
+// Qwen 0.23 Claude-style frames (same Anthropic Messages wire format grok uses; qwen has no usageInputExclusive).
+const QWEN_FRAMES = [
+  { type: 'system', subtype: 'init', session_id: 'qwen-sess-1', model: 'qwen3-coder-plus' },
+  { type: 'assistant', message: { id: 'msg_0', role: 'assistant', content: [{ type: 'text', text: 'created hi.txt' }], stop_reason: 'end_turn' } },
+  { type: 'result', subtype: 'success', is_error: false, result: 'created hi.txt', usage: { input_tokens: 40, output_tokens: 8, cache_read_input_tokens: 2 } },
+];
+
+test('qwen-code: Claude-style stream-json frames parse to text, usage and session', async () => {
+  const spec = VENDORS['qwen-code'];
+  const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0, spec };
+  for (const obj of QWEN_FRAMES) spec.parse(obj, st, () => {});
+  assert.equal(st.finalText, 'created hi.txt');
+  assert.equal(st.error, null);
+  assert.equal(st.threadId, 'qwen-sess-1');
+  assert.equal(st.items.filter((i) => i.type === 'agent_message').length, 1);
+  assert.equal(st.usage.input_tokens, 40);
+  assert.equal(st.usage.output_tokens, 8);
+  assert.equal(st.usage.exclusive, undefined);
+});
+
+test('qwen-code: exit 0 with [API Error: 429 ...] assistant text is a limit hit', async () => {
+  const text = '[API Error: 429 {"error":{"message":"quota exceeded"}}]';
+  const lines = [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
+    { type: 'result', subtype: 'success', is_error: false, result: text },
+  ];
+  const r = await runVendorCli(fakeSpec(lines, { parse: VENDORS['qwen-code'].parse, onClose: VENDORS['qwen-code'].onClose }), { id: 't', cwd: tmpDir('qwen-api-err'), prompt: 'x' });
+  assert.equal(r.ok, false);
+  assert.equal(r.limitHit, true);
+  assert.match(r.error, /API Error: 429/);
+});
+
+test('kimi spec sets PYTHONUTF8 and the runner merges spec.env() into the child', async () => {
+  assert.deepEqual(VENDORS.kimi.env(), { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' });
+  const script = `console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:process.env.PYTHONUTF8+'|'+process.env.PYTHONIOENCODING}}))`;
+  const spec = { id: 'fake', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script] }), parse: VENDORS.antigravity.parse, env: VENDORS.kimi.env };
+  const r = await runVendorCli(spec, { id: 't', cwd: tmpDir('kimi-env'), prompt: 'x' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.finalMessage, '1|utf-8');
+});
+
+test('kimi unrecognised JSON objects fall back to parseText instead of failing the run', async () => {
+  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 0 };
+  const echoed = { error: 'Heads up: not a run failure', message: 'echoed prompt' };
+  const r = await runVendorCli(fakeSpec([echoed, 'done'], opts), { id: 't', cwd: tmpDir('kimi-unrec'), prompt: 'x' });
+  assert.equal(r.ok, true, r.error);
+  assert.match(r.finalMessage, /done/);
+});
+
+test('kimi headlessArgs uses --output-format stream-json (confirmed on kimi --help 1.50)', () => {
+  const { args } = VENDORS.kimi.headlessArgs({ prompt: 'hi', cwd: 'F:/ws' });
+  assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
+});
+
+test('auto-continue sums usage from the interrupted first run', async () => {
+  let n = 0;
+  const spec = {
+    id: 'fake', bin: () => process.execPath,
+    headlessArgs: () => {
+      n++;
+      if (n === 1) return { args: ['-e', `console.log(JSON.stringify({event:'result',result:{status:'ERROR',error:'stream was interrupted',usage:{input_tokens:10,output_tokens:3}}})); process.exit(1)`], threadId: 'th-cont' };
+      return { args: ['-e', `console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'done',usage:{input_tokens:4,output_tokens:2}}}))`], threadId: 'th-cont' };
+    },
+    parse: VENDORS.antigravity.parse,
+  };
+  const r = await runVendorCli(spec, { id: 't', cwd: tmpDir('v-cont'), prompt: 'x' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(n, 2);
+  assert.equal(r.usage.input_tokens, 14);
+  assert.equal(r.usage.output_tokens, 5);
+});
+
+test('grok long-prompt temp file is created with mode 0o600', (t) => {
+  let seen;
+  const orig = fs.writeFileSync;
+  const mocked = t.mock.method(fs, 'writeFileSync', (path, data, options) => { seen = options; return orig.call(fs, path, data, options); });
+  syncBuiltinESMExports();
+  let pf;
+  try {
+    const big = VENDORS.grok.headlessArgs({ prompt: 'x'.repeat(20000), cwd: 'F:/ws', model: 'grok-4.6' });
+    pf = big.args[big.args.indexOf('--prompt-file') + 1];
+    assert.equal(seen?.mode, 0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(pf).mode & 0o777, 0o600);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+    try { if (pf) unlinkSync(pf); } catch {}
+  }
+});
+
+test('detect and listModels share one models probe; loginCommand computes canLogin once', async () => {
+  const cwd = tmpDir('probe-once');
+  const nfile = join(cwd, 'n.txt');
+  writeFileSync(nfile, '0');
+  const script = join(cwd, 'cli.js');
+  writeFileSync(script, `const { writeFileSync, readFileSync } = require('node:fs');
+const f = ${JSON.stringify(nfile)};
+writeFileSync(f, String(Number(readFileSync(f, 'utf8')) + 1));
+console.log('  * grok-4.6 (default)');
+`);
+  const WIN = process.platform === 'win32';
+  const bin = join(cwd, WIN ? 'grok.cmd' : 'grok');
+  if (WIN) writeFileSync(bin, `@echo off\r\n"${process.execPath}" "%~dp0cli.js" %*\r\n`);
+  else { writeFileSync(bin, `#!/bin/sh\n"${process.execPath}" "${script}" "$@"\n`); chmodSync(bin, 0o755); }
+  let binCalls = 0;
+  const p = providerFor({ ...VENDORS.grok, bin: () => { binCalls++; return bin; } });
+  await p.detect();
+  await p.listModels();
+  assert.equal(readFileSync(nfile, 'utf8'), '1');
+  binCalls = 0;
+  p.loginCommand();
+  p.loginCommand();
+  assert.equal(binCalls, 1);
+});
+
+test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help', () => {
+  const t = { prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000, sandbox: 'read-only' };
+  const agy = VENDORS.antigravity.headlessArgs(t);
+  assert.equal(agy.args[agy.args.indexOf('--mode') + 1], 'plan');
+  assert.ok(!agy.args.includes('--dangerously-skip-permissions'));
+  const grok = VENDORS.grok.headlessArgs(t);
+  assert.equal(grok.args[grok.args.indexOf('--permission-mode') + 1], 'plan');
+  assert.ok(!grok.args.includes('--always-approve'));
+  const qwen = VENDORS['qwen-code'].headlessArgs(t);
+  assert.equal(qwen.args[qwen.args.indexOf('--approval-mode') + 1], 'plan');
+  const kimi = VENDORS.kimi.headlessArgs(t);
+  assert.ok(kimi.args.includes('--plan'));
+  assert.ok(!kimi.args.includes('--yolo'));
+  const open = { prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000 };
+  assert.ok(VENDORS.antigravity.headlessArgs(open).args.includes('--dangerously-skip-permissions'));
+  assert.ok(VENDORS.grok.headlessArgs(open).args.includes('--always-approve'));
+  assert.equal(VENDORS['qwen-code'].headlessArgs(open).args[VENDORS['qwen-code'].headlessArgs(open).args.indexOf('--approval-mode') + 1], 'yolo');
+  assert.ok(VENDORS.kimi.headlessArgs(open).args.includes('--yolo'));
 });

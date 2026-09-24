@@ -22,7 +22,19 @@ export async function runVendorCli(spec, t) {
   const again = await runVendorCliOnce(spec, { ...t, resumeThreadId: first.threadId, prompt: 'Continue the task you were working on; the stream was interrupted. Finish it and report as instructed.' });
   again.items = [...first.items, ...again.items];
   again.durationMs = (first.durationMs || 0) + (again.durationMs || 0);
+  again.usage = sumUsage(first.usage, again.usage);
   return again;
+}
+
+function sumUsage(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    if (typeof v === 'number') out[k] = (Number(out[k]) || 0) + v;
+    else if (!(k in out)) out[k] = v;
+  }
+  return out;
 }
 
 function runVendorCliOnce(spec, t) {
@@ -43,7 +55,14 @@ function runVendorCliOnce(spec, t) {
     emit('thread', { threadId: st.threadId });
     onLines(child.stdout, (line) => {
       let obj = null; try { obj = JSON.parse(line); } catch {}
-      try { if (obj) spec.parse(obj, st, emit); else spec.parseText?.(line, st, emit); } catch (e) { st.unknown++; }
+      try {
+        if (obj) {
+          const before = [st.error, st.items.length, st.text.length];
+          spec.parse(obj, st, emit);
+          // Unrecognised JSON (e.g. a kimi echoed prompt with an `error` key) is text, not a run failure.
+          if (spec.parseText && st.error === before[0] && st.items.length === before[1] && st.text.length === before[2]) spec.parseText(line, st, emit);
+        } else spec.parseText?.(line, st, emit);
+      } catch (e) { st.unknown++; }
     });
     onLines(child.stderr, (line) => { res.stderr = (res.stderr + line + '\n').slice(-4000); if (!st.error && (LIMIT_RE.test(line) || AUTH_RE.test(line))) st.errorHint = line; });
     const timer = t.timeoutMs ? setTimeout(() => { st.error = st.error || `timeout after ${Math.round(t.timeoutMs / 1000)}s`; killTree(child); }, t.timeoutMs) : null;

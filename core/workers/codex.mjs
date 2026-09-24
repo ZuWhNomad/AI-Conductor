@@ -40,7 +40,7 @@ export function runCodex(t) {
 
   return new Promise((resolve) => {
     const started = Date.now();
-    const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, exitCode: null, stderr: '' };
+    const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, lastError: null, warnings: [], limitHit: false, exitCode: null, stderr: '' };
     let child;
     try { child = spawnCodex(args, { cwd: t.cwd, env: { ...process.env, ...mcp.env } }); }
     catch (e) { res.error = e.message; return resolve(res); }
@@ -63,9 +63,12 @@ export function runCodex(t) {
       if (timer) clearTimeout(timer);
       t.signal?.removeEventListener('abort', onAbort);
       res.exitCode = code;
-      res.items = [...items.values()].map(summarizeItem);
+      res.items = [...items.values()];
       res.ok = code === 0 && !res.error;
-      if (!res.ok && !res.error) res.error = `codex exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-500)}` : ''}`;
+      if (!res.ok && !res.error) res.error = `codex exited with code ${code}${res.lastError ? ` — ${res.lastError}` : ''}${res.stderr ? `: ${res.stderr.trim().slice(-500)}` : ''}`;
+      // Error items/events are warnings; a 429 retry notice must not fail a successful run or trigger failover.
+      if (res.ok) res.limitHit = false;
+      else res.limitHit = res.limitHit || LIMIT_RE.test(`${res.error || ''}\n${res.lastError || ''}`);
       res.durationMs = Date.now() - started;
       resolve(res);
     });
@@ -82,17 +85,23 @@ export function applyCodexEvent(ev, res, items, emit = () => {}) {
     case 'turn.started': emit('turn.started', {}); break;
     case 'item.started': case 'item.updated': case 'item.completed': {
       const it = ev.item; if (!it) break;
-      items.set(it.id, it);
+      items.set(it.id, summarizeItem(it));
       if (it.type === 'agent_message' && ev.type === 'item.completed') res.finalMessage = it.text || res.finalMessage;
-      if (it.type === 'error') { res.error = it.message; if (LIMIT_RE.test(it.message || '')) res.limitHit = true; }
+      if (it.type === 'error') noteCodexWarning(res, it.message);
       emit('item', { item: summarizeItem(it), phase: ev.type.split('.')[1] });
       break;
     }
     case 'turn.completed': res.usage = ev.usage || null; emit('turn.completed', { usage: ev.usage }); break;
     case 'turn.failed': res.error = ev.error?.message || 'turn failed'; if (LIMIT_RE.test(res.error)) res.limitHit = true; emit('turn.failed', { error: res.error }); break;
-    case 'error': res.error = ev.message || res.error; if (LIMIT_RE.test(ev.message || '')) res.limitHit = true; emit('error', { error: ev.message }); break;
+    case 'error': noteCodexWarning(res, ev.message); emit('error', { error: ev.message }); break;
     default: break;
   }
+}
+
+function noteCodexWarning(res, message) {
+  const text = message || '';
+  res.lastError = text || res.lastError;
+  (res.warnings ||= []).push(text);
 }
 
 export function summarizeItem(it) {

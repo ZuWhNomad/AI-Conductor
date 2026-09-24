@@ -1,10 +1,12 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { spawnCli, spawnCodex, killTree } from '../core/proc.mjs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { spawnCli, spawnCodex, killTree, resolveNpmShim } from '../core/proc.mjs';
 import { capture, providerFor, VENDORS } from '../core/providers/vendors.mjs';
 
 const WIN = process.platform === 'win32';
@@ -81,6 +83,39 @@ test('POSIX CLI children are process-group leaders for tree termination', { skip
   } finally {
     try { process.kill(-child.pid); } catch {}
   }
+});
+
+test('killTree fires taskkill via async execFile, not execFileSync', { skip: !WIN }, async (t) => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { stdio: 'ignore', windowsHide: true });
+  const asyncCalls = [];
+  const sync = t.mock.method(childProcess, 'execFileSync', () => { throw new Error('must not use execFileSync'); });
+  const asyncKill = t.mock.method(childProcess, 'execFile', (cmd, args, opts, cb) => { asyncCalls.push([cmd, args]); if (typeof cb === 'function') cb(null); });
+  syncBuiltinESMExports();
+  try {
+    killTree(child);
+    assert.equal(asyncCalls.length, 1);
+    assert.equal(asyncCalls[0][0], 'taskkill');
+    assert.deepEqual(asyncCalls[0][1], ['/pid', String(child.pid), '/T', '/F']);
+  } finally {
+    sync.mock.restore(); asyncKill.mock.restore(); syncBuiltinESMExports();
+    try { child.kill(); } catch {}
+  }
+});
+
+test('resolveNpmShim accepts a quoted native .exe target', { skip: !WIN }, async () => {
+  const cwd = tmpDir('shim-exe');
+  const exe = join(cwd, 'tool.exe');
+  copyFileSync(process.execPath, exe);
+  const bin = join(cwd, 'tool.cmd');
+  writeFileSync(bin, `@echo off\r\n"%~dp0\\tool.exe" %*\r\n`);
+  const shim = resolveNpmShim(bin);
+  assert.equal(shim.command, exe);
+  assert.deepEqual(shim.args, []);
+  const binAbs = join(cwd, 'tool-abs.cmd');
+  writeFileSync(binAbs, `@echo off\r\n"${exe}" %*\r\n`);
+  assert.equal(resolveNpmShim(binAbs).command, exe);
+  const out = await collect(spawnCli(bin, ['-e', 'process.stdout.write("ok")'], { stdio: ['ignore', 'pipe', 'pipe'] }));
+  assert.equal(out, 'ok');
 });
 
 test('killTree unblocks close when a grandchild still holds the pipes', async () => {

@@ -18,6 +18,8 @@ export async function runClaude(t) {
   const emit = (event, data) => bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data });
   const started = Date.now();
   const bypass = (t.permissionMode || 'bypassPermissions') === 'bypassPermissions';
+  const readOnly = t.sandbox === 'read-only';
+  let sawRejectedLimit = false;
   try {
     const q = query({
       prompt: t.prompt,
@@ -35,6 +37,8 @@ export async function runClaude(t) {
         mcpServers: t.mcpServers && Object.keys(t.mcpServers).length ? t.mcpServers : undefined,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         abortController: abort,
+        // Agent SDK supports disallowedTools; read-only drops write/edit/Bash rather than relying on plan mode.
+        ...(readOnly ? { disallowedTools: ['Bash', 'Edit', 'Write', 'NotebookEdit'] } : {}),
       },
     });
     for await (const m of q) {
@@ -46,7 +50,12 @@ export async function runClaude(t) {
           if (b.type === 'tool_use') { res.items.push({ type: 'tool_use', name: b.name, input: b.input }); emit('item', { item: { type: 'tool_use', name: b.name, input: summarizeInput(b.input) }, phase: 'started' }); }
         }
       }
-      else if (m.type === 'rate_limit_event') { bus.publish('rate_limit', { provider: res.provider, info: m.rate_limit_info }); if (m.rate_limit_info?.status === 'rejected') res.limitHit = true; }
+      else if (m.type === 'rate_limit_event') {
+        const info = m.rate_limit_info || {};
+        bus.publish('rate_limit', { provider: res.provider, info });
+        const overage = !!(info.isUsingOverage || /overage/i.test(String(info.status || '')));
+        if (info.status === 'rejected' && !overage) sawRejectedLimit = true;
+      }
       else if (m.type === 'result') {
         res.finalMessage = m.subtype === 'success' ? m.result : (m.errors || []).join('; ');
         res.usage = m.modelUsage || m.usage || null; res.costUsd = m.total_cost_usd || 0;
@@ -56,6 +65,8 @@ export async function runClaude(t) {
       }
     }
     res.ok = !res.error;
+    if (res.ok) res.limitHit = false;
+    else if (sawRejectedLimit) res.limitHit = true;
   } catch (e) {
     res.error = res.error || (abort.signal.aborted ? (t.timeoutMs ? 'timeout' : 'aborted') : String(e?.message || e));
     if (LIMIT_RE.test(res.error)) res.limitHit = true;

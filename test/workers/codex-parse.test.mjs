@@ -24,7 +24,7 @@ test('codex JSONL folds into thread, final message, items and usage', () => {
   assert.equal(res.finalMessage, 'Created add.js.');
   assert.equal(res.usage.output_tokens, 227);
   assert.equal(items.size, 4);
-  assert.equal(items.get('item_1').exit_code, 0);
+  assert.equal(items.get('item_1').exitCode, 0);
   assert.deepEqual(summarizeItem(items.get('item_2')).changes, [{ path: 'add.js', kind: 'add' }]);
   assert.ok(seen.includes('thread') && seen.includes('turn.completed'));
 });
@@ -34,8 +34,18 @@ test('limit and failure events are classified', () => {
   applyCodexEvent({ type: 'turn.failed', error: { message: '{"status":429,"error":{"message":"You have hit your usage limit"}}' } }, res, new Map());
   assert.equal(res.limitHit, true);
   assert.match(res.error, /usage limit/);
-  const res2 = { threadId: null, finalMessage: '', error: null, limitHit: false, usage: null };
+  const res2 = { threadId: null, finalMessage: '', error: null, lastError: null, limitHit: false, usage: null };
   applyCodexEvent({ type: 'item.completed', item: { id: 'e', type: 'error', message: 'Model metadata not found' } }, res2, new Map());
   assert.equal(res2.limitHit, false);
-  assert.equal(res2.error, 'Model metadata not found');
+  // Was `res2.error === 'Model metadata not found'`: Codex `error` items are warnings, not run failures.
+  assert.equal(res2.error, null);
+  assert.equal(res2.lastError, 'Model metadata not found');
+});
+
+test('top-level error events are warnings and do not set limitHit', () => {
+  const res = { threadId: null, finalMessage: '', error: null, lastError: null, warnings: [], limitHit: false, usage: null };
+  applyCodexEvent({ type: 'error', message: 'Reconnecting… 429' }, res, new Map());
+  assert.equal(res.error, null);
+  assert.equal(res.limitHit, false);
+  assert.equal(res.lastError, 'Reconnecting… 429');
 });

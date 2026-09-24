@@ -149,7 +149,9 @@ export const VENDORS = {
       const args = [];
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
-      args.push('--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
+      args.push('--output-format', 'stream-json', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
+      if (t.sandbox === 'read-only') args.push('--mode', 'plan');
+      else args.push('--dangerously-skip-permissions');
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
       // Effort is encoded in the id (Method C): translate (family, effort) → concrete id here. Never pass --effort:
       // agy rejects it, and the id already carries the level. A model with no effort dimension dispatches its id as-is.
@@ -198,9 +200,11 @@ export const VENDORS = {
       // A large prompt as a `-p` CLI arg fails on Windows (command-line length limit) — grok exits ~instantly with
       // an empty result. `--prompt-file` reads the prompt from disk instead; use it past a safe threshold. The temp
       // file lives outside the workspace so a benchmark run never sees it.
-      const args = ['--output-format', 'streaming-messages-json', '--always-approve', '--no-auto-update', '--cwd', t.cwd];
+      const args = ['--output-format', 'streaming-messages-json', '--no-auto-update', '--cwd', t.cwd];
+      if (t.sandbox === 'read-only') args.push('--permission-mode', 'plan');
+      else args.push('--always-approve');
       let cleanup = null;
-      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt); args.push('--prompt-file', pf); cleanup = () => { try { unlinkSync(pf); } catch {} }; } // removed after the run so the full prompt doesn't linger in %TEMP%
+      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt, { mode: 0o600 }); args.push('--prompt-file', pf); cleanup = () => { try { unlinkSync(pf); } catch {} }; } // removed after the run so the full prompt doesn't linger in %TEMP%
       else args.push('-p', t.prompt);
       let threadId = null;
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
@@ -228,21 +232,17 @@ export const VENDORS = {
     // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: grok's 8000.
     headlessArgs: (t) => {
       const long = !!(t.prompt && t.prompt.length > 8000);
-      const args = long ? ['-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd]
-        : [t.prompt, '-o', 'stream-json', '--approval-mode', 'yolo', '--include-directories', t.cwd];
+      const args = long ? ['-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd]
+        : [t.prompt, '-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd];
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
       if (t.model) args.push('-m', t.model);
       return { args, stdinPrompt: long };
     },
-    // Gemini-CLI-family stream-json: {type:'init'|'message'|'tool_use'|'tool_result'|'result', ...}
-    parse: (obj, st, emit) => {
-      const type = obj.type;
-      if (obj.session_id && !st.threadId) st.threadId = obj.session_id;
-      if (type === 'message' && obj.role === 'assistant') { const txt = typeof obj.content === 'string' ? obj.content : (obj.content || []).map((c) => c.text || '').join(''); if (txt) { P.message(st, emit, txt.trim()); st.text += txt; } }
-      else if (type === 'tool_use') P.toolStart(st, emit, obj.tool_id || obj.id || `qwen-${st.items.length}`, obj.tool_name || obj.name || 'tool', obj.parameters || obj.input);
-      else if (type === 'tool_result') P.toolDone(st, emit, obj.tool_id || obj.id, obj.tool_name || 'tool', typeof obj.output === 'string' ? obj.output : JSON.stringify(obj.output ?? obj.content ?? 'done'), obj.status === 'error');
-      else if (type === 'result') { if (obj.stats) P.addUsage(st, { input_tokens: obj.stats.input_tokens, output_tokens: obj.stats.output_tokens, cache_read_tokens: obj.stats.cached }); if (obj.status && !/success|ok/i.test(obj.status)) st.error = String(obj.error?.message || obj.error || obj.status); else st.finalText = obj.result ?? st.text; }
-      else if (type === 'error' || obj.error) st.error = String(obj.error?.message || obj.error || obj.message);
+    // Qwen Code 0.23 emits Claude-style Anthropic Messages frames, not Gemini-CLI {type:'message'|'tool_use'}.
+    parse: (obj, st, emit) => parseMessagesStream(obj, st, emit, 'qwen'),
+    onClose: (st) => {
+      const text = st.finalText || st.text || '';
+      if (!st.error && /\[API Error:/i.test(text)) st.error = text.trim();
     },
   },
 
@@ -255,13 +255,16 @@ export const VENDORS = {
     probe: { args: ['--version'], signedOut: /never/, needsAuthFile: () => existsSync(join(home, '.kimi', 'credentials.json')) || existsSync(join(home, '.kimi', 'config.toml')) },
     parseModels: () => ['kimi-k3', 'kimi-k2.5'].map((id) => ({ id, label: id })),
     efforts: [],
-    // kimi 1.50: `--print` = non-interactive with auto-approval; output is plain text unless the CLI
-    // emits JSON lines (both are handled). Session resume via --session <id> (ids come from `kimi export`).
+    env: () => ({ PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }),
+    // kimi 1.50: `--print` = non-interactive with auto-approval. `--output-format stream-json` is on
+    // `kimi --help` (1.50). Session resume via --session <id> (ids come from `kimi export`).
     // Long prompts: drop `-p` (valued flag) and pipe stdin; `--input-format` "must be piped in via stdin"
     // (kimi 1.50 --help; Print.run reads stdin when `-p` is omitted). No --prompt-file. Threshold: grok's 8000.
     headlessArgs: (t) => {
       const long = !!(t.prompt && t.prompt.length > 8000);
-      const args = ['--print', '--yolo', '-w', t.cwd];
+      const args = ['--print', '-w', t.cwd, '--output-format', 'stream-json'];
+      if (t.sandbox === 'read-only') args.push('--plan');
+      else args.push('--yolo');
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
       if (t.resumeThreadId) args.push('--session', t.resumeThreadId);
@@ -271,20 +274,26 @@ export const VENDORS = {
     parse: (obj, st, emit) => {
       const type = obj.type || obj.event;
       if ((obj.session_id || obj.sessionId) && !st.threadId) st.threadId = obj.session_id || obj.sessionId;
-      const txt = obj.text ?? obj.content ?? obj.message?.content;
-      if (/^(assistant|message|agent_message|text)/i.test(String(type)) && typeof txt === 'string') { P.message(st, emit, txt.trim()); st.text += txt; }
+      const raw = obj.text ?? obj.content ?? obj.message?.content;
+      const txt = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw.map((c) => (typeof c === 'string' ? c : c?.text || '')).join('') : '';
+      if ((obj.role === 'assistant' || /^(assistant|message|agent_message|text)/i.test(String(type))) && txt) { P.message(st, emit, txt.trim()); st.text += txt; }
       else if (/tool_(use|call)/i.test(String(type))) P.toolStart(st, emit, obj.id || `kimi-${st.items.length}`, obj.name || obj.tool_name || 'tool', obj.input || obj.arguments);
       else if (/tool_result/i.test(String(type))) P.toolDone(st, emit, obj.id || obj.tool_use_id, obj.name || 'tool', typeof obj.output === 'string' ? obj.output : JSON.stringify(obj.output ?? obj.content ?? 'done'));
       if (obj.usage) P.addUsage(st, obj.usage, { input: 'input_tokens', output: 'output_tokens', cached: 'cached_tokens' });
       if (/^(result|done|complete|final)/i.test(String(type))) { st.finalText = obj.result ?? obj.response ?? st.text; if (obj.error || obj.status === 'error') st.error = String(obj.error?.message || obj.error || 'kimi run failed'); }
-      else if (type === 'error' || obj.error) st.error = String(obj.error?.message || obj.error || obj.message);
+      else if (type === 'error') st.error = String(obj.error?.message || obj.error || obj.message);
+      // Unrecognised objects (JSON-parseable echoed prompts) fall through; the runner calls parseText.
     },
     parseText: (line, st) => { st.text += line + '\n'; },
   },
 };
 
+// One-shot handoff: detect() stores a models-probe so the following listModels() does not spawn again.
+const probeHandoff = new WeakMap();
+
 /** Provider-module shape for the registry, built from a vendor spec. */
 export function providerFor(spec) {
+  let loginCmd;
   return {
     id: spec.id, label: spec.label, kind: 'vendor-cli',
     auth: { type: 'subscription', setup: spec.login?.note || `Run \`${spec.loginHint}\` in a terminal.` },
@@ -294,6 +303,7 @@ export function providerFor(spec) {
       if (!bin) return { installed: false, loggedIn: false, hint: spec.install?.win || spec.install?.posix };
       if (spec.probe?.needsAuthFile) return { installed: true, bin, loggedIn: spec.probe.needsAuthFile() };
       const r = await capture(bin, spec.probe.args, { timeoutMs: 40_000 });
+      if (spec.probe.args?.[0] === 'models') probeHandoff.set(spec, { bin, argsKey: JSON.stringify(spec.probe.args), result: r });
       const signedOut = spec.probe.signedOut.test(r.out) || r.timedOut;
       return { installed: true, bin, loggedIn: !signedOut && (r.code === 0 || !/error/i.test(r.out)), detail: r.out.trim().split('\n')[0]?.slice(0, 120) };
     },
@@ -304,7 +314,12 @@ export function providerFor(spec) {
       const override = loadConfig().providers?.[spec.id]?.models;
       let list;
       if (Array.isArray(override) && override.length) list = override.map((m) => (typeof m === 'string' ? { id: m } : m));
-      else if (spec.probe?.args?.[0] === 'models' && !spec.probe.needsAuthFile) { const r = await capture(bin, spec.probe.args, { timeoutMs: 40_000 }); list = spec.parseModels(r.out); }
+      else if (spec.probe?.args?.[0] === 'models' && !spec.probe.needsAuthFile) {
+        const hit = probeHandoff.get(spec);
+        probeHandoff.delete(spec);
+        const r = (hit && hit.bin === bin && hit.argsKey === JSON.stringify(spec.probe.args)) ? hit.result : await capture(bin, spec.probe.args, { timeoutMs: 40_000 });
+        list = spec.parseModels(r.out);
+      }
       else list = spec.parseModels('');
       if (spec.collapseEfforts) list = collapseEffortFamilies(list); // fold effort-in-id variants into family models (Antigravity)
       return list.map((m) => ({ provider: spec.id, id: m.id, label: m.label || m.id, description: spec.budgetLabel, efforts: m.efforts || spec.efforts || [], effortIds: m.effortIds || null, kind: 'agent', cost: 'subscription', isDefault: !!m.isDefault }));
@@ -313,9 +328,11 @@ export function providerFor(spec) {
     workerConfig: () => ({}),
     installCommand: () => (WIN ? spec.install?.win : spec.install?.posix) || null,
     loginCommand: () => {
+      if (loginCmd !== undefined) return loginCmd;
       const bin = spec.bin() || spec.id;
       const q = (s) => (/\s/.test(s) ? `"${s}"` : s);
-      return `${q(bin)}${spec.login?.args?.length ? ' ' + spec.login.args.join(' ') : ''}`;
+      loginCmd = `${q(bin)}${spec.login?.args?.length ? ' ' + spec.login.args.join(' ') : ''}`;
+      return loginCmd;
     },
     // Sub-command CLIs (grok/kimi: `<bin> login`) have a matching `<bin> logout`; re-auth runs it first so a stale
     // token (e.g. a free-tier grant that a new subscription must replace) is cleared before the fresh sign-in.

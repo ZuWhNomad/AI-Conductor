@@ -1,7 +1,7 @@
 // Process helpers: locate CLIs on PATH, spawn the Codex CLI without a shell, kill process trees.
-import { spawn, execFileSync, execSync } from 'node:child_process';
+import { spawn, execFile, execFileSync, execSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 
 const WIN = process.platform === 'win32';
 const probeChildren = new Set();
@@ -72,13 +72,25 @@ export function codexCommand() {
 export function resolveNpmShim(cmdPath) {
   if (!WIN || !/\.cmd$/i.test(cmdPath)) return null;
   let txt; try { txt = readFileSync(cmdPath, 'utf8'); } catch { return null; }
+  const unwrap = (raw) => {
+    const rel = raw.replace(/%~dp0\\?/gi, '').replace(/%[^%]*%/g, '').replace(/^["\\/]+/, '');
+    return isAbsolute(rel) ? rel : join(dirname(cmdPath), rel);
+  };
   // The shim's real invocation is `"<…>\entry.js" %*`. Take the last quoted .js path it references (node.exe comes first, isn't .js).
-  const quoted = [...txt.matchAll(/"([^"\r\n]*?\.js)"/gi)].map((m) => m[1]);
-  const raw = quoted[quoted.length - 1] || (txt.match(/([^\s"']+\.js)\b/i) || [])[1];
-  if (!raw) return null;
-  const rel = raw.replace(/%~dp0\\?/gi, '').replace(/%[^%]*%/g, '').replace(/^["\\/]+/, ''); // %~dp0 = the shim's own dir
-  const js = join(dirname(cmdPath), rel);
-  return existsSync(js) ? { command: process.execPath, args: [js] } : null;
+  const quotedJs = [...txt.matchAll(/"([^"\r\n]*?\.js)"/gi)].map((m) => m[1]);
+  const rawJs = quotedJs[quotedJs.length - 1] || (txt.match(/([^\s"']+\.js)\b/i) || [])[1];
+  if (rawJs) {
+    const js = unwrap(rawJs);
+    if (existsSync(js)) return { command: process.execPath, args: [js] };
+  }
+  // Native-bin packages: `"<…>\tool.exe" %*` (last quoted .exe is the actual target; an earlier IF EXIST node.exe is ignored).
+  const quotedExe = [...txt.matchAll(/"([^"\r\n]*?\.exe)"/gi)].map((m) => m[1]);
+  const rawExe = quotedExe[quotedExe.length - 1];
+  if (rawExe) {
+    const exe = unwrap(rawExe);
+    if (existsSync(exe)) return { command: exe, args: [] };
+  }
+  return null;
 }
 
 /**
@@ -109,7 +121,7 @@ export function killTree(child) {
   if (!child) return;
   if (child.pid && child.exitCode === null) {
     try {
-      if (WIN) execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      if (WIN) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }, (err) => { if (err) try { child.kill(); } catch {} });
       else process.kill(-child.pid, 'SIGTERM');
     } catch { try { child.kill(); } catch {} }
   } else if (child.pid && !WIN) {
