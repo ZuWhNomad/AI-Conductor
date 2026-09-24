@@ -1,7 +1,8 @@
 // The framework budget gate: may one more task start on a provider right now without blowing its windows?
 // A task's cost is measured per window (the scorecard records each run's % delta) and charged against that window's
 // own target. Used by `core/tasks.mjs schedule()` for ALL tasks.
-import { getLimits } from './limits.mjs';
+import { getLimits, isSession } from './limits.mjs';
+export { isSession };
 import { loadConfig } from './config.mjs';
 
 /**
@@ -33,7 +34,6 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
 // --- Per-window targets (2026-09-12): a session window (5-hour and the like) is used up to 95%, everything else
 // (weekly, monthly, a budget) up to 100%. The gate applies to every subscription; a provider with only a weekly
 // window (Codex) is simply planned against 100% of it.
-export const isSession = (w) => /hour|session/i.test(w.label || '') || (w.windowMinutes && w.windowMinutes <= 600);
 export const targetFor = (w, targets = loadConfig().scorecard.windowTargets) => isSession(w) ? targets.session : targets.other;
 export const isBudgetWindow = (w) => w.rate !== true && w.usedPercent != null;
 
