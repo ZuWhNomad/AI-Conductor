@@ -32,6 +32,8 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
+    failoverAfterBlockMinutes: 15,    // queued tasks fail over only beyond this remaining block; 0 keeps them parked
+    tasksInMemory: 500,               // newest terminal task records retained alongside all open tasks; older records stay on disk
     recipeChars: 9401,                // log recipes over this character budget (the full recipe is still appended). 9401 is the longest shipped recipe (image-to-3d-model.b.md, measured).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
@@ -223,6 +225,8 @@ function normalize(cfg) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
+  if (!Number.isFinite(cfg.worker.failoverAfterBlockMinutes) || cfg.worker.failoverAfterBlockMinutes < 0) cfg.worker.failoverAfterBlockMinutes = DEFAULTS.worker.failoverAfterBlockMinutes;
+  if (!Number.isInteger(cfg.worker.tasksInMemory) || cfg.worker.tasksInMemory < 50) cfg.worker.tasksInMemory = DEFAULTS.worker.tasksInMemory;
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
   cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;

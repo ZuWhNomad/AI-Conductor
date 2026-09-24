@@ -6,6 +6,30 @@ import { join } from 'node:path';
 
 const { loadConfig, saveConfig, publicConfig, DEFAULTS } = await import('../core/config.mjs');
 
+test('L6/P9: queued failover and task retention settings use the owner defaults and bounds', () => {
+  const previous = loadConfig().worker;
+  try {
+    assert.equal(DEFAULTS.worker.failoverAfterBlockMinutes, 15);
+    assert.equal(DEFAULTS.worker.tasksInMemory, 500);
+    for (const failoverAfterBlockMinutes of [0, 0.5, 15]) {
+      saveConfig({ worker: { failoverAfterBlockMinutes } });
+      assert.equal(loadConfig().worker.failoverAfterBlockMinutes, failoverAfterBlockMinutes);
+    }
+    for (const failoverAfterBlockMinutes of [-1, null, '15', Infinity, NaN]) {
+      saveConfig({ worker: { failoverAfterBlockMinutes } });
+      assert.equal(loadConfig().worker.failoverAfterBlockMinutes, 15);
+    }
+    for (const tasksInMemory of [50, 500, 501]) {
+      saveConfig({ worker: { tasksInMemory } });
+      assert.equal(loadConfig().worker.tasksInMemory, tasksInMemory);
+    }
+    for (const tasksInMemory of [0, 49, 50.5, null, '500', Infinity]) {
+      saveConfig({ worker: { tasksInMemory } });
+      assert.equal(loadConfig().worker.tasksInMemory, 500);
+    }
+  } finally { saveConfig({ worker: previous }); }
+});
+
 test('defaults load, patches deep-merge, secrets redact', () => {
   const c = loadConfig();
   assert.equal(c.port, DEFAULTS.port);

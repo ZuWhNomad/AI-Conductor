@@ -11,18 +11,19 @@ import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlockedUntil, refreshLimits } from './limits.mjs';
+import { modelBlockedUntil, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
 import { findModel } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
-import { admit, measuredCostByWindow } from './sweep.mjs';
+import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { capabilityLines, accessProviders } from './capabilities.mjs';
 import { mcpServersFor } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
+const INDEX = () => statePath('tasks-index.json');
 const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8');
 // MSW kernel (necessity test for every claim): measured 2026-09-09 on the battery as 5-15% faster and 3-10% fewer output tokens at equal pass rate.
 const MSW = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'msw.md'), 'utf8');
@@ -33,26 +34,61 @@ const tasks = new Map();
 const running = new Map();   // id -> AbortController
 const settling = new Set(); // completed tasks retain budget reservations until polling and scoring settle
 const waiters = new Map();   // id -> resolve[]
+let journalIndex = new Map(); // small metadata only; journal files remain authoritative
+const validId = (id) => typeof id === 'string' && /^[a-z0-9_-]+$/i.test(id);
+const newestFirst = (a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id));
+function journalStamp(file) { try { const s = statSync(file); return `${s.mtimeMs}:${s.size}`; } catch { return null; } }
+function indexTask(t, file = join(DIR(), `${t.id}.json`)) {
+  journalIndex.set(t.id, { status: t.status, createdAt: t.createdAt, stamp: journalStamp(file) });
+}
+function saveIndex() { try { writeJson(INDEX(), Object.fromEntries(journalIndex)); } catch {} } // disposable cache; a stale/missing entry is rebuilt from its journal
+let indexTimer = null;
+function saveIndexSoon() { if (indexTimer) return; indexTimer = setImmediate(() => { indexTimer = null; saveIndex(); }); } // one write per event-loop turn, not per task update
+function trimTasks(keep = loadConfig().worker.tasksInMemory) {
+  const terminal = [...tasks.values()].filter((t) => TERMINAL.has(t.status)).sort(newestFirst);
+  for (const t of terminal.slice(keep)) {
+    // Accounting still owns these records until its final limits sample and score settle.
+    if (!running.has(t.id) && !settling.has(t.id)) tasks.delete(t.id);
+  }
+}
 
 // Load the journal so history survives restarts and interrupted work resumes. Work interrupted long ago is NOT
 // replayed: a start after a crash used to requeue day-old tasks all at once (the 09-16 hang), and the manual recovery
 // was to edit every journal file by hand.
 export function recoverTasks() {
   // Never replace objects owned by this process's in-flight workers.
-  if (running.size) return;
+  if (running.size || settling.size) return;
   try {
-    const hours = loadConfig().worker.resumeMaxAgeHours ?? DEFAULTS.worker.resumeMaxAgeHours; let stale = 0;
+    const cfg = loadConfig().worker;
+    const hours = cfg.resumeMaxAgeHours ?? DEFAULTS.worker.resumeMaxAgeHours; let stale = 0;
+    const saved = readJson(INDEX(), {});
+    journalIndex = new Map();
     for (const f of readdirSync(DIR())) {
       if (!f.endsWith('.json')) continue;
-      const t = readJson(join(DIR(), f));
-      if (!t?.id) continue;
+      const id = f.slice(0, -5), file = join(DIR(), f), stamp = journalStamp(file);
+      if (!validId(id)) continue;
+      const entry = saved?.[id];
+      if (stamp && entry?.stamp === stamp && typeof entry.status === 'string') journalIndex.set(id, entry);
+      else {
+        const t = readJson(file);
+        if (t?.id === id) indexTask(t, file);
+      }
+    }
+    const entries = [...journalIndex].map(([id, entry]) => ({ id, ...entry }));
+    const retained = [...entries.filter((t) => !TERMINAL.has(t.status)), ...entries.filter((t) => TERMINAL.has(t.status)).sort(newestFirst).slice(0, cfg.tasksInMemory)];
+    tasks.clear();
+    for (const entry of retained) {
+      const file = join(DIR(), `${entry.id}.json`), t = readJson(file);
+      if (t?.id !== entry.id) continue;
       if (t.status === 'running' || t.status === 'parked' || (t.status === 'queued' && t.resume)) {
-        const last = Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0;
-        if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(join(DIR(), f), t); }
-        else if (t.status !== 'queued') { t.status = 'queued'; t.resume = true; } // running/parked → re-queue; already-queued+resume stays as-is
+        const last = Math.max(Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0, t.status === 'parked' ? Number(t.resumeAt) || 0 : 0);
+        if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(file, t); indexTask(t, file); }
+        else if (t.status !== 'queued') { t.resume = t.status === 'running' || t.attempts > 0; t.status = 'queued'; } // never-started parked tasks need no interruption note
       }
       tasks.set(t.id, t);
     }
+    trimTasks(cfg.tasksInMemory);
+    saveIndex();
     if (stale) logImprovement('friction', 'tasks', `${stale} interrupted task(s) older than ${hours} h were not resumed at start`, { count: stale });
   } catch {}
 }
@@ -61,7 +97,8 @@ recoverTasks();
 function persist(t) {
   t.updatedAt = nowIso();
   writeJson(join(DIR(), `${t.id}.json`), t);
-  bus.publish('task', { task: publicTask(t) });
+  indexTask(t); saveIndexSoon(); trimTasks();
+  bus.publish('task', { task: taskSummary(t) });
 }
 
 export function publicTask(t) {
@@ -70,17 +107,36 @@ export function publicTask(t) {
   return { ...rest, specPreview: String(spec ?? '').slice(0, 400) };
 }
 
-export function getTask(id) { return tasks.get(id) || null; }
+/** Fleet/list payload; detail endpoints and scoring keep the full record. */
+export function taskSummary(t) {
+  if (!t) return null;
+  const { paths, imageOptions, diffStat, result, ...summary } = publicTask(t);
+  if (result) {
+    const { items, files, tools, finalMessage, ...small } = result;
+    // The fleet's lastAction preview displays 120 characters.
+    summary.result = { ...small, finalMessage: String(finalMessage || '').slice(0, 120) };
+  } else summary.result = result;
+  return summary;
+}
+
+export function getTask(id) {
+  if (tasks.has(id)) return tasks.get(id);
+  if (!validId(id)) return null;
+  const t = readJson(join(DIR(), `${id}.json`));
+  return t?.id === id ? t : null;
+}
+
+export function openTasks() { return [...tasks.values()].filter((t) => !TERMINAL.has(t.status)); }
 
 export function listTasks({ sessionId = null, limit = 200 } = {}) {
   return [...tasks.values()].filter((t) => !sessionId || t.sessionId === sessionId)
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, limit).map(publicTask);
+    .sort(newestFirst).slice(0, limit).map(taskSummary);
 }
 
 /**
  * @param {object} i { sessionId, cwd, title, spec, provider, model, effort, paths, followUpOf, imageOptions }
  */
-export function createTask(i) {
+export function createTask(i, { dispatch = true } = {}) {
   if (!i.followUpOf) {
     let valid = false;
     try { valid = typeof i.cwd === 'string' && !!i.cwd.trim() && statSync(i.cwd).isDirectory(); } catch {}
@@ -111,10 +167,12 @@ export function createTask(i) {
   // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
   if (!t.sandbox && !i.followUpOf && t.provider === 'codex') t.sandbox = codexSandboxFor(t.model, cfg);
   if (t.followUpOf) {
-    const parent = tasks.get(t.followUpOf);
+    const parent = getTask(t.followUpOf);
     if (!parent) throw Object.assign(new Error(`unknown task ${t.followUpOf}`), { status: 404 });
     if (!parent.threadId) throw Object.assign(new Error(`task ${parent.id} has no resumable thread (provider ${parent.provider})`), { status: 400 });
     if (!TERMINAL.has(parent.status)) throw Object.assign(new Error(`task ${parent.id} is still ${parent.status}; wait for it before following up`), { status: 400 });
+    const holder = openTasks().find((task) => task.threadId === parent.threadId);
+    if (holder) throw Object.assign(new Error(`task ${holder.id} is still ${holder.status} on thread ${parent.threadId}; wait for it before following up`), { status: 409 });
     Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
     if (t.rounds > cfg.worker.maxRounds) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
   }
@@ -138,12 +196,12 @@ export function createTask(i) {
   }
   tasks.set(t.id, t);
   persist(t);
-  schedule();
+  if (dispatch) schedule();
   return t;
 }
 
 export function cancelTask(id, reason) {
-  const t = tasks.get(id); if (!t) return null;
+  const t = getTask(id); if (!t) return null;
   if (TERMINAL.has(t.status)) return t;
   t.status = 'canceled'; t.error = reason || 'canceled';
   running.get(id)?.abort();
@@ -151,22 +209,39 @@ export function cancelTask(id, reason) {
   return t;
 }
 
+/** Cancel the live replacement(s), including malformed cyclic chains, without claiming a terminal task was canceled. */
+export function cancelChain(id) {
+  let t = getTask(id);
+  if (!t) return null;
+  const visited = new Set(), canceled = [];
+  let already = null;
+  while (t && !visited.has(t.id)) {
+    visited.add(t.id);
+    if (TERMINAL.has(t.status)) already = t.status;
+    else { cancelTask(t.id); canceled.push(t.id); }
+    t = t.failedOverTo ? getTask(t.failedOverTo) : null;
+  }
+  return { canceled, already: canceled.length ? null : already };
+}
+
 let shuttingDown = false;
 /** Abort every active worker. With `requeue`, in-flight tasks are journaled as queued+resume (graceful shutdown) instead of failed. */
 export function abortRunning({ requeue = false } = {}) { shuttingDown = requeue; for (const ac of running.values()) ac.abort(); }
 
-/** Resolve at a terminal state, or time out after the explicit wait or the task's configured worker timeout. */
+const waitResult = (t) => t?.status === 'parked' ? { ...publicTask(t), parked: true, message: `parked until ${new Date(t.resumeAt).toISOString()}` } : publicTask(t);
+
+/** Resolve at a terminal or parked state, or time out after the explicit wait or configured worker timeout. */
 export function awaitTask(id, timeoutMs) {
-  const t = tasks.get(id);
+  const t = getTask(id);
   if (!t) return Promise.resolve(null);
-  if (TERMINAL.has(t.status)) return Promise.resolve(publicTask(t));
+  if (TERMINAL.has(t.status) || t.status === 'parked') return Promise.resolve(waitResult(t));
   if (timeoutMs == null) {
     const wcfg = loadConfig().worker;
     timeoutMs = (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000;
   }
   return new Promise((resolve) => {
     const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== done)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, Math.min(2 ** 31 - 1, timeoutMs));
-    const done = (task) => { clearTimeout(timer); resolve(publicTask(task)); };
+    const done = (task) => { clearTimeout(timer); resolve(waitResult(task)); };
     waiters.set(id, [...(waiters.get(id) || []), done]);
   });
 }
@@ -200,31 +275,46 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
 }
 
 export function schedule() {
+  if (shuttingDown) return;
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
   const cfg = loadConfig();
   const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
-  const queued = [...tasks.values()].filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   if (!queued.length || running.size >= max) return;
   const rows = budget ? runRows() : null;
-  const costByWindow = (t) => measuredCostByWindow(rows, t.provider, { model: t.model }); // {windowId: %-per-task} for this provider/model
+  const costCache = new Map();
+  const costByWindow = (t) => {
+    const key = JSON.stringify([t.provider, t.model ?? null]);
+    if (!costCache.has(key)) costCache.set(key, measuredCostByWindow(rows, t.provider, { model: t.model }));
+    return costCache.get(key);
+  };
   // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
   // overrun any one window (a Claude task's % is charged only to Claude's windows, not to a grouped provider's others).
   const addCost = (acc, prov, costs) => { acc[prov] = acc[prov] || {}; for (const [id, c] of Object.entries(costs)) acc[prov][id] = (acc[prov][id] || 0) + c; };
   // A task's cost is UNMEASURED (probe-gated) if the provider reports windows but the task lacks a measured cost
   // for ANY of them — a newly-appeared window with no history counts as unknown, not free.
-  const isUnmeasured = (t) => { const ws = providerWindows(t.provider, t.model); return ws.length > 0 && ws.some((w) => !(w.id in costByWindow(t))); };
+  const isUnmeasured = (t) => providerWindows(t.provider, t.model).some((w) => isBudgetWindow(w) && !(w.id in costByWindow(t)));
   const runningByWindow = {};
   const probing = {}; // provider -> a probe (unmeasured task) is in flight / dispatched this pass; hold everything else on it
   const reserved = new Set([...running.keys(), ...settling]);
   if (budget) for (const id of reserved) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
   const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
   const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys(), ...settling].some((id) => tasks.get(id)?.provider === prov);
+  const failovers = [];
   for (const t of queued) {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (running.size >= max) break;
     const until = modelBlockedUntil(t.provider, t.model);
-    if (until) { park(t, until, `provider ${t.provider} is at its usage limit`); continue; }
+    if (until) {
+      const threshold = cfg.worker.failoverAfterBlockMinutes;
+      const next = threshold > 0 && until - Date.now() > threshold * 60_000 ? failover(t) : null;
+      if (next) {
+        t.limitHit = true; t.finishedAt = nowIso(); persist(t); wake(t);
+        failovers.push(next);
+      } else park(t, until, `provider ${t.provider} is at its usage limit`);
+      continue;
+    }
     if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
       if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
       const windows = providerWindows(t.provider, t.model);
@@ -232,7 +322,7 @@ export function schedule() {
       const unmeasured = isUnmeasured(t); // windowed provider missing a cost for some window -> one probe at a time (windowless API/local providers have no window to protect)
       const committed = { ...(runningByWindow[t.provider] || {}) };
       for (const [id, c] of Object.entries(dispatchedByWindow[t.provider] || {})) committed[id] = (committed[id] || 0) + c;
-      const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1 });
+      const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1, windowTargets: cfg.scorecard.windowTargets });
       if (!a.n || unmeasured) {
         // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
         // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
@@ -245,12 +335,18 @@ export function schedule() {
     }
     void run(t);
   }
+  if (failovers.length) schedule();
 }
 
 function park(t, until, reason) {
   t.status = 'parked'; t.resumeAt = until; t.error = reason; t.resume = t.attempts > 0; // only a run that started can be resumed
   persist(t);
-  setTimeout(() => { if (t.status === 'parked') { t.status = 'queued'; t.resumeAt = null; persist(t); schedule(); } }, Math.min(2 ** 31 - 1, Math.max(1000, until - Date.now()))).unref();
+  wake(t);
+  setTimeout(async () => {
+    if (t.status !== 'parked' || shuttingDown) return;
+    await refreshLimits({ only: [t.provider] }).catch(() => {});
+    if (t.status === 'parked' && !shuttingDown) { t.status = 'queued'; t.resumeAt = null; persist(t); schedule(); }
+  }, Math.min(2 ** 31 - 1, Math.max(1000, until - Date.now()))).unref();
 }
 
 async function run(t) {
@@ -284,7 +380,7 @@ async function run(t) {
     const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
     const observed = diffStatus(before, after);
     t.changedFiles = [...new Set([...observed, ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
-    t.diffStat = await gitDiffStat(t.cwd, after);
+    t.diffStat = await gitDiffStat(t.cwd, after, observed);
     const claimed = claimedWrites(r.items);
     // G5: a claimed file that is gitignored or outside the repo won't appear in git status; confirm via disk mtime.
     // Only files that exist AND were modified at or after the task started are enough to disprove a phantom verdict.
@@ -297,16 +393,15 @@ async function run(t) {
     })();
     const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
-    if (r.limitHit && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
+    if (r.limitHit && !r.ok && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
       t.limitHit = true; // never scored against the model
       await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
     }
     if (t.status === 'canceled') { /* keep */ }
-    else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || r.limitHit)) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
-    else if (r.limitHit) {
+    else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
+    else if (r.limitHit && !r.ok) {
       const next = failover(t);
-      if (next) { t.status = 'failed'; t.failedOverTo = next.id; t.error = `provider ${t.provider} at its limit; failed over to task ${next.id} (${next.provider}:${next.model || 'default'}:${next.effort || 'default'}) — await that id`; }
-      else {
+      if (!next) {
         const until = modelBlockedUntil(t.provider, t.model) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard.blockedMinutes) * 60_000);
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
@@ -333,7 +428,8 @@ async function run(t) {
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().
   } finally {
     running.delete(t.id);
-    try { if (TERMINAL.has(t.status)) wake(t); } catch {} // parked/requeued tasks keep their waiters until they really finish
+    trimTasks();
+    try { if (TERMINAL.has(t.status) || t.status === 'parked') wake(t); } catch {}
     try { if (!shuttingDown) schedule(); } catch {}
   }
 }
@@ -350,7 +446,8 @@ function failover(t) {
     if (gate?.providers) providers = providers.filter((id) => gate.providers.includes(id));
     const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi });
     if (!alt || alt.provider === t.provider) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox }, { dispatch: false });
+    t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
   } catch { return null; }
@@ -363,14 +460,16 @@ function score(t, limitsBefore, concurrent, concurrentByWindow) {
   settling.add(t.id);
   // The first refresh may join a poll started before completion. Drain it before requesting a
   // second refresh, which must have started after completion (the scope entry clears on settlement).
-  const p = refreshLimits({ only: [t.provider] }).catch(() => {})
-    .then(() => refreshLimits({ only: [t.provider] })).catch(() => {}).then(() => { try {
+  const { joined, promise } = refreshLimitsWithMeta({ only: [t.provider] });
+  const p = promise.catch(() => {})
+    .then(() => joined ? refreshLimits({ only: [t.provider] }) : undefined).catch(() => {}).then(() => { try {
     // Per-task % of the provider window this run burned (max across its windows) — surfaced on the Fleet card.
     const d = windowDelta(limitsBefore, snapshotWindows(t.provider));
     if (d) { const max = Math.max(...Object.values(d)); t.pctWindow = Math.round(max * 10) / 10; persist(t); }
     recordRun(t, { before: limitsBefore, concurrent, concurrentByWindow });
   } catch {} }).finally(() => {
     settling.delete(t.id);
+    trimTasks();
     pendingRecords.delete(p);
     try { if (!shuttingDown) schedule(); } catch {}
   });
@@ -398,7 +497,7 @@ async function git(cwd, args) {
   if (!root) return null;
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) return null;
-  try { return (await execFileP(gitBin, args, { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
+  try { return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
 }
 async function gitStatus(cwd) {
   const root = findGitRoot(cwd);
@@ -443,9 +542,13 @@ function diffStatus(before, after) {
   return [...new Set([...before.keys(), ...after.keys()])].filter((f) => before.get(f) !== after.get(f));
 }
 async function changedSince(cwd, before) { return diffStatus(before, await gitStatus(cwd)); }
-async function gitDiffStat(cwd, status = null) {
-  const [a, b] = await Promise.all([git(cwd, ['diff', '--stat']), git(cwd, ['diff', '--cached', '--stat'])]);
-  const untracked = [...(status || await gitStatus(cwd) || [])].filter(([, s]) => s.startsWith('??')).map(([name]) => name).slice(0, 50);
+async function gitDiffStat(cwd, status = null, observed = null) {
+  if (observed && !observed.length) return '';
+  const root = findGitRoot(cwd);
+  if (!root) return '';
+  const paths = observed?.map((name) => `:(top,literal)${relative(root, resolve(cwd, name)).replaceAll('\\', '/')}`) || [];
+  const [a, b] = await Promise.all([git(cwd, ['diff', '--stat', '--', ...paths]), git(cwd, ['diff', '--cached', '--stat', '--', ...paths])]);
+  const untracked = [...(status || await gitStatus(cwd) || [])].filter(([name, s]) => s.startsWith('??') && (!observed || observed.includes(name))).map(([name]) => name).slice(0, 50);
   return [((a || '') + (b || '')).trim().slice(0, 3000), untracked.length ? `untracked: ${untracked.join(', ')}` : ''].filter(Boolean).join('\n');
 }
 
@@ -479,7 +582,7 @@ async function repoSize(cwd) {
 export function describeTask(t) {
   if (!t) return 'unknown task';
   const r = t.result || {};
-  const cmds = (r.items || []).filter((i) => i.type === 'command_execution' || i.type === 'tool_use').length;
+  const cmds = r.tools?.calls ?? countTools(r.items)?.calls ?? 0;
   const lines = [
     `Task ${t.id} [${t.status}] ${t.title} — ${t.provider}${t.model ? `/${t.model}` : ''}${t.effort ? ` (${t.effort})` : ''}, round ${t.rounds + 1}${r.durationMs ? `, ${Math.round(r.durationMs / 1000)}s` : ''}${t.threadId ? `, thread ${t.threadId}` : ''}`,
   ];

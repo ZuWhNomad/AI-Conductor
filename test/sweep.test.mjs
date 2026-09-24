@@ -1,6 +1,7 @@
 import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 const { measuredCostByWindow, targetFor, nextResetWindows, admit } = await import('../core/sweep.mjs');
 const lim = await import('../core/limits.mjs');
 
@@ -75,4 +76,45 @@ test('admit: per-window costs charge each window its own cost, not one window\'s
   assert.equal(admit(windows, [{ costs: { w: 10, s: 13 } }], { maxParallel: 1 }).n, 0);
   // Unknown per-window cost -> exactly one probe admitted (never floods a fresh window).
   assert.equal(admit(windows, [{ costs: {} }, { costs: {} }, { costs: {} }]).n, 1);
+});
+
+test('P1: sweep reads window targets once per admission and compiles each model pattern once per measurement', async (ctx) => {
+  globalThis.__w1ConfigReads = 0;
+  const configUrl = 'w1-config:sweep';
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === './config.mjs' && context.parentURL?.endsWith('?p1-config')) return { url: configUrl, shortCircuit: true };
+      return nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      if (url === configUrl) return { format: 'module', shortCircuit: true, source: 'export function loadConfig() { globalThis.__w1ConfigReads++; return { scorecard: { windowTargets: { session: 95, other: 100 } } }; }' };
+      return nextLoad(url, context);
+    },
+  });
+  try {
+    const sweep = await import('../core/sweep.mjs?p1-config');
+    const windows = [{ id: 'session', label: 'session', usedPercent: 96, resetsAt: 100 }, { id: 'weekly', label: 'weekly', usedPercent: 100, resetsAt: 200 }];
+    assert.equal(sweep.admit(windows, [{ costs: { session: 1, weekly: 1 } }]).n, 0);
+    assert.equal(globalThis.__w1ConfigReads, 1);
+    globalThis.__w1ConfigReads = 0;
+    assert.equal(sweep.nextResetWindows(windows), 100);
+    assert.equal(globalThis.__w1ConfigReads, 1);
+    lim.getLimits().providers['w1-pattern'] = { windows: [{ id: 'w', models: '^model' }] };
+    const NativeRegExp = RegExp, compiled = [];
+    ctx.mock.method(globalThis, 'RegExp', new Proxy(NativeRegExp, { construct(target, args) { compiled.push(args); return new target(...args); } }));
+    assert.deepEqual(sweep.measuredCostByWindow([
+      { provider: 'w1-pattern', model: 'model', pct: { w: 2 } },
+      { provider: 'w1-pattern', model: 'model', pct: { w: 3 } },
+    ], 'w1-pattern'), { w: 3 });
+    assert.deepEqual(compiled, [['^model', 'i']]);
+  } finally { hooks.deregister(); delete globalThis.__w1ConfigReads; delete lim.getLimits().providers['w1-pattern']; }
+});
+
+test('P2: admission excludes rate and unknown-percentage windows without weakening budget windows', () => {
+  const ignored = [{ id: 'rate', rate: true, usedPercent: 100, resetsAt: 1 }, { id: 'unknown', usedPercent: null }];
+  assert.equal(admit(ignored, [{ costs: {} }, { costs: {} }]).n, 2);
+  assert.equal(nextResetWindows(ignored), null);
+  const windows = [...ignored, { id: 'budget', usedPercent: 90 }];
+  assert.equal(admit(windows, [{ costs: { budget: 5 } }, { costs: { budget: 5 } }]).n, 2);
+  assert.equal(admit(windows, [{ costs: { budget: 11 } }]).n, 0);
 });

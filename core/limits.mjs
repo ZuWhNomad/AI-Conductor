@@ -53,8 +53,16 @@ function save(publish = true) {
   if (publish) bus.publish('limits', { updatedAt: cache.updatedAt });
 }
 
+const scopeKey = (only) => only ? [...only].sort().join(',') : '*';
+
+/** Per-call metadata without changing refreshLimits' shared promise or registry result. */
+export function refreshLimitsWithMeta({ only = null } = {}) {
+  const joined = inflightByScope.has(scopeKey(only));
+  return { joined, promise: refreshLimits({ only }) };
+}
+
 export function refreshLimits({ only = null } = {}) {
-  const key = only ? [...only].sort().join(',') : '*';
+  const key = scopeKey(only);
   if (inflightByScope.has(key)) return inflightByScope.get(key);
   const generation = ++refreshGeneration;
   const inflight = (async () => {

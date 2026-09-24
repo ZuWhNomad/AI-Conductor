@@ -34,7 +34,7 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
   return respond(url, options);
 });
 
-const { createTask, cancelTask, awaitTask, getTask, listTasks, describeTask, publicTask, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
+const { createTask, cancelTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
 const { getModels } = await import('../core/models.mjs');
 const registryModels = (ctx, models) => {
   const reg = getModels(), previous = { models: reg.models, providers: reg.providers };
@@ -127,7 +127,7 @@ test('all task waits use the category timeout or worker timeout unless explicitl
       await awaitTask(t.id); assert.equal(waits.pop(), minutes * 60_000);
       await call('await_task', { task_id: t.id }); assert.equal(waits.pop(), minutes * 60_000);
       await call('delegate', { title: 'wait', spec: 'wait', provider: 'codex', category }); assert.equal(waits.pop(), minutes * 60_000);
-      Object.assign(t, { status: 'done', threadId: 'wait-thread' });
+      Object.assign(t, { status: 'done', threadId: `wait-thread-${t.id}` });
       await call('follow_up', { task_id: t.id, comments: 'wait' }); assert.equal(waits.pop(), minutes * 60_000);
     }
     await awaitTask(modeling.id, 123); assert.equal(waits.pop(), 123);
@@ -407,7 +407,10 @@ async function tasksWithGit(ctx, exec) {
   const original = childProcess.execFile;
   const originalSync = childProcess.execFileSync;
   const syncCalls = [];
-  childProcess.execFile = Object.assign(() => { throw new Error('expected promisified execFile'); }, { [promisify.custom]: exec });
+  childProcess.execFile = Object.assign(() => { throw new Error('expected promisified execFile'); }, { [promisify.custom]: (bin, args, opts) => {
+    assert.deepEqual(args.slice(0, 5), ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks']);
+    return exec(bin, args.slice(5), opts);
+  } });
   childProcess.execFileSync = (...args) => { syncCalls.push(args); throw new Error('synchronous git on the task path'); };
   syncBuiltinESMExports();
   ctx.after(() => {
@@ -450,7 +453,7 @@ test('dispatch is not serialized on git: two tasks are running before the first 
     for (const read of reads.values()) read.resolve();
     for (const t of await Promise.all(batch.map((t) => tk.awaitTask(t.id)))) assert.equal(t.status, 'done');
     assert.equal(worker.mock.calls.filter((c) => String(c.arguments[0]).endsWith('/chat/completions')).length, dirs.length);
-    for (const cwd of dirs) assert.deepEqual(calls.filter((c) => c.cwd === cwd).map((c) => c.args[0]), ['status', 'ls-tree', 'status', 'diff', 'diff']);
+    for (const cwd of dirs) assert.deepEqual(calls.filter((c) => c.cwd === cwd).map((c) => c.args[0]), ['status', 'ls-tree', 'status']); // no observed changes: no diff needed
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     for (const read of reads.values()) read.resolve();
@@ -878,9 +881,17 @@ test('GP7: a noFailover task that parks on a limit hit is scored after a success
     return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
   });
   const t = createTask({ cwd: tmpDir('gp7-limit'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, noFailover: true });
+  const { bus } = await import('../core/bus.mjs');
+  const resumed = Promise.withResolvers();
+  const watchdog = setTimeout(() => resumed.reject(new Error('resume did not complete')), 15000); // same wait budget as this regression
+  const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.status === 'done') resumed.resolve(e.task); };
+  bus.on('event', onTask);
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
     schedule();
+    const parked = await awaitTask(t.id, 15000);
+    assert.equal(parked.parked, true);
+    await resumed.promise;
     const done = await awaitTask(t.id, 15000);
     assert.equal(done.timedOut, undefined, done.error);
     assert.equal(done.status, 'done', done.error);
@@ -892,6 +903,321 @@ test('GP7: a noFailover task that parks on a limit hit is scored after a success
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     abortRunning();
     cancelTask(t.id);
+    bus.off('event', onTask);
+    clearTimeout(watchdog);
     delete getLimits().providers.deepseek;
+  }
+});
+
+// Exercise scheduler outcomes without depending on a vendor's parser or external service.
+async function tasksWithWorker(ctx, worker) {
+  globalThis.__w1Worker = ctx.mock.fn(worker);
+  globalThis.__w1Costs = [];
+  const workerUrl = `w1-worker:${encodeURIComponent(ctx.name)}`;
+  const sweepUrl = `w1-sweep:${encodeURIComponent(ctx.name)}`;
+  const realSweep = new URL('../core/sweep.mjs', import.meta.url).href;
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (context.parentURL?.includes('/core/tasks.mjs')) {
+        if (specifier === './workers/index.mjs') return { url: workerUrl, shortCircuit: true };
+        if (specifier === './sweep.mjs') return { url: sweepUrl, shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      if (url === workerUrl) return { format: 'module', shortCircuit: true, source: 'export const runWorker = (...args) => globalThis.__w1Worker(...args);' };
+      if (url === sweepUrl) return { format: 'module', shortCircuit: true, source: `
+        export * from ${JSON.stringify(realSweep)};
+        import { measuredCostByWindow as measure } from ${JSON.stringify(realSweep)};
+        export const measuredCostByWindow = (...args) => { globalThis.__w1Costs.push(args.slice(1)); return measure(...args); };
+      ` };
+      return nextLoad(url, context);
+    },
+  });
+  const tk = await import(`../core/tasks.mjs?w1=${encodeURIComponent(ctx.name)}`);
+  for (const t of tk.openTasks()) tk.cancelTask(t.id);
+  ctx.after(async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    for (const t of tk.openTasks()) tk.cancelTask(t.id);
+    await tk.flushRecords();
+    hooks.deregister(); delete globalThis.__w1Worker; delete globalThis.__w1Costs;
+  });
+  return tk;
+}
+
+for (const [id, provider] of [['L1', 'codex'], ['L4', 'claude']]) {
+  test(`${id}: a successful worker with limitHit completes and is scored without a limit refresh`, async (ctx) => {
+    const { getLimits } = await import('../core/limits.mjs');
+    const { runRows } = await import('../core/scorecard.mjs');
+    delete getLimits().providers[provider];
+    const polls = ctx.mock.method(PROVIDERS[provider], 'pollLimits', async () => ({ provider, windows: [], blocked: false }));
+    const tk = await tasksWithWorker(ctx, async () => ({ ok: true, limitHit: true, finalMessage: 'finished', usage: { input_tokens: 5, output_tokens: 2 } }));
+    const t = tk.createTask({ cwd: tmpDir(id), provider, spec: 'x' });
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await tk.awaitTask(t.id);
+    assert.equal(done.status, 'done');
+    assert.equal(done.limitHit, false);
+    assert.equal(done.failedOverTo, undefined);
+    assert.equal(done.resumeAt, null);
+    await tk.flushRecords();
+    assert.ok(runRows().some((r) => r.taskId === t.id));
+    assert.equal(globalThis.__w1Worker.mock.callCount(), 1);
+    assert.equal(polls.mock.callCount(), 1, 'one fresh accounting poll; no limit-handling or redundant accounting poll');
+  });
+}
+
+test('L10: a live follow-up owns its thread through queued, running and parked states', () => {
+  const parent = createTask({ cwd: tmpDir('thread-owner'), spec: 'x' });
+  Object.assign(parent, { status: 'done', threadId: `thread-${parent.id}` });
+  const follow = createTask({ followUpOf: parent.id });
+  for (const status of ['queued', 'running', 'parked']) {
+    follow.status = status;
+    assert.throws(() => createTask({ followUpOf: parent.id }), (e) => e.status === 409 && e.message.includes(follow.id));
+  }
+  cancelTask(follow.id);
+  const next = createTask({ followUpOf: parent.id });
+  assert.equal(next.threadId, parent.threadId);
+  cancelTask(next.id);
+});
+
+test('P1: one scheduling pass measures each provider/model once and the next pass remeasures', async (ctx) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const conductor = loadConfig().conductor;
+  saveConfig({ conductor: { maxWorkerConcurrency: 3 } });
+  ctx.after(() => saveConfig({ conductor }));
+  getLimits().providers['w1-cost'] = { windows: [{ id: 'budget', usedPercent: 0 }, { id: 'weekly', usedPercent: 0 }] };
+  ctx.after(() => delete getLimits().providers['w1-cost']);
+  const finish = Promise.withResolvers();
+  const tk = await tasksWithWorker(ctx, () => finish.promise);
+  const cwd = tmpDir('cost-cache');
+  const batch = ['a', 'a', 'b'].map((model) => tk.createTask({ cwd, provider: 'w1-cost', model }));
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.deepEqual(batch.map((t) => t.status), ['running', 'queued', 'queued']);
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a' }]]);
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    finish.resolve({ ok: true });
+    await tk.awaitTask(batch[0].id);
+    await tk.flushRecords();
+    globalThis.__w1Costs.length = 0;
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a' }], ['w1-cost', { model: 'b' }]], 'the measured model and the next unmeasured model are each scanned once');
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    await tk.awaitTask(batch[1].id);
+    await tk.flushRecords();
+    globalThis.__w1Costs.length = 0;
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'b' }]]);
+    await tk.awaitTask(batch[2].id);
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); }
+});
+
+test('P2: rate and null-percent windows do not serialize a provider behind a probe', async (ctx) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const finish = Promise.withResolvers();
+  const tk = await tasksWithWorker(ctx, () => finish.promise);
+  getLimits().providers['w1-rate'] = { windows: [{ id: 'requests', rate: true, usedPercent: 90 }, { id: 'unknown', usedPercent: null }] };
+  const batch = ['one', 'two'].map((spec) => tk.createTask({ cwd: tmpDir('rate-probe'), provider: 'w1-rate', spec }));
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.deepEqual(batch.map((t) => t.status), ['running', 'running']);
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    finish.resolve({ ok: true });
+    await Promise.all(batch.map((t) => tk.awaitTask(t.id)));
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); delete getLimits().providers['w1-rate']; }
+});
+
+test('P8: lists and task events omit bulky results while the full record preserves them', async () => {
+  const { bus } = await import('../core/bus.mjs');
+  const t = createTask({ cwd: tmpDir('task-summary'), paths: ['scope'], imageOptions: { source: 'image' }, spec: 'full spec' });
+  t.result = { items: [{ type: 'tool_use', input: { file_path: 'edited.txt', content: 'full contents' } }], finalMessage: 'report'.repeat(40), tools: { calls: 1, byName: { Write: 1 } }, files: ['image.png'], usage: { input_tokens: 3 }, durationMs: 10, costUsd: 2 };
+  t.diffStat = 'full diff';
+  const events = [];
+  const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id) events.push(e.task); };
+  bus.on('event', onTask);
+  try {
+    cancelTask(t.id);
+    const summary = taskSummary(t);
+    assert.deepEqual(listTasks().find((x) => x.id === t.id), summary);
+    assert.deepEqual(events, [summary]);
+    for (const key of ['paths', 'imageOptions', 'diffStat']) assert.equal(key in summary, false);
+    for (const key of ['items', 'files', 'tools']) assert.equal(key in summary.result, false);
+    assert.equal(summary.result.finalMessage, t.result.finalMessage.slice(0, 120));
+    assert.equal(summary.result.durationMs, 10);
+    assert.equal(summary.result.costUsd, 2);
+    assert.deepEqual(publicTask(getTask(t.id)).result, t.result);
+    assert.deepEqual(JSON.parse(readFileSync(join(HOME, 'tasks', `${t.id}.json`))).result, t.result);
+  } finally { bus.off('event', onTask); }
+});
+
+test('L23: cancelChain follows replacements, reports terminal status and stops on cycles', () => {
+  const cwd = tmpDir('cancel-chain');
+  const original = createTask({ cwd }), replacement = createTask({ cwd });
+  Object.assign(original, { status: 'failed', failedOverTo: replacement.id });
+  assert.deepEqual(cancelChain(original.id), { canceled: [replacement.id], already: null });
+  assert.deepEqual(cancelChain(original.id), { canceled: [], already: 'canceled' });
+  assert.equal(cancelChain('unknown-chain'), null);
+  const a = createTask({ cwd }), b = createTask({ cwd });
+  a.failedOverTo = b.id; b.failedOverTo = a.id;
+  assert.deepEqual(cancelChain(a.id), { canceled: [a.id, b.id], already: null });
+  assert.deepEqual(cancelChain(a.id), { canceled: [], already: 'canceled' });
+});
+
+test('L37: schedule does not dispatch queued tasks during graceful shutdown', () => {
+  const t = createTask({ cwd: tmpDir('shutdown-gate'), provider: 'missing-test-provider' });
+  try {
+    abortRunning({ requeue: true });
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    assert.equal(t.status, 'queued');
+    assert.equal(t.attempts, 0);
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); cancelTask(t.id); }
+});
+
+test('L46: existing and new awaiters return immediately when a task parks', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const provider = 'w1-await-park', until = Date.now() + 60_000;
+  getLimits().providers[provider] = { blocked: true, blockedUntil: until, windows: [] };
+  const t = createTask({ cwd: tmpDir('wait-park'), provider });
+  const pending = awaitTask(t.id);
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    for (const result of [await pending, await awaitTask(t.id)]) {
+      assert.equal(result.parked, true);
+      assert.equal(result.status, 'parked');
+      assert.equal(result.resumeAt, until);
+      assert.equal(result.message, `parked until ${new Date(until).toISOString()}`);
+      assert.equal(result.timedOut, undefined);
+    }
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; cancelTask(t.id); delete getLimits().providers[provider]; }
+});
+
+test('L14: park timer re-polls before requeueing and preserves an indefinite provider block', async (ctx) => {
+  const { getLimits, modelBlockedUntil } = await import('../core/limits.mjs');
+  const { bus } = await import('../core/bus.mjs');
+  const provider = 'w1-park-poll', timers = [];
+  getLimits().providers[provider] = { provider, blocked: true, windows: [] };
+  ctx.mock.method(globalThis, 'setTimeout', (fn) => { timers.push(fn); return { unref() {} }; });
+  const poll = Promise.withResolvers();
+  const polls = [];
+  PROVIDERS[provider] = { id: provider, pollLimits: () => { polls.push(provider); return poll.promise; } };
+  const t = createTask({ cwd: tmpDir('park-poll'), provider });
+  const events = [];
+  const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id) events.push(e.task.status); };
+  bus.on('event', onTask);
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    assert.equal(t.status, 'parked');
+    const checking = timers.shift()();
+    assert.deepEqual(polls, [provider]);
+    assert.equal(t.status, 'parked', 'must await the refresh');
+    poll.resolve({ provider, blocked: true, windows: [] });
+    await checking;
+    assert.deepEqual(events, ['parked', 'queued', 'parked']);
+    assert.ok(modelBlockedUntil(provider) > Date.now());
+    assert.equal(getLimits().providers[provider].blockedUntil, null, 'no invented expiration for an indefinite block');
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; poll.resolve({ provider, blocked: true, windows: [] }); cancelTask(t.id); delete PROVIDERS[provider]; delete getLimits().providers[provider]; bus.off('event', onTask); }
+});
+
+test('L52: describeTask uses all counted actions including MCP calls beyond the journal tail', async () => {
+  const { countTools } = await import('../core/tasks.mjs');
+  const items = Array.from({ length: 41 }, () => ({ type: 'mcp_tool_call', server: 'data', tool: 'read' })); // one beyond the journal's 40-item tail
+  const t = { id: 'actions', status: 'done', title: 'x', provider: 'test', rounds: 0, result: { items: items.slice(-40), tools: countTools(items) } };
+  assert.match(describeTask(t), /Actions: 41 commands\/tool calls/);
+});
+
+test('I9: openTasks returns every non-terminal state without the list limit', () => {
+  const cwd = tmpDir('open-tasks');
+  const batch = ['queued', 'running', 'parked', 'done', 'failed', 'canceled'].map((status) => {
+    const t = createTask({ cwd }); t.status = status; return t;
+  });
+  try {
+    assert.deepEqual(openTasks().filter((t) => t.cwd === cwd).map((t) => t.status), ['queued', 'running', 'parked']);
+  } finally { for (const t of batch) cancelTask(t.id); }
+});
+
+for (const scenario of [
+  { name: 'short 429', minutes: 15, remaining: 60_000, failover: false },
+  { name: 'threshold boundary', minutes: 15, remaining: 15 * 60_000, failover: false },
+  { name: 'long block', minutes: 15, remaining: 15 * 60_000 + 1, failover: true },
+  { name: 'disabled', minutes: 0, remaining: 15 * 60_000 + 1, failover: false },
+  { name: 'no alternative', minutes: 15, remaining: 15 * 60_000 + 1, failover: false, unavailable: true },
+]) test(`L6: queued failover respects ${scenario.name} and dispatches after collecting replacements`, async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const { bus } = await import('../core/bus.mjs');
+  const previous = loadConfig(), provider = 'l6-blocked', model = 'l6-alternative';
+  const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
+  saveConfig({ worker: { failoverAfterBlockMinutes: scenario.minutes }, scorecard: { minSamples: 1, classOrder: ['free'] } });
+  registryModels(ctx, scenario.unavailable ? [] : [{ provider: 'ollama', id: model, kind: 'agent', cost: 'free-local' }]);
+  recordRun({ id: `l6-seed-${scenario.name}`, status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  rateTask(`l6-seed-${scenario.name}`, 'pass');
+  getLimits().providers[provider] = { provider, blocked: true, blockedUntil: now + scenario.remaining, windows: [] };
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true }));
+  const batch = ['first', 'second'].map((title) => tk.createTask({ cwd: tmpDir('l6'), provider, title, spec: 'x', category: 'review', difficulty: 2 }));
+  const waiting = batch.map((t) => tk.awaitTask(t.id));
+  const statesAtDispatch = [];
+  const onTask = (e) => {
+    if (e.type === 'task' && e.task.status === 'running' && batch.some((t) => t.id === e.task.retryOf)) statesAtDispatch.push(batch.map((t) => t.status));
+  };
+  bus.on('event', onTask);
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.deepEqual(batch.map((t) => t.status), scenario.failover ? ['failed', 'failed'] : ['parked', 'parked']);
+    assert.ok(batch.every((t) => t.attempts === 0));
+    await Promise.all(waiting);
+    if (scenario.failover) {
+      assert.deepEqual(statesAtDispatch, [['failed', 'failed'], ['failed', 'failed']], 'no replacement starts inside the collection loop');
+      const replacements = batch.map((t) => tk.getTask(t.failedOverTo));
+      assert.deepEqual(replacements.map((t) => t.retryOf), batch.map((t) => t.id));
+      assert.ok(replacements.every((t) => t.provider === 'ollama' && t.model === model));
+      for (const done of await Promise.all(replacements.map((t) => tk.awaitTask(t.id)))) assert.equal(done.status, 'done');
+    } else assert.ok(batch.every((t) => !t.failedOverTo && t.resumeAt === now + scenario.remaining));
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    bus.off('event', onTask);
+    for (const t of batch) tk.cancelChain(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers[provider];
+    saveConfig({ worker: previous.worker, scorecard: previous.scorecard });
+  }
+});
+
+for (const joined of [false, true]) test(`P11: task accounting ${joined ? 're-polls after joining an earlier poll' : 'uses one newly started poll'}`, async (ctx) => {
+  const { refreshLimits, getLimits } = await import('../core/limits.mjs');
+  const { runRows } = await import('../core/scorecard.mjs');
+  const provider = `p11-${joined}`, finish = Promise.withResolvers();
+  const initial = { provider, blocked: false, windows: [{ id: 'budget', usedPercent: 10 }] };
+  const updated = { provider, blocked: false, windows: [{ id: 'budget', usedPercent: 20 }] };
+  getLimits().providers[provider] = initial;
+  let polls = 0;
+  PROVIDERS[provider] = { id: provider, pollLimits: () => ++polls === 1 ? finish.promise : updated };
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true }));
+  const old = joined ? refreshLimits({ only: [provider] }) : null;
+  const t = tk.createTask({ cwd: tmpDir('p11-score'), provider, spec: 'x' });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.equal((await tk.awaitTask(t.id)).status, 'done');
+    assert.equal(polls, 1);
+    assert.ok(!runRows().some((r) => r.taskId === t.id));
+    finish.resolve(joined ? initial : updated);
+    await tk.flushRecords();
+    assert.equal(polls, joined ? 2 : 1);
+    assert.deepEqual(runRows().find((r) => r.taskId === t.id).pct, { budget: 10 });
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve(updated);
+    await old; await tk.flushRecords();
+    delete PROVIDERS[provider]; delete getLimits().providers[provider];
   }
 });

@@ -7,6 +7,29 @@ import { readJson } from '../core/paths.mjs';
 const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
 
+test('P11: refresh metadata distinguishes joined polls without changing promise identity or result', async () => {
+  const { refreshLimits, refreshLimitsWithMeta } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const id = 'p11-metadata', finish = Promise.withResolvers();
+  let polls = 0;
+  PROVIDERS[id] = { id, pollLimits: () => { polls++; return finish.promise; } };
+  try {
+    const fresh = refreshLimitsWithMeta({ only: [id] });
+    const joined = refreshLimitsWithMeta({ only: [id] });
+    assert.equal(fresh.joined, false);
+    assert.equal(joined.joined, true);
+    assert.equal(fresh.promise, joined.promise);
+    assert.equal(refreshLimits({ only: [id] }), fresh.promise);
+    assert.equal(polls, 1);
+    finish.resolve({ provider: id, windows: [], blocked: false });
+    assert.equal(await joined.promise, getLimits());
+    const next = refreshLimitsWithMeta({ only: [id] });
+    assert.equal(next.joined, false);
+    await next.promise;
+    assert.equal(polls, 2);
+  } finally { finish.resolve({ provider: id, windows: [], blocked: false }); delete PROVIDERS[id]; delete getLimits().providers[id]; }
+});
+
 for (const scenario of [
   { olderFull: true, collected: true, first: 'newer' },
   { olderFull: false, first: 'older' },

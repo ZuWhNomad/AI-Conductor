@@ -1,7 +1,7 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, utimesSync, mkdirSync, statSync } from 'node:fs';
+import { writeFileSync, utimesSync, mkdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -136,4 +136,36 @@ test('git detects new and modified untracked files and includes them in the summ
   const nested = await _git.gitStatus(cwd);
   writeFileSync(join(cwd, 'nested', 'space name.txt'), 'second and longer');
   assert.deepEqual(await _git.changedSince(cwd, nested), ['nested/space name.txt']);
+});
+
+test('S1: server git reads disable a repository fsmonitor command', { skip: !git }, async () => {
+  const cwd = tmpDir('git-fsmonitor');
+  const run = (...args) => execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  run('config', 'core.fsmonitor', 'echo invoked > fsmonitor-ran');
+  assert.ok(await _git.gitStatus(cwd));
+  await _git.gitDiffStat(cwd);
+  assert.equal(existsSync(join(cwd, 'fsmonitor-ran')), false);
+});
+
+test('X4: diff stat includes only observed files, with literal paths relative to a nested cwd', { skip: !git }, async () => {
+  const repo = tmpDir('git-observed');
+  const cwd = join(repo, 'pkg'); mkdirSync(cwd);
+  const run = (...args) => execFileSync(git, args, { cwd: repo, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  for (const name of ['changed[1].txt', 'changed1.txt', 'untouched.txt']) writeFileSync(join(cwd, name), 'base\n');
+  run('add', '--', 'pkg');
+  run('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture');
+  for (const name of ['changed[1].txt', 'changed1.txt', 'untouched.txt']) writeFileSync(join(cwd, name), 'dirty\n');
+  run('add', '--', 'pkg/untouched.txt');
+  writeFileSync(join(cwd, 'unrelated-new.txt'), 'existing untracked');
+  const before = await _git.gitStatus(cwd);
+  writeFileSync(join(cwd, 'changed[1].txt'), 'worker edit\n');
+  writeFileSync(join(cwd, 'worker-new.txt'), 'new');
+  const after = await _git.gitStatus(cwd), observed = _git.diffStatus(before, after);
+  const summary = await _git.gitDiffStat(cwd, after, observed);
+  assert.match(summary, /changed\[1\]\.txt/);
+  assert.match(summary, /untracked: worker-new\.txt/);
+  assert.doesNotMatch(summary, /changed1\.txt|untouched\.txt|unrelated-new\.txt/);
+  assert.equal(await _git.gitDiffStat(cwd, after, []), '');
 });
