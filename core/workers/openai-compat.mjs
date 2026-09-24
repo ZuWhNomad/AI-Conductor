@@ -71,6 +71,98 @@ async function assertPublicHost(hostname) {
   for (const a of addrs) if (isPrivateIp(a.address)) throw new Error(`blocked: ${hostname} resolves to a private/reserved address (${a.address})`);
 }
 
+const FETCH_BODY_BYTES = 2 * 1024 * 1024; // P4 spec: stream-and-cancel cap (2 MB)
+const TOOL_RESULT_CHARS = 120_000; // X6 spec: keep latest tool results in full up to ~120k chars
+const HTTP_ATTEMPTS = 3; // I1 spec
+const SETTIMEOUT_MAX_MS = 2 ** 31 - 1; // Node/DOM setTimeout 32-bit signed limit
+
+function findTag(s, from, name, closing) {
+  const needle = closing ? `</${name}` : `<${name}`;
+  let i = from;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) return -1;
+    if (s.slice(lt, lt + needle.length).toLowerCase() === needle) {
+      const c = s[lt + needle.length];
+      if (c === undefined || c === '>' || c === '/' || c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f') return lt;
+    }
+    i = lt + 1;
+  }
+  return -1;
+}
+
+function stripDelimited(s, open, close) {
+  let out = '', i = 0;
+  for (;;) {
+    const a = s.indexOf(open, i);
+    if (a < 0) return out + s.slice(i);
+    out += s.slice(i, a) + ' ';
+    const b = s.indexOf(close, a + open.length);
+    if (b < 0) return out; // unclosed: drop the rest; do not rescan
+    i = b + close.length;
+  }
+}
+
+function stripElement(s, name) {
+  let out = '', i = 0;
+  for (;;) {
+    const a = findTag(s, i, name, false);
+    if (a < 0) return out + s.slice(i);
+    out += s.slice(i, a) + ' ';
+    const gt = s.indexOf('>', a + 1);
+    if (gt < 0) return out;
+    const b = findTag(s, gt + 1, name, true);
+    if (b < 0) return out;
+    const end = s.indexOf('>', b + 1);
+    if (end < 0) return out;
+    i = end + 1;
+  }
+}
+
+/** Linear HTML strip: comments/script/style dropped with indexOf, tags to space/newline, entities decoded. */
+function stripHtml(body) {
+  let s = stripDelimited(body, '<!--', '-->');
+  s = stripElement(s, 'script');
+  s = stripElement(s, 'style');
+  let out = '', i = 0;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) { out += s.slice(i); break; }
+    out += s.slice(i, lt);
+    const gt = s.indexOf('>', lt + 1);
+    if (gt < 0) break;
+    const raw = s.slice(lt + 1, gt).trim();
+    const closing = raw.startsWith('/');
+    const name = (closing ? raw.slice(1) : raw).split(/[\s/]/)[0].toLowerCase();
+    out += (name === 'br' || (closing && (name === 'p' || name === 'div' || name === 'li' || name === 'tr' || /^h[1-6]$/.test(name)))) ? '\n' : ' ';
+    i = gt + 1;
+  }
+  return out.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+}
+
+async function readBodyCapped(r, maxBytes, signal) {
+  const stream = r.body;
+  if (!stream?.getReader) {
+    const buf = Buffer.from(await r.arrayBuffer());
+    return buf.subarray(0, maxBytes).toString('utf8');
+  }
+  const reader = stream.getReader();
+  const chunks = [];
+  let n = 0;
+  try {
+    while (n < maxBytes) {
+      if (signal?.aborted) throw new Error('aborted');
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const take = Math.min(value.byteLength, maxBytes - n);
+      chunks.push(Buffer.from(value.subarray(0, take)));
+      n += take;
+      if (n >= maxBytes) { try { await reader.cancel(); } catch {} break; }
+    }
+  } finally { try { reader.releaseLock(); } catch {} }
+  return Buffer.concat(chunks, n).toString('utf8');
+}
+
 /** Fetch a page as readable text: scripts/styles dropped, tags stripped, whitespace collapsed. */
 export async function fetchUrlText(url, { signal, maxChars = 60000, timeoutMs = 30_000, allowPrivate = loadConfig().worker?.fetchAllowPrivate } = {}) {
   // Validate the host (and every redirect hop) against the SSRF blocklist before each request, and follow redirects
@@ -88,10 +180,8 @@ export async function fetchUrlText(url, { signal, maxChars = 60000, timeoutMs = 
     if (!loc || hop >= 5) break;
     current = new URL(loc, current).toString();
   }
-  const body = await r.text();
-  const text = /html/i.test(r.headers.get('content-type') || '') || /^\s*</.test(body)
-    ? body.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<!--[\s\S]*?-->/gi, ' ').replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6])>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim()
-    : body;
+  const body = await readBodyCapped(r, FETCH_BODY_BYTES, sig);
+  const text = /html/i.test(r.headers.get('content-type') || '') || /^\s*</.test(body) ? stripHtml(body) : body;
   return `HTTP ${r.status}\n${text.slice(0, maxChars)}`;
 }
 
@@ -109,6 +199,63 @@ export function closeDanglingToolCalls(messages, note = 'aborted before executio
     if (m.role === 'user') break;
   }
   return messages;
+}
+
+function toolAborted() {
+  const e = new Error('aborted');
+  e.name = 'ToolAborted';
+  return e;
+}
+
+/** Reject as soon as `signal` aborts, without waiting for a tool that ignores it. */
+function raceAbort(promise, signal) {
+  if (signal?.aborted) return Promise.reject(toolAborted());
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(toolAborted());
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
+      (e) => { signal.removeEventListener('abort', onAbort); reject(e); },
+    );
+  });
+}
+
+function isAbortOrTimeout(e) {
+  const name = e?.name || '';
+  const msg = String(e?.message || e || '');
+  return name === 'AbortError' || name === 'TimeoutError' || name === 'ToolAborted' || /^(aborted|timeout)$/i.test(msg) || /aborted due to timeout/i.test(msg);
+}
+
+function stubOldToolResults(messages, budget = TOOL_RESULT_CHARS) {
+  const idxs = [];
+  const out = messages.map((m, i) => { if (m.role === 'tool') idxs.push(i); return m; });
+  let used = 0;
+  for (let k = idxs.length - 1; k >= 0; k--) {
+    const i = idxs[k];
+    const content = String(out[i].content ?? '');
+    if (used + content.length <= budget) { used += content.length; continue; }
+    const stub = content.startsWith('[output trimmed:') ? content : `[output trimmed: ${content.length} chars]`;
+    out[i] = { ...out[i], content: stub };
+    used += stub.length;
+  }
+  return out;
+}
+
+function waitForRetry(ms, signal, deadline) {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'));
+  if (deadline !== Infinity && Date.now() >= deadline) return Promise.reject(new Error('timeout'));
+  const cap = deadline === Infinity ? ms : Math.min(ms, Math.max(0, deadline - Date.now()));
+  if (cap <= 0) return Promise.reject(new Error('timeout'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      if (deadline !== Infinity && Date.now() > deadline) reject(new Error('timeout'));
+      else resolve();
+    }, cap);
+    const onAbort = () => { clearTimeout(timer); reject(new Error('aborted')); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function searchInWorker(data, signal, deadline) {
@@ -142,15 +289,25 @@ function searchInWorker(data, signal, deadline) {
   });
 }
 
+function runTimeoutMs(timeout_s, deadline) {
+  const sec = Number(timeout_s);
+  let ms = (Number.isFinite(sec) && sec > 0 ? sec : 120) * 1000;
+  ms = Math.min(Math.max(ms, 1000), SETTIMEOUT_MAX_MS);
+  if (deadline !== Infinity) ms = Math.min(ms, Math.max(0, deadline - Date.now()));
+  return ms;
+}
+
 async function makeTools(cwd, signal, deadline) {
   const root = await realpath(cwd);
-  const safe = (p) => safePath(cwd, root, p);
+  const safe = (p, opts) => safePath(cwd, root, p, opts);
   return {
     // UTF-8 needs at most three bytes per UTF-16 code unit (astral characters use two units).
     read_file: async ({ path }) => (await readBytes(await safe(path), 60000 * 3)).toString('utf8').slice(0, 60000),
-    write_file: async ({ path, content }) => { const f = await safe(path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content); return `wrote ${content.length} chars to ${path}`; },
+    write_file: async ({ path, content }) => { const f = await safe(path, { mutate: true }); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content); return `wrote ${content.length} chars to ${path}`; },
     edit_file: async ({ path, old, new: nu }) => {
-      const f = await safe(path); const s = readFileSync(f, 'utf8');
+      if (typeof old !== 'string' || !old) throw new Error('`old` must be a non-empty string');
+      if (typeof nu !== 'string') throw new Error('`new` must be a string');
+      const f = await safe(path, { mutate: true }); const s = readFileSync(f, 'utf8');
       const first = s.indexOf(old); if (first < 0) throw new Error('`old` not found');
       if (s.indexOf(old, first + 1) >= 0) throw new Error('`old` is ambiguous (multiple matches)');
       writeFileSync(f, s.slice(0, first) + nu + s.slice(first + old.length)); return 'edited';
@@ -177,7 +334,7 @@ async function makeTools(cwd, signal, deadline) {
       child.stdout.on('data', (d) => { out = cap(out + d); });
       child.stderr.on('data', (d) => { err = cap(err + d); });
       const finish = (code) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); res(`exit ${code ?? 1}${why}\n${`${out}${err ? `\n[stderr]\n${err}` : ''}`.slice(-20000)}`); };
-      const timer = setTimeout(() => { why = ' (timeout)'; killTree(child); }, (timeout_s || 120) * 1000);
+      const timer = setTimeout(() => { why = ' (timeout)'; killTree(child); }, runTimeoutMs(timeout_s, deadline));
       const onAbort = () => { why = ' (canceled)'; killTree(child); };
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
@@ -198,7 +355,10 @@ export async function runOpenAICompat(t) {
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data }); t.onEvent?.(event, data); };
   const started = Date.now();
   const deadline = t.timeoutMs ? started + t.timeoutMs : Infinity;
-  const impl = { ...await makeTools(t.cwd, t.signal, deadline), ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, x.impl])) };
+  const impl = {
+    ...await makeTools(t.cwd, t.signal, deadline),
+    ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, (args) => raceAbort(Promise.resolve().then(() => x.impl(args)), t.signal)])),
+  };
   // read-only (a review): no write, edit or run tool at all, so a reviewer on these models cannot change the repo.
   // The run tool's description states its real limits, so a model does not burn a turn discovering them.
   const readOnly = t.sandbox === 'read-only';
@@ -212,15 +372,38 @@ export async function runOpenAICompat(t) {
     for (let i = 0; i < (t.maxIterations || 150); i++) {
       if (t.signal?.aborted) throw new Error('aborted');
       if (Date.now() > deadline) throw new Error('timeout');
-      const body = { model: t.model, messages, tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false };
+      const body = { model: t.model, messages: stubOldToolResults(messages), tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false };
       if (t.effort) body.reasoning_effort = t.effort;
-      const r = await fetch(`${t.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST', signal: AbortSignal.any([t.signal, ...(deadline === Infinity ? [] : [AbortSignal.timeout(Math.max(1000, deadline - Date.now()))])].filter(Boolean)),
-        headers: { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}) },
-        body: JSON.stringify(body),
-      });
-      bus.publish('http_rate', { provider: res.provider, status: r.status, headers: Object.fromEntries([...r.headers].filter(([k]) => /ratelimit|retry-after/i.test(k))) });
-      if (r.status === 429) { res.limitHit = true; res.retryAfterMs = Number(r.headers.get('retry-after') || 0) * 1000 || null; throw new Error(`429 rate limited: ${(await r.text()).slice(0, 300)}`); }
+      const url = `${t.baseUrl.replace(/\/$/, '')}/chat/completions`;
+      const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}) };
+      let r;
+      for (let attempt = 1; ; attempt++) {
+        if (t.signal?.aborted) throw new Error('aborted');
+        if (Date.now() > deadline) throw new Error('timeout');
+        const reqSignal = AbortSignal.any([t.signal, ...(deadline === Infinity ? [] : [AbortSignal.timeout(Math.max(1000, deadline - Date.now()))])].filter(Boolean));
+        try {
+          r = await fetch(url, { method: 'POST', signal: reqSignal, headers, body: JSON.stringify(body) });
+        } catch (e) {
+          if (isAbortOrTimeout(e)) {
+            const timedOut = e.name === 'TimeoutError' || /timeout/i.test(String(e.message || ''))
+              || (deadline !== Infinity && Date.now() >= deadline && !t.signal?.aborted);
+            throw new Error(timedOut ? 'timeout' : 'aborted');
+          }
+          if (e instanceof TypeError && attempt < HTTP_ATTEMPTS) {
+            await waitForRetry(100 * 2 ** (attempt - 1) + Math.floor(Math.random() * 100), t.signal, deadline);
+            continue;
+          }
+          throw e;
+        }
+        bus.publish('http_rate', { provider: res.provider, status: r.status, headers: Object.fromEntries([...r.headers].filter(([k]) => /ratelimit|retry-after/i.test(k))) });
+        if (r.status === 429) { res.limitHit = true; res.retryAfterMs = Number(r.headers.get('retry-after') || 0) * 1000 || null; throw new Error(`429 rate limited: ${(await r.text()).slice(0, 300)}`); }
+        if ((r.status >= 500 || r.status === 408) && attempt < HTTP_ATTEMPTS) {
+          try { await r.arrayBuffer(); } catch {}
+          await waitForRetry(100 * 2 ** (attempt - 1) + Math.floor(Math.random() * 100), t.signal, deadline);
+          continue;
+        }
+        break;
+      }
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 500)}`);
       const j = await r.json();
       if (j.usage) { res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); }
@@ -242,7 +425,10 @@ export async function runOpenAICompat(t) {
         else if (repeat >= 3) { out = `error: this exact call (same tool, same arguments) was already made ${repeat - 1} times in a row and its result will not change; do something different or finish`; isError = true; }
         else {
           try { out = String(await impl[c.function.name](args)); }
-          catch (e) { out = `error: ${e.message}`; isError = true; }
+          catch (e) {
+            if (e?.name === 'ToolAborted') throw new Error('aborted');
+            out = `error: ${e.message}`; isError = true;
+          }
         }
         res.items.push({ type: 'tool_use', name: c.function.name, input: args, output: out.slice(0, 2000) });
         emit('tool_result', { toolUseId: c.id, name: c.function.name, isError, text: out.slice(0, 4000) });
@@ -254,6 +440,13 @@ export async function runOpenAICompat(t) {
     res.error = String(e?.message || e);
     closeDanglingToolCalls(messages, `not executed: ${res.error}`); // keep the saved history replayable
   }
+  // Persist stubs for older turns so follow-ups replay a bounded history. Keep this run's last
+  // tool batch intact so the caller can read what the tools actually returned.
+  const stubbed = stubOldToolResults(messages);
+  let lastCall = -1;
+  for (let i = 0; i < messages.length; i++) if (messages[i].role === 'assistant' && messages[i].tool_calls?.length) lastCall = i;
+  const keepFrom = lastCall < 0 ? messages.length : lastCall + 1;
+  for (let i = 0; i < keepFrom; i++) if (stubbed[i] !== messages[i]) messages[i] = stubbed[i];
   res.durationMs = Date.now() - started;
   return res;
 }

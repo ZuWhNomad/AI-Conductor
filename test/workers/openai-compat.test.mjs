@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { loadConfig, saveConfig } from '../../core/config.mjs';
 
-const { runOpenAICompat } = await import('../../core/workers/openai-compat.mjs');
+const { runOpenAICompat, fetchUrlText } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
 
 test('cancellation between tool calls prevents the next tool from running', async (ctx) => {
@@ -289,4 +289,149 @@ test('a read-only task sends no write, edit or run tool; the run tool states its
   const run = seen[1].find((f) => f.name === 'run');
   assert.match(run.description, /Disabled in this workspace: every command is refused/);
   assert.match(run.description, /not sandboxed.*outside the workspace/);
+});
+
+test('S1: write/edit refuse .git path variants; reads stay allowed', async (ctx) => {
+  const cwd = tmpDir('s1-git');
+  fs.mkdirSync(join(cwd, '.git'));
+  fs.writeFileSync(join(cwd, '.git', 'config'), 'safe');
+  fs.writeFileSync(join(cwd, 'ok.txt'), 'hello');
+  const variants = ['.git/config', '.GIT/config', '.git./config', '.git /config', 'GIT~1/config'];
+  const calls = [
+    ['read_file', { path: '.git/config' }],
+    ...variants.flatMap((path) => [
+      ['write_file', { path, content: 'pwned' }],
+      ['edit_file', { path, old: 'safe', new: 'pwned' }],
+    ]),
+    ['write_file', { path: 'ok.txt', content: 'ok' }],
+  ];
+  returnCalls(ctx, calls);
+  const r = await runOpenAICompat({ ...base, cwd });
+  assert.equal(r.ok, true);
+  const tools = r.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.equal(tools[0], 'safe');
+  for (const msg of tools.slice(1, 1 + variants.length * 2)) assert.match(msg, /refusing write inside \.git/);
+  assert.match(tools.at(-1), /^wrote /);
+  assert.equal(fs.readFileSync(join(cwd, '.git', 'config'), 'utf8'), 'safe');
+});
+
+test('X2: edit_file validates old (non-empty string) and new (string) before writing', async (ctx) => {
+  const cwd = tmpDir('x2-edit');
+  fs.writeFileSync(join(cwd, 'f.txt'), 'hello world');
+  returnCalls(ctx, [
+    ['edit_file', { path: 'f.txt', new: 'x' }],
+    ['edit_file', { path: 'f.txt', old: '', new: 'x' }],
+    ['edit_file', { path: 'f.txt', old: 'hello' }],
+    ['edit_file', { path: 'f.txt', old: 'hello', new: 1 }],
+  ]);
+  const r = await runOpenAICompat({ ...base, cwd });
+  assert.equal(r.ok, true);
+  const tools = r.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.equal(tools.length, 4);
+  for (const msg of tools) assert.match(msg, /^error:/);
+  assert.equal(fs.readFileSync(join(cwd, 'f.txt'), 'utf8'), 'hello world');
+});
+
+test('X1: abort during a blocking tool records it as not executed and returns promptly', async (ctx) => {
+  const ac = new AbortController();
+  ctx.mock.method(globalThis, 'fetch', async () => reply(toolCall('hang', '{}')));
+  const started = Date.now();
+  const r = await runOpenAICompat({
+    ...base, signal: ac.signal,
+    extraTools: [{ def: { name: 'hang', parameters: { type: 'object' } }, impl: () => {
+      queueMicrotask(() => ac.abort());
+      return new Promise(() => {});
+    } }],
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /aborted/);
+  assert.ok(Date.now() - started < 2000);
+  const tools = r.messages.filter((m) => m.role === 'tool');
+  assert.equal(tools.length, 1);
+  assert.match(tools[0].content, /not executed/);
+});
+
+test('I1: retries HTTP 5xx/408 and fetch TypeError; 429 stays on the limit path; abort is not retried', async (ctx) => {
+  ctx.mock.method(Math, 'random', () => 0);
+  let n = 0;
+  const statuses = [503, 408, 200];
+  ctx.mock.method(globalThis, 'fetch', async () => {
+    const s = statuses[n++] ?? 200;
+    if (s === 200) return reply({ content: 'ok' });
+    return new Response('err', { status: s });
+  });
+  assert.equal((await runOpenAICompat(base)).ok, true);
+  assert.equal(n, 3);
+
+  n = 0;
+  ctx.mock.method(globalThis, 'fetch', async () => {
+    n++;
+    if (n < 3) throw new TypeError('fetch failed');
+    return reply({ content: 'ok' });
+  });
+  assert.equal((await runOpenAICompat(base)).ok, true);
+  assert.equal(n, 3);
+
+  n = 0;
+  ctx.mock.method(globalThis, 'fetch', async () => {
+    n++;
+    return new Response('slow down', { status: 429, headers: { 'retry-after': '1' } });
+  });
+  const limited = await runOpenAICompat(base);
+  assert.equal(limited.ok, false);
+  assert.equal(limited.limitHit, true);
+  assert.equal(n, 1);
+
+  n = 0;
+  const ac = new AbortController();
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    n++;
+    ac.abort();
+    if (opts.signal?.aborted) throw opts.signal.reason || new Error('aborted');
+    return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true }));
+  });
+  const aborted = await runOpenAICompat({ ...base, signal: ac.signal });
+  assert.match(aborted.error, /aborted/);
+  assert.equal(n, 1);
+});
+
+test('X6: older tool results over the char budget are stubbed in the request and saved history', async (ctx) => {
+  const bodies = [];
+  let n = 0;
+  const big = 'Z'.repeat(80_000);
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    n++;
+    if (n <= 3) return reply(toolCall('blob', JSON.stringify({ n }), 'c' + n));
+    return reply({ content: 'done' });
+  });
+  const r = await runOpenAICompat({
+    ...base,
+    extraTools: [{ def: { name: 'blob', parameters: { type: 'object' } }, impl: () => big }],
+  });
+  assert.equal(r.ok, true);
+  const lastTools = bodies.at(-1).messages.filter((m) => m.role === 'tool');
+  assert.equal(lastTools.length, 3);
+  assert.match(lastTools[0].content, /^\[output trimmed: 80000 chars\]$/);
+  assert.match(lastTools[1].content, /^\[output trimmed: 80000 chars\]$/);
+  assert.equal(lastTools[2].content, big);
+  const saved = r.messages.filter((m) => m.role === 'tool');
+  assert.match(saved[0].content, /^\[output trimmed: 80000 chars\]$/);
+  assert.equal(saved[2].content, big);
+});
+
+test('P4: fetch_url caps the body at 2MB and strips HTML without a quadratic comment regex', async (ctx) => {
+  const html = '<html><body>keep<!--' + 'x'.repeat(400_000) + '<p>after</p></body></html>';
+  const big = 'a'.repeat(3 * 1024 * 1024);
+  ctx.mock.method(globalThis, 'fetch', async (url) => {
+    if (String(url).includes('/comment')) return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+    return new Response(big, { status: 200, headers: { 'content-type': 'text/plain' } });
+  });
+  const commented = await fetchUrlText('http://127.0.0.1/comment', { allowPrivate: true });
+  assert.match(commented, /^HTTP 200\n/);
+  assert.match(commented, /keep/);
+  assert.ok(!/xxxxx/.test(commented), 'unclosed comment is dropped, not rescanned');
+  const plain = await fetchUrlText('http://127.0.0.1/big', { allowPrivate: true, maxChars: 5 * 1024 * 1024 });
+  const body = plain.replace(/^HTTP \d+\n/, '');
+  assert.equal(body.length, 2 * 1024 * 1024);
 });

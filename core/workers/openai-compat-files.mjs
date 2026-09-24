@@ -6,7 +6,17 @@ import { isInside } from '../context.mjs';
 
 export const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'target', '__pycache__']);
 
-export async function safePath(cwd, root, p) {
+/** A path segment that names a git metadata dir, including Windows aliases. */
+function isGitSegment(name) {
+  const n = String(name ?? '').replace(/[. ]+$/g, ''); // Windows trailing dot/space
+  return n.toLowerCase() === '.git' || /^git~1$/i.test(n);
+}
+
+function hasGitSegment(pathish) {
+  return String(pathish ?? '').split(/[/\\]/).some(isGitSegment);
+}
+
+export async function safePath(cwd, root, p, { mutate = false } = {}) {
   const a = resolve(cwd, p || '.');
   if (!isInside(cwd, a)) throw new Error(`path outside project: ${p}`);
   // lstat distinguishes missing paths from dangling links. Resolve the nearest existing
@@ -16,7 +26,18 @@ export async function safePath(cwd, root, p) {
     try { await lstat(existing); break; }
     catch (e) { if (e.code !== 'ENOENT') throw e; existing = dirname(existing); }
   }
-  if (!isInside(root, await realpath(existing))) throw new Error(`path outside project: ${p}`);
+  const realExisting = await realpath(existing);
+  if (!isInside(root, realExisting)) throw new Error(`path outside project: ${p}`);
+  if (mutate) {
+    // Canonical = realpath(nearest existing ancestor) + unresolved remainder, so .GIT, .git.,
+    // .git , and the 8.3 name GIT~1 are visible even when the leaf does not exist yet.
+    const remainder = relative(existing, a);
+    const canonical = remainder ? join(realExisting, remainder) : realExisting;
+    const rel = relative(root, canonical);
+    if (hasGitSegment(rel) || hasGitSegment(remainder) || hasGitSegment(p) || hasGitSegment(a)) {
+      throw new Error(`refusing write inside .git: ${p}`);
+    }
+  }
   return a;
 }
 

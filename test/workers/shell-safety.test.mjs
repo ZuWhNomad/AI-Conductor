@@ -132,6 +132,49 @@ test('D9: runEnv sets NoDefaultCurrentDirectoryInExePath so a cwd shim cannot sh
   assert.equal(env.OTHER, 'keep');
 });
 
+test('S4: run timeout is clamped to [1s, deadline-now, 2^31-1], default 120s', async (ctx) => {
+  const previous = loadConfig().worker.shell;
+  saveConfig({ worker: { shell: true } });
+  const delays = [];
+  const origSetTimeout = globalThis.setTimeout;
+  ctx.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => {
+    delays.push(ms);
+    return origSetTimeout(fn, ms, ...args);
+  });
+  const spawn = ctx.mock.method(childProcess, 'spawn', () => {
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    queueMicrotask(() => child.emit('close', 0));
+    return child;
+  });
+  syncBuiltinESMExports();
+  const request = (timeout_s, extra = {}) => {
+    let n = 0;
+    ctx.mock.method(globalThis, 'fetch', async () => Response.json({ choices: [{ message: ++n === 1
+      ? { role: 'assistant', tool_calls: [{ id: 'c0', function: { name: 'run', arguments: JSON.stringify({ command: 'node --version', timeout_s }) } }] }
+      : { role: 'assistant', content: 'done' } }] }));
+    return runOpenAICompat({ cwd: tmpDir('s4'), baseUrl: 'http://unused.test', model: 'test', prompt: 'x', ...extra });
+  };
+  try {
+    delays.length = 0;
+    await request(undefined);
+    assert.ok(delays.includes(120_000), `default 120s, got ${delays}`);
+
+    delays.length = 0;
+    await request(1e12);
+    assert.ok(delays.includes(2_147_483_647), `2^31-1 clamp, got ${delays}`);
+
+    delays.length = 0;
+    await request(-5);
+    assert.ok(delays.includes(120_000), `negative falls back to 120s, got ${delays}`);
+    assert.ok(!delays.includes(-5000), 'negative must not be passed to setTimeout');
+
+    delays.length = 0;
+    await request(1e12, { timeoutMs: 3000 });
+    assert.ok(delays.some((d) => typeof d === 'number' && d <= 3000), `deadline clamp, got ${delays}`);
+    assert.equal(delays.includes(2_147_483_647), false, 'deadline must win over 2^31-1');
+  } finally { saveConfig({ worker: { shell: previous } }); spawn.mock.restore(); syncBuiltinESMExports(); }
+});
+
 test('resolveNpmShim + spawnCli deliver a malicious argument verbatim, no injection', { skip: !WIN }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   mkdirSync(join(dir, 'node_modules', 'tool', 'dist'), { recursive: true });
