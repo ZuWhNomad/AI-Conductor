@@ -33,7 +33,7 @@ const TERMINAL = new Set(['done', 'failed', 'canceled']);
 const tasks = new Map();
 const running = new Map();   // id -> AbortController
 const settling = new Set(); // completed tasks retain budget reservations until polling and scoring settle
-const waiters = new Map();   // id -> resolve[]
+const waiters = new Map();   // id -> { deadline, done }[]
 let journalIndex = new Map(); // small metadata only; journal files remain authoritative
 const validId = (id) => typeof id === 'string' && /^[a-z0-9_-]+$/i.test(id);
 const newestFirst = (a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id));
@@ -230,25 +230,33 @@ export function abortRunning({ requeue = false } = {}) { shuttingDown = requeue;
 
 const waitResult = (t) => t?.status === 'parked' ? { ...publicTask(t), parked: true, message: `parked until ${new Date(t.resumeAt).toISOString()}` } : publicTask(t);
 
-/** Resolve at a terminal or parked state, or time out after the explicit wait or configured worker timeout. */
+/** Resolve at a terminal state or a park beyond this wait's deadline, else wait until timeout. */
 export function awaitTask(id, timeoutMs) {
   const t = getTask(id);
   if (!t) return Promise.resolve(null);
-  if (TERMINAL.has(t.status) || t.status === 'parked') return Promise.resolve(waitResult(t));
+  if (TERMINAL.has(t.status)) return Promise.resolve(waitResult(t));
   if (timeoutMs == null) {
     const wcfg = loadConfig().worker;
     timeoutMs = (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000;
   }
+  timeoutMs = Math.min(2 ** 31 - 1, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  if (t.status === 'parked' && t.resumeAt > deadline) return Promise.resolve(waitResult(t));
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== done)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, Math.min(2 ** 31 - 1, timeoutMs));
-    const done = (task) => { clearTimeout(timer); resolve(waitResult(task)); };
-    waiters.set(id, [...(waiters.get(id) || []), done]);
+    const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== waiter)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, timeoutMs);
+    const waiter = { deadline, done: (task) => { clearTimeout(timer); resolve(waitResult(task)); } };
+    waiters.set(id, [...(waiters.get(id) || []), waiter]);
   });
 }
 
 function wake(t) {
-  for (const r of waiters.get(t.id) || []) r(t);
-  waiters.delete(t.id);
+  const pending = [];
+  for (const w of waiters.get(t.id) || []) {
+    if (t.status === 'parked' && !(t.resumeAt > w.deadline)) pending.push(w);
+    else w.done(t);
+  }
+  if (pending.length) waiters.set(t.id, pending);
+  else waiters.delete(t.id);
 }
 
 export function buildPrompt(t) {

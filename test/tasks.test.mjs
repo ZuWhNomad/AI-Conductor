@@ -889,10 +889,8 @@ test('GP7: a noFailover task that parks on a limit hit is scored after a success
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
     schedule();
-    const parked = await awaitTask(t.id, 15000);
-    assert.equal(parked.parked, true);
-    await resumed.promise;
     const done = await awaitTask(t.id, 15000);
+    await resumed.promise;
     assert.equal(done.timedOut, undefined, done.error);
     assert.equal(done.status, 'done', done.error);
     assert.ok(!done.limitHit);
@@ -1080,22 +1078,27 @@ test('L37: schedule does not dispatch queued tasks during graceful shutdown', ()
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); cancelTask(t.id); }
 });
 
-test('L46: existing and new awaiters return immediately when a task parks', async () => {
+test('GP: awaitTask keeps a 30 s park inside longer waits and resolves parks past each deadline', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
-  const provider = 'w1-await-park', until = Date.now() + 60_000;
+  const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
+  const provider = 'w1-await-park', until = now + 30_000;
   getLimits().providers[provider] = { blocked: true, blockedUntil: until, windows: [] };
   const t = createTask({ cwd: tmpDir('wait-park'), provider });
-  const pending = awaitTask(t.id);
+  const pending = awaitTask(t.id, 60_000), short = awaitTask(t.id, 15_000);
   try {
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     schedule();
-    for (const result of [await pending, await awaitTask(t.id)]) {
+    const joined = awaitTask(t.id, 60_000), boundary = awaitTask(t.id, 30_000);
+    for (const wait of [pending, joined, boundary]) assert.equal(await Promise.race([wait, Promise.resolve('pending')]), 'pending');
+    for (const result of [await short, await awaitTask(t.id, 15_000)]) {
       assert.equal(result.parked, true);
       assert.equal(result.status, 'parked');
       assert.equal(result.resumeAt, until);
       assert.equal(result.message, `parked until ${new Date(until).toISOString()}`);
       assert.equal(result.timedOut, undefined);
     }
+    cancelTask(t.id);
+    for (const result of await Promise.all([pending, joined, boundary])) assert.equal(result.status, 'canceled');
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; cancelTask(t.id); delete getLimits().providers[provider]; }
 });
 
@@ -1164,7 +1167,7 @@ for (const scenario of [
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: now + scenario.remaining, windows: [] };
   const tk = await tasksWithWorker(ctx, async () => ({ ok: true }));
   const batch = ['first', 'second'].map((title) => tk.createTask({ cwd: tmpDir('l6'), provider, title, spec: 'x', category: 'review', difficulty: 2 }));
-  const waiting = batch.map((t) => tk.awaitTask(t.id));
+  const waiting = batch.map((t) => tk.awaitTask(t.id, scenario.remaining / 2)); // these waits end before the park
   const statesAtDispatch = [];
   const onTask = (e) => {
     if (e.type === 'task' && e.task.status === 'running' && batch.some((t) => t.id === e.task.retryOf)) statesAtDispatch.push(batch.map((t) => t.status));

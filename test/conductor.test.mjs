@@ -247,6 +247,41 @@ test('L33: runOnce ignores a mid-turn error event and resolves on result', async
   assert.equal(r.isError, false);
 });
 
+test('GP: reloadSessions refreshes idle records and removes disk deletions while preserving live runtimes', async () => {
+  const { sessionFlags } = await import('../core/session-flags.mjs');
+  const idle = createSession({ cwd: HOME, provider: 'codex', model: 'gpt-6-astra', title: 'stale' });
+  const deleted = createSession({ cwd: HOME, title: 'deleted on disk' });
+  const active = createSession({ cwd: HOME, provider: 'codex', model: 'gpt-6-astra', title: 'active turn' });
+  const query = createSession({ cwd: HOME, title: 'live query' });
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  await sendMessage(active.id, 'in flight');
+  await globalThis.__codexStarted.promise;
+  const replied = onceSession(query.id, 'result');
+  await sendMessage(query.id, 'keep the query open');
+  await replied;
+  assert.equal((await getSession(query.id)).status, 'idle');
+  const file = join(HOME, 'sessions.json');
+  const patch = { title: 'fresh', threadId: 'fresh-thread', sdkSessionId: 'fresh-sdk', effort: 'high', overflowApi: true, parallelOverride: true, costUsd: 2 };
+  writeJson(file, readJson(file).filter((s) => ![deleted.id, active.id].includes(s.id)).map((s) =>
+    s.id === idle.id ? { ...s, ...patch } : s.id === query.id ? { ...s, title: 'stale disk query' } : s));
+  reloadSessions();
+  const refreshed = await getSession(idle.id);
+  for (const [key, value] of Object.entries(patch)) assert.equal(refreshed[key], value, key);
+  assert.deepEqual(sessionFlags(idle.id), { overflowApi: true, parallelOverride: true });
+  assert.equal(await getSession(deleted.id), null);
+  assert.equal((await getSession(active.id)).status, 'running');
+  assert.equal((await getSession(query.id)).title, 'live query');
+  setEffort(idle.id, 'low'); // the next persist must neither resurrect deleted chats nor restore stale fields
+  const disk = readJson(file);
+  assert.ok(!disk.some((s) => s.id === deleted.id));
+  assert.equal(disk.find((s) => s.id === idle.id).threadId, 'fresh-thread');
+  assert.equal(disk.find((s) => s.id === idle.id).overflowApi, true);
+  const finished = onceSession(active.id, 'status');
+  globalThis.__codexHold.resolve();
+  await finished;
+});
+
 test('L35: interrupt while idle returns false and does not label the next turn interrupted', async () => {
   const s = createSession({ cwd: tmpDir('l35') });
   const first = onceSession(s.id, 'result');

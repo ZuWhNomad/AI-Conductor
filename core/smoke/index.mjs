@@ -114,6 +114,7 @@ async function executeTask(spec, timeoutMinutes) {
   const startedMs = Date.parse(after.startedAt) || Date.now();
   const remaining = Math.max(0, boundMs - (Date.now() - startedMs));
   const r = remaining > 0 ? await awaitTask(t.id, remaining) : { ...getTask(t.id), timedOut: true };
+  if (r?.parked) cancelTask(t.id, 'provider limit (parked)');
   if (r?.timedOut) {
     cancelTask(t.id, 'timeout'); // OB6: reason so run() still scores this cancellation
     // cancelTask already marked the task terminal, so awaitTask would return immediately;

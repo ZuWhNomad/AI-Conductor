@@ -1,7 +1,7 @@
 // Deterministic multi-stage plans (fan-out, refuter votes, judge panels, until-dry loops, critic)
 // executed on the task scheduler. Model-agnostic: every task carries whatever provider/model/effort
 // the conductor chose (or nothing, for the auto-pick). Pure helpers are exported for tests.
-import { createTask, awaitTask, getTask, cancelTask } from './tasks.mjs';
+import { createTask, awaitTask, getTask, cancelTask, cancelChain } from './tasks.mjs';
 import { statePath, writeJson, readJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
@@ -90,10 +90,9 @@ function verdictOf(j) {
   if (typeof j.score === 'number') return { real: j.score >= (j.threshold ?? 5), reason: j.reason || '', score: j.score };
 }
 
-const isFindingsShape = (o) => {
-  const arr = Array.isArray(o?.findings) ? o.findings : Array.isArray(o) ? o : null;
-  return Array.isArray(arr) && arr.some((f) => f && typeof f === 'object');
-};
+const findingsArray = (o) => Array.isArray(o?.findings) ? o.findings : Array.isArray(o) ? o : null;
+const hasFindingObjects = (o) => !!findingsArray(o)?.some((f) => f && typeof f === 'object');
+const isFindingsShape = (o) => findingsArray(o)?.length === 0 || hasFindingObjects(o);
 
 /** Fenced JSON that looks like findings, else an unfenced object with findings[]. */
 function structuredOf(report) {
@@ -113,7 +112,7 @@ export function extractJson(text) {
 /** Findings from a report: an explicit findings[] block, else the whole report as one item. */
 export function findingsOf(report, taskId) {
   const j = structuredOf(report);
-  const arr = Array.isArray(j?.findings) ? j.findings : Array.isArray(j) ? j : null;
+  const arr = findingsArray(j);
   if (arr) return arr.filter((f) => f && typeof f === 'object').map((f, i) => ({ ...f, id: f.id || `${taskId}-${i + 1}`, source: taskId }));
   return report?.trim() ? [{ id: `${taskId}-1`, title: report.trim().slice(0, 140), detail: report.trim(), source: taskId }] : [];
 }
@@ -274,7 +273,7 @@ export function abortPlans(sessionId) {
   for (const p of livePlans.values()) {
     if (p.sessionId !== sessionId) continue;
     p.aborted = true;
-    for (const tid of p.taskIds || []) cancelTask(tid);
+    for (const tid of p.taskIds || []) cancelChain(tid);
   }
 }
 
@@ -300,7 +299,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
     const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live });
     if (aborted()) {
-      for (const d of done) if (d.id) cancelTask(d.id);
+      for (const d of done) if (d.id) cancelChain(d.id);
       return { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status || 'canceled' })), findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
     }
     const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
@@ -338,7 +337,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
       result.fresh = fresh;
       result.summary = `${result.findings.length} findings (${fresh} new)\n` + result.findings.map((f) => findingLine(f)).join('\n') + '\n' + done.filter((d) => !d.ok).map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
       // L17: keep the full report unless real finding objects were extracted.
-      if (done.length === 1 && done[0].ok && !isFindingsShape(structuredOf(done[0].report))) result.summary = done[0].report.slice(0, RESULTS_CHARS); // single free-text task (planner, critic)
+      if (done.length === 1 && done[0].ok && !hasFindingObjects(structuredOf(done[0].report))) result.summary = done[0].report.slice(0, RESULTS_CHARS); // single free-text task (planner, critic)
     }
     return result;
   };

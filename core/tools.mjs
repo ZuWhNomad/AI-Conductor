@@ -355,12 +355,10 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         timeout_minutes: z.number().max(1440).optional(),
       }),
       handler: async (a) => {
-        const picks = [
-          a.defaults,
-          ...(a.stages || []).flatMap((s) => [s.defaults, s.task, ...(s.tasks || [])]),
-        ].filter(Boolean);
+        const picks = (a.stages || []).flatMap((s) => (s.for_each ? [s.task] : s.tasks || [])
+          .map((p) => ({ ...a.defaults, ...s.defaults, ...p })));
         for (const p of picks) {
-          const bad = checkVariant(p.category || a.defaults?.category, p.variant);
+          const bad = checkVariant(p.category, p.variant);
           if (bad) return bad;
         }
         let planId;

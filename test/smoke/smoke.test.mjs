@@ -1,7 +1,7 @@
 import { HOME, tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { BATTERY } = await import('../../core/smoke/battery.mjs');
@@ -59,6 +59,48 @@ test('a smoke task that never dispatched is skipped and not rated', async () => 
   const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'skipped');
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'queued' && a.verdict)), 'never rateTask when attempts is 0');
+});
+
+test('GP: a parked smoke task is canceled before scratch cleanup and remains skipped', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../../core/config.mjs');
+  const { PROVIDERS } = await import('../../core/providers/index.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
+  const { getTask, cancelTask } = await import('../../core/tasks.mjs');
+  const { bus } = await import('../../core/bus.mjs');
+  const previous = loadConfig(), priorLimit = getLimits().providers.deepseek;
+  const timeoutMinutes = previous.smoke.timeoutMinutes;
+  delete getLimits().providers.deepseek;
+  saveConfig({ providers: { deepseek: { apiKey: 'test-key' } } });
+  ctx.mock.method(PROVIDERS.deepseek, 'pollLimits', async () => ({ provider: 'deepseek', windows: [], blocked: false }));
+  ctx.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(new URL(url).pathname, '/v1/chat/completions');
+    return new Response('rate limit', { status: 429, headers: { 'retry-after': String((timeoutMinutes + 1) * 60) } });
+  });
+  let taskId, scratchPresentAtCancel = false;
+  const onTask = (e) => {
+    if (e.type !== 'task' || e.task.sessionId !== 'gp-smoke-park') return;
+    taskId = e.task.id;
+    if (e.task.status === 'canceled') scratchPresentAtCancel = existsSync(e.task.cwd);
+  };
+  bus.on('event', onTask);
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-flash' }], tasks: ['read-1'], sessionId: 'gp-smoke-park', timeoutMinutes });
+    const task = getTask(r.taskId);
+    assert.equal(r.verdict, 'skipped');
+    assert.equal(task.attempts, 1);
+    assert.equal(task.status, 'canceled');
+    assert.equal(task.error, 'provider limit (parked)');
+    assert.equal(task.limitHit, true);
+    assert.equal(scratchPresentAtCancel, true);
+    assert.equal(existsSync(task.cwd), false);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    bus.off('event', onTask); if (taskId) cancelTask(taskId);
+    if (priorLimit) getLimits().providers.deepseek = priorLimit;
+    else delete getLimits().providers.deepseek;
+    saveConfig({ providers: previous.providers });
+  }
 });
 
 test('smoke timeouts are per invocation and bench probes never write config, even on failure', async (ctx) => {

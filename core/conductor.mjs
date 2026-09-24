@@ -493,8 +493,11 @@ export function shutdownSessions() {
 
 /** Pick up sessions written to disk after this process imported sessions.json (relaunch child). */
 export function reloadSessions() {
-  for (const rec of readJson(FILE(), [])) {
-    if (sessions.has(rec.id)) continue;
+  const saved = new Map(readJson(FILE(), []).map((rec) => [rec.id, rec]));
+  const live = (s) => s && (s.query || s.turnAbort || s.status === 'running');
+  for (const [id, s] of sessions) if (!saved.has(id) && !live(s)) sessions.delete(id);
+  for (const rec of saved.values()) {
+    if (live(sessions.get(rec.id))) continue;
     const s = hydrateSession(rec);
     sessions.set(s.id, s);
     syncFlags(s);

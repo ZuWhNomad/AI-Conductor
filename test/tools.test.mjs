@@ -8,6 +8,7 @@ import { createTask, getTask, cancelTask, listTasks } from '../core/tasks.mjs';
 import { abortPlans } from '../core/plans.mjs';
 import { loadConfig, saveConfig } from '../core/config.mjs';
 import { CATEGORIES } from '../core/scorecard.mjs';
+import { bus } from '../core/bus.mjs';
 
 const cwd = () => tmpDir('tools');
 const defs = (opts = {}) => conductorToolDefs({ sessionId: opts.sessionId || 'tools', cwd: opts.cwd || cwd(), maxBlockMs: opts.maxBlockMs });
@@ -67,6 +68,34 @@ test('L25: delegate and run_plan accept a known variant and reject an unknown on
   const planBad = await handler('run_plan', { cwd: dir })({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', category: 'summarize', variant: 'nope' }] }] });
   assert.match(planBad, /unknown variant/);
   cancelTask(id);
+});
+
+test('GP: run_plan validates variants after merging plan, stage and task or template defaults', async () => {
+  const sessionId = 'gp-plan-variants', created = [];
+  const onTask = (e) => {
+    if (e.type !== 'task' || e.task.sessionId !== sessionId || e.task.status !== 'queued') return;
+    const task = getTask(e.task.id); created.push(task);
+    Object.assign(task, { status: 'done', result: { finalMessage: task.spec === 'vote' ? '{"real":true}' : '{"findings":[{"title":"item"}]}' } });
+  };
+  bus.on('event', onTask);
+  try {
+    const run = handler('run_plan', { sessionId });
+    const report = await run({ goal: 'variants', defaults: { provider: 'ollama', model: 'qwen', category: 'summarize' }, stages: [
+      { id: 'find', defaults: { category: 'modeling' }, tasks: [{ spec: 'find', variant: 'recipe-c' }] },
+      { id: 'inherit', defaults: { category: 'modeling', variant: 'recipe-c' }, tasks: [{ spec: 'find' }] },
+      { id: 'vote', for_each: 'find', defaults: { category: 'summarize', variant: 'video-general' }, task: { spec: 'vote', category: 'modeling', variant: 'recipe-c' } },
+    ] });
+    assert.match(report, /^Plan /);
+    assert.deepEqual(created.map((t) => [t.category, t.variant]), Array.from({ length: 3 }, () => ['modeling', 'recipe-c']));
+    const invalid = await run({ goal: 'invalid inheritance', defaults: { category: 'modeling', variant: 'recipe-c' }, stages: [
+      { id: 'a', defaults: { category: 'summarize' }, tasks: [{ spec: 'x' }] },
+    ] });
+    assert.match(invalid, /unknown variant "recipe-c" for summarize/);
+    assert.equal(created.length, 3);
+  } finally {
+    bus.off('event', onTask);
+    for (const task of created) cancelTask(task.id);
+  }
 });
 
 test('S8: allow_command denies start/call/forfiles; description drops pytest/cmake and says programs are trusted', async () => {

@@ -906,6 +906,77 @@ test('L18: lastFenced want-predicate: a trailing fence without findings/verdict 
   assert.match(prose.reason, /note/);
 });
 
+test('GP: empty final findings override examples and stop dry loops without losing planner prose', async () => {
+  const example = 'Example:\n```json\n{"findings":[{"title":"Example bug"}]}\n```\n';
+  for (const report of [
+    example + 'Final:\n```json\n{"findings":[]}\n```',
+    example + 'Final:\n```json\n[]\n```',
+    '```json\n[]\n```',
+    'Plan: keep this prose summary.\n```json\n{"findings":[]}\n```',
+  ]) {
+    assert.deepEqual(findingsOf(report, 'empty'), []);
+    let created = 0;
+    const out = await runPlan({ stages: [{ id: 'find', tasks: [{ spec: 'review' }] }], until_dry: { stage: 'find' } }, { taskRuntime: {
+      createTask() { return { id: `empty-${++created}` }; },
+      async awaitTask(id) { return { id, status: 'done', result: { finalMessage: report } }; },
+    } });
+    assert.equal(created, 1);
+    assert.deepEqual(out.stages.find.findings, []);
+    assert.equal(out.stages.find.untilDry.dry, true);
+    assert.equal(out.stages.find.summary, report);
+  }
+});
+
+test('GP: abortPlans cancels a real failover replacement and stops later stages', async () => {
+  const { schedule, openTasks, cancelChain } = await import('../core/tasks.mjs');
+  const { saveConfig } = await import('../core/config.mjs');
+  const { getModels } = await import('../core/models.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const previous = loadConfig(), reg = getModels(), saved = { models: reg.models, providers: reg.providers };
+  for (const task of openTasks()) cancelChain(task.id);
+  const provider = 'gp-abort-blocked', model = 'gp-abort-alternative', sessionId = 'gp-abort';
+  reg.models = [{ provider: 'ollama', id: model, kind: 'agent', cost: 'free-local' }];
+  reg.providers = { ollama: { status: 'ok' } };
+  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'] } });
+  recordRun({ id: 'gp-abort-seed', status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  rateTask('gp-abort-seed', 'pass');
+  getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + (previous.worker.failoverAfterBlockMinutes + 1) * 60_000, windows: [] };
+  let planId;
+  // Observe the real scheduler's failover, then leave the replacement queued without launching a provider.
+  const onTask = (e) => {
+    if (e.type === 'task' && e.task.sessionId === sessionId && e.task.failedOverTo) process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  };
+  bus.on('event', onTask);
+  const pending = runPlan({ defaults: { provider, category: 'review', difficulty: 2 }, stages: [
+    { id: 'a', tasks: [{ spec: 'review' }] },
+    { id: 'b', tasks: [{ spec: 'must not start' }] },
+  ] }, { sessionId, cwd: HOME, onId: (id) => { planId = id; } });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    const original = getTask(getPlan(planId).taskIds[0]);
+    const replacement = getTask(original.failedOverTo);
+    assert.equal(original.status, 'failed');
+    assert.equal(replacement.retryOf, original.id);
+    assert.equal(replacement.status, 'queued');
+    await new Promise(setImmediate); // let the plan follow the replacement
+    abortPlans(sessionId);
+    assert.equal(replacement.status, 'canceled');
+    const out = await pending;
+    assert.equal(out.status, 'incomplete');
+    assert.match(out.report, /aborted/);
+    assert.equal(out.stages.b, undefined);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    bus.off('event', onTask);
+    for (const id of getPlan(planId)?.taskIds || []) cancelChain(id);
+    await pending;
+    delete getLimits().providers[provider]; Object.assign(reg, saved);
+    saveConfig({ scorecard: previous.scorecard });
+  }
+});
+
 test('X3: abortPlans cancels the current stage and does not dispatch later stages', async () => {
   const created = [];
   const hang = Promise.withResolvers();
