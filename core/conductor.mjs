@@ -20,7 +20,8 @@ import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel } from './models.mjs';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');
-const PROMPT = prompt('conductor.md') + '\n\n' + prompt('orchestration.md'); // policy + the structural playbook (model-agnostic)
+// Policy + the structural playbook (model-agnostic). {{CONDUCTOR_DOCS}} is this install's docs/, whatever the chat's cwd.
+export const PROMPT = (prompt('conductor.md') + '\n\n' + prompt('orchestration.md')).replaceAll('{{CONDUCTOR_DOCS}}', () => join(REPO_ROOT, 'docs'));
 const PROMPT_CODEX = prompt('conductor-codex.md');
 const PROMPT_LOOP = prompt('conductor-loop.md');
 const FILE = () => statePath('sessions.json');

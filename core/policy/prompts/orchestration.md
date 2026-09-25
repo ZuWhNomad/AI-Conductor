@@ -28,6 +28,8 @@ severity, evidence, proposed fix). Dedupe across lenses before spending anything
 `run_plan` only merges exact duplicates, so when lenses overlap add a one-task "dedupe" stage that
 reads `{{results:find}}` and returns the merged `findings[]`, then point the refuter stage at it.
 
+Before running review passes on a codebase, read `{{CONDUCTOR_DOCS}}/REVIEW-FRAMEWORK.md`.
+
 ## 3. Adversarial refuters
 
 For each finding worth acting on, ask N independent workers to *refute* it ("default to refuted

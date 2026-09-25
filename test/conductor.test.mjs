@@ -76,7 +76,7 @@ registerHooks({
   },
 });
 
-const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, runOnce, shutdownSessions, reloadSessions, answerPermission } = await import('../core/conductor.mjs');
+const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, runOnce, shutdownSessions, reloadSessions, answerPermission, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels } = await import('../core/models.mjs');
 
@@ -331,4 +331,13 @@ test('pendingCount is on publicSession and updated fires when a permission is ad
   assert.equal(resolved.session.pendingCount, 0);
   g1.resolve();
   await onceSession(s.id, 'result');
+});
+
+test('the conductor prompt points at this install\'s review framework, whatever the chat cwd', async () => {
+  const { REPO_ROOT } = await import('../core/paths.mjs');
+  assert.ok(!PROMPT.includes('{{CONDUCTOR_DOCS}}'));
+  const path = `${join(REPO_ROOT, 'docs')}/REVIEW-FRAMEWORK.md`;
+  assert.ok(PROMPT.includes(path));
+  assert.ok(existsSync(path));
+  assert.ok(PROMPT.includes('{{results:find}}'), 'run_plan placeholders are left alone');
 });
