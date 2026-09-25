@@ -64,7 +64,7 @@ export const DEFAULTS = {
   },
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
-    ollama: { baseUrl: 'http://localhost:11434', autoStart: true, harness: 'openai-compat' }, // or 'claude' (Anthropic-API compat)
+    ollama: { enabled: false, baseUrl: 'http://localhost:11434', autoStart: false, harness: 'openai-compat' }, // local models OFF by default (owner 2026-09-25): enabled = use Ollama at all, autoStart = spawn `ollama serve`; harness 'openai-compat' or 'claude'
     deepseek: { apiKey: null },
     moonshot: { apiKey: null },       // Kimi
     xai: { apiKey: null },            // Grok

@@ -16,6 +16,8 @@ export const auth = { type: 'none', setup: 'Install Ollama from https://ollama.c
 export const installCommand = () => (process.platform === 'win32' ? 'start https://ollama.com/download' : 'curl -fsSL https://ollama.com/install.sh | sh');
 
 export const baseUrl = () => (loadConfig().providers.ollama?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
+/** Owner's on/off switch for local models: providers.ollama.enabled === false -> never start, list or use Ollama. */
+export const enabled = () => loadConfig().providers.ollama?.enabled === true;   // opt-in: OFF unless set true
 
 async function ping(ms = 1500) {
   try { const r = await fetch(`${baseUrl()}/api/version`, { signal: AbortSignal.timeout(ms) }); return r.ok ? await r.json() : null; } catch { return null; }
@@ -24,6 +26,7 @@ async function ping(ms = 1500) {
 let starting = null;
 /** Ensure the server is running (spawns `ollama serve` detached when configured). */
 export async function ensureRunning() {
+  if (!enabled()) return false;
   if (await ping()) return true;
   const bin = findOnPath('ollama');
   if (!bin || !loadConfig().providers.ollama?.autoStart) return false;
@@ -40,12 +43,14 @@ export async function ensureRunning() {
 }
 
 export async function detect() {
+  if (!enabled()) return { installed: true, running: false, version: null, configured: false, error: 'switched off (providers.ollama.enabled = false)' };
   const bin = findOnPath('ollama');
   const v = await ping();
   return { installed: !!bin, running: !!v, version: v?.version || null };
 }
 
 export async function listModels() {
+  if (!enabled()) return [];
   if (!(await ping())) { if (!(await ensureRunning())) return []; }
   const r = await fetch(`${baseUrl()}/api/tags`, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) return [];
