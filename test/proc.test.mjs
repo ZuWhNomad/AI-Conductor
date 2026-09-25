@@ -71,7 +71,8 @@ test('spawnCodex forwards its supplied environment to the executable', async () 
 });
 
 test('vendor capture marks a timed-out probe and returns its captured output', async () => {
-  const r = await capture(process.execPath, ['-e', "process.stdout.write('started');setInterval(() => {}, 1000)"], { timeoutMs: 100 });
+  // 3 s, not 100 ms: under full-suite load a Node child can take longer than that just to start and print.
+  const r = await capture(process.execPath, ['-e', "process.stdout.write('started');setInterval(() => {}, 1000)"], { timeoutMs: 3000 });
   assert.equal(r.timedOut, true);
   assert.match(r.out, /started/);
 });
