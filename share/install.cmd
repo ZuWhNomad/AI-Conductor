@@ -25,7 +25,9 @@ echo.
 echo One-time logins (each in this terminal):
 echo   claude auth login      (Claude subscription; installs Claude Code if missing: npm i -g @anthropic-ai/claude-code)
 echo   npm i -g @openai/codex ^&^& codex login   (ChatGPT subscription, for GPT-6 Astra)
-echo   Optional: install Ollama from https://ollama.com for free local models.
+echo   Optional: install Ollama from https://ollama.com for free local models (local models are off by default:
+echo     turn them on in Settings with providers.ollama.enabled = true).
+echo   Optional: a /conductor skill for Claude Code - see docs\DRIVE-CONDUCTOR.md, "Optional: a /conductor skill".
 echo.
 echo Then run:  node bin\conductor.mjs doctor
 pause

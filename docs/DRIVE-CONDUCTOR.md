@@ -133,6 +133,26 @@ curl -s "$BASE/api/sessions/$SID" | node -e "let s='';process.stdin.on('data',d=
 to the budget-gated scheduler, bypassing a conductor chat. Track it with `GET /api/tasks/:id`;
 cancel with `POST /api/tasks/:id/cancel`.
 
+## Optional: a `/conductor` skill for Claude Code
+
+So that any Claude Code session can drive Conductor (and knows to use this document), install the bundled skill into
+your Claude Code skills folder. It is a template in `share/claude-skill/conductor/SKILL.md`; the command fills in your
+Conductor folder. Run it **from the Conductor folder** (it overwrites an existing `conductor` skill — back that up first):
+
+```powershell
+# Windows (PowerShell)
+$d=(Get-Location).Path; $t="$HOME\.claude\skills\conductor"; New-Item -ItemType Directory -Force $t | Out-Null; (Get-Content share\claude-skill\conductor\SKILL.md -Raw).Replace('{{CONDUCTOR_DIR}}',$d) | Set-Content "$t\SKILL.md" -Encoding UTF8
+```
+
+```bash
+# macOS / Linux
+mkdir -p ~/.claude/skills/conductor && sed "s|{{CONDUCTOR_DIR}}|$PWD|g" share/claude-skill/conductor/SKILL.md > ~/.claude/skills/conductor/SKILL.md
+```
+
+New Claude Code sessions then list `conductor` in their skills and invoke it when you say "use the conductor" /
+"delegate this". Add your own defaults to the installed copy (preferred conductor model, where your briefs or project
+notes live) — the template stays machine-neutral on purpose. To remove it, delete the `conductor` skill folder.
+
 ## Notes
 
 - State lives under `~/.conductor2` (override with `CONDUCTOR_HOME`, or by creating `.state/` in the checkout). The server listens only on
