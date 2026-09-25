@@ -55,6 +55,14 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('codex', 'gpt-5.3-codex-spark').price, null);
   assert.equal(pr.priorFor('nope', 'x'), null);
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.6-luna'), { in: 0.2, out: 1.2, cached: 0.02 });
+  // Official list prices checked 2026-09-24 (OpenAI and xAI pricing pages); build-fast must not fall to the 4.7 row.
+  assert.deepEqual(pr.priceFor('codex', 'gpt-6-sol', {}), { in: 2, out: 10, cached: 0.2 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-6-luna', {}), { in: 0.1, out: 0.5, cached: 0.01 });
+  assert.deepEqual(pr.priceFor('grok', 'grok-4.7-build-fast', {}), { in: 4, out: 12, cached: 1 });
+  assert.deepEqual(pr.priceFor('grok', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
+  assert.deepEqual(pr.priceFor('xai', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
+  assert.deepEqual(pr.priceFor('grok', 'grok-4.5', {}), { in: 2, out: 6, cached: 0.3 });
+  assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
   // 50k uncached @0.2 + 50k cached @0.02 + 10k out @1.2 = 0.01 + 0.001 + 0.012
   assert.ok(Math.abs(pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, { in: 0.2, out: 1.2, cached: 0.02 }) - 0.023) < 1e-9);

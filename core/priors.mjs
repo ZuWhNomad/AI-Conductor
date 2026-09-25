@@ -72,6 +72,8 @@ export const PRIORS = [
   { re: /^codex:gpt-5\.6-terra/, tier: 'B', tb21: 87.4, gdpval: 1583, mrcr: 89.6, price: { in: 2, out: 12, cached: 0.2 } },
   { re: /^codex:gpt-5\.6-luna/, tier: 'B', tiers: { read: 'D' }, tb21: 84.7, gdpval: 1582, mrcr: 41.3, price: { in: 0.2, out: 1.2, cached: 0.02 } }, // weak long-context recall (MRCR 41%)
   { re: /^codex:gpt-5\.5/, tier: 'A', tb21: 88.0, price: { in: 5, out: 30, cached: 0.5 } },
+  { re: /^codex:gpt-6-sol/, tier: null, price: { in: 2, out: 10, cached: 0.2 } }, // launched 2026-09-22; >272K input: 2x in, 1.5x out
+  { re: /^codex:gpt-6-luna/, tier: null, price: { in: 0.1, out: 0.5, cached: 0.01 } }, // launched 2026-09-22
   { re: /^codex:gpt-5\.3-codex-spark/, tier: 'C', tb20: 77.3, price: null }, // own rate-limit bucket; no public API price
   { re: /^codex:/, tier: null, price: null },
   { re: /^claude:.*(fable-5|mythos-5)/, tier: 'A', tb21: 91.4, swev: 95, gdpval: 1853, price: { in: 10, out: 50, cached: 0.25 } },
@@ -91,6 +93,9 @@ export const PRIORS = [
   { re: /^antigravity:gpt-oss/, tier: 'D', price: null },
   { re: /^kimi:kimi-k3/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 88.3, swev: 93.4, gdpval: 1668, price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^kimi:kimi-k2$/, tier: 'D', swev: 76.8, price: null },
+  { re: /^(grok|xai):grok-4\.7-build-fast/, tier: null, price: { in: 4, out: 12, cached: 1 } }, // xAI "Grok 4.7 Fast" (Cursor / Grok Build only)
+  { re: /^(grok|xai):grok-4\.7/, tier: null, price: { in: 2, out: 6, cached: 0.5 } }, // >=200K prompt: 2x
+  { re: /^(grok|xai):grok-4\.5/, tier: null, price: { in: 2, out: 6, cached: 0.3 } },
   { re: /^grok:grok-4\.6/, tier: 'D', tiers: { read: 'B', reason: 'B' }, gdpval: 1730, price: { in: 2, out: 6, cached: 0.5 } }, // strong knowledge work (GDPval 1730); no TB2.1 score found
   { re: /^deepseek:(deepseek-flash|.*v4(.1)?-flash|deepseek-chat)/, tier: 'B', tb21: 82.7, swev: 79, price: { in: 0.30, out: 1.20, cached: 0.006 } }, // deepseek-flash = V4.1 Flash (284B MoE, 13B active, 1M ctx); peak rate, off-peak is half; 92GB+ to run locally
   { re: /^deepseek:.*v4-pro|^deepseek:deepseek-reasoner/, tier: 'A', tb21: 87.9, swev: 80.6, price: { in: 1.32, out: 3.96, cached: 0.044 } }, // routes to V4.1 Flash at Flash pricing from 2026-09-14
