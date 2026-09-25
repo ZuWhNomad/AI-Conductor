@@ -1083,3 +1083,21 @@ test('L19: auto-pick persists difficulty 2 when omitted', async () => {
   });
   assert.equal(created[0].difficulty, 2);
 });
+
+test('avoid_families keeps the auto-pick off those families and reaches createTask', async (t) => {
+  const { getModels } = await import('../core/models.mjs');
+  const reg = getModels(), models = reg.models;
+  reg.models = [{ provider: 'claude', id: 'claude-opus-5' }, { provider: 'antigravity', id: 'claude-sonnet-4-6' }, { provider: 'grok', id: 'grok-4.6' }];
+  t.after(() => { reg.models = models; });
+  const created = [], excluded = [];
+  await runPlan({ stages: [{ id: 'a', tasks: [{ spec: 'x', category: 'review', avoid_families: ['Claude'], exclude: ['codex:gpt-5.5'] }] }] }, {
+    recommend(input) { excluded.push(input.exclude); return { provider: 'grok', model: 'grok-4.6', effort: 'low' }; },
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: 't1' }; },
+      async awaitTask() { return { id: 't1', status: 'done', result: { finalMessage: 'ok' } }; },
+      getTask() { assert.fail(); },
+    },
+  });
+  assert.deepEqual(excluded, [['codex:gpt-5.5', 'claude:claude-opus-5', 'antigravity:claude-sonnet-4-6']]);
+  assert.deepEqual(created[0].avoidFamilies, ['Claude']); // createTask normalizes it
+});

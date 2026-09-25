@@ -1224,3 +1224,51 @@ for (const joined of [false, true]) test(`P11: task accounting ${joined ? 're-po
     delete PROVIDERS[provider]; delete getLimits().providers[provider];
   }
 });
+
+test('failover skips avoided families, carries avoidFamilies to the replacement, and parks when only avoided ones qualify', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  registryModels(ctx, [
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+    { provider: 'grok', id: 'grok-4.6', kind: 'agent' },
+  ]);
+  const scorecard = loadConfig().scorecard;
+  saveConfig({ scorecard: { minSamples: 1 } });
+  for (const [id, provider, model] of [['avf-o', 'ollama', 'qwen'], ['avf-g', 'grok', 'grok-4.6']]) {
+    recordRun({ id, title: 't', status: 'done', provider, model, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  mockCompletions(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
+  });
+  const run = async (avoidFamilies) => {
+    const t = createTask({ cwd: tmpDir('avoid-failover'), provider: 'deepseek', model: 'deepseek-flash', title: 'review', spec: 'x', category: 'review', difficulty: 2, overflowApi: true, avoidFamilies });
+    delete getLimits().providers.deepseek; // else the previous run's 429 parks this task before it runs
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    schedule();
+    return { t, done: await awaitTask(t.id, 15000) };
+  };
+  const made = [];
+  try {
+    assert.equal(recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'ollama', 'without avoidFamilies, the qwen model would win');
+    const a = await run([' Qwen', 'deepseek', 'qwen']); made.push(a.t);
+    assert.deepEqual(a.t.avoidFamilies, ['qwen', 'deepseek']);
+    assert.equal(a.done.status, 'failed');
+    const next = getTask(a.done.failedOverTo);
+    assert.equal(next.provider, 'grok');
+    assert.deepEqual(next.avoidFamilies, ['qwen', 'deepseek'], 'a second failover respects it too');
+    assert.deepEqual(JSON.parse(readFileSync(join(HOME, 'tasks', `${next.id}.json`), 'utf8')).avoidFamilies, ['qwen', 'deepseek'], 'journaled, so a restart keeps it');
+    cancelTask(next.id); // keep the replacement from dispatching during the next run
+    const b = await run(['qwen', 'grok']); made.push(b.t);
+    assert.equal(b.done.status, 'parked');
+    assert.equal(b.done.limitHit, true, 'it ran into the limit, and failover found nothing outside the avoided families');
+    assert.equal(getTask(b.t.id).failedOverTo, undefined);
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    for (const t of made) { if (t.failedOverTo) cancelTask(t.failedOverTo); cancelTask(t.id); }
+    saveConfig({ scorecard });
+    delete getLimits().providers.deepseek;
+  }
+});

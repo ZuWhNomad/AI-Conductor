@@ -15,7 +15,7 @@ import { modelBlockedUntil, refreshLimits, refreshLimitsWithMeta } from './limit
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
-import { findModel } from './models.mjs';
+import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
@@ -162,6 +162,7 @@ export function createTask(i, { dispatch = true } = {}) {
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it
     parallelOverride: !!i.parallelOverride, // the chat's parallel toggle at delegation time: skip the budget gate
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
+    avoidFamilies: normFamilies(i.avoidFamilies), // reviews: failover never lands on these model families (see familyOf)
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
   // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
@@ -452,9 +453,10 @@ function failover(t) {
     const gate = accessProviders(`${t.title}\n${t.spec}`); // OG4: honour the capability access gate (same as delegate)
     let providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
     if (gate?.providers) providers = providers.filter((id) => gate.providers.includes(id));
-    const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi });
-    if (!alt || alt.provider === t.provider) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox }, { dispatch: false });
+    const avoid = t.avoidFamilies || [];
+    const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
+    if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;

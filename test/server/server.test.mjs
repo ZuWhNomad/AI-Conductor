@@ -513,3 +513,10 @@ test('/mcp/<session> JSON-RPC initialize, tools/list, tools/call', async () => {
   assert.equal((await fetch(url + '/mcp/no-such-session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"jsonrpc":"2.0","id":1,"method":"ping"}' })).status, 404);
   await fetch(url + `/api/sessions/${s.id}`, { method: 'DELETE' });
 });
+
+test('POST /api/tasks accepts avoidFamilies (normalized)', async () => {
+  const cwd = tmpDir('avoid');
+  const t = await post('/api/tasks', { cwd, spec: 'review', avoidFamilies: ['Claude', 'grok', 'claude'] });
+  assert.deepEqual(t.avoidFamilies, ['claude', 'grok']);
+  await post(`/api/tasks/${t.id}/cancel`);
+});

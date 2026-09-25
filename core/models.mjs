@@ -70,3 +70,17 @@ export function startModelPolling(minutes) {
 export function stopModelPolling() {
   if (timer) { clearInterval(timer); timer = null; }
 }
+
+// Model family, whichever provider serves it (antigravity serves several, so the id decides). Reviews use it to keep
+// failover off a family already on the review (task option avoidFamilies).
+const FAMILIES = [['claude', /^(?:claude|opus|sonnet|haiku|fable)\b/], ['gpt', /^(?:gpt|codex|o\d|astra|luna|sol|terra)\b/], ['grok', /^grok/], ['gemini', /^gemini/], ['deepseek', /^deepseek/], ['kimi', /^(?:kimi|moonshot)/], ['qwen', /^qwen/]];
+const PROVIDER_FAMILY = { claude: 'claude', anthropic: 'claude', codex: 'gpt', openai: 'gpt', grok: 'grok', xai: 'grok', deepseek: 'deepseek', moonshot: 'kimi', kimi: 'kimi', gemini: 'gemini', qwen: 'qwen', 'qwen-code': 'qwen' };
+export function familyOf(provider, model) {
+  const id = String(model || '').toLowerCase().split('/').at(-1);
+  if (id && id !== 'default') for (const [f, re] of FAMILIES) if (re.test(id)) return f;
+  return PROVIDER_FAMILY[provider] || provider;
+}
+/** Lowercased, deduped family names; anything else is dropped. */
+export const normFamilies = (fs) => [...new Set((Array.isArray(fs) ? fs : []).filter((f) => typeof f === 'string' && f.trim()).map((f) => f.trim().toLowerCase()))];
+/** recommend() exclude list: every registry selection whose model is in one of `families`. */
+export const selsInFamilies = (families, reg = cache) => reg.models.flatMap((m) => [m.id, m.resolved].filter((id) => id && families.includes(familyOf(m.provider, id))).map((id) => `${m.provider}:${id}`));

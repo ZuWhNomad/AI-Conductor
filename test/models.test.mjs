@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 import { PROVIDERS } from '../core/providers/index.mjs';
-import { getModels, refreshModels } from '../core/models.mjs';
+import { getModels, refreshModels, familyOf, normFamilies, selsInFamilies } from '../core/models.mjs';
 
 for (const scope of ['disjoint', 'full', 'failure']) {
   test(`scoped model refresh merges into the live cache: ${scope}`, async (ctx) => {
@@ -107,3 +107,17 @@ for (const newerFails of [false, true]) {
     });
   }
 }
+
+test('familyOf maps a model to its family whichever provider serves it', () => {
+  for (const [provider, model, family] of [
+    ['claude', 'claude-opus-5-5[1m]', 'claude'], ['claude', 'default', 'claude'], ['claude', null, 'claude'], ['anthropic', '', 'claude'],
+    ['codex', 'gpt-5.5', 'gpt'], ['codex', 'gpt-6-astra', 'gpt'], ['codex', 'luna', 'gpt'], ['openai', 'o3-mini', 'gpt'], ['codex', 'default', 'gpt'],
+    ['antigravity', 'claude-sonnet-4-6', 'claude'], ['antigravity', 'claude-opus-4-6-thinking', 'claude'], ['antigravity', 'gpt-oss-120b', 'gpt'], ['antigravity', 'gemini-3.1-pro', 'gemini'],
+    ['grok', 'grok-4.7-build-fast', 'grok'], ['grok', 'default', 'grok'], ['xai', 'default', 'grok'], ['gemini', null, 'gemini'], ['deepseek', 'deepseek-v4-pro', 'deepseek'], ['kimi', 'kimi-k3', 'kimi'], ['moonshot', null, 'kimi'],
+    ['qwen-code', 'qwen3-coder-plus', 'qwen'], ['ollama', 'qwen3.8:latest', 'qwen'], ['ollama', 'n2ft:latest', 'ollama'], ['ollama', 'hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M', 'qwen'],
+  ]) assert.equal(familyOf(provider, model), family, `${provider}:${model}`);
+  assert.deepEqual(normFamilies([' Claude', 'claude', 'GPT', 7, '']), ['claude', 'gpt']);
+  const reg = { models: [{ provider: 'claude', id: 'claude-opus-5' }, { provider: 'antigravity', id: 'claude-sonnet-4-6' }, { provider: 'antigravity', id: 'gemini-3.1-pro' }, { provider: 'ollama', id: 'qwen3.8:latest' }] };
+  assert.deepEqual(selsInFamilies(['claude', 'qwen'], reg), ['claude:claude-opus-5', 'antigravity:claude-sonnet-4-6', 'ollama:qwen3.8:latest']);
+  assert.deepEqual(selsInFamilies([], reg), []);
+});

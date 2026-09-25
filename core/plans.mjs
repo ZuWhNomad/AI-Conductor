@@ -5,6 +5,7 @@ import { createTask, awaitTask, getTask, cancelTask, cancelChain } from './tasks
 import { statePath, writeJson, readJson, nowIso, shortId } from './paths.mjs';
 import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
+import { normFamilies, selsInFamilies } from './models.mjs';
 import { existsSync } from 'node:fs';
 
 /** Shared enum for sandbox values (used in run_plan and delegate schemas). */
@@ -196,7 +197,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
       try {
         const gate = accessProviders(`${inp.title || ''}\n${inp.spec || ''}`); // OG4: honour the capability access gate
         const providers = gate?.providers || null;
-        pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: inp.exclude || [], overflowApi, ...(providers ? { providers } : {}) });
+        pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: [...(inp.exclude || []), ...selsInFamilies(normFamilies(inp.avoid_families))], overflowApi, ...(providers ? { providers } : {}) });
       }
       catch { noWorker = 'Worker recommendation failed.'; }
       if (!pick) { resolved.push({ input: inp, noWorker }); continue; }
@@ -214,7 +215,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
   for (const r of resolved) {
     let t;
     try {
-      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, category: r.input.category, difficulty: r.difficulty, variant: r.variant, overflowApi, parallelOverride });
+      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, overflowApi, parallelOverride });
     } catch (err) {
       createError = String(err?.message || err);
       for (const c of created) { if (c.id) cancelTask(c.id); }

@@ -167,3 +167,44 @@ test('L23: cancel_task follows a failover to the live replacement and reports an
   assert.match(await handler('cancel_task')({ task_id: replacement.id }), /already canceled/);
   assert.match(await handler('cancel_task')({ task_id: 'nope' }), /unknown task/);
 });
+
+test('delegate avoid_families: a pin still runs, the default worker is refused, and the auto-pick skips them', async (t) => {
+  const tool = defs().find((d) => d.name === 'delegate');
+  const del = (a) => tool.handler(tool.schema.parse({ title: 't', spec: 's', background: true, ...a }));
+  const created = async (a) => { const msg = await del(a), task = getTask(/^Task (\S+)/.exec(msg)?.[1]); assert.ok(task, msg); cancelTask(task.id); return task; };
+  // A reviewer lists its own family too: the pin runs, and failover leaves both families.
+  assert.deepEqual((await created({ provider: 'antigravity', model: 'claude-sonnet-4-6', avoid_families: ['Claude', 'grok', 'claude'] })).avoidFamilies, ['claude', 'grok']);
+  assert.match(await del({ avoid_families: ['GPT'] }), /default worker codex:gpt-6-astra is in an avoided family \(gpt/);
+  assert.equal((await created({ avoid_families: ['claude'] })).provider, 'codex');
+  const { getModels } = await import('../core/models.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  const reg = getModels(), models = reg.models, scorecard = loadConfig().scorecard;
+  reg.models = [{ provider: 'antigravity', id: 'claude-sonnet-4-6', kind: 'agent' }, { provider: 'grok', id: 'grok-4.6', kind: 'agent' }];
+  saveConfig({ scorecard: { minSamples: 1 } });
+  t.after(() => { reg.models = models; saveConfig({ scorecard }); });
+  for (const [rid, provider, model] of [['avd-a', 'antigravity', 'claude-sonnet-4-6'], ['avd-g', 'grok', 'grok-4.6']]) {
+    recordRun({ id: rid, title: 't', status: 'done', provider, model, effort: null, category: 'docs', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(rid, 'pass');
+  }
+  assert.equal(recommend({ category: 'docs', difficulty: 2 }).provider, 'grok', 'without avoid_families the Grok model wins');
+  assert.equal((await created({ category: 'docs', avoid_families: ['grok'] })).model, 'claude-sonnet-4-6');
+  assert.match(await del({ category: 'docs', avoid_families: ['claude', 'grok'] }), /No worker is available/);
+});
+
+test('run_plan passes avoid_families through from a task or the defaults', async () => {
+  const sessionId = 'avoid-plan', created = [];
+  const onTask = (e) => {
+    if (e.type !== 'task' || e.task.sessionId !== sessionId || e.task.status !== 'queued') return;
+    const task = getTask(e.task.id); created.push(task);
+    Object.assign(task, { status: 'done', result: { finalMessage: 'ok' } });
+  };
+  bus.on('event', onTask);
+  try {
+    const tool = defs({ sessionId }).find((d) => d.name === 'run_plan');
+    await tool.handler(tool.schema.parse({ goal: 'g', defaults: { provider: 'ollama', model: 'qwen', avoid_families: ['gpt'] }, stages: [{ id: 'a', tasks: [{ spec: 'x', avoid_families: ['Claude', 'claude', 'grok'] }, { spec: 'y' }] }] }));
+    assert.deepEqual(created.map((t) => t.avoidFamilies), [['claude', 'grok'], ['gpt']]);
+  } finally {
+    bus.off('event', onTask);
+    for (const task of created) cancelTask(task.id);
+  }
+});

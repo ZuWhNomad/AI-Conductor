@@ -4,7 +4,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { createTask, awaitTask, getTask, cancelChain, listTasks, describeTask } from './tasks.mjs';
-import { getModels, refreshModels } from './models.mjs';
+import { getModels, refreshModels, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { getLimits, refreshLimits } from './limits.mjs';
 import { logImprovement, resolveImprovement } from './improve.mjs';
 import { folderTree } from './context.mjs';
@@ -111,6 +111,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         category: z.enum(CATEGORIES).optional().describe('Kind of work. With difficulty this selects the worker from the scorecard and trains it.'),
         difficulty: z.number().int().min(1).max(5).optional().describe('1 mechanical single-file edit/lookup · 2 small feature from a precise spec, one module · 3 multi-file or needs surrounding understanding · 4 ambiguous, debugging, cross-cutting · 5 design-heavy, high blast radius'),
         exclude: z.array(z.string()).optional().describe('provider:model[:effort] selections the auto-pick must skip'),
+        avoid_families: z.array(z.string()).optional().describe('Model families (claude, gpt, grok, gemini, deepseek, kimi, qwen) that the auto-pick, the default worker and a limit failover must not land on; a pinned model still runs. For a review: the finder\'s family and the reviewer\'s own.'),
         retry_of: z.string().optional().describe('Task id of the failed attempt this replaces. Its model is excluded from the auto-pick, category/difficulty are inherited, and the cost of both attempts is scored as one chain (this is how ladders get measured).'),
         provider: z.string().optional().describe(`Provider id (${Object.keys(PROVIDERS).join(', ')}). Omit with model to auto-pick; fallback default: ${loadConfig().worker.provider}`),
         model: z.string().optional().describe('Model id for that provider; see list_models'),
@@ -128,7 +129,8 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         if (badVariant) return badVariant;
         const failed = a.retry_of ? getTask(a.retry_of) : null;
         if (a.retry_of && !failed) return `unknown task ${a.retry_of} (retry_of)`;
-        const exclude = [...(a.exclude || [])];
+        const avoid = normFamilies(a.avoid_families), avoided = selsInFamilies(avoid);
+        const exclude = [...(a.exclude || []), ...avoided];
         let depth = 0, root = failed;
         if (failed) {
           // Count attempts once, keeping the latest review rounds while resolving each attempt's retry link.
@@ -159,7 +161,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           // Escalate only when there is something better to escalate TO. The chain's own selections are excluded
           // from the auto-pick, so a worker that is already the ceiling would be "escalated" to a weaker model.
           if (escalate && failed) {
-            const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || [])], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
+            const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || []), ...avoided], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
             // L44: compare top against every selection in the chain, not only the latest attempt.
             if (top && (exclude.includes(selOf(top)) || atCeiling(top, failed))) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(top)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
           }
@@ -177,13 +179,17 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort;
           difficulty = difficulty || 2; // L19: persist the routed level when auto-picked
         }
+        // A pin runs as pinned (a reviewer lists its own family too, so failover leaves it); the configured default
+        // worker, like the auto-pick, must stay outside avoid_families.
+        const defaultFamily = !provider && !model ? familyOf(cfg.worker.provider, cfg.worker.model) : null;
+        if (avoid.includes(defaultFamily)) return `The default worker ${cfg.worker.provider}:${cfg.worker.model || 'default'} is in an avoided family (${defaultFamily}; avoid_families: ${avoid.join(', ')}). Pin a provider/model, or tag category to auto-pick one outside those families.`;
         if (!effort && model && difficulty) effort = effortForTask({ provider: provider || cfg.worker.provider, model, difficulty, defaultEffort: cfg.worker.effort }) || undefined; // hand-routed: effort scales with difficulty, never below the default
         if (failed) {
           const resolvedProvider = provider || cfg.worker.provider;
           const resolved = { provider: resolvedProvider, model: model || (resolvedProvider === cfg.worker.provider ? cfg.worker.model : null), effort: effort || cfg.worker.effort };
           if (exclude.includes(selOf(resolved))) return `retry_of ${failed.id} would re-run ${selOf(resolved)}, which is already in the chain. Name a different provider/model, or tag category so the scorecard can pick.`;
         }
-        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
+        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
@@ -340,13 +346,13 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       description: 'Execute a multi-stage plan deterministically (the orchestration playbook: planner pass, fan-out finders, adversarial refuters with votes, judge panels, until-dry loops, completeness critic). Stages run in order; each stage\'s tasks run in parallel on any providers YOU choose (leave provider/model empty to auto-pick). Findings flow between stages: ask finder tasks to end with a ```json {"findings":[{title,file,line,severity,detail,fix}]} block; refuter/judge tasks with {"real":true|false,"reason":...}. Returns a per-stage report; verify it yourself.',
       schema: z.object({
         goal: z.string().describe('One line: what the plan is for'),
-        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional().describe('Defaults for every task (a task may override)'),
+        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional().describe('Defaults for every task (a task may override)'),
         stages: z.array(z.object({
           id: z.string(), title: z.string().optional(),
-          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional(),
-          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
+          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional(),
+          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional().describe('Model families the auto-pick and a limit failover must not land on (as delegate)') })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
           for_each: z.string().optional().describe('Run the task template once per finding of an earlier stage: "<stage>" (its findings) or "<stage>.confirmed" / "<stage>.rejected"'),
-          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional() }).optional(),
+          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional(),
           votes: z.number().optional().describe('for_each: independent verdicts per item (1-7); with lenses[] each vote gets a different lens'),
           lenses: z.array(z.string()).optional(),
           pass: z.enum(['majority', 'any', 'all']).optional(),
