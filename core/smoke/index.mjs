@@ -14,10 +14,11 @@ import { bus } from '../bus.mjs';
 export const SMOKE_TASKS = BATTERY.map(({ id, category, difficulty, title }) => ({ id, category, difficulty, title }));
 
 /**
- * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, sessionId?, keep?, execute?, onResult? }
- * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub.
+ * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, hardTimeoutMinutes?, sessionId?, keep?, execute?, onResult? }
+ * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 7+
+ * gets `hardTimeoutMinutes` (smoke.hardTimeoutMinutes), every other task `timeoutMinutes` (smoke.timeoutMinutes).
  */
-export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
+export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
   if (!Array.isArray(models) || !models.length) throw Object.assign(new Error('models must be a non-empty array of {provider, model, effort}'), { status: 400 });
   const battery = BATTERY.filter((b) => !tasks || tasks.includes(b.id));
   if (!battery.length) throw Object.assign(new Error(`no matching smoke tasks (have: ${BATTERY.map((b) => b.id).join(', ')})`), { status: 400 });
@@ -27,12 +28,13 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
       const base = { provider: sel.provider, model: sel.model || null, effort: sel.effort || null, task: b.id, category: b.category, difficulty: b.difficulty };
       if (!providerAvailable(sel.provider, { overflowApi: true, model: sel.model })) { push({ ...base, verdict: 'skipped', notes: 'provider at its usage limit' }); continue; }
       // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\LONGNA~1\...), which the Codex sandbox denies.
-      const dir = realpathSync.native(mkdtempSync(join(tmpdir(), `conductor-smoke-${b.id}-`)));
+      // Neutral names: neither the path nor the title says conductor, smoke or which task (the worker sees both).
+      const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'w-')));
       let res;
       try {
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
-        const t = await execute({ cwd: dir, title: `smoke ${b.id}`, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', variant }, timeoutMinutes);
+        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant }, b.difficulty >= 7 ? hardTimeoutMinutes : timeoutMinutes);
         if ((t.attempts || 0) === 0 && t.status !== 'done') {
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
         } else {

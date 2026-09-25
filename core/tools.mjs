@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize } from './scorecard.mjs';
+import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
@@ -170,7 +170,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           if (!pick) {
             const d = difficulty || 2;
             const bar = cfg.scorecard?.quality ?? 0.75;
-            const proven = summarize().some((g) => g.category === category && g.difficulty >= d && g.rated > 0 && (g.quality ?? 0) >= bar);
+            const proven = summarize().some((g) => g.category === category && g.difficulty >= d && g.difficulty <= ROUTED_MAX_DIFFICULTY && g.rated > 0 && (g.quality ?? 0) >= bar);
             // I2: split unproven from capped. I12: the old "configured default" branch is unreachable.
             if (!proven) return `No worker is available for ${category}@${d}: nothing is proven at this level yet. Pin a provider/model explicitly (which always runs and seeds the scorecard) or run smoke_test.`;
             return `No worker is available for ${category}@${d} under the current budget rules (subscription classes capped at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;

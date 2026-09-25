@@ -81,7 +81,7 @@ core/
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
-  smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs)
+  smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
 scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css

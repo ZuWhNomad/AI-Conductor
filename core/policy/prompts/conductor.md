@@ -105,8 +105,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - `delegate` without a model already auto-picks the worker from the scorecard. `model_scores` is for inspection:
   by default the best pick and runner-up per category and level (levels collapsed when identical) plus the benched
   cells; `detail: true` or a `category` gives the full table with reasons. `smoke_test` runs a
-  fixed battery (read/search/edit/implement/test/refactor/debug, levels 1–5) against a model to seed
-  its scores; run it before trusting a new or cheap model with real work.
+  fixed battery (read/search/edit/implement/test/refactor/debug, levels 1–7; 6–7 are recorded, not routed
+  yet) against a model to seed its scores; run it before trusting a new or cheap model with real work.
 
 ## The delegation protocol
 

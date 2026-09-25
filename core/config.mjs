@@ -122,7 +122,7 @@ export const DEFAULTS = {
     reservePct: 0.5,
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
-  smoke: { timeoutMinutes: 20 },      // per smoke-battery task
+  smoke: { timeoutMinutes: 20, hardTimeoutMinutes: 30 }, // per smoke-battery task; hardTimeoutMinutes for difficulty 7+
   tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
     index: {},                        // machine-specific entries by name: { kind, categories, purpose, invoke, detect, install, platforms }; null removes a shared one; extra fields tag it
     researchOnMiss: false,            // a category with no entry at all → one bounded background search task proposes programs (unapproved until you set approved: true)
@@ -220,7 +220,7 @@ function normalize(cfg) {
     ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
     ...['minSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
-    [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
+    [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.smoke, DEFAULTS.smoke, 'hardTimeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
   ]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
@@ -257,7 +257,7 @@ function normalize(cfg) {
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
   if (!Number.isFinite(cfg.scorecard.effortSlackPct) || cfg.scorecard.effortSlackPct < 0) cfg.scorecard.effortSlackPct = DEFAULTS.scorecard.effortSlackPct;
   // Config timer bounds: minutes at one day; hours at 596, below Node's 2^31-1 ms timer maximum.
-  for (const [obj, key] of [[cfg, 'pollMinutes'], [cfg.worker, 'timeoutMinutes'], [cfg.conductor, 'turnTimeoutMinutes'], [cfg.smoke, 'timeoutMinutes'], [cfg.ui, 'detectMinutes']]) {
+  for (const [obj, key] of [[cfg, 'pollMinutes'], [cfg.worker, 'timeoutMinutes'], [cfg.conductor, 'turnTimeoutMinutes'], [cfg.smoke, 'timeoutMinutes'], [cfg.smoke, 'hardTimeoutMinutes'], [cfg.ui, 'detectMinutes']]) {
     obj[key] = Math.min(1440, obj[key]);
   }
   for (const key of Object.keys(cfg.worker.timeoutByCategory)) cfg.worker.timeoutByCategory[key] = Math.min(1440, cfg.worker.timeoutByCategory[key]);

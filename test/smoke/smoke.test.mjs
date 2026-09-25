@@ -1,25 +1,156 @@
 import { HOME, tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname, basename } from 'node:path';
 
-const { BATTERY } = await import('../../core/smoke/battery.mjs');
+const { BATTERY, copiedFromGrader } = await import('../../core/smoke/battery.mjs');
 const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../../core/smoke/index.mjs');
-const { recordRun, rootRuns } = await import('../../core/scorecard.mjs');
+const { recordRun, rootRuns, recommend } = await import('../../core/scorecard.mjs');
+const { CANARY, bare } = await import('../../core/smoke/private/common.mjs');
+const PRIVATE = new URL('../../core/smoke/private/', import.meta.url);
+const write = (dir, files) => { for (const [rel, body] of Object.entries(files)) { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), body); } };
 
 for (const b of BATTERY) {
   test(`battery ${b.id}: check fails on the untouched fixture and passes on the reference solution`, async () => {
     const dir = tmpDir(`smoke-${b.id}`);
     b.setup(dir);
+    assert.equal(copiedFromGrader(dir), false, 'a fixture carries the canary');
     const untouched = await b.check(dir, { result: { finalMessage: 'Done. See src/http/parse.mjs:1 for area, distance.' } });
     assert.equal(untouched.pass, false, `untouched fixture passed: ${untouched.notes}`);
+    assert.notEqual(untouched.notes, 'copied from the grader');
     const solved = b.solve(dir) || {};
+    assert.equal(copiedFromGrader(dir), false, 'solve() writes the canary');
     const ok = await b.check(dir, { result: { finalMessage: solved.finalMessage || 'done' } });
     assert.equal(ok.pass, true, ok.notes);
+    for (const rel of b.hidden || []) assert.equal(existsSync(join(dir, rel)), false, `${rel} left behind`);
     rmSync(dir, { recursive: true, force: true });
   });
 }
+
+// Level 6-7 graders: every plausible wrong solution fails, every different-but-correct one passes. Mutants that fail only
+// by timing out (refactor-6's benchmark kill, implement-7's 60 s test timeout) run with CONDUCTOR_SMOKE_SLOW=1.
+const SLOW = process.env.CONDUCTOR_SMOKE_SLOW === '1';
+for (const id of ['refactor-6', 'implement-6', 'implement-7', 'debug-7']) {
+  const b = BATTERY.find((x) => x.id === id);
+  const { MUTANTS, SLOW_MUTANTS = {}, VARIANTS } = await import(new URL(`${id}.mjs`, PRIVATE));
+  const cases = [...Object.entries(MUTANTS), ...(SLOW ? Object.entries(SLOW_MUTANTS) : [])].map(([name, files]) => ['mutant', name, files, false])
+    .concat(Object.entries(VARIANTS).map(([name, files]) => ['variant', name, files, true]));
+  for (const [kind, name, files, pass] of cases) {
+    test(`${id} ${kind} ${pass ? 'passes' : 'fails'}: ${name}`, async () => {
+      const dir = tmpDir(`smoke-${id}`);
+      b.setup(dir); b.solve(dir); write(dir, bare(files));
+      const r = await b.check(dir, { result: { finalMessage: 'done' } });
+      assert.equal(r.pass, pass, r.notes);
+      assert.notEqual(r.notes, 'copied from the grader');
+      rmSync(dir, { recursive: true, force: true });
+    });
+  }
+}
+
+test('canary: every private module and every body in it except a fixture carries it; a planted copy fails every check', async () => {
+  const fixtures = new Set();
+  for (const b of BATTERY) {
+    const dir = tmpDir(`smoke-fixture-${b.id}`);
+    b.setup(dir);
+    for (const e of readdirSync(dir, { recursive: true, withFileTypes: true })) if (e.isFile()) fixtures.add(readFileSync(join(e.parentPath, e.name), 'utf8'));
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const bodies = (v) => (typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(bodies) : []);
+  for (const f of readdirSync(PRIVATE).filter((f) => f.endsWith('.mjs'))) {
+    assert.ok(readFileSync(new URL(f, PRIVATE), 'utf8').includes(CANARY), f);
+    if (f === 'common.mjs') continue; // the canary itself, the helpers and the PRNG source
+    for (const [name, v] of Object.entries(await import(new URL(f, PRIVATE)))) for (const s of bodies(v)) assert.ok(fixtures.has(s) || s.includes(CANARY), `${f} ${name}: no canary`);
+  }
+  assert.ok((await import(new URL('implement-6.mjs', PRIVATE))).patchHidden().includes(CANARY));
+  const { OVERLAP_FAST } = await import(new URL('refactor-6.mjs', PRIVATE));
+  for (const b of BATTERY) {
+    const dir = tmpDir(`smoke-canary-${b.id}`);
+    b.setup(dir); b.solve(dir);
+    write(dir, { 'lib/deep/notes.txt': `copied\n// ${CANARY}\n` });
+    assert.deepEqual(await b.check(dir, { result: { finalMessage: 'done' } }), { pass: false, notes: 'copied from the grader' }, b.id);
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const dir = tmpDir('smoke-canary-verbatim'); // the reference copied verbatim from private/ is caught too
+  const b = BATTERY.find((x) => x.id === 'refactor-6');
+  b.setup(dir); write(dir, { 'src/overlap.mjs': OVERLAP_FAST });
+  assert.equal((await b.check(dir)).notes, 'copied from the grader');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("canary: the grader's own hidden files never trigger it, even when left behind", async () => {
+  const hidden = {
+    'refactor-6': (m) => [m.OVERLAP_HIDDEN, m.OVERLAP_BENCH], 'implement-6': (m) => [m.patchHidden()],
+    'implement-7': (m) => [m.MULTIPART_HIDDEN], 'debug-7': (m) => [m.CACHE_HIDDEN],
+  };
+  for (const [id, bodies] of Object.entries(hidden)) {
+    const b = BATTERY.find((x) => x.id === id);
+    const dir = tmpDir(`smoke-hidden-${id}`);
+    b.setup(dir); b.solve(dir);
+    const left = bodies(await import(new URL(`${id}.mjs`, PRIVATE)));
+    b.hidden.forEach((rel, i) => write(dir, { [rel]: left[i] })); // as if a killed earlier check had left them behind
+    const r = await b.check(dir, { result: { finalMessage: 'done' } });
+    assert.equal(r.pass, true, `${id}: ${r.notes}`);
+    for (const rel of b.hidden) assert.equal(existsSync(join(dir, rel)), false, `${id}: ${rel} left behind`);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scratch dirs and task titles are neutral (no conductor, smoke or task id); the dirs are removed', async () => {
+  const specs = [];
+  const execute = async (spec) => { specs.push(spec); assert.ok(existsSync(spec.cwd)); return { status: 'canceled', timedOut: true }; };
+  await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'debug-7'], execute });
+  assert.equal(specs.length, 2);
+  assert.deepEqual(specs.map((s) => s.smokeId), ['read-1', 'debug-7']); // the id travels beside the title, not in it
+  for (const { cwd, title } of specs) {
+    assert.equal(dirname(cwd), realpathSync.native(tmpdir()));
+    assert.match(basename(cwd), /^w-[A-Za-z0-9]{6}$/);
+    assert.doesNotMatch(title, /conductor|smoke|read-1|debug-7/i);
+    assert.equal(existsSync(cwd), false);
+  }
+});
+
+test('smoke tasks at difficulty 7+ get smoke.hardTimeoutMinutes (30); the rest smoke.timeoutMinutes (20)', async () => {
+  const { loadConfig, saveConfig, DEFAULTS } = await import('../../core/config.mjs');
+  assert.deepEqual([DEFAULTS.smoke.timeoutMinutes, DEFAULTS.smoke.hardTimeoutMinutes], [20, 30]);
+  const previous = loadConfig().smoke;
+  const waits = [];
+  const execute = async (spec, minutes) => { waits.push([spec.difficulty, minutes]); return { status: 'canceled', timedOut: true }; };
+  const models = [{ provider: 'ollama', model: 'qwen' }], tasks = ['debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'];
+  try {
+    await runSmoke({ models, tasks, execute });
+    assert.deepEqual(waits.splice(0), [[5, 20], [6, 20], [6, 20], [7, 30], [7, 30]]);
+    saveConfig({ smoke: { hardTimeoutMinutes: 45 } });
+    await runSmoke({ models, tasks: ['debug-5', 'debug-7'], execute });
+    await runSmoke({ models, tasks: ['debug-5', 'debug-7'], execute, timeoutMinutes: 3, hardTimeoutMinutes: 4 });
+    assert.deepEqual(waits.splice(0), [[5, 20], [7, 45], [5, 3], [7, 4]]);
+    saveConfig({ smoke: { hardTimeoutMinutes: -1 } });
+    assert.equal(loadConfig().smoke.hardTimeoutMinutes, 30);
+    saveConfig({ smoke: { hardTimeoutMinutes: 1e9 } });
+    assert.equal(loadConfig().smoke.hardTimeoutMinutes, 1440);
+  } finally { saveConfig({ smoke: previous }); }
+});
+
+test('routing ignores difficulty > 5: L6/L7 rows neither pool into nor lift a level-1-5 pick; delegate stays 1-5', async () => {
+  const reg = { providers: { codex: { status: 'ok' } }, models: ['gpt-5.6-luna', 'gpt-5.6-terra'].map((id) => ({ provider: 'codex', id, kind: 'agent' })) };
+  const row = (model, difficulty, rated, quality, avgUsd) => ({ sel: `codex:${model}:low`, steps: 1, provider: 'codex', model, effort: 'low', category: 'debug', difficulty, rated, n: rated, pass: rated * quality, fixable: 0, fail: rated * (1 - quality), phantom: 0, quality, accept: quality, avgUsd, avgDurationMs: 1000 });
+  // Luna: one cheap rated run at L5 (below the sample floor) plus passing L6/L7 runs that would pool into it. Terra: proven at L5.
+  const base = [row('gpt-5.6-luna', 5, 1, 1, 0.001), row('gpt-5.6-terra', 5, 3, 1, 0.05)];
+  const hard = [row('gpt-5.6-luna', 6, 3, 1, 0.001), row('gpt-5.6-luna', 7, 3, 1, 0.001), row('gpt-5.6-terra', 6, 3, 0, 0.05), row('gpt-5.6-terra', 7, 3, 0, 0.05)];
+  for (let d = 1; d <= 5; d++) assert.deepEqual(recommend({ category: 'debug', difficulty: d, summary: [...base, ...hard], reg }), recommend({ category: 'debug', difficulty: d, summary: base, reg }), `level ${d}`);
+  const r = recommend({ category: 'debug', difficulty: 5, summary: [...base, ...hard], reg });
+  assert.equal(r.model, 'gpt-5.6-terra');
+  assert.doesNotMatch(r.reason, /pooled|reserve/);
+  const { createTask, cancelTask } = await import('../../core/tasks.mjs');
+  const cwd = tmpDir('smoke-difficulty');
+  const smoke = createTask({ cwd, spec: 'x', provider: 'ollama', difficulty: 7, source: 'smoke' });
+  const live = createTask({ cwd, spec: 'x', provider: 'ollama', difficulty: 6 });
+  assert.equal(smoke.difficulty, 7);
+  assert.equal(live.difficulty, null);
+  cancelTask(smoke.id); cancelTask(live.id);
+  rmSync(cwd, { recursive: true, force: true });
+});
 
 test('implement-4: eval named in a comment or string passes; a real eval or new Function fails', async () => {
   const b = BATTERY.find((x) => x.id === 'implement-4');
@@ -40,7 +171,11 @@ test('implement-4: eval named in a comment or string passes; a real eval or new 
 test('battery ids are unique and follow category-level', () => {
   const ids = SMOKE_TASKS.map((t) => t.id);
   assert.equal(new Set(ids).size, ids.length);
-  for (const t of SMOKE_TASKS) assert.equal(t.id, `${t.category}-${t.difficulty}`);
+  for (const t of SMOKE_TASKS) {
+    assert.equal(t.id, `${t.category}-${t.difficulty}`);
+    assert.ok(Number.isInteger(t.difficulty) && t.difficulty >= 1 && t.difficulty <= 7, t.id);
+  }
+  assert.deepEqual([6, 7].map((d) => SMOKE_TASKS.filter((t) => t.difficulty === d).map((t) => t.id).sort()), [['implement-6', 'refactor-6'], ['debug-7', 'implement-7']]);
 });
 
 test('runSmoke rates each run from its check and the rows reach the scorecard as smoke runs', async () => {
@@ -213,4 +348,12 @@ test('importing a worker module that process.exit does not kill the check', asyn
   assert.equal(r.pass, false);
   assert.match(r.notes, /import did not finish|import failed/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('L6/L7 smoke runs are recorded and listed in the scores table', async () => {
+  const { formatScores } = await import('../../core/scorecard.mjs');
+  const execute = async (spec) => { const t = { id: 'hard7', ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 5 } }; recordRun(t); return t; };
+  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['debug-7'], execute });
+  assert.equal(r.verdict, 'fail');
+  assert.match(formatScores({ source: 'smoke' }), /\| debug@7 \|/);
 });

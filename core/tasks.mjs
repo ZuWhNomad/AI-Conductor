@@ -14,7 +14,7 @@ import { contextBlock } from './context.mjs';
 import { modelBlockedUntil, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
 import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -155,8 +155,10 @@ export function createTask(i, { dispatch = true } = {}) {
     // Explicit category wins; an unknown non-empty one collapses to 'other'; when none is given, classify the spec
     // (today: UI tasks → 'ui') so hand-diverted /worker UI tasks still land under the right category.
     category: CATEGORIES.includes(i.category) ? i.category : i.category ? 'other' : classifyCategory(`${i.title || ''}\n${i.spec || ''}`),
-    difficulty: Number.isInteger(i.difficulty) && i.difficulty >= 1 && i.difficulty <= 5 ? i.difficulty : null,
+    // 1-5 route work; the smoke battery also records 6-7 (recommend() ignores those rows until they are planned in).
+    difficulty: Number.isInteger(i.difficulty) && i.difficulty >= 1 && i.difficulty <= (i.source === 'smoke' ? 7 : ROUTED_MAX_DIFFICULTY) ? i.difficulty : null,
     source: i.source === 'smoke' ? 'smoke' : 'live',
+    smokeId: i.source === 'smoke' && typeof i.smokeId === 'string' ? i.smokeId : null, // battery id, kept out of the worker's prompt
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain
     variant: typeof i.variant === 'string' && i.variant ? i.variant.slice(0, 40) : null, // A/B label (e.g. a policy file under test); rows keep it
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it

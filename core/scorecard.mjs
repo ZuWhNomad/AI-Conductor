@@ -25,6 +25,8 @@ export function classifyCategory(text) {
 }
 export const VERDICTS = ['pass', 'fixable', 'fail', 'phantom'];
 const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
+// Routing covers levels 1-5. The smoke battery also records 6-7: those rows show in the tables, but recommend() ignores them.
+export const ROUTED_MAX_DIFFICULTY = 5;
 const LEVELS = [1, 2, 3, 4, 5];
 export const selOf = (r) => `${r.provider}:${r.model || 'default'}:${r.effort || 'default'}`;
 export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
@@ -80,7 +82,7 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
-    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, failKind: t.failKind || null, rounds: t.rounds ?? null,
+    pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
   };
   appendNdjson(FILE(), row);
@@ -309,7 +311,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // A transient registry error retains cached models; explicit unavailability or removal does not.
     return reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
-  const all = summary || summarize({ source });
+  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY);
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const gate = passGate(category, reg);
   const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
