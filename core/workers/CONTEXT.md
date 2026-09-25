@@ -30,6 +30,9 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
   quoted spans or parse shell-specific escapes. This setting does not change Codex sandbox defaults or per-model exceptions.
 - File tools check canonical workspace containment via `safePath()`, including symlinks/junctions and new-file
   ancestors. These checks cannot prevent concurrent link swaps (TOCTOU); they are not an OS sandbox.
+- Claude runs (workers and conductor chats) carry `KILL_GUARD_HOOKS`: a PreToolUse hook denies killing processes by
+  name or image (`taskkill /IM`, `Stop-Process -Name`, `pkill`, `killall`), which would kill the Conductor itself.
+  Vendor CLIs can't be hooked; `core/policy/prompts/worker.md` tells them the same rule.
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 
 **How to test.** `test/workers/`: `openai-compat.test.mjs`, `file-tools.test.mjs` (responsiveness, bounds, cleanup), `shell-safety.test.mjs` (spawn/allow-list),

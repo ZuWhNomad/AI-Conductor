@@ -208,3 +208,10 @@ test('run_plan passes avoid_families through from a task or the defaults', async
     for (const task of created) cancelTask(task.id);
   }
 });
+
+test('delegate no_failover makes a strict pin: the task carries noFailover', async () => {
+  const tools = conductorToolDefs({ sessionId: 'nofo', cwd: cwd() });
+  const msg = await tools.find((d) => d.name === 'delegate').handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, no_failover: true });
+  const id = /^Task (\S+)/.exec(msg)[1];
+  try { assert.equal(getTask(id).noFailover, true); } finally { cancelTask(id); }
+});

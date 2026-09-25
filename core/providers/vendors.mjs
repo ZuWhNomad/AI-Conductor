@@ -116,7 +116,7 @@ function parseMessagesStream(obj, st, emit, tag) {
     for (const c of obj.message?.content || []) if (c.type === 'tool_result') P.toolDone(st, emit, c.tool_use_id, 'tool', typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? 'done'), !!c.is_error);
   } else if (obj.type === 'result') {
     if (obj.usage) P.addUsage(st, obj.usage, { input: 'input_tokens', output: 'output_tokens', cached: 'cache_read_input_tokens' });
-    if (obj.is_error || (obj.subtype && obj.subtype !== 'success')) st.error = String(obj.error?.message || obj.error || obj.result || obj.subtype || `${tag} run failed`);
+    if (obj.is_error || (obj.subtype && obj.subtype !== 'success')) st.error = String(obj.error?.message || obj.error || obj.result || obj.errors?.join('; ') || obj.subtype || `${tag} run failed`); // grok puts the reason (e.g. 402 balance exhausted) only in errors[]
     else st.finalText = typeof obj.result === 'string' && obj.result.trim() ? obj.result.trim() : st.text.trim();
   } else if (obj.type === 'error' || obj.error) st.error = String(obj.error?.message || obj.error || obj.message);
 }

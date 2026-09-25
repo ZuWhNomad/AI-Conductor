@@ -74,7 +74,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
   function push(r) { results.push(r); bus.publish('smoke', r); onResult?.(r); }
 }
 
-const ENV_FAIL = /max iterations reached|UnauthorizedAccessException|access (?:was |is )?denied|permission denied|EACCES|EPERM|waiting for network|Connection failed|ECONNRESET|ENOTFOUND|fetch failed/i;
+const ENV_FAIL = /max iterations reached|UnauthorizedAccessException|access (?:was |is )?denied|permission denied|EACCES|EPERM|waiting for network|Connection failed|ECONNRESET|ENOTFOUND|fetch failed|unexpected status 401|Incorrect API key provided|refresh token was already used/i; // 401s: a broken sign-in, not the model
 /** A workspace-access denial or network drop in the worker's own words (or its error) — the harness failed, not the model. */
 export function envFailure(t) {
   const texts = [t.result?.finalMessage || '', t.error || '', ...(t.result?.items || []).map((i) => i.text || i.output || '')];

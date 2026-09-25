@@ -997,7 +997,7 @@ test('P1: one scheduling pass measures each provider/model once and the next pas
     assert.deepEqual(batch.map((t) => t.status), ['running', 'queued', 'queued']);
     assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a' }]]);
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    finish.resolve({ ok: true });
+    finish.resolve({ ok: true, finalMessage: 'ok' });
     await tk.awaitTask(batch[0].id);
     await tk.flushRecords();
     globalThis.__w1Costs.length = 0;
@@ -1026,7 +1026,7 @@ test('P2: rate and null-percent windows do not serialize a provider behind a pro
     tk.schedule();
     assert.deepEqual(batch.map((t) => t.status), ['running', 'running']);
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    finish.resolve({ ok: true });
+    finish.resolve({ ok: true, finalMessage: 'ok' });
     await Promise.all(batch.map((t) => tk.awaitTask(t.id)));
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); delete getLimits().providers['w1-rate']; }
 });
@@ -1165,7 +1165,7 @@ for (const scenario of [
   recordRun({ id: `l6-seed-${scenario.name}`, status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask(`l6-seed-${scenario.name}`, 'pass');
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: now + scenario.remaining, windows: [] };
-  const tk = await tasksWithWorker(ctx, async () => ({ ok: true }));
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'ok' }));
   const batch = ['first', 'second'].map((title) => tk.createTask({ cwd: tmpDir('l6'), provider, title, spec: 'x', category: 'review', difficulty: 2 }));
   const waiting = batch.map((t) => tk.awaitTask(t.id, scenario.remaining / 2)); // these waits end before the park
   const statesAtDispatch = [];
@@ -1205,7 +1205,7 @@ for (const joined of [false, true]) test(`P11: task accounting ${joined ? 're-po
   getLimits().providers[provider] = initial;
   let polls = 0;
   PROVIDERS[provider] = { id: provider, pollLimits: () => ++polls === 1 ? finish.promise : updated };
-  const tk = await tasksWithWorker(ctx, async () => ({ ok: true }));
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'ok' }));
   const old = joined ? refreshLimits({ only: [provider] }) : null;
   const t = tk.createTask({ cwd: tmpDir('p11-score'), provider, spec: 'x' });
   try {
@@ -1271,4 +1271,37 @@ test('failover skips avoided families, carries avoidFamilies to the replacement,
     saveConfig({ scorecard });
     delete getLimits().providers.deepseek;
   }
+});
+
+test('a worker that ends ok with no report and no file change fails as an empty report, not done', async (ctx) => {
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: '  ', usage: { input_tokens: 3, output_tokens: 1 }, durationMs: 5 }));
+  const gitBin = findCli('git');
+  if (!gitBin) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('empty-report');
+  childProcess.execFileSync(gitBin, ['init', '--quiet'], { cwd, windowsHide: true });
+  const t = tk.createTask({ cwd, provider: 'codex', spec: 'x' });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  assert.equal(done.status, 'failed');
+  assert.equal(done.failKind, 'empty');
+  assert.match(done.error, /empty report/);
+});
+
+test('changedFiles lists a file once when git and a Windows worker report it with different separators', async (ctx) => {
+  const gitBin = findCli('git');
+  if (!gitBin) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('changed-slashes');
+  childProcess.execFileSync(gitBin, ['init', '--quiet'], { cwd, windowsHide: true });
+  const tk = await tasksWithWorker(ctx, async () => {
+    mkdirSync(join(cwd, 'sub'), { recursive: true });
+    writeFileSync(join(cwd, 'sub', 'a.txt'), 'x');
+    return { ok: true, finalMessage: 'wrote sub/a.txt', items: [{ type: 'file_change', changes: [{ path: join(cwd, 'sub', 'a.txt') }] }] };
+  });
+  const t = tk.createTask({ cwd, provider: 'codex', spec: 'x' });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  assert.equal(done.status, 'done', done.error);
+  assert.deepEqual(done.changedFiles, ['sub/a.txt']);
 });

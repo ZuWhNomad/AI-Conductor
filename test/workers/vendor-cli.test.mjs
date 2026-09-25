@@ -408,3 +408,11 @@ test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help',
   assert.equal(VENDORS['qwen-code'].headlessArgs(open).args[VENDORS['qwen-code'].headlessArgs(open).args.indexOf('--approval-mode') + 1], 'yolo');
   assert.ok(VENDORS.kimi.headlessArgs(open).args.includes('--yolo'));
 });
+
+test('grok: a 402 exhausted balance (recorded 2026-09-25, reason only in errors[]) is a limit hit with the reason, not error_during_execution', async () => {
+  const line = { type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 900, num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, errors: ["Internal error: {\n  \"message\": \"API error (status 402 Payment Required): Grok Build usage balance exhausted\",\n  \"http_status\": 402\n}"] };
+  const r = await runVendorCli(fakeSpec([line], { exitCode: 1, parse: VENDORS.grok.parse }), { id: 't', cwd: tmpDir('grok402'), prompt: 'x' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /balance exhausted/);
+  assert.equal(r.limitHit, true);
+});

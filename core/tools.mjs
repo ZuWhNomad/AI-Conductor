@@ -119,6 +119,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         variant: z.string().optional().describe('Recipe variant for this category (e.g. recipe-c, video-finance). Must be one of the variants registered for the category.'),
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
+        no_failover: z.boolean().optional().describe('Strict pin: on a provider limit the task parks until the window resets instead of failing over to another provider'),
         timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
         sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
@@ -189,7 +190,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           const resolved = { provider: resolvedProvider, model: model || (resolvedProvider === cfg.worker.provider ? cfg.worker.model : null), effort: effort || cfg.worker.effort };
           if (exclude.includes(selOf(resolved))) return `retry_of ${failed.id} would re-run ${selOf(resolved)}, which is already in the chain. Name a different provider/model, or tag category so the scorecard can pick.`;
         }
-        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
+        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, noFailover: !!a.no_failover, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';

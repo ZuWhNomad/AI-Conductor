@@ -16,6 +16,7 @@ import { logImprovement } from './improve.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { runCodex } from './workers/codex.mjs';
+import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel } from './models.mjs';
 
@@ -198,6 +199,7 @@ function start(s) {
       settingSources: ['user', 'project', 'local'],
       resume: s.sdkSessionId || undefined,
       abortController: abort,
+      hooks: KILL_GUARD_HOOKS,
       maxTurns: loadConfig().conductor.maxTurns,
       title: s.title !== 'New chat' ? s.title : undefined,
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'conductor/2.0.0' },
@@ -261,10 +263,10 @@ async function pump(s, q) {
         const more = (m.queued_turn_count || 0) > 0;
         if (!more) s.status = 'idle';
         s.costUsd = m.total_cost_usd || s.costUsd; s.updatedAt = nowIso(); persistAll();
-        const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' ? '' : (m.errors || [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
+        const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' && !m.is_error ? '' : (m.errors?.length ? m.errors : [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
         if (s.interrupted) { s.interrupted = false; msg.subtype = 'interrupted'; msg.text = 'interrupted by user'; }
         pushMessage(s, msg); emit(s, 'result', msg); emit(s, 'status', { status: s.status });
-        if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text}`, { sessionId: s.id });
+        if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text || m.subtype}`, { sessionId: s.id });
         if (s.restartPending && !more) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
           s.restartPending = false;
           const pending = s.inbox?.drain() || [];

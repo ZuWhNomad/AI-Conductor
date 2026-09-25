@@ -357,3 +357,10 @@ test('L6/L7 smoke runs are recorded and listed in the scores table', async () =>
   assert.equal(r.verdict, 'fail');
   assert.match(formatScores({ source: 'smoke' }), /\| debug@7 \|/);
 });
+
+test('a Codex 401 or a spent refresh token is an environment failure, not a model fail', async () => {
+  const { envFailure } = await import('../../core/smoke/index.mjs');
+  assert.ok(envFailure({ error: 'unexpected status 401 Unauthorized: Incorrect API key provided: sk-svcac***fvMA.' }));
+  assert.ok(envFailure({ error: 'Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.' }));
+  assert.equal(envFailure({ error: 'tests failed: expected 3, got 4' }), null);
+});

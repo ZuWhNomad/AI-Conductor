@@ -5,6 +5,24 @@ import { bus } from '../bus.mjs';
 
 const LIMIT_RE = /usage limit|rate limit|limit reached|too many requests|\b429\b/i;
 
+// 2026-09-25: a worker ran `taskkill //F //IM node.exe` to stop its own script and killed the Conductor server.
+// Killing by image or name hits every process of that name on the machine; only a PID the agent started is safe.
+const KILL_BY_NAME = [
+  /\btaskkill(\.exe)?\b[^;&|\n]*\s[/-]{1,2}(im|fi)\b/i,                               // taskkill /IM, //IM, -im, /FI "IMAGENAME eq …"
+  /\b(stop-process|spps|kill)\b[^;&|\n]*\s-(name|processname)\b/i,                    // Stop-Process -Name node
+  /\b(get-process|gps)\b(?![^|;\n]*\s-id\b)[^|;\n]*\|\s*(stop-process|spps|kill)\b/i, // Get-Process node | Stop-Process
+  /(^|[\s;&|(`"'])(pkill|killall)(\.exe)?(\s|$)/i,
+  /\bwmic\b[^;&|\n]*\bprocess\b[^;&|\n]*\bname\s*=/i,
+];
+export const killByNameDenied = (command) => typeof command === 'string' && KILL_BY_NAME.some((re) => re.test(command))
+  ? 'Blocked by Conductor: never kill processes by name or image; it also kills the Conductor itself. Kill only a PID you started (taskkill /PID <pid> /T /F, Stop-Process -Id <pid>, kill <pid>).'
+  : null;
+// PreToolUse hooks run before the permission mode, so this holds under bypassPermissions; covers Bash, PowerShell, Monitor.
+export const KILL_GUARD_HOOKS = { PreToolUse: [{ hooks: [async (input) => {
+  const reason = killByNameDenied(input?.tool_input?.command);
+  return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : {};
+}] }] };
+
 /**
  * @param {object} t { id, cwd, prompt, model, effort, env, permissionMode, resumeSessionId, signal, maxTurns, timeoutMs, provider }
  */
@@ -37,6 +55,7 @@ export async function runClaude(t) {
         mcpServers: t.mcpServers && Object.keys(t.mcpServers).length ? t.mcpServers : undefined,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         abortController: abort,
+        hooks: KILL_GUARD_HOOKS,
         // Agent SDK supports disallowedTools; read-only drops write/edit/Bash rather than relying on plan mode.
         ...(readOnly ? { disallowedTools: ['Bash', 'Edit', 'Write', 'NotebookEdit'] } : {}),
       },

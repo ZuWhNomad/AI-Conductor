@@ -387,7 +387,8 @@ async function run(t) {
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
-    const rel = (p) => { try { return isAbsolute(p) ? relative(t.cwd, p) || p : p; } catch { return p; } };
+    const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p; // git reports '/', Windows workers '\\': one file, one entry
+    const rel = (p) => { try { return slash(isAbsolute(p) ? relative(t.cwd, p) || p : p); } catch { return p; } };
     const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
     const observed = diffStatus(before, after);
     t.changedFiles = [...new Set([...observed, ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
@@ -424,6 +425,11 @@ async function run(t) {
       t.status = 'failed'; t.failKind = 'phantom';
       t.error = `phantom completion: worker reported file write(s) (${claimed.slice(0, 3).join(', ')}${claimed.length > 3 ? ', …' : ''}) but none landed on disk (git shows no change). Recorded as a phantom-failure verdict.`;
       logImprovement('error', `worker:${t.provider}`, `phantom completion: claimed ${claimed.length} write(s), 0 landed`, { taskId: t.id, model: t.model, title: t.title });
+    } else if (!String(r.finalMessage || '').trim() && before !== null && !observed.length && !r.files?.length && !t.imageOptions) { // git-visible only: outside a repo a change can't be seen
+      // Seen from agy Gemini Flash on read-only tasks: "done" after one tool call with no report and no change.
+      t.status = 'failed'; t.failKind = 'empty';
+      t.error = 'empty report: the worker ended without a final message or any file change';
+      logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else { t.status = 'done'; }
     t.finishedAt = nowIso();
     persist(t);

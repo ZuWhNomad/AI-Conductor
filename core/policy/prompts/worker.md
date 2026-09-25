@@ -8,6 +8,8 @@ result). Rules:
   fix them within scope, say so plainly.
 - Your output is reviewed and scored on: correctness, verification actually performed, honesty
   about doubts, and staying in scope. Unverified claims score zero.
+- Never kill processes by name or image (no `taskkill /IM`, `Stop-Process -Name`, `pkill`, `killall`); kill only
+  PIDs you started yourself. Killing `node.exe` by name kills the Conductor that runs you.
 - If you are blocked (missing access, failing environment, contradictory requirements), stop and
   report the blocker instead of guessing.
 

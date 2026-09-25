@@ -2,7 +2,7 @@
 // Conductor 2.0 CLI. `conductor` starts the workbench; see `conductor help`.
 import { parseArgs } from 'node:util';
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { REPO_ROOT, stateDir, statePath } from '../core/paths.mjs';
@@ -57,6 +57,11 @@ function desktopDir() {
 if (flags.help || cmd === 'help') { console.log(HELP); process.exit(0); }
 
 if (cmd === 'start') {
+  // A non-zero exit leaves a line in crash.log (stderr is lost when not started by the launcher). Non-fatal uncaught
+  // errors are logged to improvements.ndjson by installGlobalErrorCapture and do not exit; a hard kill leaves no trace.
+  let lastError = null;
+  process.on('uncaughtExceptionMonitor', (e, origin) => { lastError = `${origin}: ${e?.stack || e}`; });
+  process.on('exit', (code) => { if (code) try { appendFileSync(statePath('crash.log'), `${new Date().toISOString()} pid ${process.pid} exit code ${code}: ${lastError || 'no uncaught error recorded (process.exit call)'}\n`); } catch {} });
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { abortRunning } = await import('../core/tasks.mjs');
   const cfg = loadConfig();

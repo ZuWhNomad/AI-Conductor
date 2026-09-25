@@ -4,7 +4,7 @@
 import { killTree, onLines, spawnCli } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 
-const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
+const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)|balance exhausted|payment required/i; // grok: 402 "Grok Build usage balance exhausted"
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|unauthorized|authentication (?:required|failed)/i;
 // Recorded Kimi 1.50 stdout refusal (see vendor-cli.test.mjs). Quota phrases alone can be successful narration.
 const KIMI_QUOTA_STDOUT = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
