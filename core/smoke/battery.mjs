@@ -442,8 +442,10 @@ export const BATTERY = [
     setup(dir) { write(dir, { 'src/calc.test.mjs': CALC_TEST }); },
     check(dir) {
       if (!unchanged(dir, 'src/calc.test.mjs', CALC_TEST)) return { pass: false, notes: 'test file modified' };
-      const src = read(dir, 'src/calc.mjs');
-      if (src && /\beval\s*\(|new\s+Function\b/.test(src)) return { pass: false, notes: 'uses eval / new Function' };
+      // Judge code, not prose: "no eval / new Function" in a comment or string is not a use.
+      const code = (read(dir, 'src/calc.mjs') || '').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '').replace(/(['"`])(?:\\.|(?!\1)[^\\\n])*\1/g, '""');
+      const use = code.split('\n').find((l) => /\beval\s*\(|new\s+Function\b/.test(l));
+      if (use) return { pass: false, notes: `uses eval / new Function: ${use.trim().slice(0, 120)}` };
       return testsPass(dir);
     },
     solve(dir) { write(dir, { 'src/calc.mjs': CALC }); },

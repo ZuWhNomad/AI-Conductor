@@ -21,6 +21,22 @@ for (const b of BATTERY) {
   });
 }
 
+test('implement-4: eval named in a comment or string passes; a real eval or new Function fails', async () => {
+  const b = BATTERY.find((x) => x.id === 'implement-4');
+  const dir = tmpDir('smoke-implement-4-eval');
+  b.setup(dir); b.solve(dir);
+  const calc = readFileSync(join(dir, 'src/calc.mjs'), 'utf8');
+  writeFileSync(join(dir, 'src/calc.mjs'), `// Recursive descent: no eval() / new Function.\n/* never eval(src) */\nconst note = 'no new Function here';\n${calc}`);
+  const prose = await b.check(dir, { result: { finalMessage: 'done' } });
+  assert.equal(prose.pass, true, prose.notes);
+  for (const bad of ['const f = new Function("return 1");', 'const v = eval("1+1");']) {
+    writeFileSync(join(dir, 'src/calc.mjs'), `${bad}\n${calc}`);
+    const r = await b.check(dir, { result: { finalMessage: 'done' } });
+    assert.equal(r.pass, false); assert.match(r.notes, /^uses eval \/ new Function: /);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('battery ids are unique and follow category-level', () => {
   const ids = SMOKE_TASKS.map((t) => t.id);
   assert.equal(new Set(ids).size, ids.length);
