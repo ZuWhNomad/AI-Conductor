@@ -1417,6 +1417,42 @@ test('L42: formatScoresShort memo key includes an hourly bucket', async (t) => {
   }
 });
 
+test('M8: summarize memoizes until the ledger or scorecard config changes', () => {
+  const source = 'M8-summary-memo';
+  const cfg = loadConfig().scorecard;
+  try {
+    run({ id: `${source}-0`, source, category: 'review', difficulty: 1 });
+    sc.rateTask(`${source}-0`, 'pass');
+    const first = sc.summarize({ source });
+    assert.strictEqual(sc.summarize({ source }), first);
+    run({ id: `${source}-1`, source, category: 'review', difficulty: 1 });
+    const afterLedger = sc.summarize({ source });
+    assert.notStrictEqual(afterLedger, first);
+    saveConfig({ scorecard: { reservePct: cfg.reservePct === 0.5 ? 0.6 : 0.5 } });
+    assert.notStrictEqual(sc.summarize({ source }), afterLedger);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('D8: short view memo key includes a future provider reset but not a past one', () => {
+  const now = Date.parse('2026-09-23T10:30:00Z');
+  const base = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now - 1 }] } } };
+  const future = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now + 60_000 }] } } };
+  assert.notEqual(sc.shortMemoKey({ source: 'D8', limits: base, now }), sc.shortMemoKey({ source: 'D8', limits: future, now }));
+});
+
+test('L2: the latest rating across a root and follow-up decides the attempt verdict', () => {
+  const check = (source, rootVerdictAt, followVerdictAt, expected) => {
+    const root = `${source}-root`, follow = `${source}-follow`;
+    run({ id: root, source, category: 'review', difficulty: 1 });
+    run({ id: follow, source, followUpOf: root, category: 'review', difficulty: 1 });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: rootVerdictAt, taskId: root, verdict: 'fail' });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: followVerdictAt, taskId: follow, verdict: 'pass' });
+    assert.equal(sc.rootRuns({ source })[0].attempts[0].verdict, expected);
+  };
+  check('L2-follow-latest', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z', 'pass');
+  check('L2-root-latest', '2026-01-01T00:00:01.000Z', '2026-01-01T00:00:00.000Z', 'fail');
+});
+
 test('P6: extrapolation reuses the already-folded summary', () => {
   const cell = { sel: 'codex:gpt-5.6-terra:medium', steps: 1, provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 };
   const r = sc.recommend({ category: 'implement', difficulty: 4, summary: [cell], source: 'P6-absent' });
