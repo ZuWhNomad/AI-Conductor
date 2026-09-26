@@ -80,7 +80,7 @@ const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.token
 export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
   if (t.imageOptions) return null;
   const row = {
-    op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, sessionId: t.sessionId || null, source: t.source || 'live',
+    op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, reroutedFrom: t.reroutedFrom || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,

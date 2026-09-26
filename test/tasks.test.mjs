@@ -262,7 +262,8 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
     return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
   });
   const cwd = tmpDir('failover');
-  const t = createTask({ sessionId: 'fo', cwd, title: 'review it', spec: 'x', provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2, sandbox: 'read-only', parallelOverride: true, overflowApi: true });
+  const originalId = 'quality-original';
+  const t = createTask({ sessionId: 'fo', cwd, title: 'review it', spec: 'x', provider: 'deepseek', model: 'deepseek-flash', category: 'review', difficulty: 2, retryOf: originalId, sandbox: 'read-only', parallelOverride: true, overflowApi: true });
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   let done;
   try {
@@ -273,7 +274,10 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
     assert.equal(next.status, 'queued');
     assert.equal(next.provider, 'ollama');
     assert.equal(next.model, 'qwen');
-    assert.equal(next.retryOf, t.id);
+    assert.equal(next.retryOf, originalId);
+    assert.equal(next.reroutedFrom, t.id);
+    assert.equal(t.failedOverTo, next.id);
+    assert.equal(next.spec, 'Note: another worker was stopped by a usage limit part-way through this task and may have left edits in the working tree. Check the current state (git status / diff) first; do not redo finished work.\nx');
     assert.equal(next.sandbox, 'read-only');
     assert.equal(next.parallelOverride, true);
     assert.equal(next.overflowApi, true);
@@ -1238,7 +1242,7 @@ for (const scenario of [
   const waiting = batch.map((t) => tk.awaitTask(t.id, scenario.remaining / 2)); // these waits end before the park
   const statesAtDispatch = [];
   const onTask = (e) => {
-    if (e.type === 'task' && e.task.status === 'running' && batch.some((t) => t.id === e.task.retryOf)) statesAtDispatch.push(batch.map((t) => t.status));
+    if (e.type === 'task' && e.task.status === 'running' && batch.some((t) => t.id === e.task.reroutedFrom)) statesAtDispatch.push(batch.map((t) => t.status));
   };
   bus.on('event', onTask);
   try {
@@ -1250,7 +1254,9 @@ for (const scenario of [
     if (scenario.failover) {
       assert.deepEqual(statesAtDispatch, [['failed', 'failed'], ['failed', 'failed']], 'no replacement starts inside the collection loop');
       const replacements = batch.map((t) => tk.getTask(t.failedOverTo));
-      assert.deepEqual(replacements.map((t) => t.retryOf), batch.map((t) => t.id));
+      assert.deepEqual(replacements.map((t) => t.retryOf), [null, null]);
+      assert.deepEqual(replacements.map((t) => t.reroutedFrom), batch.map((t) => t.id));
+      assert.ok(replacements.every((t) => t.spec === 'x'), 'a never-started task adds no handoff note');
       assert.ok(replacements.every((t) => t.provider === 'ollama' && t.model === model));
       for (const done of await Promise.all(replacements.map((t) => tk.awaitTask(t.id)))) assert.equal(done.status, 'done');
     } else assert.ok(batch.every((t) => !t.failedOverTo && t.resumeAt === now + scenario.remaining));

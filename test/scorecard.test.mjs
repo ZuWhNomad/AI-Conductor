@@ -126,6 +126,21 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
 });
 
+test('a usage-limit reroute skips the cut-off run in the quality chain', () => {
+  const source = 'failover-reroute';
+  run({ id: `${source}-a`, source, category: 'review', difficulty: 2 });
+  sc.rateTask(`${source}-a`, 'fail');
+  // B hit a usage limit and has no scorecard row. C keeps A as its quality predecessor and records B separately.
+  run({ id: `${source}-c`, source, category: 'review', difficulty: 2, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-a`, reroutedFrom: `${source}-b` });
+  sc.rateTask(`${source}-c`, 'pass');
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-a`);
+  assert.deepEqual(chain.path, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
+  assert.ok(!chain.attempts.some((a) => a.taskId === `${source}-b`));
+  assert.equal(sc.runRows().find((r) => r.taskId === `${source}-c`)?.reroutedFrom, `${source}-b`);
+  sc.voidTask(`${source}-a`, 'test fixture');
+  sc.voidTask(`${source}-c`, 'test fixture');
+});
+
 test('summarize: single-step rows count every attempt, path rows count observed ladders', () => {
   const sum = sc.summarize();
   const luna4 = sum.find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'debug' && g.difficulty === 4);
