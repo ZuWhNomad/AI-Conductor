@@ -111,7 +111,7 @@ test('scratch dirs and task titles are neutral (no conductor, smoke or task id);
   }
 });
 
-test('smoke tasks at difficulty 7+ get smoke.hardTimeoutMinutes (30); the rest smoke.timeoutMinutes (20)', async () => {
+test('smoke tasks at difficulty 6+ get smoke.hardTimeoutMinutes (30); the rest smoke.timeoutMinutes (20)', async () => {
   const { loadConfig, saveConfig, DEFAULTS } = await import('../../core/config.mjs');
   assert.deepEqual([DEFAULTS.smoke.timeoutMinutes, DEFAULTS.smoke.hardTimeoutMinutes], [20, 30]);
   const previous = loadConfig().smoke;
@@ -120,7 +120,7 @@ test('smoke tasks at difficulty 7+ get smoke.hardTimeoutMinutes (30); the rest s
   const models = [{ provider: 'ollama', model: 'qwen' }], tasks = ['debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'];
   try {
     await runSmoke({ models, tasks, execute });
-    assert.deepEqual(waits.splice(0), [[5, 20], [6, 20], [6, 20], [7, 30], [7, 30]]);
+    assert.deepEqual(waits.splice(0), [[5, 20], [6, 30], [6, 30], [7, 30], [7, 30]]);
     saveConfig({ smoke: { hardTimeoutMinutes: 45 } });
     await runSmoke({ models, tasks: ['debug-5', 'debug-7'], execute });
     await runSmoke({ models, tasks: ['debug-5', 'debug-7'], execute, timeoutMinutes: 3, hardTimeoutMinutes: 4 });

@@ -20,7 +20,7 @@ const inFlight = new Set();
 
 /**
  * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, hardTimeoutMinutes?, sessionId?, keep?, execute?, onResult? }
- * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 7+
+ * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 6+
  * gets `hardTimeoutMinutes` (smoke.hardTimeoutMinutes), every other task `timeoutMinutes` (smoke.timeoutMinutes).
  */
 export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
@@ -42,7 +42,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
       try {
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
-        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant }, b.difficulty >= 7 ? hardTimeoutMinutes : timeoutMinutes);
+        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
         if ((t.attempts || 0) === 0 && t.status !== 'done') {
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
         } else {
