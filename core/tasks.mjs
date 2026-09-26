@@ -24,7 +24,7 @@ import { mcpServersFor } from './mcp.mjs';
 
 const DIR = () => statePath('tasks');
 const INDEX = () => statePath('tasks-index.json');
-const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8');
+const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8').replaceAll('{{conductorCli}}', join(REPO_ROOT, 'bin', 'conductor.mjs'));
 // MSW kernel (necessity test for every claim): measured 2026-09-09 on the battery as 5-15% faster and 3-10% fewer output tokens at equal pass rate.
 const MSW = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'msw.md'), 'utf8');
 const RESUME_NOTE = 'You were interrupted earlier (usage limit or restart). Continue from the current state of the files; do not redo finished work.\n\n';
@@ -94,6 +94,23 @@ export function recoverTasks() {
 }
 recoverTasks();
 
+// Coarse progress for task_status while a worker runs (not a live stream): the last activity line or tool, and tokens
+// when the runtime reports them. Every worker event updates `live`; the task's snapshot copies it at most once a minute.
+const PROGRESS_MS = 60_000;
+const live = new Map(); // taskId -> { activity, tokens }
+const tokensOf = (u) => { if (!u) return null; const n = (Number(u.input_tokens ?? u.inputTokens) || 0) + (Number(u.output_tokens ?? u.outputTokens) || 0); return n || null; };
+bus.on('event', (e) => {
+  if (e.type !== 'worker' || !running.has(e.taskId)) return;
+  const t = tasks.get(e.taskId); if (!t) return;
+  const l = live.get(t.id) || {};
+  const i = e.item;
+  const activity = i ? (i.command || (i.type === 'mcp_tool_call' ? `mcp:${i.server}:${i.tool}` : i.name) || (i.text && String(i.text).trim().split('\n').pop())) : null;
+  if (activity) l.activity = String(activity).slice(0, 160);
+  const n = tokensOf(e.usage); if (n) l.tokens = n;
+  live.set(t.id, l);
+  if (!t.progress || Date.now() - t.progress.at >= PROGRESS_MS) t.progress = { at: Date.now(), ...l };
+});
+
 function persist(t) {
   t.updatedAt = nowIso();
   writeJson(join(DIR(), `${t.id}.json`), t);
@@ -144,6 +161,7 @@ export function createTask(i, { dispatch = true } = {}) {
   }
   for (const k of ['provider', 'model', 'effort']) if (i[k] != null && typeof i[k] !== 'string') throw Object.assign(new Error(`${k} must be a string`), { status: 400 });
   if (i.sandbox != null && !['read-only', 'workspace-write', 'danger-full-access'].includes(i.sandbox)) throw Object.assign(new Error('invalid sandbox'), { status: 400 });
+  const writableRoots = checkWritableRoots(i.writableRoots);
   const cfg = loadConfig();
   const t = {
     id: shortId(), sessionId: typeof i.sessionId === 'string' ? i.sessionId : null, cwd: i.cwd, title: String(i.title || 'task').slice(0, 200), spec: String(i.spec ?? ''),
@@ -165,6 +183,7 @@ export function createTask(i, { dispatch = true } = {}) {
     parallelOverride: !!i.parallelOverride, // the chat's parallel toggle at delegation time: skip the budget gate
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
     avoidFamilies: normFamilies(i.avoidFamilies), // reviews: failover never lands on these model families (see familyOf)
+    writableRoots, // extra directories the worker may write besides cwd (a sibling git worktree): Codex --add-dir, Claude additionalDirectories
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
   // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
@@ -176,7 +195,7 @@ export function createTask(i, { dispatch = true } = {}) {
     if (!TERMINAL.has(parent.status)) throw Object.assign(new Error(`task ${parent.id} is still ${parent.status}; wait for it before following up`), { status: 400 });
     const holder = openTasks().find((task) => task.threadId === parent.threadId);
     if (holder) throw Object.assign(new Error(`task ${holder.id} is still ${holder.status} on thread ${parent.threadId}; wait for it before following up`), { status: 409 });
-    Object.assign(t, { cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
+    Object.assign(t, { writableRoots: writableRoots.length ? writableRoots : parent.writableRoots || [], cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
     if (t.rounds > cfg.worker.maxRounds) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
   }
   // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
@@ -201,6 +220,18 @@ export function createTask(i, { dispatch = true } = {}) {
   persist(t);
   if (dispatch) schedule();
   return t;
+}
+
+/** writable_roots: absolute paths of existing directories (a typo must not silently leave the worker without access). */
+function checkWritableRoots(roots) {
+  if (roots == null) return [];
+  if (!Array.isArray(roots) || roots.some((r) => typeof r !== 'string')) throw Object.assign(new Error('writable_roots must be an array of absolute directory paths'), { status: 400 });
+  for (const r of roots) {
+    let dir = false;
+    try { dir = isAbsolute(r) && statSync(r).isDirectory(); } catch {}
+    if (!dir) throw Object.assign(new Error(`writable_roots: ${r} is not an existing absolute directory`), { status: 400 });
+  }
+  return [...new Set(roots.map((r) => resolve(r)))];
 }
 
 export function cancelTask(id, reason) {
@@ -364,7 +395,7 @@ async function run(t) {
   try {
     const ac = new AbortController();
     running.set(t.id, ac);
-    t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null; t.limitHit = false;
+    t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null; t.limitHit = false; t.authFailed = false; t.envFailed = false;
     persist(t);
     const limitsBefore = snapshotWindows(t.provider);
     // Each window needs its own divisor: Opus and Sonnet share global windows, but only Sonnet consumes its
@@ -383,6 +414,7 @@ async function run(t) {
     const providerKind = PROVIDERS[t.provider]?.kind;
     const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
     const r = await runWorker({ ...t, prompt, timeoutMs: Math.min(2 ** 31 - 1, (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000) }, { signal: ac.signal });
+    live.delete(t.id); delete t.progress; // the result replaces the snapshot
     const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
@@ -418,6 +450,11 @@ async function run(t) {
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }
+    } else if ((r.authFailed || r.envFailed) && !r.ok) {
+      // A broken sign-in or API key, or a harness fault (grok plan mode cancelling a tool), is the environment, not the
+      // model: recorded, never scored (the smoke battery voids these too).
+      t.status = 'failed'; t.failKind = r.authFailed ? 'auth' : 'env'; t.authFailed = !!r.authFailed; t.envFailed = !r.authFailed; t.error = r.error || 'environment failure';
+      logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else if (!r.ok) {
       t.status = 'failed'; t.error = r.error || 'worker failed';
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
@@ -435,7 +472,7 @@ async function run(t) {
     persist(t);
     // A plain cancel is not scored (its ~0 tokens would drag the model's cost means). A smoke timeout
     // still needs a run row so rateTask(id, 'fail', 'timeout') has something to attach to (OB6).
-    if (TERMINAL.has(t.status) && !t.limitHit && (t.status !== 'canceled' || t.error === 'timeout')) score(t, limitsBefore, concurrent, concurrentByWindow);
+    if (TERMINAL.has(t.status) && !t.limitHit && !t.authFailed && !t.envFailed && (t.status !== 'canceled' || t.error === 'timeout')) score(t, limitsBefore, concurrent, concurrentByWindow);
     if (t.failKind === 'phantom') { try { rateTask(t.id, 'phantom', 'auto: reported file writes that never landed on disk'); } catch {} }
   } catch (e) {
     // G8: if the outcome was already decided (persist() threw after the status was set), keep the decided status.
@@ -444,7 +481,7 @@ async function run(t) {
     else { try { logImprovement('error', `worker:${t.provider}`, `journal persist failed after ${t.status}: ${e?.message || e}`, { taskId: t.id }); } catch {} }
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().
   } finally {
-    running.delete(t.id);
+    running.delete(t.id); live.delete(t.id); delete t.progress;
     trimTasks();
     try { if (TERMINAL.has(t.status) || t.status === 'parked') wake(t); } catch {}
     try { if (!shuttingDown) schedule(); } catch {}
@@ -464,7 +501,7 @@ function failover(t) {
     const avoid = t.avoidFamilies || [];
     const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
     if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid }, { dispatch: false });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
@@ -608,6 +645,10 @@ export function describeTask(t) {
   if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
   if (t.status === 'parked') lines.push(`Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (auto-resumes)`);
+  if (t.status === 'running') {
+    const p = t.progress, mins = (ms) => `${Math.round(ms / 60_000)} min`;
+    lines.push(`Progress: running ${mins(Date.now() - (Date.parse(t.startedAt) || Date.now()))}${p?.activity ? `; last: ${p.activity}` : ''}${p?.tokens ? `; ${p.tokens} tokens so far` : ''}${p ? ` (as of ${mins(Date.now() - p.at)} ago)` : '; no worker activity yet'}`);
+  }
   if (t.changedFiles?.length) lines.push(`Changed files: ${t.changedFiles.join(', ')}`);
   if (t.diffStat) lines.push(`Diff stat:\n${t.diffStat}`);
   if (r.usage) lines.push(`Usage: ${JSON.stringify(r.usage)}`);

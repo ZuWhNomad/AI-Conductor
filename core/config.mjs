@@ -34,7 +34,7 @@ export const DEFAULTS = {
     resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
     failoverAfterBlockMinutes: 15,    // queued tasks fail over only beyond this remaining block; 0 keeps them parked
     tasksInMemory: 500,               // newest terminal task records retained alongside all open tasks; older records stay on disk
-    recipeChars: 9401,                // log recipes over this character budget (the full recipe is still appended). 9401 is the longest shipped recipe (image-to-3d-model.b.md, measured).
+    recipeChars: 10000,               // log recipes over this character budget (the full recipe is still appended). Headroom over the longest shipped recipe (image-to-3d-model.b.md, 9443 chars on 2026-09-25).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
@@ -386,7 +386,7 @@ export function saveConfig(patch) {
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
   const effective = normalize(deepMerge(DEFAULTS, deepMerge(stored, clean)));
-  writeJson(FILE(), pruneToDefaults(effective, DEFAULTS));
+  writeJson(FILE(), pruneToDefaults(effective, DEFAULTS), { secrets: true });
   fileCache = { key: null, value: {} }; // our own write: re-read on the next load even if size and mtime did not move
   return effective;
 }

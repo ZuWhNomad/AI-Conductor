@@ -118,6 +118,10 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   assert.equal(sc.rootRuns().find((r) => r.taskId === 'crashed').verdict, 'fail');
   sc.voidTask('crashed', 'sandbox denied the workspace');
   assert.equal(sc.rootRuns().find((r) => r.taskId === 'crashed'), undefined);
+  // rate_task's `void` verdict routes to voidTask: the run leaves every aggregate.
+  run({ id: 'signin', category: 'edit', status: 'failed' });
+  assert.equal(sc.rateTask('signin', 'void', 'codex 401').op, 'void');
+  assert.equal(sc.rootRuns().find((r) => r.taskId === 'signin'), undefined);
   assert.equal(sc.recordRun({ id: 'img', imageOptions: {} }), null);
   assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
 });

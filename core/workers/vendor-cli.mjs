@@ -3,9 +3,10 @@
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
 import { killTree, onLines, spawnCli } from '../proc.mjs';
 import { bus } from '../bus.mjs';
+import { logImprovement } from '../improve.mjs';
 
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)|balance exhausted|payment required/i; // grok: 402 "Grok Build usage balance exhausted"
-const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|unauthorized|authentication (?:required|failed)/i;
+const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|\bunauthorized\b|authentication (?:required|failed)/i; // \b: UnauthorizedAccessException is a sandbox denial, not a sign-in
 // Recorded Kimi 1.50 stdout refusal (see vendor-cli.test.mjs). Quota phrases alone can be successful narration.
 const KIMI_QUOTA_STDOUT = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
 
@@ -39,8 +40,8 @@ function sumUsage(a, b) {
 
 function runVendorCliOnce(spec, t) {
   const started = Date.now();
-  const res = { ok: false, provider: spec.id, threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, authFailed: false, exitCode: null, stderr: '' };
-  const st = { spec, threadId: t.resumeThreadId || null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0 };
+  const res = { ok: false, provider: spec.id, threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, authFailed: false, envFailed: false, exitCode: null, stderr: '' };
+  const st = { spec, cwd: t.cwd, threadId: t.resumeThreadId || null, text: '', finalText: null, usage: null, error: null, httpStatus: null, envFailed: false, items: [], unknown: 0 };
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: spec.id, event, ...data }); t.onEvent?.(event, data); };
   return new Promise((resolve) => {
     const bin = spec.bin();
@@ -88,8 +89,18 @@ function runVendorCliOnce(spec, t) {
       if (quotaOnly && !res.error) res.error = quotaText;
       // st.text joins the haystack only for quota-only stdout — a failed run whose narration mentions "429" is not a limit hit.
       const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${quotaOnly ? `\n${st.text || ''}` : ''}`;
-      res.limitHit = !!res.error && LIMIT_RE.test(haystack);
-      res.authFailed = !!res.error && AUTH_RE.test(haystack);
+      // Deterministic first: a structured HTTP status the parser found (grok: http_status in result.errors[]), or the recorded
+      // whole Kimi refusal. Text patterns only when a CLI gives neither (agy, kimi, qwen today), and that use is logged.
+      const s = st.httpStatus;
+      if (!res.error) { res.limitHit = false; res.authFailed = false; }
+      else if (s) { res.limitHit = s === 402 || s === 429; res.authFailed = s === 401 || s === 403; }
+      else if (quotaOnly) { res.limitHit = true; res.authFailed = false; }
+      else {
+        res.limitHit = LIMIT_RE.test(haystack);
+        res.authFailed = !res.limitHit && AUTH_RE.test(haystack);
+        if (res.limitHit || res.authFailed) try { logImprovement('friction', `worker:${spec.id}`, `${res.limitHit ? 'limit' : 'sign-in'} failure recognised from text: ${spec.id} gave no structured status`, { taskId: t.id, error: String(res.error).slice(0, 200) }); } catch {}
+      }
+      res.envFailed = !!res.error && !!st.envFailed;
       if (res.authFailed && res.error) res.error += ` — sign in with: ${spec.loginHint || spec.id}`;
       res.ok = !res.error;
       res.durationMs = Date.now() - started;

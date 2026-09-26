@@ -1155,3 +1155,26 @@ test('P7: withLimitsSnapshot skips restat until the callback returns', async () 
   assert.equal(inside, undefined, 'in-flight snapshot does not pick up an external write');
   assert.ok(getLimits().providers['p7-ext'], 'after the snapshot, the next getLimits restats');
 });
+
+test('a window at its limit is re-polled when its reset passes (no stale "100%, resets hours ago")', async (ctx) => {
+  const { refreshLimits, RESET_POLL_GRACE_MS } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const { formatLimits } = await import('../core/tools.mjs');
+  ctx.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.parse('2026-09-15T20:00:00Z') });
+  const resetsAt = Date.now() + 60 * 60_000;
+  const polls = [
+    { provider: 'antigravity', blocked: false, windows: [{ id: 'antigravity:gemini-5h', label: 'Gemini 5-hour', usedPercent: 100, resetsAt, windowMinutes: 300 }] },
+    { provider: 'antigravity', blocked: false, windows: [{ id: 'antigravity:gemini-5h', label: 'Gemini 5-hour', usedPercent: 0, resetsAt: resetsAt + 5 * 3_600_000, windowMinutes: 300 }] },
+  ];
+  const poll = ctx.mock.method(PROVIDERS.antigravity, 'pollLimits', async () => polls.shift());
+  delete process.env.CONDUCTOR_NO_POLL;
+  ctx.after(() => { process.env.CONDUCTOR_NO_POLL = '1'; });
+  await refreshLimits({ only: ['antigravity'] });
+  assert.equal(poll.mock.callCount(), 1);
+  ctx.mock.timers.tick(60 * 60_000 + 1000);
+  assert.match(formatLimits(getLimits()), /Gemini 5-hour 100% \(reset .* has passed; not re-polled yet\)/, 'until the poll lands, the view says the reset passed');
+  ctx.mock.timers.tick(RESET_POLL_GRACE_MS);
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.equal(poll.mock.callCount(), 2, 're-polled once the reset passed');
+  assert.equal(getLimits().providers.antigravity.windows[0].usedPercent, 0);
+});

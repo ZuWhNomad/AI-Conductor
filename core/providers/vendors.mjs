@@ -8,6 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.mjs';
+import { readTail } from '../paths.mjs';
 import { vendorParse as P } from '../workers/vendor-cli.mjs';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
@@ -104,6 +105,34 @@ export function parseAgyUsage(text) {
 }
 
 
+/** grok's structured HTTP status: a top-level http_status, or the JSON body inside an errors[] entry ("Internal error: {… "http_status": 402}"). */
+export function httpStatusOf(obj) {
+  if (Number.isInteger(obj?.http_status)) return obj.http_status;
+  for (const e of obj?.errors || []) {
+    const s = String(e), i = s.indexOf('{');
+    if (i < 0) continue;
+    try { const j = JSON.parse(s.slice(i)); if (Number.isInteger(j.http_status)) return j.http_status; } catch {}
+  }
+  return null;
+}
+
+/**
+ * grok's own record of how a headless turn ended: ~/.grok/sessions/<encoded cwd>/<session>/events.jsonl (grok 1.0.30).
+ * Returns { outcome, category, refusedTool } from the last turn_ended event, or null.
+ */
+export function grokTurnEnd(cwd, sessionId, home = process.env.GROK_HOME || join(homedir(), '.grok')) {
+  if (!cwd || !/^[\w-]+$/.test(sessionId || '')) return null;
+  const lines = readTail(join(home, 'sessions', encodeURIComponent(cwd), sessionId, 'events.jsonl'), 256 * 1024).split('\n');
+  let end = null, refusedTool = null;
+  for (const l of lines) {
+    if (!l.includes('"turn_ended"') && !l.includes('"permission_resolved"')) continue;
+    let e; try { e = JSON.parse(l); } catch { continue; }
+    if (e.type === 'permission_resolved' && e.decision === 'cancelled') refusedTool = e.tool_name || refusedTool;
+    if (e.type === 'turn_ended') end = { outcome: e.outcome || null, category: e.cancellation_category || null, refusedTool };
+  }
+  return end;
+}
+
 /** Anthropic Messages wire format (NDJSON): system init, assistant/user messages with content blocks, result. Used by grok --output-format streaming-messages-json. */
 function parseMessagesStream(obj, st, emit, tag) {
   if (obj.session_id && !st.threadId) st.threadId = obj.session_id;
@@ -116,7 +145,10 @@ function parseMessagesStream(obj, st, emit, tag) {
     for (const c of obj.message?.content || []) if (c.type === 'tool_result') P.toolDone(st, emit, c.tool_use_id, 'tool', typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? 'done'), !!c.is_error);
   } else if (obj.type === 'result') {
     if (obj.usage) P.addUsage(st, obj.usage, { input: 'input_tokens', output: 'output_tokens', cached: 'cache_read_input_tokens' });
-    if (obj.is_error || (obj.subtype && obj.subtype !== 'success')) st.error = String(obj.error?.message || obj.error || obj.result || obj.errors?.join('; ') || obj.subtype || `${tag} run failed`); // grok puts the reason (e.g. 402 balance exhausted) only in errors[]
+    if (obj.is_error || (obj.subtype && obj.subtype !== 'success')) {
+      st.error = String(obj.error?.message || obj.error || obj.result || obj.errors?.join('; ') || obj.subtype || `${tag} run failed`); // grok puts the reason (e.g. 402 balance exhausted) only in errors[]
+      st.httpStatus = httpStatusOf(obj);
+    }
     else st.finalText = typeof obj.result === 'string' && obj.result.trim() ? obj.result.trim() : st.text.trim();
   } else if (obj.type === 'error' || obj.error) st.error = String(obj.error?.message || obj.error || obj.message);
 }
@@ -149,7 +181,7 @@ export const VENDORS = {
       const args = [];
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
-      args.push('--output-format', 'stream-json', '--add-dir', t.cwd, '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
+      args.push('--output-format', 'stream-json', '--add-dir', t.cwd, ...(t.writableRoots || []).flatMap((d) => ['--add-dir', d]), '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
       if (t.sandbox === 'read-only') args.push('--mode', 'plan');
       else args.push('--dangerously-skip-permissions');
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
@@ -215,7 +247,17 @@ export const VENDORS = {
     },
     // Verified 2026-09-10 against grok 4.6 CLI: `--output-format streaming-messages-json` (Anthropic Messages wire format).
     parse: (obj, st, emit) => parseMessagesStream(obj, st, emit, 'grok'),
-    onClose: (st, emit) => { if (st.buf) { P.message(st, emit, st.buf.trim()); st.text += st.buf; st.buf = ''; } },
+    onClose: (st, emit) => {
+      if (st.buf) { P.message(st, emit, st.buf.trim()); st.text += st.buf; st.buf = ''; }
+      // Plan mode (our read-only sandbox) cancels a shell or write call and ends the turn: grok's bug, not the model's.
+      // Decided from grok's structured session events, not the text: an environment failure, never scored.
+      if (!st.error || !st.threadId) return;
+      const end = grokTurnEnd(st.cwd, st.threadId);
+      if (end?.outcome === 'cancelled' && end.category === 'permission_cancelled') {
+        st.envFailed = true;
+        st.error = `${st.error}: grok's read-only (plan) mode cancelled the ${end.refusedTool || 'tool'} call and ended the turn (environment failure, not scored)`;
+      }
+    },
   },
 
   'qwen-code': {

@@ -1,14 +1,15 @@
 // Process-wide event bus with a ring buffer so late SSE subscribers can replay recent events.
 import { EventEmitter } from 'node:events';
+import { redactDeep } from './paths.mjs';
 
 class Bus extends EventEmitter {
   #seq = 0;
   #ring = [];
   #max = 2000;
 
-  /** Emit an event to live listeners and keep it for replay. */
+  /** Emit an event to live listeners and keep it for replay. Secrets are redacted: this is the UI's live stream. */
   publish(type, data = {}) {
-    const ev = { seq: ++this.#seq, ts: Date.now(), type, ...data };
+    const ev = { seq: ++this.#seq, ts: Date.now(), type, ...redactDeep(data) };
     this.#ring.push(ev);
     if (this.#ring.length > this.#max) this.#ring.shift();
     this.emit('event', ev);

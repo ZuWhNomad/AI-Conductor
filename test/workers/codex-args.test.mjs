@@ -126,3 +126,19 @@ test('Windows detects the newest desktop-bundled Codex CLI after PATH and npm', 
     assert.deepEqual(codexCommand(), { command: exes[0], args: [] });
   } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
 });
+
+test('writable_roots reach Codex as --add-dir and Claude as additionalDirectories', async (ctx) => {
+  const extra = tmpDir('sibling-worktree');
+  const calls = [];
+  ctx.mock.method(childProcess, 'spawn', (command, args) => { calls.push(args); throw new Error('fixture: captured spawn'); });
+  syncBuiltinESMExports();
+  ctx.after(() => { ctx.mock.restoreAll(); syncBuiltinESMExports(); });
+  await runCodex({ cwd, prompt: 'x', writableRoots: [extra] });
+  const argv = calls.at(-1);
+  assert.equal(argv[argv.indexOf('--add-dir') + 1], extra);
+  assert.ok(argv.indexOf('--add-dir') < argv.indexOf('-s'), 'an exec option, before the sandbox flag and the prompt');
+  await runClaude({ cwd, prompt: 'x', writableRoots: [extra], timeoutMs: 5000 });
+  const claudeArgv = calls.at(-1);
+  assert.notEqual(claudeArgv, argv, 'the Agent SDK spawned the claude CLI');
+  assert.equal(claudeArgv[claudeArgv.indexOf('--add-dir') + 1], extra);
+});

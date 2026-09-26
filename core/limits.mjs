@@ -26,6 +26,26 @@ function observe(provider, key) {
 
 function fileMtime() { try { const st = statSync(FILE()); return `${st.mtimeMs}:${st.size}`; } catch { return '0'; } } // mtime alone misses two writes in the same tick
 
+// A window at its limit is re-polled when its reset passes. Before this, nothing re-read it then: the registry kept
+// "100%, resets <hours ago>" until the next interval poll (never, with autoRefresh off; not while that poll errored),
+// and the limits tool showed full windows with reset times in the past (Antigravity, 2026-09-15). One timer, for the
+// earliest such reset; a provider that still reports a past reset is not re-armed, so nothing loops.
+let resetTimer = null;
+export const RESET_POLL_GRACE_MS = 5000;
+function scheduleResetPoll() {
+  if (process.env.CONDUCTOR_NO_POLL) return;
+  const now = Date.now(); let next = null;
+  for (const [id, p] of Object.entries(cache.providers)) {
+    for (const w of p?.windows || []) {
+      if (w.resetsAt > now && (w.status === 'rejected' || (w.usedPercent ?? 0) >= 100) && !(next?.at <= w.resetsAt)) next = { at: w.resetsAt, id };
+    }
+  }
+  clearTimeout(resetTimer); resetTimer = null;
+  if (!next) return;
+  resetTimer = setTimeout(() => { resetTimer = null; refreshLimits({ only: [next.id] }).catch(() => {}); }, Math.min(2 ** 31 - 1, next.at - now + RESET_POLL_GRACE_MS));
+  resetTimer.unref?.();
+}
+
 /** Session/5-hour windows (the conductor's classCap applies to these; weekly/budget windows do not). */
 export const isSession = (w) => /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
 
@@ -50,6 +70,7 @@ function save(publish = true) {
   cache.updatedAt = nowIso();
   writeJson(FILE(), cache);
   seenMtime = fileMtime();
+  scheduleResetPoll();
   if (publish) bus.publish('limits', { updatedAt: cache.updatedAt });
 }
 

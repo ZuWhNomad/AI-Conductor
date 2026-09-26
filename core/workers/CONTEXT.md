@@ -21,8 +21,17 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - `image.mjs` — image generation.
 
 **Invariants.**
-- A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, retryAfterMs?, threadId? }`. `limitHit`
-  runs are never scored; on a real limit the scheduler fails over or parks (`core/tasks.mjs`).
+- A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, authFailed, retryAfterMs?, threadId? }`.
+  `limitHit` runs are never scored; on a real limit the scheduler fails over or parks (`core/tasks.mjs`). `authFailed`
+  (a 401, a spent refresh token, not signed in) and `envFailed` (grok plan mode cancelling a tool) are the environment:
+  the task fails with `failKind: 'auth'` / `'env'`, unscored.
+- Limit and auth are decided from structured signals: Codex `codexFailure` (rollout `codex_error_info`, a JSON body's
+  `status`, the "unexpected status NNN" prefix); grok `http_status` (402/429 limit, 401/403 auth); grok's own session
+  `events.jsonl` for plan-mode cancels. agy, kimi and qwen give no structured status: their text patterns are the
+  fallback, and each use is logged to the improvement log.
+- `runWorker` redacts its result (keys a CLI echoes, e.g. OpenAI's 401) before anything records it; see `paths.mjs` `redact`.
+- `writableRoots` (delegate `writable_roots`): extra writable directories — Codex `--add-dir`, Claude
+  `additionalDirectories`, Antigravity `--add-dir`. Grok runs unsandboxed; the rest ignore it.
 - No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
 - The openai-compat `run` tool is disabled by default (`worker.shell: false`). Explicit `true` or an allow-list
   trusts host execution: permitted programs can read/write outside the workspace. `shellDenied` filters commands,
@@ -36,4 +45,4 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 
 **How to test.** `test/workers/`: `openai-compat.test.mjs`, `file-tools.test.mjs` (responsiveness, bounds, cleanup), `shell-safety.test.mjs` (spawn/allow-list),
-`vendor-cli.test.mjs`, `codex-args.test.mjs` / `codex-parse.test.mjs`. `CONDUCTOR_HOME`-isolated.
+`vendor-cli.test.mjs`, `codex-args.test.mjs` / `codex-parse.test.mjs`, `codex-auth.test.mjs` (401 → authFailed, redaction). `CONDUCTOR_HOME`-isolated.

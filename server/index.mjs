@@ -6,7 +6,7 @@ import { readdir, access } from 'node:fs/promises';
 import { join, extname, resolve, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { REPO_ROOT, readJson, writeJson, statePath } from '../core/paths.mjs';
+import { REPO_ROOT, readJson, writeJson, statePath, redact } from '../core/paths.mjs';
 import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 import { getModels, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
@@ -119,7 +119,9 @@ export const isIdle = ({ runningSessions, openTasks, lastActivity, now = Date.no
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
-const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); return true; };
+// Every API answer is redacted (task records, chat messages, improvements), except the settings, which publicConfig masks
+// in its own round-trippable way (`raw`).
+const json = (res, code, body, raw = false) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); const text = JSON.stringify(body); res.end(raw ? text : redact(text)); return true; };
 // Oversized bodies are drained (not destroyed) so the 413 actually reaches the client.
 const readBody = (req) => new Promise((resolve, reject) => { let d = '', stopped = false; req.on('data', (c) => { if (stopped) return; d += c; if (d.length > 5e6) { stopped = true; d = ''; reject(Object.assign(new Error('body too large'), { status: 413 })); req.resume(); } }); req.on('end', () => { if (stopped) return; try { resolve(d ? JSON.parse(d) : {}); } catch { reject(Object.assign(new Error('invalid JSON body'), { status: 400 })); } }); req.on('error', reject); });
 
@@ -194,6 +196,15 @@ async function route(req, res, url) {
     return true;
   }
 
+  if (seg[1] === 'jobs') { // detached long jobs (core/jobs.mjs); `conductor job` calls these from a worker's shell
+    const { startJob, jobStatus, cancelJob, listJobs } = await import('../core/jobs.mjs');
+    if (m === 'GET' && !seg[2]) return json(res, 200, listJobs());
+    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, startJob({ command: b.command, cwd: b.cwd })); }
+    const j = m === 'POST' && seg[3] === 'cancel' ? cancelJob(seg[2]) : m === 'GET' && !seg[3] ? jobStatus(seg[2], { tailChars: Number(url.searchParams.get('tail')) || 4000 }) : undefined;
+    if (j === undefined) return false;
+    return j ? json(res, 200, j) : json(res, 404, { error: `unknown job ${seg[2]}` });
+  }
+
   if (seg[1] === 'sessions') {
     if (m === 'GET' && !seg[2]) return json(res, 200, conductor.listSessions());
     if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, conductor.createSession({ ...b, overflowApi: b.overflowApi == null ? null : !!b.overflowApi, parallelOverride: !!b.parallelOverride })); }
@@ -255,7 +266,7 @@ async function route(req, res, url) {
   }
 
   if (p === '/api/settings') {
-    if (m === 'GET') return json(res, 200, publicConfig());
+    if (m === 'GET') return json(res, 200, publicConfig(), true);
     if (m === 'POST') {
       const b = await readBody(req);
       const prev = loadConfig();
@@ -264,7 +275,7 @@ async function route(req, res, url) {
       const auChanged = prev.conductor.autoUpdate !== next.conductor.autoUpdate;
       const hoursChanged = prev.conductor.updateCheckHours !== next.conductor.updateCheckHours;
       if (auChanged || hoursChanged) startUpdateChecks({ initial: prev.conductor.autoUpdate === 'off' && next.conductor.autoUpdate !== 'off' });
-      schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next));
+      schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next), true);
     }
   }
 

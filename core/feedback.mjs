@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, userInfo, platform, release, arch } from 'node:os';
-import { REPO_ROOT } from './paths.mjs';
+import { REPO_ROOT, redact as redactSecrets } from './paths.mjs';
 import { listImprovements } from './improve.mjs';
 import { getLimits } from './limits.mjs';
 import { getModels } from './models.mjs';
@@ -30,7 +30,7 @@ export function redact(text, { home = homedir(), user = safeUser() } = {}) {
   // Unlabelled tokens: the feedback contract drops 24+ characters spanning multiple character classes.
   s = s.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) =>
     [/[a-z]/, /[A-Z]/, /[0-9]/, /[_+/=-]/].filter((re) => re.test(token)).length > 1 ? '<secret>' : token);
-  return s;
+  return redactSecrets(s); // plus the shared key redactor: masked keys (sk-svcac****…), configured key values
 }
 
 /** The bundle as an object: versions, providers, limits (windows only), improvement metadata, and scorecard text. */

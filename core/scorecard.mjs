@@ -92,7 +92,8 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
 
 /** The conductor's verdict. Any task id in a fix-round chain rates that attempt. */
 export function rateTask(taskId, verdict, notes = '') {
-  if (!VERDICTS.includes(verdict)) throw Object.assign(new Error(`verdict must be one of ${VERDICTS.join('|')}`), { status: 400 });
+  if (verdict === 'void') return voidTask(taskId, notes || 'voided by the conductor'); // not the model's doing (harness, sign-in, bad fixture)
+  if (!VERDICTS.includes(verdict)) throw Object.assign(new Error(`verdict must be one of ${[...VERDICTS, 'void'].join('|')}`), { status: 400 });
   const row = { op: 'rate', ts: nowIso(), taskId: String(taskId), verdict, notes: String(notes || '').slice(0, 1000) };
   appendNdjson(FILE(), row);
   bus.publish('score', { taskId: row.taskId, verdict });

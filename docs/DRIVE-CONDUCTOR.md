@@ -127,11 +127,51 @@ curl -s "$BASE/api/sessions/$SID" | node -e "let s='';process.stdin.on('data',d=
 
 `DELETE /api/sessions/:id` removes a chat.
 
-## Direct-to-worker shortcut (no conductor tokens)
+## 7. Direct drive: be the conductor yourself
 
-`POST /api/tasks` `{ cwd, spec, provider?, model?, effort? }` queues a single worker task straight
-to the budget-gated scheduler, bypassing a conductor chat. Track it with `GET /api/tasks/:id`;
-cancel with `POST /api/tasks/:id/cancel`.
+Instead of briefing a conductor chat, your own session can **be** the conductor: it calls the same workbench tools a
+Codex conductor uses (`delegate`, `follow_up`, `await_task`, `rate_task`, `run_plan`, `plan_status`, `list_models`,
+`limits`, `model_scores`, `log_improvement`, …) over the MCP endpoint. No conductor turn runs, so no conductor tokens
+are spent, and every task still goes through the scorecard auto-pick, limit failover and rating.
+
+1. **Get a session id for the project.** Tools run in a session's `cwd`, so keep one session per project, created
+   with `POST /api/sessions` `{cwd, title}` and **never sent a message** (it never starts a model). Reuse it: look it up
+   by `title` in `/api/state` `.sessions`.
+2. **Call the tools** with JSON-RPC `tools/call` at `POST /mcp/<sessionId>` (`content-type: application/json`).
+   `tools/list` returns every schema. The reply text is in `result.content[0].text`; `result.isError` flags a failure.
+
+```python
+# mcp.py — usage: python mcp.py <base-url> <session-id> <tool> '<json args>'  (or '@args.json')
+import json, sys, urllib.request
+base, sid, tool, a = sys.argv[1:5]
+args = json.load(open(a[1:], encoding='utf-8')) if a.startswith('@') else json.loads(a)
+req = urllib.request.Request(f'{base}/mcp/{sid}', json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+      'params': {'name': tool, 'arguments': args}}).encode(), {'content-type': 'application/json'})
+res = json.load(urllib.request.urlopen(req, timeout=3700))
+r = res.get('result') or {'isError': True, 'content': [{'text': json.dumps(res.get('error'))}]}
+sys.stdout.reconfigure(encoding='utf-8'); print(r['content'][0]['text']); sys.exit(1 if r['isError'] else 0)
+```
+
+   Claude Code can also mount the endpoint as a native MCP server for one run:
+   `claude -p … --mcp-config <file>` with `{"mcpServers":{"conductor":{"type":"http","url":"<base>/mcp/<sessionId>"}}}`.
+3. **Follow the conductor's own policy**, not your habits: `core/policy/prompts/conductor.md` (economics, delegation
+   protocol, fix-round → escalation ladder, rating) and `core/policy/prompts/orchestration.md` (fan-out, refuters,
+   judge panels, until-dry, critic — run as one `run_plan`). In short:
+   - `delegate` with `title`, `spec`, `category` and `difficulty`, and **no** provider/model: the scorecard picks.
+     Pin a model only with a reason.
+   - Verify the diff yourself; `follow_up` for fix rounds; `retry_of` to escalate; `rate_task` every task.
+   - A report saying `failed over to task <id>` means await that id.
+   - Parallel tasks share the `cwd`: fan out read-only work, keep editors sequential (or give each a worktree via
+     `writable_roots`).
+   - Report workbench faults with `log_improvement`.
+4. **Wait cheaply.** `delegate` blocks until the task finishes unless `background: true`; `await_task` and `run_plan`
+   block up to about an hour, then `run_plan` answers "still running" and you poll `plan_status`. Run these calls in the
+   background of your own harness and read one compact report, instead of polling `/api/tasks`.
+
+**Raw tasks.** `POST /api/tasks` `{cwd, spec, title?, provider?, model?, effort?, sandbox?, category?, difficulty?}`
+queues one task with **no** auto-pick (it falls back to the configured default worker) and no rating path. Track it with
+`GET /api/tasks/:id` (the report is `result.finalMessage`; `changedFiles`, `diffStat`; statuses `queued`, `running`,
+`parked`, `done`, `failed`, `canceled`) and cancel with `POST /api/tasks/:id/cancel`. Prefer the tools above.
 
 ## Optional: a `/conductor` skill for Claude Code
 

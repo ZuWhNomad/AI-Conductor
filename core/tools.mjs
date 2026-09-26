@@ -18,6 +18,7 @@ import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
 import { RECIPE_VARIANTS } from './recipes.mjs';
+import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 
 const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
 const checkVariant = (category, variant) => {
@@ -78,7 +79,7 @@ export function formatModels(reg = getModels()) {
 export function formatLimits(reg = getLimits()) {
   const lines = [`Limits (updated ${reg.updatedAt || 'never'}):`];
   for (const [id, p] of Object.entries(reg.providers)) {
-    const w = (p.windows || []).map((x) => `${x.label} ${x.usedPercent ?? '?'}%${x.remaining ? ` (${x.remaining})` : ''}${x.resetsAt ? ` (resets ${fmtWhen(x.resetsAt)})` : ''}`).join(', ');
+    const w = (p.windows || []).map((x) => `${x.label} ${x.usedPercent ?? '?'}%${x.remaining ? ` (${x.remaining})` : ''}${x.resetsAt ? (x.resetsAt > Date.now() ? ` (resets ${fmtWhen(x.resetsAt)})` : ` (reset ${fmtWhen(x.resetsAt)} has passed; not re-polled yet)`) : ''}`).join(', ');
     const bal = p.balance ? `balance ${p.balance.amount} ${p.balance.currency}${p.balance.granted > 0 ? ` (${p.balance.granted} granted/free)` : ''}${p.balance.available ? '' : ' (exhausted)'}` : '';
     lines.push(`- ${id}${p.plan ? ` (plan ${p.plan})` : ''}${p.blocked ? ` BLOCKED until ${fmtWhen(p.blockedUntil)} (${p.blockedReason || 'limit'})` : ''}: ${[bal, w].filter(Boolean).join(', ') || (p.available === false ? 'no plan limits available (not logged in?)' : p.error ? `error: ${p.error}` : 'no windows reported')}${w && p.error ? ` (stale: ${p.error.slice(0, 80)})` : ''}`);
   }
@@ -120,6 +121,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         paths: z.array(z.string()).optional().describe('Files/folders in scope; their CONTEXT.md notes are injected'),
         background: z.boolean().optional().describe('Return immediately with a task id; collect with await_task'),
         no_failover: z.boolean().optional().describe('Strict pin: on a provider limit the task parks until the window resets instead of failing over to another provider'),
+        writable_roots: z.array(z.string()).optional().describe('Absolute paths of existing directories the worker may also write, e.g. a sibling git worktree (Codex --add-dir, Claude additionalDirectories, Antigravity --add-dir). The task still runs in the project directory.'),
         timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
         sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
@@ -138,8 +140,9 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           const visited = new Set();
           for (let f = failed; f && !visited.has(f.id);) {
             const failover = !!f.retryOf && getTask(f.retryOf)?.failedOverTo === f.id; // created by failover(), not by the conductor
-            // L22: a provider-limit failover is not a model switch — skip both depth++ and root = f.
-            if (!failover) { depth++; root = f; }
+            const quota = !!f.limitHit || f.status === 'canceled'; // a limit hit or a (quota) cancel says nothing about the model
+            // L22: a provider-limit failover is not a model switch — skip both depth++ and root = f. Same for a quota stop.
+            if (!failover && !quota) { depth++; root = f; }
             while (f && !visited.has(f.id)) {
               visited.add(f.id); exclude.push(selOf(f));
               if (!f.followUpOf) break;
@@ -190,7 +193,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           const resolved = { provider: resolvedProvider, model: model || (resolvedProvider === cfg.worker.provider ? cfg.worker.model : null), effort: effort || cfg.worker.effort };
           if (exclude.includes(selOf(resolved))) return `retry_of ${failed.id} would re-run ${selOf(resolved)}, which is already in the chain. Name a different provider/model, or tag category so the scorecard can pick.`;
         }
-        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, noFailover: !!a.no_failover, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
+        const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, writableRoots: a.writable_roots, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, noFailover: !!a.no_failover, overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
           : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
@@ -232,7 +235,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'task_status',
-      description: 'Current status and latest actions of a task.',
+      description: 'Current status of a task. While it runs: a coarse progress snapshot (elapsed time, last activity or tool, tokens when known; refreshed about once a minute, not a live stream). After it ends: its latest actions.',
       schema: z.object({ task_id: z.string() }),
       handler: async (a) => {
         const t = getTask(a.task_id); if (!t) return `unknown task ${a.task_id}`;
@@ -241,6 +244,24 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       },
     },
     { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => { const r = cancelChain(a.task_id); if (!r) return `unknown task ${a.task_id}`; return r.canceled.length ? `Canceled ${r.canceled.join(', ')}${r.canceled[0] !== a.task_id ? ` (the live replacement of ${a.task_id})` : ''}.` : `Task ${a.task_id} is already ${r.already}; nothing to cancel.`; } },
+    {
+      name: 'job_start',
+      description: 'Start a long shell command as a detached job (a backtest, scrape or build that outlives a worker turn and a server restart). Returns a job id at once; poll it with job_status. Workers start the same jobs with: node <conductor>/bin/conductor.mjs job start --cwd <dir> -- <command>.',
+      schema: z.object({ command: z.string().describe('Shell command line'), cwd: z.string().optional().describe('Directory to run in (default: the project directory)') }),
+      handler: async (a) => { const j = startJob({ command: a.command, cwd: a.cwd || cwd }); return `Job ${j.id} started (pid ${j.pid ?? '?'}). Poll with job_status ${j.id}.`; },
+    },
+    {
+      name: 'job_status',
+      description: 'Status, exit code and output tail of a detached job.',
+      schema: z.object({ job_id: z.string(), tail_chars: z.number().int().min(0).max(20000).optional().describe('Output tail length (default 4000)') }),
+      handler: async (a) => { const j = jobStatus(a.job_id, { tailChars: a.tail_chars ?? 4000 }); return j ? formatJob(j) : `unknown job ${a.job_id}`; },
+    },
+    {
+      name: 'job_cancel',
+      description: 'Stop a detached job (kills its process tree by PID).',
+      schema: z.object({ job_id: z.string() }),
+      handler: async (a) => { const j = cancelJob(a.job_id); return j ? `Job ${j.id} is ${j.status}.` : `unknown job ${a.job_id}`; },
+    },
     {
       name: 'allow_command',
       description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad). Allowed programs are trusted: they run with the worker\'s privileges and are not sandboxed. Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
@@ -272,8 +293,8 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'rate_task',
-      description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; fail = abandoned, redone elsewhere or by you. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
-      schema: z.object({ task_id: z.string(), verdict: z.enum(VERDICTS), notes: z.string().optional().describe('What was wrong, briefly') }),
+      description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; fail = abandoned, redone elsewhere or by you; void = the model was not at fault (harness, sign-in, bad fixture): the run is dropped from every score. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
+      schema: z.object({ task_id: z.string(), verdict: z.enum([...VERDICTS, 'void']), notes: z.string().optional().describe('What was wrong, briefly') }),
       handler: async (a) => {
         let t = getTask(a.task_id);
         if (!t) return `unknown task ${a.task_id}`;
@@ -347,13 +368,13 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       description: 'Execute a multi-stage plan deterministically (the orchestration playbook: planner pass, fan-out finders, adversarial refuters with votes, judge panels, until-dry loops, completeness critic). Stages run in order; each stage\'s tasks run in parallel on any providers YOU choose (leave provider/model empty to auto-pick). Findings flow between stages: ask finder tasks to end with a ```json {"findings":[{title,file,line,severity,detail,fix}]} block; refuter/judge tasks with {"real":true|false,"reason":...}. Returns a per-stage report; verify it yourself.',
       schema: z.object({
         goal: z.string().describe('One line: what the plan is for'),
-        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional().describe('Defaults for every task (a task may override)'),
+        defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional(), writable_roots: z.array(z.string()).optional() }).optional().describe('Defaults for every task (a task may override)'),
         stages: z.array(z.object({
           id: z.string(), title: z.string().optional(),
-          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional(),
-          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional().describe('Model families the auto-pick and a limit failover must not land on (as delegate)') })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
+          defaults: z.object({ provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional(), writable_roots: z.array(z.string()).optional() }).optional(),
+          tasks: z.array(z.object({ title: z.string().optional(), spec: z.string(), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), paths: z.array(z.string()).optional(), writable_roots: z.array(z.string()).optional().describe('Absolute paths of existing directories the worker may also write, e.g. a sibling git worktree (Codex --add-dir, Claude additionalDirectories, Antigravity --add-dir). The task still runs in the project directory.'), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional().describe('Model families the auto-pick and a limit failover must not land on (as delegate)') })).optional().describe('Independent tasks (fan-out). Spec placeholders: {{goal}}, {{seen}} (findings so far), {{results:<stage>}}'),
           for_each: z.string().optional().describe('Run the task template once per finding of an earlier stage: "<stage>" (its findings) or "<stage>.confirmed" / "<stage>.rejected"'),
-          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional() }).optional(),
+          task: z.object({ title: z.string().optional(), spec: z.string().describe('Template; {{item}} is the finding JSON, {{lens}} the per-vote lens'), provider: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), sandbox: z.enum(SANDBOX_VALUES).optional(), category: z.enum(CATEGORIES).optional(), difficulty: z.number().int().min(1).max(5).optional(), variant: z.string().optional(), avoid_families: z.array(z.string()).optional(), writable_roots: z.array(z.string()).optional() }).optional(),
           votes: z.number().optional().describe('for_each: independent verdicts per item (1-7); with lenses[] each vote gets a different lens'),
           lenses: z.array(z.string()).optional(),
           pass: z.enum(['majority', 'any', 'all']).optional(),

@@ -1052,6 +1052,24 @@ test('L22: failover hops skip depth++ and root, so the first retry is not an esc
   assert.equal(calls.at(-1).escalate, false, 'failover must not count as a prior model switch');
 });
 
+test('retry_of after a quota cancel or limit hit is not a model switch, so it cannot escalate', async () => {
+  for (const stop of [{ status: 'canceled', limitHit: true }, { status: 'canceled' }, { status: 'failed', limitHit: true }]) {
+    const original = attempt();
+    const stopped = attempt({ model: 'other', retryOf: original.id });
+    Object.assign(stopped, stop);
+    calls.length = 0;
+    await delegate(stopped);
+    assert.equal(calls.at(-1).escalate, false, JSON.stringify(stop));
+  }
+  // Control: a real failed retry after the original is a model switch (depth 2), so the next retry escalates.
+  const original = attempt();
+  const failed = attempt({ model: 'other', retryOf: original.id });
+  failed.status = 'failed';
+  calls.length = 0;
+  await delegate(failed);
+  assert.equal(calls.at(-1).escalate, true);
+});
+
 test('L43: retry_of that resolves to a selection already in the chain is refused', async () => {
   const failed = attempt();
   const report = await handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, provider: 'stub', model: 'original', effort: 'low', background: true });
@@ -1082,6 +1100,18 @@ test('L19: auto-pick persists difficulty 2 when omitted', async () => {
     },
   });
   assert.equal(created[0].difficulty, 2);
+});
+
+test('run_plan passes writable_roots (task or defaults) to createTask', async () => {
+  const created = [];
+  await runPlan({ defaults: { writable_roots: ['D:/wt-default'] }, stages: [{ id: 'a', tasks: [{ spec: 'x', provider: 'stub' }, { spec: 'y', provider: 'stub', writable_roots: ['D:/wt-a'] }] }] }, {
+    taskRuntime: {
+      createTask(input) { created.push(input); return { id: `t${created.length}` }; },
+      async awaitTask(id) { return { id, status: 'done', result: { finalMessage: 'ok' } }; },
+      getTask() { assert.fail(); },
+    },
+  });
+  assert.deepEqual(created.map((c) => c.writableRoots), [['D:/wt-default'], ['D:/wt-a']]);
 });
 
 test('avoid_families keeps the auto-pick off those families and reaches createTask', async (t) => {

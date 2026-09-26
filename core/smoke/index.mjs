@@ -13,6 +13,11 @@ import { bus } from '../bus.mjs';
 
 export const SMOKE_TASKS = BATTERY.map(({ id, category, difficulty, title }) => ({ id, category, difficulty, title }));
 
+// selection + battery id of every smoke task running in this process: a second smoke_test (or bench) launched while the
+// first still runs skips those instead of running them twice (the 2026-09-12 relaunch spent ~1.5M Codex tokens on repeats).
+// Across processes the CLI already refuses to start while the journal has open tasks.
+const inFlight = new Set();
+
 /**
  * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, hardTimeoutMinutes?, sessionId?, keep?, execute?, onResult? }
  * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 7+
@@ -27,10 +32,13 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
     for (const b of battery) {
       const base = { provider: sel.provider, model: sel.model || null, effort: sel.effort || null, task: b.id, category: b.category, difficulty: b.difficulty };
       if (!providerAvailable(sel.provider, { overflowApi: true, model: sel.model })) { push({ ...base, verdict: 'skipped', notes: 'provider at its usage limit' }); continue; }
+      const key = `${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'}:${b.id}`;
+      if (inFlight.has(key)) { push({ ...base, verdict: 'skipped', notes: 'already running in another smoke run' }); continue; }
       // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\LONGNA~1\...), which the Codex sandbox denies.
       // Neutral names: neither the path nor the title says conductor, smoke or which task (the worker sees both).
       const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'w-')));
       let res;
+      inFlight.add(key);
       try {
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
@@ -51,7 +59,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
           try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
           break;
         }
-        if (!check.pass && envFailure(t)) {
+        if (!check.pass && (t.failKind === 'auth' || t.failKind === 'env' || envFailure(t))) {
           // The harness, not the model, failed (sandbox denied the workspace, network down, loop cap): void it now, since a
           // failed status would otherwise read as a model failure in the ledger.
           if (t.id) voidTask(t.id, `environment: ${envFailure(t)}`);
@@ -64,6 +72,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
       } catch (e) {
         res = { ...base, verdict: 'error', notes: String(e?.message || e).slice(0, 400) };
       } finally {
+        inFlight.delete(key);
         if (!keep) try { rmSync(dir, { recursive: true, force: true }); } catch {}
       }
       push(res);
@@ -77,6 +86,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
 const ENV_FAIL = /max iterations reached|UnauthorizedAccessException|access (?:was |is )?denied|permission denied|EACCES|EPERM|waiting for network|Connection failed|ECONNRESET|ENOTFOUND|fetch failed|unexpected status 401|Incorrect API key provided|refresh token was already used/i; // 401s: a broken sign-in, not the model
 /** A workspace-access denial or network drop in the worker's own words (or its error) — the harness failed, not the model. */
 export function envFailure(t) {
+  if (t.failKind === 'auth' || t.failKind === 'env') return `${t.failKind === 'auth' ? 'sign-in' : 'harness'}: ${String(t.error || '').slice(0, 160)}`;
   const texts = [t.result?.finalMessage || '', t.error || '', ...(t.result?.items || []).map((i) => i.text || i.output || '')];
   const hit = texts.find((x) => ENV_FAIL.test(x));
   return hit ? hit.match(ENV_FAIL)[0] : null;

@@ -20,7 +20,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
   windowless providers (never gates dispatch).
 - `conductor.mjs` — chat sessions (Agent SDK / Codex / API). `tools.mjs` — the tools a conductor session gets.
-- `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON.
+- `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
+  secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
+- `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
+  that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID.
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
   category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
   `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.
@@ -50,7 +53,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - State lives in the state dir via `paths.mjs` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that
   folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
 - `config.json` holds only the user's overrides; `loadConfig()` folds `DEFAULTS` in at read time, so a new default
-  reaches every user. Secrets live only in config and are never logged; `publicConfig()` redacts them.
+  reaches every user. Secrets live only in config and are never logged; `publicConfig()` masks them for the settings
+  UI, and `redact()` strips key shapes and configured key values from everything else written or shown.
 - The usage estimate is advisory — it is never fed to the `admit` gate.
 - Two runtime deps only (`@anthropic-ai/claude-agent-sdk`, `zod`); no build step. Walk the ladder before adding code.
 

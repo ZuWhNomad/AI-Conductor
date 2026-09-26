@@ -32,7 +32,7 @@ export async function runClaude(t) {
   const onAbort = () => abort.abort();
   t.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = t.timeoutMs ? setTimeout(() => abort.abort(), t.timeoutMs) : null;
-  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false };
+  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false, authFailed: false };
   const emit = (event, data) => bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data });
   const started = Date.now();
   const bypass = (t.permissionMode || 'bypassPermissions') === 'bypassPermissions';
@@ -53,6 +53,7 @@ export async function runClaude(t) {
         maxTurns: t.maxTurns || 500,
         settingSources: ['project'],
         mcpServers: t.mcpServers && Object.keys(t.mcpServers).length ? t.mcpServers : undefined,
+        additionalDirectories: t.writableRoots?.length ? t.writableRoots : undefined, // writable_roots: a sibling worktree
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         abortController: abort,
         hooks: KILL_GUARD_HOOKS,
@@ -63,7 +64,7 @@ export async function runClaude(t) {
     for await (const m of q) {
       if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; emit('session', { sessionId: m.session_id, model: m.model }); }
       else if (m.type === 'assistant') {
-        if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; }
+        if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; }
         for (const b of m.message.content || []) {
           if (b.type === 'text' && b.text) { res.items.push({ type: 'agent_message', text: b.text }); emit('item', { item: { type: 'agent_message', text: b.text }, phase: 'completed' }); }
           if (b.type === 'tool_use') { res.items.push({ type: 'tool_use', name: b.name, input: b.input }); emit('item', { item: { type: 'tool_use', name: b.name, input: summarizeInput(b.input) }, phase: 'started' }); }
@@ -84,7 +85,7 @@ export async function runClaude(t) {
       }
     }
     res.ok = !res.error;
-    if (res.ok) res.limitHit = false;
+    if (res.ok) { res.limitHit = false; res.authFailed = false; }
     else if (sawRejectedLimit) res.limitHit = true;
   } catch (e) {
     res.error = res.error || (abort.signal.aborted ? (t.timeoutMs ? 'timeout' : 'aborted') : String(e?.message || e));

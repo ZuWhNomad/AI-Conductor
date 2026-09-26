@@ -1,7 +1,7 @@
 import { tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { loadConfig, saveConfig, publicConfig, DEFAULTS } = await import('../core/config.mjs');
@@ -215,7 +215,10 @@ test('timer and loop settings accept positive finite numbers and otherwise use D
 });
 
 test('the live prompt budgets are settings; the retired shared budget is absent', () => {
-  assert.equal(DEFAULTS.worker.recipeChars, 9401);
+  assert.equal(DEFAULTS.worker.recipeChars, 10000);
+  // Every shipped recipe fits the budget, so a stock install never logs the over-budget friction.
+  const recipes = join(import.meta.dirname, '..', 'core', 'policy', 'recipes');
+  for (const f of readdirSync(recipes).filter((n) => n.endsWith('.md') && n !== 'CONTEXT.md')) assert.ok(readFileSync(join(recipes, f), 'utf8').length <= DEFAULTS.worker.recipeChars, f);
   assert.equal(DEFAULTS.worker.toolLineChars, 1500);
   assert.ok(!('specAppendChars' in DEFAULTS.worker));
   saveConfig({ worker: { recipeChars: 7000, toolLineChars: 2000 } });

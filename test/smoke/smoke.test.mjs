@@ -364,3 +364,20 @@ test('a Codex 401 or a spent refresh token is an environment failure, not a mode
   assert.ok(envFailure({ error: 'Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.' }));
   assert.equal(envFailure({ error: 'tests failed: expected 3, got 4' }), null);
 });
+
+test('a second smoke run for a selection+task already in flight skips it instead of running it twice', async () => {
+  const release = Promise.withResolvers(); let calls = 0;
+  const execute = async (spec) => { calls++; await release.promise; return { id: `dup${calls}`, ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', durationMs: 1 } }; };
+  const sel = [{ provider: 'ollama', model: 'qwen' }];
+  const first = runSmoke({ models: sel, tasks: ['read-1'], execute });
+  await new Promise((r) => setImmediate(r));
+  const [dup] = await runSmoke({ models: sel, tasks: ['read-1'], execute });
+  assert.equal(dup.verdict, 'skipped');
+  assert.match(dup.notes, /already running/);
+  release.resolve();
+  await first;
+  assert.equal(calls, 1);
+  const again = runSmoke({ models: sel, tasks: ['read-1'], execute }); // finished: a later run is not blocked
+  await again;
+  assert.equal(calls, 2);
+});

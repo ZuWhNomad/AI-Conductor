@@ -404,6 +404,7 @@ export async function runOpenAICompat(t) {
         }
         break;
       }
+      if (r.status === 401) res.authFailed = true; // a bad or revoked key: the environment, not the model
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 500)}`);
       const j = await r.json();
       if (j.usage) { res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); }

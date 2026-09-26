@@ -8,17 +8,17 @@ import { runOpenAICompat } from './openai-compat.mjs';
 import { runImage } from './image.mjs';
 import { runVendorCli } from './vendor-cli.mjs';
 import { mcpServersFor, forClaudeSdk } from '../mcp.mjs';
-import { readJson, writeJson, statePath } from '../paths.mjs';
+import { readJson, writeJson, statePath, redactDeep } from '../paths.mjs';
 
 /**
  * @param {object} t { id, cwd, prompt, provider, model, effort, threadId, timeoutMs, system, imageOptions }
- * @returns {Promise<{ok, threadId, finalMessage, items, usage, costUsd, error, limitHit, retryAfterMs, durationMs}>}
+ * @returns {Promise<{ok, threadId, finalMessage, items, usage, costUsd, error, limitHit, authFailed, retryAfterMs, durationMs}>}
  */
 export async function runWorker(t, { signal } = {}) {
   const p = getProvider(t.provider);
   const cfg = loadConfig();
   const mcp = mcpServersFor(t.category, cfg); // scoped by category: a data MCP is not loaded into a refactor
-  const base = { id: t.id, cwd: t.cwd, prompt: t.prompt, model: t.model || undefined, effort: t.effort || undefined, signal, timeoutMs: t.timeoutMs, provider: p.id, mcp, mcpServers: forClaudeSdk(mcp), maxIterations: cfg.worker.maxIterations, sandbox: t.sandbox || null };
+  const base = { id: t.id, cwd: t.cwd, prompt: t.prompt, model: t.model || undefined, effort: t.effort || undefined, signal, timeoutMs: t.timeoutMs, provider: p.id, mcp, mcpServers: forClaudeSdk(mcp), maxIterations: cfg.worker.maxIterations, sandbox: t.sandbox || null, writableRoots: t.writableRoots || [] };
   let r;
   switch (p.kind) {
     case 'codex':
@@ -51,9 +51,11 @@ export async function runWorker(t, { signal } = {}) {
     default:
       throw new Error(`provider ${p.id} has unknown kind ${p.kind}`);
   }
+  // Redacted at the source: a CLI can echo a key (OpenAI's 401 names the key it was given), and this result feeds the
+  // task record, the conductor's report and the scorecard.
   return {
-    ok: !!r.ok, threadId: r.threadId || null, finalMessage: r.finalMessage || '', items: r.items || [], usage: r.usage || null,
-    costUsd: r.costUsd || 0, error: r.error || null, limitHit: !!r.limitHit, retryAfterMs: r.retryAfterMs || null, durationMs: r.durationMs || 0, files: r.files || undefined,
+    ok: !!r.ok, threadId: r.threadId || null, finalMessage: redactDeep(r.finalMessage || ''), items: redactDeep(r.items || []), usage: r.usage || null,
+    costUsd: r.costUsd || 0, error: redactDeep(r.error || null), limitHit: !!r.limitHit, authFailed: !!r.authFailed, envFailed: !!r.envFailed, retryAfterMs: r.retryAfterMs || null, durationMs: r.durationMs || 0, files: r.files || undefined,
   };
 }
 

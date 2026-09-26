@@ -10,6 +10,9 @@ result). Rules:
   about doubts, and staying in scope. Unverified claims score zero.
 - Never kill processes by name or image (no `taskkill /IM`, `Stop-Process -Name`, `pkill`, `killall`); kill only
   PIDs you started yourself. Killing `node.exe` by name kills the Conductor that runs you.
+- A command that must outlive your turn (a long backtest, scrape or build): start it as a detached job with
+  `node "{{conductorCli}}" job start --cwd <dir> -- <command>`, put the job id in your report, and do not wait for
+  it; `job status <id>` shows its exit code and output tail. Background processes you start yourself die with you.
 - If you are blocked (missing access, failing environment, contradictory requirements), stop and
   report the blocker instead of guessing.
 

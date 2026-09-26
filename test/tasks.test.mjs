@@ -965,6 +965,74 @@ for (const [id, provider] of [['L1', 'codex'], ['L4', 'claude']]) {
   });
 }
 
+test('an auth failure is never scored, and the echoed key never reaches the journal or the improvement log', async (ctx) => {
+  const { runRows } = await import('../core/scorecard.mjs');
+  const { statePath } = await import('../core/paths.mjs');
+  const echo = 'unexpected status 401 Unauthorized: Incorrect API key provided: sk-svcac*************************fvMA.';
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, authFailed: true, error: echo, usage: { input_tokens: 0, output_tokens: 0 } }));
+  const t = tk.createTask({ cwd: tmpDir('auth'), provider: 'codex', spec: 'x', category: 'edit', difficulty: 2 });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  await tk.flushRecords();
+  assert.equal(done.status, 'failed');
+  assert.equal(done.failKind, 'auth');
+  assert.equal(done.failedOverTo, undefined, 'not a limit: no failover');
+  assert.ok(!runRows().some((r) => r.taskId === t.id), 'no scorecard row');
+  for (const f of [statePath('tasks', `${t.id}.json`), statePath('improvements.ndjson')]) assert.doesNotMatch(readFileSync(f, 'utf8'), /sk-svcac|fvMA/, f);
+});
+
+test('an environment failure (grok plan-mode cancel) is recorded but never scored', async (ctx) => {
+  const { runRows } = await import('../core/scorecard.mjs');
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, envFailed: true, error: "error_during_execution: grok's read-only (plan) mode cancelled the write call and ended the turn (environment failure, not scored)", usage: { input_tokens: 75542, output_tokens: 10084 } }));
+  const t = tk.createTask({ cwd: tmpDir('env'), provider: 'grok', spec: 'x', category: 'search', difficulty: 3, sandbox: 'read-only' });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  await tk.flushRecords();
+  assert.deepEqual([done.status, done.failKind, done.envFailed, done.authFailed], ['failed', 'env', true, false]);
+  assert.equal(done.failedOverTo, undefined);
+  assert.ok(!runRows().some((r) => r.taskId === t.id), 'no scorecard row');
+});
+
+test('a running task shows a coarse progress snapshot, refreshed at most once a minute', async (ctx) => {
+  const { bus } = await import('../core/bus.mjs');
+  const finish = Promise.withResolvers(), started = Promise.withResolvers();
+  const tk = await tasksWithWorker(ctx, (t) => { started.resolve(t.id); return finish.promise; });
+  const t = tk.createTask({ cwd: tmpDir('progress'), provider: 'codex', spec: 'x' });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  await started.promise;
+  assert.match(tk.describeTask(tk.getTask(t.id)), /Progress: running 0 min; no worker activity yet/);
+  const item = (command) => bus.publish('worker', { taskId: t.id, provider: 'codex', event: 'item', item: { type: 'command_execution', command } });
+  item('npm test');
+  bus.publish('worker', { taskId: t.id, provider: 'codex', event: 'turn.completed', usage: { input_tokens: 1200, output_tokens: 34 } });
+  assert.match(tk.describeTask(tk.getTask(t.id)), /last: npm test \(as of 0 min ago\)/);
+  item('npm run build'); // within the minute: the snapshot stays put
+  assert.doesNotMatch(tk.describeTask(tk.getTask(t.id)), /npm run build/);
+  tk.getTask(t.id).progress.at -= 61_000; // a minute later, the next event refreshes it with everything seen since
+  item('git diff');
+  assert.match(tk.describeTask(tk.getTask(t.id)), /last: git diff; 1234 tokens so far/);
+  finish.resolve({ ok: true, finalMessage: 'done' });
+  const done = await tk.awaitTask(t.id);
+  assert.equal(done.progress, undefined, 'the snapshot is dropped when the result lands');
+});
+
+test('writable_roots must be existing absolute directories; follow-ups inherit them', () => {
+  const cwd = tmpDir('roots'), sibling = tmpDir('roots-sibling');
+  for (const bad of ['relative/dir', join(sibling, 'missing'), 42]) assert.throws(() => createTask({ cwd, spec: 'x', writableRoots: [bad] }), (e) => e.status === 400);
+  assert.throws(() => createTask({ cwd, spec: 'x', writableRoots: sibling }), (e) => e.status === 400);
+  const t = createTask({ cwd, spec: 'x', writableRoots: [sibling, sibling] });
+  assert.deepEqual(t.writableRoots, [sibling]);
+  const plain = createTask({ cwd, spec: 'y' });
+  assert.deepEqual(plain.writableRoots, []);
+  cancelTask(plain.id);
+  Object.assign(t, { status: 'done', threadId: `thread-${t.id}` });
+  const follow = createTask({ followUpOf: t.id, spec: 'fix' });
+  assert.deepEqual(follow.writableRoots, [sibling]);
+  cancelTask(follow.id);
+});
+
 test('L10: a live follow-up owns its thread through queued, running and parked states', () => {
   const parent = createTask({ cwd: tmpDir('thread-owner'), spec: 'x' });
   Object.assign(parent, { status: 'done', threadId: `thread-${parent.id}` });

@@ -88,7 +88,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
   that, so trust its effort choice over intuition.
 - **Rate every task** after you verified it (and after its fix rounds), on the original task id:
   `pass` accepted as delivered · `fixable` accepted after follow-ups · `fail` abandoned, redone
-  elsewhere or by you. Rate honestly: a generous rating sends future work to a model that cannot do it.
+  elsewhere or by you · `void` not the model's fault (harness, sign-in, bad fixture): dropped from every score. Rate honestly: a generous rating sends future work to a model that cannot do it.
 - **On fail**, re-delegate with `retry_of: <failed task id>`: the failed model is excluded and both
   attempts are scored as one chain (this is how ladders get measured). Early on it moves to the plan's
   value fallback; once the worker's review rounds are spent (or a model has already been swapped) the

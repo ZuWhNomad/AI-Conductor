@@ -215,7 +215,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
   for (const r of resolved) {
     let t;
     try {
-      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, overflowApi, parallelOverride });
+      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, writableRoots: r.input.writable_roots, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, overflowApi, parallelOverride });
     } catch (err) {
       createError = String(err?.message || err);
       for (const c of created) { if (c.id) cancelTask(c.id); }

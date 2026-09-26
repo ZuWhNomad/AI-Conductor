@@ -416,3 +416,70 @@ test('grok: a 402 exhausted balance (recorded 2026-09-25, reason only in errors[
   assert.match(r.error, /balance exhausted/);
   assert.equal(r.limitHit, true);
 });
+
+test('grok: the out-of-balance run as `grok` 1.0.30 really emits it (2026-09-25: result on stdout, same text on stderr) is a limit hit', async () => {
+  // Recorded live: `grok --output-format streaming-messages-json -p …` with the Grok Build balance spent. Zero tokens,
+  // subtype error_during_execution, the reason only in errors[] and on stderr.
+  const result = { type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 1164, duration_api_ms: 0, num_turns: 0, stop_reason: null, total_cost_usd: 0.0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, server_tool_use: { web_search_requests: 0 } }, modelUsage: {}, errors: ['Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}'], session_id: '01a0db55-537e-75b3-b8ff-68dbb6c1acff' };
+  const stderr = 'Error: Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}';
+  for (const exitCode of [0, 1]) {
+    const r = await runVendorCli(fakeSpec([{ type: 'system', subtype: 'init', session_id: result.session_id, model: 'grok-4.6', permissionMode: 'plan' }, result], { exitCode, stderr, parse: VENDORS.grok.parse }), { id: 't', cwd: tmpDir('grok402live'), prompt: 'x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.limitHit, true, `exit ${exitCode}`);
+    assert.equal(r.authFailed, false);
+  }
+});
+
+test('grok: a plan-mode tool cancel (read from the grok session events) is an environment failure, not a model fail', async () => {
+  const { mkdirSync } = await import('node:fs');
+  const home = tmpDir('grok-home'), cwd = tmpDir('grokplan'), session = 'fd7366bc-7640-419e-b3ce-c4415cfc9bf2';
+  const dir = join(home, 'sessions', encodeURIComponent(cwd), session);
+  mkdirSync(dir, { recursive: true });
+  // Recorded 2026-09-24 (grok 1.0.30, task x8mvhdjw): the tail of ~/.grok/sessions/<cwd>/<session>/events.jsonl.
+  writeFileSync(join(dir, 'events.jsonl'), [
+    '{"ts":"2026-09-24T22:31:28.872Z","type":"permission_resolved","tool_name":"grep","decision":"allow","wait_ms":0}',
+    '{"ts":"2026-09-24T22:32:37.328Z","type":"tool_started","tool_name":"write"}',
+    '{"ts":"2026-09-24T22:32:37.329Z","type":"permission_requested","tool_name":"write"}',
+    '{"ts":"2026-09-24T22:32:37.335Z","type":"permission_resolved","tool_name":"write","decision":"cancelled","wait_ms":6}',
+    '{"ts":"2026-09-24T22:32:37.381Z","type":"turn_ended","outcome":"cancelled","cancellation_category":"permission_cancelled"}',
+  ].join('\n') + '\n');
+  const previous = process.env.GROK_HOME; process.env.GROK_HOME = home;
+  try {
+    const lines = [
+      { type: 'system', subtype: 'init', session_id: session, model: 'grok-4.6', permissionMode: 'plan' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'I will write a scratch inspector.' }, { type: 'tool_use', id: 'c1', name: 'write', input: { file_path: 'x.py' } }] } },
+      { type: 'result', subtype: 'error_during_execution', is_error: true, usage: { input_tokens: 75542, output_tokens: 10084 } },
+    ];
+    const spec = { ...fakeSpec(lines, { exitCode: 0, parse: VENDORS.grok.parse }), onClose: VENDORS.grok.onClose };
+    const r = await runVendorCli(spec, { id: 't', cwd, prompt: 'x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.envFailed, true);
+    assert.equal(r.limitHit, false);
+    assert.equal(r.authFailed, false);
+    assert.match(r.error, /plan\) mode cancelled the write call/);
+    // Same stream, but grok recorded a normal error end: not an environment failure.
+    writeFileSync(join(dir, 'events.jsonl'), '{"ts":"2026-09-15T22:52:38.414Z","type":"turn_ended","outcome":"error"}\n');
+    assert.equal((await runVendorCli(spec, { id: 't', cwd, prompt: 'x' })).envFailed, false);
+  } finally { if (previous === undefined) delete process.env.GROK_HOME; else process.env.GROK_HOME = previous; }
+});
+
+test('grok: the decision comes from http_status, not the text; text is only a logged fallback', async () => {
+  const { httpStatusOf } = await import('../../core/providers/vendors.mjs');
+  const { statePath } = await import('../../core/paths.mjs');
+  const rec = (status) => ({ type: 'result', subtype: 'error_during_execution', is_error: true, usage: { input_tokens: 0, output_tokens: 0 }, errors: [`Internal error: {
+  "message": "API error (status ${status})",
+  "http_status": ${status}
+}`] });
+  assert.equal(httpStatusOf(rec(402)), 402);
+  for (const [status, limitHit, authFailed] of [[402, true, false], [429, true, false], [401, false, true], [403, false, true], [500, false, false]]) {
+    const r = await runVendorCli(fakeSpec([rec(status)], { exitCode: 1, parse: VENDORS.grok.parse }), { id: 't', cwd: tmpDir('grokstatus'), prompt: 'x' });
+    assert.deepEqual([r.limitHit, r.authFailed], [limitHit, authFailed], String(status));
+  }
+  // A 500 whose text says "quota": the structured status wins, no keyword decision.
+  const quotaText = { ...rec(500), errors: ['Internal error: {"message": "quota exceeded", "http_status": 500}'] };
+  assert.equal((await runVendorCli(fakeSpec([quotaText], { exitCode: 1, parse: VENDORS.grok.parse }), { id: 't', cwd: tmpDir('grokstatus'), prompt: 'x' })).limitHit, false);
+  // No http_status at all: the text fallback still decides, and says so in the improvement log.
+  const fb = await runVendorCli({ ...fakeSpec([{ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['rate limit reached'] }], { exitCode: 1, parse: VENDORS.grok.parse }), id: 'fallback-probe' }, { id: 't', cwd: tmpDir('grokstatus'), prompt: 'x' });
+  assert.equal(fb.limitHit, true);
+  assert.match(readFileSync(statePath('improvements.ndjson'), 'utf8'), /"source":"worker:fallback-probe","message":"limit failure recognised from text: fallback-probe gave no structured status/);
+});

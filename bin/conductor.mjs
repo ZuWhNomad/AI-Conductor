@@ -5,7 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { REPO_ROOT, stateDir, statePath } from '../core/paths.mjs';
+import { REPO_ROOT, stateDir, statePath, redact } from '../core/paths.mjs';
 import { loadConfig } from '../core/config.mjs';
 
 const PID_FILE = () => statePath('server.pid');
@@ -16,6 +16,7 @@ const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    cwd: { type: 'string' },
     models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
   },
 });
@@ -38,6 +39,8 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor share                            zip the committed files (what git tracks) to your Desktop
   conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
   conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)
+  conductor job start [--cwd DIR] -- CMD…    run a long command detached (it survives the caller's exit); prints its id
+  conductor job status ID | job cancel ID    its exit code and output tail, or stop it (needs the running server)
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
   conductor help`;
@@ -61,7 +64,9 @@ if (cmd === 'start') {
   // errors are logged to improvements.ndjson by installGlobalErrorCapture and do not exit; a hard kill leaves no trace.
   let lastError = null;
   process.on('uncaughtExceptionMonitor', (e, origin) => { lastError = `${origin}: ${e?.stack || e}`; });
-  process.on('exit', (code) => { if (code) try { appendFileSync(statePath('crash.log'), `${new Date().toISOString()} pid ${process.pid} exit code ${code}: ${lastError || 'no uncaught error recorded (process.exit call)'}\n`); } catch {} });
+  process.on('exit', (code) => { if (code) try { appendFileSync(statePath('crash.log'), redact(`${new Date().toISOString()} pid ${process.pid} exit code ${code}: ${lastError || 'no uncaught error recorded (process.exit call)'}\n`)); } catch {} });
+  // The launcher copies stdout/stderr into launcher.log: redact on the way out.
+  for (const out of [process.stdout, process.stderr]) { const write = out.write.bind(out); out.write = (chunk, ...rest) => write(typeof chunk === 'string' ? redact(chunk) : chunk, ...rest); }
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { abortRunning } = await import('../core/tasks.mjs');
   const cfg = loadConfig();
@@ -225,6 +230,21 @@ if (cmd === 'start') {
     } catch (e) { console.error(e.message); process.exit(1); }
   }
   process.exit(st.error && st.git ? 1 : 0);
+} else if (cmd === 'job') {
+  // Through the running server, so it works from a sandboxed worker (the server spawns and journals the job).
+  let info = null; try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
+  const base = info?.url || `http://127.0.0.1:${info?.port || loadConfig().port}`;
+  const [, sub, id] = positionals;
+  const call = async (method, path, body) => {
+    try { const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
+    catch (e) { console.error(`job ${sub}: ${e.message} (is the Conductor server running at ${base}?)`); process.exit(1); }
+  };
+  const { formatJob } = await import('../core/jobs.mjs');
+  if (sub === 'start' && positionals.length > 2) console.log(formatJob(await call('POST', '/api/jobs', { command: positionals.slice(2).join(' '), cwd: flags.cwd || process.cwd() })));
+  else if (sub === 'status' && id) console.log(formatJob(await call('GET', `/api/jobs/${encodeURIComponent(id)}`)));
+  else if (sub === 'cancel' && id) console.log(formatJob(await call('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`)));
+  else { console.error('usage: conductor job start [--cwd DIR] -- COMMAND…  |  job status ID  |  job cancel ID'); process.exit(2); }
+  process.exit(0);
 } else if (cmd === 'feedback') {
   const { writeFeedback, issuesUrl } = await import('../core/feedback.mjs');
   const f = writeFeedback(desktopDir());

@@ -166,6 +166,23 @@ test('resolving an improvement over HTTP publishes exactly one event', async () 
   assert.ok(!(await get('/api/improvements')).some((e) => e.id === entry.id));
 });
 
+test('API answers are redacted, including entries written before redaction existed', async () => {
+  const { appendFileSync } = await import('node:fs');
+  const { statePath } = await import('../../core/paths.mjs');
+  appendFileSync(statePath('improvements.ndjson'), JSON.stringify({ id: 'oldkey01', ts: new Date().toISOString(), kind: 'error', source: 'worker:codex', message: 'Incorrect API key provided: sk-svcac*******************fvMA.', context: {}, resolved: false }) + '\n');
+  const text = JSON.stringify(await get('/api/improvements'));
+  assert.match(text, /oldkey01/);
+  assert.doesNotMatch(text, /fvMA/);
+  assert.doesNotMatch(JSON.stringify(await get('/api/state')), /fvMA/);
+});
+
+test('job routes: unknown ids are 404, a bad start is 400, the list is an array', async () => {
+  assert.equal((await fetch(url + '/api/jobs/nope1')).status, 404);
+  assert.equal((await fetch(url + '/api/jobs/nope1/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
+  assert.equal((await fetch(url + '/api/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: '', cwd: tmpDir('srv-job') }) })).status, 400);
+  assert.ok(Array.isArray(await get('/api/jobs')));
+});
+
 test('bad requests are client errors and leave state usable', async () => {
   const cwd = tmpDir('srv-validation');
   const send = (p, body, headers = {}) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
