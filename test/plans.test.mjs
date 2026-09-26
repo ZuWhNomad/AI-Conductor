@@ -571,7 +571,7 @@ hooks.deregister();
 const handler = (name, sessionId = name) => conductorToolDefs({ sessionId, cwd: HOME }).find((tool) => tool.name === name).handler;
 const attempt = (input = {}) => {
   const task = createTask({ cwd: HOME, spec: 'fixture', provider: 'stub', model: 'original', effort: 'low', category: 'code', difficulty: 2, ...input });
-  Object.assign(task, { status: 'done', threadId: `thread-${task.id}` });
+  Object.assign(task, { status: 'done', threadId: `thread-${task.id}`, attempts: 1 });
   return task;
 };
 const delegate = (failed) => handler('delegate')({ title: 'retry', spec: 'fixture', retry_of: failed.id, background: true });
@@ -958,7 +958,8 @@ test('GP: abortPlans cancels a real failover replacement and stops later stages'
     const original = getTask(getPlan(planId).taskIds[0]);
     const replacement = getTask(original.failedOverTo);
     assert.equal(original.status, 'failed');
-    assert.equal(replacement.retryOf, original.id);
+    assert.equal(replacement.retryOf, original.retryOf);
+    assert.equal(replacement.reroutedFrom, original.id);
     assert.equal(replacement.status, 'queued');
     await new Promise(setImmediate); // let the plan follow the replacement
     abortPlans(sessionId);
@@ -1045,7 +1046,7 @@ test('P10: an unroutable input does not dispatch siblings', async () => {
 
 test('L22: failover hops skip depth++ and root, so the first retry is not an escalation', async () => {
   const original = attempt();
-  const failover = attempt({ title: `FAILOVER: ${original.title}`, model: 'other', retryOf: original.id });
+  const failover = attempt({ title: `FAILOVER: ${original.title}`, model: 'other', retryOf: original.retryOf, reroutedFrom: original.id });
   original.failedOverTo = failover.id; // what tasks.mjs failover() records on the exhausted task
   calls.length = 0;
   await delegate(failover);
