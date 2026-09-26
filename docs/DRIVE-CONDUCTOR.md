@@ -138,35 +138,32 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
    with `POST /api/sessions` `{cwd, title}` and **never sent a message** (it never starts a model). Reuse it: look it up
    by `title` in `/api/state` `.sessions`.
 2. **Call the tools** with JSON-RPC `tools/call` at `POST /mcp/<sessionId>` (`content-type: application/json`).
-   `tools/list` returns every schema. The reply text is in `result.content[0].text`; `result.isError` flags a failure.
+   The JSON-RPC method `tools/list` returns every schema. The reply text is in `result.content[0].text`;
+   `result.isError` flags a failure.
 
-```python
-# mcp.py — usage: python mcp.py <base-url> <session-id> <tool> '<json args>'  (or '@args.json')
-import json, sys, urllib.request
-base, sid, tool, a = sys.argv[1:5]
-args = json.load(open(a[1:], encoding='utf-8')) if a.startswith('@') else json.loads(a)
-req = urllib.request.Request(f'{base}/mcp/{sid}', json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-      'params': {'name': tool, 'arguments': args}}).encode(), {'content-type': 'application/json'})
-res = json.load(urllib.request.urlopen(req, timeout=3700))
-r = res.get('result') or {'isError': True, 'content': [{'text': json.dumps(res.get('error'))}]}
-sys.stdout.reconfigure(encoding='utf-8'); print(r['content'][0]['text']); sys.exit(1 if r['isError'] else 0)
-```
+   Client: `share/claude-skill/conductor/mcp.py` (stdlib Python; run it in place):
+   `python mcp.py <base-url> <sessionId> <tool> '<json args>'` (or `@args.json` for long specs — no hand-quoted
+   Windows paths), and `python mcp.py <base-url> <sessionId> tools/list` for every tool's schema.
 
    Claude Code can also mount the endpoint as a native MCP server for one run:
    `claude -p … --mcp-config <file>` with `{"mcpServers":{"conductor":{"type":"http","url":"<base>/mcp/<sessionId>"}}}`.
 3. **Follow the conductor's own policy**, not your habits: `core/policy/prompts/conductor.md` (economics, delegation
    protocol, fix-round → escalation ladder, rating) and `core/policy/prompts/orchestration.md` (fan-out, refuters,
-   judge panels, until-dry, critic — run as one `run_plan`). In short:
+   judge panels, until-dry, critic — one `run_plan` per job, the shapes as its stages). In short:
    - `delegate` with `title`, `spec`, `category` and `difficulty`, and **no** provider/model: the scorecard picks.
      Pin a model only with a reason.
-   - Verify the diff yourself; `follow_up` for fix rounds; `retry_of` to escalate; `rate_task` every task.
+   - Verify the diff yourself; `follow_up` for fix rounds; to escalate, `delegate` with `retry_of` set to the **last
+     follow-up task's id** (its spent rounds trip the escalation); `rate_task` the original task id.
    - A report saying `failed over to task <id>` means await that id.
+   - `avoid_families` takes model families — `claude`, `gpt` (Codex/OpenAI), `grok`, `gemini`, `deepseek`, `kimi`,
+     `qwen` — not provider ids; an unknown name is silently ignored.
    - Parallel tasks share the `cwd`: fan out read-only work, keep editors sequential (or give each a worktree via
      `writable_roots`).
    - Report workbench faults with `log_improvement`.
-4. **Wait cheaply.** `delegate` blocks until the task finishes unless `background: true`; `await_task` and `run_plan`
-   block up to about an hour, then `run_plan` answers "still running" and you poll `plan_status`. Run these calls in the
-   background of your own harness and read one compact report, instead of polling `/api/tasks`.
+4. **Wait cheaply.** `delegate` and `follow_up` (without `background: true`) and `await_task` block until the task
+   ends or about an hour passes; a reply ending `(still running — call await_task)` is not final, so call `await_task`
+   again. `run_plan` likewise answers "still running" — then call `plan_status`. Run these calls in the background of
+   your own harness and read one compact report, instead of polling `/api/tasks`.
 
 **Raw tasks.** `POST /api/tasks` `{cwd, spec, title?, provider?, model?, effort?, sandbox?, category?, difficulty?}`
 queues one task with **no** auto-pick (it falls back to the configured default worker) and no rating path. Track it with
@@ -175,7 +172,8 @@ queues one task with **no** auto-pick (it falls back to the configured default w
 
 ## Optional: a `/conductor` skill for Claude Code
 
-So that any Claude Code session can drive Conductor (and knows to use this document), install the bundled skill into
+So that any Claude Code session can drive Conductor — as the conductor itself (§7), through its own subagents, or by
+briefing a conductor chat — and knows to use this document, install the bundled skill into
 your Claude Code skills folder. It is a template in `share/claude-skill/conductor/SKILL.md`; the command fills in your
 Conductor folder. Run it **from the Conductor folder** (it overwrites an existing `conductor` skill — back that up first):
 
@@ -190,8 +188,9 @@ mkdir -p ~/.claude/skills/conductor && sed "s|{{CONDUCTOR_DIR}}|$PWD|g" share/cl
 ```
 
 New Claude Code sessions then list `conductor` in their skills and invoke it when you say "use the conductor" /
-"delegate this". Add your own defaults to the installed copy (preferred conductor model, where your briefs or project
-notes live) — the template stays machine-neutral on purpose. To remove it, delete the `conductor` skill folder.
+"delegate this". Nothing else to install: the skill runs the `mcp.py` client from your Conductor folder.
+Add your own defaults to the installed copy (preferred conductor model, where your briefs or project notes live) —
+the template stays machine-neutral on purpose. To remove it, delete the `conductor` skill folder.
 
 ## Notes
 

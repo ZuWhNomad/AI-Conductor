@@ -1,6 +1,6 @@
 ---
 name: conductor
-description: Delegate work to Conductor 2.0 — create autonomous conductor chats, hand them a task brief, and monitor them over its local HTTP API. Use when the user says to use/drive the conductor, delegate, fan out, or hand a job off to a worker.
+description: Orchestrate work through Conductor 2.0 — become the conductor yourself and route each unit of work to its multi-provider workers (delegate / run_plan with scorecard auto-pick), to your own subagents, or to an autonomous conductor chat, following Conductor's delegation framework. Use when the user says to use/drive the conductor, delegate, fan out, or hand a job off to a worker.
 ---
 
 # conductor (Conductor 2.0)
@@ -16,6 +16,22 @@ Conductor 2.0 is installed in `{{CONDUCTOR_DIR}}`. It runs a local server on `12
   controls, direct-to-worker tasks. Read it before the first call in a session.
 - **Pick a model the user has signed in to:** `/api/state` → `models.providers.<id>.status == "ok"`; the selection is
   `provider:model:effort` from `/api/models`. Use the user's preferred defaults if they've told you any.
+
+## You are the conductor
+
+Follow Conductor's framework, not your own habits: read `{{CONDUCTOR_DIR}}/core/policy/prompts/conductor.md`
+(economics, delegation protocol, fix-round → escalation ladder, rating) and `orchestration.md` beside it once per
+session. Keep intent, decomposition, specs, review and final verification; send execution out. Route each unit of work:
+
+- **Workers** (default) — execution, research, multi-provider fan-out, cross-family verification: **direct drive**
+  (`DRIVE-CONDUCTOR.md` §7). One never-messaged session per project gives you the conductor's tools (`delegate`,
+  `run_plan`, `follow_up`, `rate_task`, …) over `/mcp/<sessionId>`, called with
+  `python {{CONDUCTOR_DIR}}/share/claude-skill/conductor/mcp.py`.
+  `delegate` with `category` + `difficulty` and no model so the scorecard picks; verify with a different model family
+  than the producer (`avoid_families` takes families such as `claude`, `gpt`, `grok`, `gemini` — not provider ids);
+  escalate with `retry_of` = the last follow-up's id; `rate_task` every task.
+- **Your own subagents** — work that needs your session's own tools or context.
+- **A conductor chat** — a long autonomous job you won't supervise (below).
 
 ## Practical notes
 - Make the HTTP calls from a script (Python `urllib`, Node `fetch`) rather than hand-written `curl` JSON — Windows
