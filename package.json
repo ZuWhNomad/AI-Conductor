@@ -15,7 +15,7 @@
     "test": "node --test --import ./test/_env.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.283",
     "zod": "^4.5.4"
   },
   "repository": {
