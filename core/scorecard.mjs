@@ -14,6 +14,8 @@ import { PROVIDERS } from './providers/index.mjs';
 import { cliVersionOf } from './cli-update.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
+// Only Claude's SDK cost is a meaningful provider-reported list price today.
+const LIST_COST_PROVIDERS = new Set(['claude']);
 export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
 
 // Minimal prompt→category classifier. Today it recognizes only UI/frontend work, so a UI task the user diverts by
@@ -82,7 +84,7 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
   const row = {
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
-    status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
+    status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, costBasis: LIST_COST_PROVIDERS.has(t.provider) && t.result?.costUsd > 0 ? 'list' : 'tokens', durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
     cliVersion: cliVersionOf(t.provider), servedModel: t.result?.servedModel || null, // cached --version (SDK for claude); the model the CLI says it ran
@@ -182,7 +184,7 @@ export function rootRuns({ source = null } = {}) {
       a.price = priceFor(root.provider, root.model, cfg);
       attempts.set(root.taskId, a);
     }
-    a.rounds += 1; a.members.push(r.taskId);
+    a.rounds += 1; a.members.push(r.taskId); (a._rows ||= []).push(r);
     if (tokensOf(r)) a._anyUsage = true;
     addTok(a.tokens, tokensOf(r));
     a.durationMs += r.durationMs || 0;
@@ -194,8 +196,18 @@ export function rootRuns({ source = null } = {}) {
     a.notes = rated?.notes || null;
     // D7: no run reported usage → cost unknown, EXCEPT when all prices are zero (local model: $0 is real).
     const priceAllZero = a.price && a.price.in === 0 && a.price.out === 0 && (a.price.cached ?? 0) === 0;
-    a.usd = a.unmeasured ? null : (!a._anyUsage && !priceAllZero ? null : usdFor(a.tokens, a.price)); // a verdict recorded for a run made outside Conductor counts for quality, never for cost
+    const listCost = LIST_COST_PROVIDERS.has(a.provider) && a._rows.every((r) => r.provider === a.provider && r.costUsd > 0);
+    a.usd = listCost ? a._rows.reduce((total, r) => total + r.costUsd, 0) : (a.unmeasured ? null : (!a._anyUsage && !priceAllZero ? null : usdFor(a.tokens, a.price))); // a verdict recorded for a run made outside Conductor counts for quality, never for cost
+    a.costBasis = a.usd == null ? null : (listCost ? 'list' : 'tokens');
+    delete a._rows;
   }
+  const attemptMeans = new Map();
+  for (const a of attempts.values()) {
+    if (a.usd == null || !a.category || !a.difficulty) continue;
+    const key = [a.sel, a.category, a.difficulty].join('|');
+    const xs = attemptMeans.get(key) || []; xs.push(a.usd); attemptMeans.set(key, xs);
+  }
+  for (const [key, xs] of attemptMeans) attemptMeans.set(key, mean(xs));
   const chains = new Map();
   const rootIn = (map, id) => { let cur = map.get(id); const seen = new Set(); while (cur && cur.followUpOf && map.has(cur.followUpOf) && !seen.has(cur.taskId)) { seen.add(cur.taskId); cur = map.get(cur.followUpOf); } return cur ? cur.taskId : null; };
   for (const a of attempts.values()) {
@@ -224,7 +236,16 @@ export function rootRuns({ source = null } = {}) {
     c.tokens = { in: 0, out: 0, cached: 0, write: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
     let usd = 0, priced = 0;
     for (const a of c.attempts) { addTok(c.tokens, a.tokens); c.durationMs += a.durationMs; c.rounds += a.rounds; if (a.usd != null) { usd += a.usd; priced++; } if (a.pct) { c.pct = c.pct || {}; for (const [k, v] of Object.entries(a.pct)) c.pct[k] = (c.pct[k] || 0) + v; } }
-    c.usd = priced ? usd : null;
+    c.partialCost = false;
+    if (!priced) c.usd = null;
+    else {
+      for (const a of c.attempts) if (a.usd == null) {
+        const estimate = attemptMeans.get([a.sel, a.category, a.difficulty].join('|'));
+        if (estimate == null) { c.partialCost = true; break; }
+        usd += estimate;
+      }
+      c.usd = c.partialCost ? null : usd;
+    }
     c.provider = last.provider; c.model = last.model; c.effort = last.effort; c.status = last.status;
     out.push(c);
   }
@@ -240,12 +261,13 @@ export function summarize({ source = null } = {}) {
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [] }; groups.set(key, g); }
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
     g.n++;
     if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
     if (x.verdict) { g.rated++; g[x.verdict]++; }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd);
+    const xs = x.attempts || [x]; g._attempts += xs.length; g._priced += xs.filter((a) => a.usd != null).length;
     const p = maxPct(x.pct); if (p != null) g._pct.push(p);
     g._dur.push(x.durationMs); g._rounds.push(x.rounds);
     return g;
@@ -266,14 +288,14 @@ export function summarize({ source = null } = {}) {
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, ...g }) => {
+  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
     const cost = g.steps === 1 ? findModel(g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
     return {
       ...g, cost, priorTier: prior?.tier || null, quality, accept: g.rated ? (g.pass + g.fixable) / g.rated : null,
       ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: meanKnown(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
-      avgTokens: mean(_tok), avgUsd: mean(_usd), avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
+      avgTokens: mean(_tok), avgUsd: mean(_usd), pricedShare: _attempts ? _priced / _attempts : null, avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
     };
   }).sort((a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1));
@@ -699,7 +721,7 @@ export function formatScores({ category = null, source = null } = {}) {
   if (!rows.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
   const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
-  for (const g of rows) lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${g.avgUsd == null ? '-' : f(g.avgUsd, 3)} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`);
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
   const cfg = loadConfig().scorecard;
   lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level))${cfg.usePriors ? '; prior fallback on' : ''}):`);
   let any = false;

@@ -964,6 +964,41 @@ test('D7: a run with no reported usage is unknown cost, except a zero list price
   assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'ollama').avgUsd, 0);
 });
 
+test('A2: Claude uses reported list cost, cells expose priced share, and chains estimate known steps', () => {
+  const source = 'A2-costs';
+  const claude = run({ id: 'A2-claude', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 2, result: { usage: { input_tokens: 100_000, output_tokens: 100_000 }, costUsd: 1.23 } });
+  assert.equal(claude.costBasis, 'list');
+  const codex = run({ id: 'A2-codex', source, category: 'read', difficulty: 2, result: { usage: USAGE, costUsd: 0 } });
+  assert.equal(codex.costBasis, 'tokens');
+  const claudeAttempt = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude').attempts[0];
+  assert.equal(claudeAttempt.usd, 1.23); assert.equal(claudeAttempt.costBasis, 'list');
+  run({ id: 'A2-claude-fix', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 1 } });
+  run({ id: 'A2-claude-fix-round', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, followUpOf: 'A2-claude-fix', result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 0 } });
+  const tokenClaude = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude-fix').attempts[0];
+  assert.equal(tokenClaude.costBasis, 'tokens'); assert.equal(tokenClaude.usd, 0.2);
+
+  const row = (id, model, usage, retryOf = null) => run({ id, source, provider: 'codex', model, effort: 'low', category: 'test', difficulty: 2, retryOf, result: { usage, durationMs: 1 } });
+  row('A2-history', 'gpt-5.6-luna', { input_tokens: 100_000, output_tokens: 0 });
+  row('A2-head', 'gpt-5.6-luna', null);
+  row('A2-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-head');
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-head');
+  const lunaMean = sc.rootRuns().flatMap((c) => c.attempts).filter((a) => a.sel === 'codex:gpt-5.6-luna:low' && a.category === 'test' && a.difficulty === 2 && a.usd != null).map((a) => a.usd).reduce((sum, usd, _, xs) => sum + usd / xs.length, 0);
+  assert.ok(Math.abs(chain.usd - (chain.attempts[1].usd + lunaMean)) < 1e-12);
+  assert.equal(chain.partialCost, false);
+
+  row('A2-no-history', 'gpt-6-astra', null);
+  row('A2-priced-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-no-history');
+  const partial = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-no-history');
+  assert.equal(partial.usd, null); assert.equal(partial.partialCost, true);
+
+  for (const id of ['A2-share-1', 'A2-share-2', 'A2-share-3']) run({ id, source, category: 'docs', difficulty: 4, result: { usage: { input_tokens: 100_000, output_tokens: 0 } } });
+  run({ id: 'A2-share-null', source, category: 'docs', difficulty: 4, result: { usage: null } });
+  const cell = sc.summarize({ source }).find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'docs' && g.difficulty === 4);
+  assert.equal(cell.pricedShare, 0.75);
+  assert.equal(cell.avgUsd, 0.02);
+  assert.match(sc.formatScores({ source }), /\(3\/4 priced\)/);
+});
+
 test('a ladder with an unpriced step ranks as cost unknown after priced plans', () => {
   const cfg = loadConfig().scorecard;
   try {
@@ -1101,7 +1136,8 @@ test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
     const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-chain-a`);
     assert.ok(chain.attempts[0].usd != null);
     assert.equal(chain.attempts[1].usd, null);
-    assert.equal(chain.usd, chain.attempts[0].usd);
+    assert.equal(chain.usd, null);
+    assert.equal(chain.partialCost, true);
 
     run({ id: `${source}-lad1a`, source, category: 'ui', difficulty: 2 });
     sc.rateTask(`${source}-lad1a`, 'fail');
