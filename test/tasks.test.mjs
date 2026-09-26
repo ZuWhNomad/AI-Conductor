@@ -995,6 +995,32 @@ test('an environment failure (grok plan-mode cancel) is recorded but never score
   assert.ok(!runRows().some((r) => r.taskId === t.id), 'no scorecard row');
 });
 
+test('a plain worker 503 failure is classified as environment and is not scored', async (ctx) => {
+  const { runRows } = await import('../core/scorecard.mjs');
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, error: '503 UNAVAILABLE', usage: { input_tokens: 0, output_tokens: 0 } }));
+  const t = tk.createTask({ cwd: tmpDir('env-503'), provider: 'codex', spec: 'x', category: 'edit', difficulty: 2 });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  await tk.flushRecords();
+  assert.deepEqual([done.status, done.failKind, done.envFailed], ['failed', 'env', true]);
+  assert.equal(done.error, 'environment: 503 UNAVAILABLE');
+  assert.ok(!runRows().some((r) => r.taskId === t.id), 'no scorecard row');
+});
+
+test('a plain worker failure still writes a scorecard row', async (ctx) => {
+  const { runRows } = await import('../core/scorecard.mjs');
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, error: 'tests failed', usage: { input_tokens: 3, output_tokens: 1 } }));
+  const t = tk.createTask({ cwd: tmpDir('model-failure'), provider: 'codex', spec: 'x', category: 'edit', difficulty: 2 });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  await tk.flushRecords();
+  assert.equal(done.status, 'failed');
+  assert.equal(done.failKind, undefined);
+  assert.ok(runRows().some((r) => r.taskId === t.id), 'scorecard row');
+});
+
 test('a running task shows a coarse progress snapshot, refreshed at most once a minute', async (ctx) => {
   const { bus } = await import('../core/bus.mjs');
   const finish = Promise.withResolvers(), started = Promise.withResolvers();

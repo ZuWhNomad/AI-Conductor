@@ -43,6 +43,24 @@ const seed = (provider, model, effort, category, difficulty, verdicts, { usage =
   return ids;
 };
 
+test('envFailure identifies provider and CLI environment failures without scanning report prose', () => {
+  for (const error of [
+    'HTTP status 503 from provider', '503 UNAVAILABLE', 'unknown option --effort',
+    'unexpected argument --effort', 'requires --effort', "invalid value for '--effort'", 'WinError 32: file locked',
+    'EBUSY: resource busy or locked', 'CUDA out of memory', 'CUDA error: driver', 'llama-server crashed',
+    'cudaMalloc failed', 'provider quota rejected task at startup',
+  ]) assert.ok(sc.envFailure({ error }), error);
+  assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: '503 UNAVAILABLE' }] } }));
+  assert.equal(sc.envFailure({ result: { finalMessage: 'This report discusses HTTP 503 handling in prose.' } }), null);
+  assert.ok(sc.envFailure({ error: '{"status": "UNAVAILABLE"}' }));
+  assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'feature unavailable in this build' }] } }), null);
+  for (const error of [
+    'max iterations reached', 'UnauthorizedAccessException', 'access was denied', 'permission denied', 'EACCES', 'EPERM',
+    'waiting for network', 'Connection failed', 'ECONNRESET', 'ENOTFOUND api.example', 'fetch failed',
+    'unexpected status 401', 'Incorrect API key provided', 'refresh token was already used',
+  ]) assert.ok(sc.envFailure({ error }), error);
+});
+
 test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna').tier, 'B');
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier, 'B');   // code: Terminal-Bench 84.7

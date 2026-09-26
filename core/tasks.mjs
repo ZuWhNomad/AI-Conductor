@@ -14,7 +14,7 @@ import { contextBlock } from './context.mjs';
 import { modelBlockedUntil, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, envFailure } from './scorecard.mjs';
 import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -461,6 +461,7 @@ async function run(t) {
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else if (!r.ok) {
       t.status = 'failed'; t.error = r.error || 'worker failed';
+      if (envFailure(t)) { t.failKind = 'env'; t.envFailed = true; t.error = `environment: ${t.error}`; }
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else if (phantom) {
       t.status = 'failed'; t.failKind = 'phantom';

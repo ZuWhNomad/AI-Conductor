@@ -33,6 +33,31 @@ export const selOf = (r) => `${r.provider}:${r.model || 'default'}:${r.effort ||
 export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
 export function isPhantomCompletion({ ok, claimed = [], canVerify, observedCount }) { return !!ok && !!canVerify && claimed.length > 0 && observedCount === 0; }
 
+const LEGACY_ENV_FAILURES = [
+  'max iterations reached', 'UnauthorizedAccessException', 'access (?:was |is )?denied', 'permission denied', 'EACCES', 'EPERM',
+  'waiting for network', 'Connection failed', 'ECONNRESET', 'ENOTFOUND', 'fetch failed', 'unexpected status 401',
+  'Incorrect API key provided', 'refresh token was already used',
+];
+const PROVIDER_ENV_FAILURES = [
+  '\\b(?:HTTP\\s*)?50[0234]\\b(?=.{0,48}\\b(?:status|error|unavailable)\\b)',
+  '\\b(?:status|error|unavailable)\\b.{0,48}\\b50[0234]\\b',
+  'status["\'\\s:=]+UNAVAILABLE\\b', // gRPC-style status; a bare "unavailable" in tool output is not a provider error
+  '\\b(?:unknown option|unexpected argument)\\b', '\\brequires --\\w+', "\\binvalid value for '--",
+  'WinError 32', '\\bEBUSY\\b',
+  'CUDA out of memory', 'CUDA error', 'llama-server', 'cudaMalloc',
+  'quota rejected', 'rejected task at startup',
+];
+export const ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES].join('|'), 'i');
+const FINAL_MESSAGE_ENV_FAIL = new RegExp(LEGACY_ENV_FAILURES.join('|'), 'i');
+/** A worker or provider failure that belongs to the environment, not the model. */
+export function envFailure(t) {
+  if (t.failKind === 'auth' || t.failKind === 'env') return `${t.failKind === 'auth' ? 'sign-in' : 'harness'}: ${String(t.error || '').slice(0, 160)}`;
+  const providerTexts = [t.error || '', ...(t.result?.items || []).map((i) => i.text || i.output || '')].map(String);
+  const finalMessage = String(t.result?.finalMessage || '');
+  const hit = providerTexts.find((text) => ENV_FAIL.test(text)) || (FINAL_MESSAGE_ENV_FAIL.test(finalMessage) ? finalMessage : null);
+  return hit ? hit.match(ENV_FAIL)?.[0] || hit.match(FINAL_MESSAGE_ENV_FAIL)?.[0] : null;
+}
+
 /** Snapshot of a provider's limit windows, taken before a run for the after-run delta. */
 export function snapshotWindows(provider) {
   return (getLimits().providers[provider]?.windows || []).map((w) => ({ id: w.id, usedPercent: w.usedPercent ?? null, resetsAt: w.resetsAt ?? null }));
