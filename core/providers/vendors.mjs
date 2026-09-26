@@ -136,6 +136,8 @@ export function grokTurnEnd(cwd, sessionId, home = process.env.GROK_HOME || join
 /** Anthropic Messages wire format (NDJSON): system init, assistant/user messages with content blocks, result. Used by grok --output-format streaming-messages-json. */
 function parseMessagesStream(obj, st, emit, tag) {
   if (obj.session_id && !st.threadId) st.threadId = obj.session_id;
+  const served = obj.type === 'system' ? obj.model : obj.type === 'assistant' ? obj.message?.model : null; // the model the CLI says it ran (init, then each message)
+  if (typeof served === 'string' && served) st.servedModel = served;
   if (obj.type === 'assistant') {
     for (const c of obj.message?.content || []) {
       if (c.type === 'text' && c.text) { P.message(st, emit, c.text.trim()); st.text += c.text; }
@@ -194,6 +196,7 @@ export const VENDORS = {
       const ev = obj.event; const body = (ev && obj[ev]) || obj;
       const id = obj.conversation_id || body.conversation_id;
       if (id) st.threadId = id;
+      if (ev === 'init' && typeof body.model === 'string') st.servedModel = body.model; // the concrete id agy resolved (recorded: init.model)
       if (ev === 'step_update') {
         if (body.step_type === 'agent_response') {
           if (typeof body.text_delta === 'string') st.buf = (st.buf || '') + body.text_delta;

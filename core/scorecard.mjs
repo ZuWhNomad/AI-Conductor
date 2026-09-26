@@ -11,6 +11,7 @@ import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
 import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
+import { cliVersionOf } from './cli-update.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
 export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
@@ -84,6 +85,7 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
+    cliVersion: cliVersionOf(t.provider), servedModel: t.result?.servedModel || null, // cached --version (SDK for claude); the model the CLI says it ran
   };
   appendNdjson(FILE(), row);
   bus.publish('score', { taskId: t.id, provider: t.provider, model: t.model, pct: row.pct });

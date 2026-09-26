@@ -22,6 +22,7 @@ import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
 import { summarize, formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
+import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -82,6 +83,7 @@ function applyDetectSweep(cfg) {
   detectTimer = setInterval(() => {
     const stale = staleAuthProviders();
     if (stale.length) refreshModels({ only: stale }).catch(() => {});
+    dailyCheck(); // worker CLI updates: a timestamp compare until the day is up; 'auto' installs wait for an idle provider
   }, minutes * 60_000);
   detectTimer.unref();
 }
@@ -175,7 +177,7 @@ async function route(req, res, url) {
 
   if (m === 'GET' && p === '/api/state') {
     const imps = listImprovements();
-    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
+    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
   }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
@@ -325,6 +327,18 @@ async function route(req, res, url) {
     pendingRelaunch = r;
     deferPendingRelaunch();
     return json(res, 200, { ...r, relaunching: 'when idle' });
+  }
+  // Worker CLI updates. POST { provider?, check? }: a check answers at once; an install runs in the background (it waits
+  // for an idle provider and verifies with a real task), and its result lands in providers[id].last.
+  if (p === '/api/cli-update' && m === 'GET') return json(res, 200, cliUpdateStatus());
+  if (p === '/api/cli-update' && m === 'POST') {
+    const b = await readBody(req).catch(() => ({}));
+    const ids = b?.provider ? [String(b.provider)] : CLI_UPDATE_IDS;
+    if (b?.check) return json(res, 200, { providers: await Promise.all(ids.map((id) => checkCliUpdate(id, { manual: true }))) });
+    for (const id of ids) if (!CLI_UPDATE_IDS.includes(id)) return json(res, 400, { error: `no CLI update recipe for "${id}"` });
+    const at = new Date().toISOString();
+    (async () => { for (const id of ids) await applyCliUpdate(id); })().catch(() => {});
+    return json(res, 202, { started: ids, at });
   }
   if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
   return json(res, 404, { error: `no route ${m} ${p}` });
@@ -587,7 +601,7 @@ export function startServer({ port = null } = {}) {
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on
         applyDetectSweep(cfg); // and the slow re-probe of signed-out providers (independent of that control)
-        refreshModels().then(() => refreshLimits()).then(() => detectCapabilities()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
+        refreshModels().then(() => refreshLimits()).then(() => detectCapabilities()).then(() => dailyCheck()).catch(() => {}); // one refresh at boot regardless, so the panel isn't blank
         startScheduledReview();
         startUpdateChecks();
       }

@@ -97,3 +97,14 @@ test('U5: Settings reveals effective sandbox for astra worker', () => {
   const view = render(config);
   assert.equal(view.field('worker.codexSandbox').value, 'workspace-write');
 });
+
+test('Settings shows each worker CLI update mode and saves it per provider', async () => {
+  const config = structuredClone(DEFAULTS); config.providers.grok.cliUpdate = 'auto';
+  const view = render(config);
+  assert.equal(view.field('providers.codex.cliUpdate').value, 'notify');
+  assert.equal(view.field('providers.grok.cliUpdate').value, 'auto');
+  view.field('providers.kimi.cliUpdate').value = 'off';
+  await view.save();
+  assert.equal(view.posts[0].patch.providers.kimi.cliUpdate, 'off');
+  assert.equal(view.posts[0].patch.providers.grok.cliUpdate, 'auto');
+});

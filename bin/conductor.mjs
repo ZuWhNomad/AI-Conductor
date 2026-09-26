@@ -38,6 +38,9 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor review [--model M]               headless self-review of this workbench from the improvement log
   conductor share                            zip the committed files (what git tracks) to your Desktop
   conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
+  conductor cli-update [provider] [--check]  update worker CLIs (codex, antigravity, grok, qwen-code, kimi; claude = the Agent
+                                             SDK, dev checkout only) to their latest stable release once idle, verified and
+                                             rolled back on failure; --check only reports
   conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)
   conductor job start [--cwd DIR] -- CMD…    run a long command detached (it survives the caller's exit); prints its id
   conductor job status ID | job cancel ID    its exit code and output tail, or stop it (needs the running server)
@@ -230,6 +233,33 @@ if (cmd === 'start') {
     } catch (e) { console.error(e.message); process.exit(1); }
   }
   process.exit(st.error && st.git ? 1 : 0);
+} else if (cmd === 'cli-update') {
+  const cu = await import('../core/cli-update.mjs');
+  const ids = positionals[1] ? [positionals[1]] : cu.CLI_UPDATE_IDS;
+  if (flags.check) {
+    for (const id of ids) { try { console.log(cu.formatCliUpdate(await cu.checkCliUpdate(id, { manual: true }))); } catch (e) { console.error(e.message); process.exit(2); } }
+    process.exit(0);
+  }
+  // A running server owns the task journal and knows which chats are mid-turn: install through it when it is up.
+  let info = null; try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
+  const base = info?.url || `http://127.0.0.1:${info?.port || loadConfig().port}`;
+  let server = false; try { server = (await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(3000) })).ok; } catch {}
+  let failed = false;
+  if (server) {
+    const r = await fetch(`${base}/api/cli-update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: positionals[1] || null }) });
+    const j = await r.json(); if (!r.ok) { console.error(j.error || r.status); process.exit(2); }
+    console.log(`installing through the running Conductor at ${base} (a busy provider is skipped; an install is verified with a test call)…`);
+    for (const id of ids) {
+      let last;
+      while (!((last = (await (await fetch(`${base}/api/cli-update`)).json()).providers[id]?.last) && last.at >= j.at)) await new Promise((ok) => setTimeout(ok, 3000));
+      console.log(cu.formatCliUpdate({ id, ...last })); failed ||= !!last.error;
+    }
+  } else {
+    const { flushRecords } = await import('../core/tasks.mjs');
+    for (const id of ids) { const r = await cu.applyCliUpdate(id); console.log(cu.formatCliUpdate(r)); failed ||= !!r.error; }
+    await flushRecords();
+  }
+  process.exit(failed ? 1 : 0);
 } else if (cmd === 'job') {
   // Through the running server, so it works from a sandboxed worker (the server spawns and journals the job).
   let info = null; try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}

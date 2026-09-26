@@ -27,6 +27,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
   category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
   `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.
+- `cli-update.mjs` — worker CLI updates. `RECIPES` per provider (current `--version`, latest stable release, exact-version
+  install, rollback); `dailyCheck` (server boot + the signed-out re-probe timer), `applyCliUpdate` (idle gate → hold the
+  provider's queue → install → verify version, sign-in and a read-1 task → roll back and `logImprovement` on failure),
+  `cliVersionOf` (the cached version every scorecard run row records). `providers.<id>.cliUpdate`: off | notify | auto.
 
 **Symptom → file.** Start here instead of reading the folder.
 
@@ -45,6 +49,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | the UI does not update | the event is not published: `bus.mjs` + the publishing module; then `ui/CONTEXT.md` |
 | a setting does not apply or does not persist | `config.mjs` (`DEFAULTS`, `loadConfig`, `saveConfig`) |
 | update / self-restart problems | `update.mjs`, then `server/index.mjs` (`scheduleRelaunch`, `startUpdateChecks`) |
+| a worker CLI is stale, an update failed or was rolled back | `cli-update.mjs` (`RECIPES`, `applyCliUpdate`); history in `<state>/cli-updates.ndjson` |
 | smoke battery or re-benchmark scheduling | `smoke/` (see its `CONTEXT.md`), `bench.mjs` |
 | improvement log, self-review, feedback bundle | `improve.mjs`, `feedback.mjs` |
 

@@ -2,7 +2,7 @@
 import { spawnCodex, killTree, onLines } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 import { codexMcpArgs } from '../mcp.mjs';
-import { readdirSync } from 'node:fs';
+import { readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readTail } from '../paths.mjs';
@@ -30,8 +30,8 @@ export function codexFailure({ message = '', info = null } = {}) {
   return status === 429 ? 'limit' : status === 401 || status === 403 ? 'auth' : null;
 }
 
-/** codex_error_info of the last finished turn in the thread's rollout (~/.codex/sessions/Y/M/D/rollout-…-<thread>.jsonl). */
-export function rolloutErrorInfo(threadId, home = process.env.CODEX_HOME || join(homedir(), '.codex')) {
+/** The thread's rollout file (~/.codex/sessions/Y/M/D/rollout-…-<thread>.jsonl), or null. */
+function rolloutFile(threadId, home) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId || '')) return null;
   const born = parseInt(threadId.replace(/-/g, '').slice(0, 12), 16); // UUIDv7: ms timestamp; the folder is its local date
   const pad = (n) => String(n).padStart(2, '0');
@@ -39,14 +39,34 @@ export function rolloutErrorInfo(threadId, home = process.env.CODEX_HOME || join
     const d = new Date(born + shift * 86_400_000);
     const dir = join(home, 'sessions', String(d.getFullYear()), pad(d.getMonth() + 1), pad(d.getDate()));
     let name; try { name = readdirSync(dir).find((n) => n.endsWith(`${threadId}.jsonl`)); } catch {}
-    if (!name) continue;
-    for (const line of readTail(join(dir, name), 256 * 1024).split('\n').reverse()) {
-      if (!line.includes('"task_complete"')) continue;
-      try { const p = JSON.parse(line).payload; if (p?.type === 'task_complete') return p.error?.codex_error_info ?? null; } catch {}
-    }
-    return null;
+    if (name) return join(dir, name);
   }
   return null;
+}
+
+/** codex_error_info of the last finished turn in the thread's rollout. */
+export function rolloutErrorInfo(threadId, home = process.env.CODEX_HOME || join(homedir(), '.codex')) {
+  const file = rolloutFile(threadId, home); if (!file) return null;
+  for (const line of readTail(file, 256 * 1024).split('\n').reverse()) {
+    if (!line.includes('"task_complete"')) continue;
+    try { const p = JSON.parse(line).payload; if (p?.type === 'task_complete') return p.error?.codex_error_info ?? null; } catch {}
+  }
+  return null;
+}
+
+/** The model Codex ran the thread's latest turn on: turn_context.model in the rollout (codex-cli 0.157.1); `codex exec --json` does not say. */
+export function rolloutModel(threadId, home = process.env.CODEX_HOME || join(homedir(), '.codex')) {
+  const file = rolloutFile(threadId, home); if (!file) return null;
+  for (const text of [readTail(file, 256 * 1024), readHead(file, 256 * 1024)]) {
+    for (const line of text.split('\n').reverse()) {
+      if (!line.includes('"turn_context"')) continue;
+      try { const j = JSON.parse(line); if (j.type === 'turn_context' && typeof j.payload?.model === 'string') return j.payload.model; } catch {}
+    }
+  }
+  return null;
+}
+function readHead(file, bytes) {
+  let fd; try { fd = openSync(file, 'r'); const b = Buffer.alloc(bytes); return b.toString('utf8', 0, readSync(fd, b, 0, bytes, 0)); } catch { return ''; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 /**
@@ -119,6 +139,7 @@ export function runCodex(t) {
         kind = 'limit';
         try { logImprovement('friction', 'worker:codex', 'usage limit recognised from the fixed Codex message: no session log (codex_error_info) for this thread', { taskId: t.id, threadId: res.threadId }); } catch {}
       }
+      res.servedModel = rolloutModel(res.threadId, t.codexHome);
       res.limitHit = kind === 'limit';
       res.authFailed = kind === 'auth';
       if (res.authFailed) res.error += ' — sign in again: codex login';

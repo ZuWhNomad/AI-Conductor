@@ -73,6 +73,15 @@ export const DEFAULTS = {
     openai: { apiKey: null },         // DALL-E / gpt-image (API key, optional)
     stability: { apiKey: null },
     sd: { baseUrl: 'http://127.0.0.1:7860' }, // local Stable Diffusion (A1111 API)
+    // Worker CLI updates (core/cli-update.mjs): 'off' never checks, 'notify' shows "update available X → Y", 'auto' also
+    // installs it once the provider is idle (verified, rolled back on failure). Claude is the Agent SDK in package.json:
+    // only `conductor cli-update claude` in a dev checkout bumps it, so its 'auto' acts as 'notify'.
+    codex: { cliUpdate: 'notify' },
+    antigravity: { cliUpdate: 'notify' },
+    grok: { cliUpdate: 'notify' },
+    'qwen-code': { cliUpdate: 'notify' },
+    kimi: { cliUpdate: 'notify' },
+    claude: { cliUpdate: 'notify' },
   },
   review: { everyDays: 0 },           // 0 = manual only
   scorecard: {                        // empirical worker selection (core/scorecard.mjs)
@@ -122,7 +131,7 @@ export const DEFAULTS = {
     reservePct: 0.5,
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
-  smoke: { timeoutMinutes: 20, hardTimeoutMinutes: 30 }, // per smoke-battery task; hardTimeoutMinutes for difficulty 7+
+  smoke: { timeoutMinutes: 20, hardTimeoutMinutes: 30 }, // per smoke-battery task; hardTimeoutMinutes for difficulty 6+ (L6/L7)
   tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
     index: {},                        // machine-specific entries by name: { kind, categories, purpose, invoke, detect, install, platforms }; null removes a shared one; extra fields tag it
     researchOnMiss: false,            // a category with no entry at all → one bounded background search task proposes programs (unapproved until you set approved: true)
@@ -173,6 +182,7 @@ function overrides() {
 }
 
 const SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'];
+export const CLI_UPDATE_MODES = ['off', 'notify', 'auto'];
 
 /** The Codex sandbox a task or session gets when it does not name one: the model's exception, else the default. */
 export function codexSandboxFor(model, cfg = loadConfig()) {
@@ -197,6 +207,9 @@ function normalize(cfg) {
       if (DEFAULTS.providers[name]?.baseUrl) p.baseUrl = DEFAULTS.providers[name].baseUrl;
       else delete p.baseUrl; // providers with their own endpoint use that default
     }
+  }
+  for (const [name, def] of Object.entries(DEFAULTS.providers)) {
+    if ('cliUpdate' in def && !CLI_UPDATE_MODES.includes(cfg.providers[name]?.cliUpdate)) cfg.providers[name].cliUpdate = def.cliUpdate;
   }
   for (const [name, s] of Object.entries(cfg.mcpServers)) {
     if (s === false) { cfg.mcpServers[name] = null; continue; } // legacy removal spelling

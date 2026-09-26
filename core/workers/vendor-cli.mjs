@@ -80,6 +80,7 @@ function runVendorCliOnce(spec, t) {
       res.threadId = st.threadId || res.threadId;
       res.finalMessage = st.finalText ?? st.text ?? '';
       res.usage = st.usage;
+      res.servedModel = st.servedModel || null;
       res.items = st.items.slice(-60);
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;

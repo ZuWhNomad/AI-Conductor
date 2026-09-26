@@ -139,6 +139,20 @@ function renderProviders() {
       }
       d.append(line);
     }
+    // Worker CLI update (core/cli-update.mjs): "update available X → Y"; the button installs it through the server.
+    const cu = S.cliUpdates?.providers?.[p.id];
+    if (cu?.available || cu?.applying || cu?.last?.error) {
+      const line = el('div', 'wl tiny');
+      const msg = cu.applying ? `updating ${cu.current} → ${cu.latest}…` : cu.available ? `update available ${cu.current} → ${cu.latest}${cu.note ? ` — ${cu.note}` : ''}` : `CLI update ${cu.last.to} failed: ${cu.last.error}`;
+      const txt = el('span', 'muted', msg); if (!cu.available && !cu.applying) txt.style.color = 'var(--bad)'; txt.title = `cliUpdate: ${cu.mode}${cu.last ? ` · last: ${cu.last.applied ? `updated ${cu.last.from} → ${cu.last.to}` : cu.last.error || cu.last.reason}` : ''}`;
+      line.append(txt);
+      if (cu.available && !cu.note && !cu.applying) {
+        const b = el('button', 'sm ghost', 'Update'); b.title = 'Install it now if the provider is idle; verified with a test call, rolled back on failure';
+        b.onclick = async (e) => { e.stopPropagation(); b.disabled = true; try { await api.post('/api/cli-update', { provider: p.id }); } catch (err) { $('#stt-hint').textContent = err.message; } };
+        line.append(b);
+      }
+      d.append(line);
+    }
     if (lim.balance) d.append(el('div', 'wl tiny', `balance ${lim.balance.amount} ${lim.balance.currency}${lim.balance.granted > 0 ? ` · ${lim.balance.granted} granted (free)` : ''}${lim.balance.available ? '' : ' · exhausted'}`));
     // Fixed order: session → per-model → weekly → other. Prefer an explicit w.scope (windowScope already does), else infer.
     const wrank = (w) => { const s = w.scope || windowScope(w); return s === 'session' ? 0 : (s === 'model' || w.models) ? 1 : s === 'weekly' ? 2 : 3; };
@@ -796,7 +810,7 @@ function noteUpdate(o) {
 async function resync() {
   const st = await api.get('/api/state');
   S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
   renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   seedNewChatDefaults();
@@ -845,6 +859,7 @@ function connect() {
   on('score', (ev) => { const s = S.scoreInfo.get(ev.taskId) || {}; if (ev.verdict) s.verdict = ev.verdict; if (ev.pct && typeof ev.pct === 'object') { const vals = Object.values(ev.pct); if (vals.length) s.pct = Math.round(Math.max(...vals) * 10) / 10; } S.scoreInfo.set(ev.taskId, s); const t = S.tasks.find((x) => x.id === ev.taskId); if (t) updateTask(t); });
   on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
+  on('cli-update', () => coalesce('cli-update', async () => { S.cliUpdates = await api.get('/api/cli-update'); renderProviders(); }));
   on('improvement', (ev) => {
     if (ev?.count != null) {
       $('#improve-count').textContent = ev.count;
@@ -991,6 +1006,8 @@ function openSettings() {
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
   field('Ollama URL', 'providers.ollama.baseUrl', c.providers.ollama.baseUrl);
+  // Worker CLI updates: off = never check; notify = show "update available"; auto = install when the provider is idle.
+  for (const id of ['codex', 'antigravity', 'grok', 'qwen-code', 'kimi', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
   field('Local SD URL', 'providers.sd.baseUrl', c.providers.sd.baseUrl);
   body.append(grid);
   body.append(el('div', 'tiny muted', 'Login for subscriptions happens in a terminal:  claude auth login   ·   codex login'));
@@ -1119,7 +1136,7 @@ async function openScores() {
 async function boot() {
   const st = await api.get('/api/state');
   S.boot = st.boot; S.lastSeq = st.seq || 0; // the transcript is rendered from state; only newer events stream in
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update });
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#cwd').value = localStorage.getItem('cwd') || '';
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
   refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh(); seedNewChatDefaults(); renderChip();

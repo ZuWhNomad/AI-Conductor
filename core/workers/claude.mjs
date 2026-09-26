@@ -62,7 +62,7 @@ export async function runClaude(t) {
       },
     });
     for await (const m of q) {
-      if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; emit('session', { sessionId: m.session_id, model: m.model }); }
+      if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; res.servedModel = m.model || null; emit('session', { sessionId: m.session_id, model: m.model }); }
       else if (m.type === 'assistant') {
         if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; }
         for (const b of m.message.content || []) {

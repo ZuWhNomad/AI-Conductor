@@ -80,6 +80,7 @@ core/
   bench.mjs              re-benchmark scheduler + new-model detection
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
+  cli-update.mjs         worker CLI updates (codex, agy, grok, qwen, kimi; the Agent SDK in dev): daily check, install when idle, verify, roll back
   proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI

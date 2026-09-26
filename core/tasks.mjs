@@ -316,6 +316,9 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 
+/** Providers whose CLI is being updated (core/cli-update.mjs): their queued tasks wait; only the update's own check task runs. */
+export const heldProviders = new Set();
+
 export function schedule() {
   if (shuttingDown) return;
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
@@ -346,6 +349,7 @@ export function schedule() {
   const failovers = [];
   for (const t of queued) {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
+    if (heldProviders.has(t.provider) && t.sessionId !== 'cli-update') continue;
     if (running.size >= max) break;
     const until = modelBlockedUntil(t.provider, t.model);
     if (until) {
@@ -418,7 +422,7 @@ async function run(t) {
     const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
-    t.result = { finalMessage: r.finalMessage || '', usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
+    t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
     const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p; // git reports '/', Windows workers '\\': one file, one entry
     const rel = (p) => { try { return slash(isAbsolute(p) ? relative(t.cwd, p) || p : p); } catch { return p; } };
     const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
