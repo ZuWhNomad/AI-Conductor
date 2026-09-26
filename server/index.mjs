@@ -20,6 +20,7 @@ import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
 import { summarize, formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
+import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
@@ -385,8 +386,14 @@ export async function doctorReport() {
   rows.push({ name: 'codex', value: codexVersion || 'missing', status: codex ? ((await PROVIDERS.codex.account().catch(() => ({ loggedIn: false }))).loggedIn ? 'logged in' : 'NOT logged in → run: codex login') : 'install: npm i -g @openai/codex', path: codex ? [codex.command, ...codex.args].join(' ') : findCli('codex') });
   const ol = await PROVIDERS.ollama.detect();
   rows.push({ name: 'ollama', value: ol.version || (ol.installed ? 'installed (not running)' : 'missing'), status: ol.installed ? 'ok' : 'optional: https://ollama.com' });
+  const unpriced = unpricedModels(getModels());
+  rows.push({ name: 'priced agent models', value: String(unpriced.length), status: unpriced.length ? `${unpriced.length} unpriced: ${unpriced.join(', ')} — their cells rank last as cost unknown` : 'ok' });
   rows.push({ name: 'git', value: await versionOf(findCli('git')) || 'missing', status: '' });
   return { rows, capabilities: capabilityReport(), path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath(), eventLoop: lagStats() };
+}
+
+export function unpricedModels(reg = getModels()) {
+  return (reg.models || []).filter((m) => m.kind === 'agent' && m.provider !== 'ollama' && priceFor(m.provider, m.id) == null).map((m) => m.id);
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */
