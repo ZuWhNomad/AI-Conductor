@@ -189,14 +189,34 @@ export function runRows() { return loadLedger().rows; }
 // P3: reuse the same cached parse (rate/void rows live in `all`, not in runRows). Callers do not mutate.
 function allRows() { return loadLedger().all; }
 
+let rootRunsMemo = null;
+let summarizeMemo = null;
+
+// Both derived views depend on the ledger, scorecard settings, and model registry. Keep the key construction in
+// one place so a caller never receives a view computed from a stale version of any of those inputs.
+function scorecardMemoKey(source) {
+  const ledger = loadLedger();
+  const cfg = loadConfig().scorecard;
+  const reg = getModels();
+  return `${source || ''}|${ledger.size ?? 'none'}:${ledger.mtimeMs ?? 'none'}|${JSON.stringify(cfg)}|${reg.updatedAt || ''}`;
+}
+
 export function rootRuns({ source = null } = {}) {
+  const key = scorecardMemoKey(source);
+  if (rootRunsMemo?.key === key) return rootRunsMemo.rows;
+  const out = rootRunsUncached({ source });
+  rootRunsMemo = { key, rows: out };
+  return out;
+}
+
+function rootRunsUncached({ source = null } = {}) {
   const runs = new Map(); const rates = new Map(); const voided = new Set();
   const all = allRows();
   for (const r of all) if (r.op === 'void') voided.add(r.taskId);
   const allRuns = new Map(); // voided runs stay in the graph for linking (retryOf through them) but not in the aggregates
-  for (const r of all) {
+  for (const [order, r] of all.entries()) {
     if (r.op === 'run') { allRuns.set(r.taskId, r); if (!voided.has(r.taskId)) runs.set(r.taskId, r); }
-    else if (r.op === 'rate') rates.set(r.taskId, r);
+    else if (r.op === 'rate') rates.set(r.taskId, { ...r, _order: order });
   }
   const follow = (r, key) => { let cur = r; const seen = new Set(); while (cur[key] && runs.has(cur[key]) && !seen.has(cur.taskId)) { seen.add(cur.taskId); cur = runs.get(cur[key]); } return cur; };
   const cfg = loadConfig();
@@ -216,7 +236,8 @@ export function rootRuns({ source = null } = {}) {
     if (r.pct) { a.pct = a.pct || {}; for (const [k, v] of Object.entries(r.pct)) a.pct[k] = (a.pct[k] || 0) + v; }
   }
   for (const a of attempts.values()) {
-    const rated = rates.get(a.taskId) || a.members.map((id) => rates.get(id)).find(Boolean);
+    const rated = a.members.map((id) => rates.get(id)).filter(Boolean).reduce((latest, rate) =>
+      !latest || rate.ts > latest.ts || (rate.ts === latest.ts && rate._order > latest._order) ? rate : latest, null);
     a.verdict = rated?.verdict || (a.status === 'failed' ? 'fail' : null);
     a.notes = rated?.notes || null;
     // D7: no run reported usage → cost unknown, EXCEPT when all prices are zero (local model: $0 is real).
@@ -282,6 +303,14 @@ export function rootRuns({ source = null } = {}) {
  * and path rows (ladders actually observed, e.g. "codex:luna:low>codex:terra:medium").
  */
 export function summarize({ source = null } = {}) {
+  const key = scorecardMemoKey(source);
+  if (summarizeMemo?.key === key) return summarizeMemo.rows;
+  const out = summarizeUncached({ source });
+  summarizeMemo = { key, rows: out };
+  return out;
+}
+
+function summarizeUncached({ source = null } = {}) {
   const groups = new Map();
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
@@ -692,10 +721,26 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
  * 140 recommend() calls take seconds on a large ledger.
  */
 let shortMemo = null;
+const nextBlockEnd = (limits, now) => {
+  const ends = [];
+  for (const p of Object.values(limits.providers || {})) {
+    if (Number.isFinite(p?.blockedUntil) && p.blockedUntil > now) ends.push(p.blockedUntil);
+    for (const w of p?.windows || []) if (Number.isFinite(w.resetsAt) && w.resetsAt > now) ends.push(w.resetsAt);
+  }
+  return ends.length ? Math.min(...ends) : null;
+};
+
+export function shortMemoKey({ source = null, limits = getLimits(), now = Date.now() } = {}) {
+  const cfg = loadConfig().scorecard;
+  const reset = nextBlockEnd(limits, now);
+  let key = source + '|' + JSON.stringify(cfg) + '|' + (limits.updatedAt || '') + '|' + (getModels().updatedAt || '') + '|' + Math.floor(now / 3600e3) + '|' + (reset ?? 'none');
+  try { const st = statSync(FILE()); key += '|' + st.size + ':' + st.mtimeMs; } catch { key += '|none'; }
+  return key;
+}
+
 export function formatScoresShort({ source = null } = {}) {
   const cfg = loadConfig().scorecard;
-  let key = source + '|' + JSON.stringify(cfg) + '|' + (getLimits().updatedAt || '') + '|' + (getModels().updatedAt || '') + '|' + Math.floor(Date.now() / 3600e3);
-  try { const st = statSync(FILE()); key += '|' + st.size + ':' + st.mtimeMs; } catch { key += '|none'; }
+  const key = shortMemoKey({ source });
   if (shortMemo?.key === key) return shortMemo.text;
   const all = summarize({ source });
   if (!all.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
