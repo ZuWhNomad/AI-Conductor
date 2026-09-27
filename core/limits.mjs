@@ -53,7 +53,9 @@ function scheduleResetPoll() {
 }
 
 /** Session/5-hour windows (the conductor's classCap applies to these; weekly/budget windows do not). */
-export const isSession = (w) => w.scope ? w.scope === 'session' : /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
+export const isSession = (w) => ['session', 'weekly', 'other'].includes(w.scope)
+  ? w.scope === 'session'
+  : /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
 
 let restatHold = 0;
 /** The registry, re-read when another process (a smoke run, `conductor limits`, a helper script) wrote limits.json since we last did. */
@@ -142,8 +144,7 @@ const modelScoped = (w) => !!windowModels(w);
 const globalWindowBlocks = (w) => !modelScoped(w) && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
 
 function scopeWindow(w) {
-  if (w.scope) return w;
-  if (windowModels(w)) return { ...w, scope: 'model' };
+  if (['session', 'weekly', 'other'].includes(w.scope)) return w;
   if (/hour|session/i.test(w.label || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes <= 600)) return { ...w, scope: 'session' };
   if (/week/i.test(w.label || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes >= 10080)) return { ...w, scope: 'weekly' };
   return { ...w, scope: 'other' };

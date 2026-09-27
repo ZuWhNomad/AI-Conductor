@@ -180,7 +180,7 @@ function renderProviders() {
 // ---------- budget headline ----------
 /** A window's scope: use the server tag, then infer for older persisted windows. */
 function windowScope(w) {
-  if (w.scope) return w.scope;
+  if (['session', 'weekly', 'other'].includes(w.scope)) return w.scope;
   if (typeof w.windowMinutes === 'number') return w.windowMinutes <= 600 ? 'session' : w.windowMinutes >= 10080 ? 'weekly' : null;
   const s = `${w.label || ''} ${w.id || ''}`;
   if (/weekly|seven[_ -]?day|7[_ -]?day/i.test(s)) return 'weekly';

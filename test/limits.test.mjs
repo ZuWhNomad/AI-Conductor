@@ -148,7 +148,7 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         ctx.mock.method(Date, 'now', () => now);
         const info = { rateLimitType, status, utilization: status === 'rejected' ? 1 : 0, resetsAt: reset };
         const initial = { ...info, status: status === 'rejected' ? 'allowed' : 'rejected', utilization: status === 'rejected' ? 0.2 : 1 };
-        const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset, scope: 'model' };
+        const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset, scope: 'other' };
         const poll = Promise.withResolvers(), entered = Promise.withResolvers(), slow = Promise.withResolvers();
         PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
         PROVIDERS[slowId] = { id: slowId, pollLimits: () => slow.promise };
@@ -156,12 +156,12 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         noteRateLimitEvent(id, initial);
         const stale = {
           provider: id, blocked: rateLimitType === 'five_hour' && status === 'allowed',
-          windows: [{ ...windowFromEvent(initial), scope: rateLimitType === 'five_hour' ? 'session' : 'model' }, { ...unrelated, usedPercent: 40 }],
+          windows: [{ ...windowFromEvent(initial), scope: rateLimitType === 'five_hour' ? 'session' : 'weekly' }, { ...unrelated, usedPercent: 40 }],
         };
         const refresh = refreshLimits({ only: [id, slowId] });
         const assertEvent = () => {
           const p = getLimits().providers[id];
-          assertStoredEvent(p.windows.find((w) => w.id === rateLimitType), info, rateLimitType === 'five_hour' ? 'session' : 'model');
+          assertStoredEvent(p.windows.find((w) => w.id === rateLimitType), info, rateLimitType === 'five_hour' ? 'session' : 'weekly');
           assert.equal(modelBlockedUntil(id, 'claude-sonnet'), status === 'rejected' ? reset : null);
           assert.equal(modelBlockedUntil(id, 'claude-haiku'), status === 'rejected' && rateLimitType === 'five_hour' ? reset : null);
           assert.equal(p.blocked, status === 'rejected' && rateLimitType === 'five_hour');
@@ -222,7 +222,7 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         poll.resolve({ provider: id, blocked: rateLimitType === 'five_hour', windows: [windowFromEvent({ rateLimitType, status: 'rejected', utilization: 1, resetsAt })] });
         await refresh;
         assert.equal(modelBlockedUntil(id, 'sonnet'), null, 'stale rejection cannot resurrect after recovery to zero');
-        assertStoredEvent(getLimits().providers[id].windows[0], allowed, rateLimitType === 'five_hour' ? 'session' : 'model');
+        assertStoredEvent(getLimits().providers[id].windows[0], allowed, rateLimitType === 'five_hour' ? 'session' : 'weekly');
       } finally {
         poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
         delete PROVIDERS[id]; delete getLimits().providers[id];
@@ -302,7 +302,7 @@ for (const scenario of [
     const warning = { rateLimitType: scenario.rateLimitType, status: 'allowed_warning', utilization: 0.9, resetsAt: reset };
     const assertState = () => {
       const p = getLimits().providers[id];
-      assertStoredEvent(p.windows.find((w) => w.id === warning.rateLimitType), warning, warning.rateLimitType === 'five_hour' ? 'session' : 'model');
+      assertStoredEvent(p.windows.find((w) => w.id === warning.rateLimitType), warning, warning.rateLimitType === 'five_hour' ? 'session' : 'weekly');
       assert.equal(modelBlockedUntil(id, 'claude-sonnet'), scenario.blocked ? reset : null);
       assert.equal(p.blocked, scenario.blocked);
       assert.equal(p.blockedUntil, scenario.blocked ? reset : null);
@@ -505,7 +505,7 @@ test('only usable unscoped request windows can clear an active HTTP block', () =
     assert.equal(result.blockedUntil, prev.blockedUntil);
     assert.equal(result.blockedReason, '429');
     assert.deepEqual(result.windows.map(({ scope, ...w }) => w), windows);
-    assert.deepEqual(result.windows.map((w) => w.scope), windows.map((w) => w.models ? 'model' : 'other'));
+    assert.deepEqual(result.windows.map((w) => w.scope), windows.map(() => 'other'));
   }
 });
 
@@ -799,7 +799,7 @@ test('poll merging keeps the stronger global block without globalizing model quo
   for (const reset of [until - 1, until + 1]) {
     const result = mergePoll(prev, { blocked: true, windows: [{ id: 'requests', usedPercent: 100, resetsAt: reset }, scoped] });
     assert.equal(result.blockedUntil, Math.max(until, reset));
-    assert.deepEqual(result.windows[1], { ...scoped, scope: 'model' });
+    assert.deepEqual(result.windows[1], { ...scoped, scope: 'other' });
     assert.equal(mergePoll(result, { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blockedUntil, until);
   }
   const indefinite = mergePoll(prev, { blocked: true, blockedReason: 'balance exhausted', windows: [] });
@@ -1417,16 +1417,18 @@ test('I13: isSession is the session-window predicate', async () => {
   assert.equal(isSession({ label: 'requests' }), false);
   assert.equal(isSession({ scope: 'session', label: 'weekly' }), true);
   assert.equal(isSession({ scope: 'weekly', label: '5-hour' }), false);
-  assert.equal(isSession({ scope: 'model', windowMinutes: 300 }), false);
+  assert.equal(isSession({ scope: 'session', models: 'spark', windowMinutes: 300 }), true);
+  assert.equal(isSession({ scope: 'model', models: 'spark', windowMinutes: 300 }), true, 'a legacy model tag falls back to its time horizon');
 });
 
 test('polled and event windows are tagged with their usage scope', async () => {
-  const { refreshLimits } = await import('../core/limits.mjs');
+  const { refreshLimits, isSession } = await import('../core/limits.mjs');
   const id = 'scope-source-test', priorProvider = PROVIDERS[id], priorLimits = getLimits().providers[id];
   PROVIDERS[id] = { id, pollLimits: async () => ({ provider: id, blocked: false, windows: [
     { id: 'five_hour', label: '5-hour', windowMinutes: 300, usedPercent: 20 },
     { id: 'seven_day', label: 'weekly', windowMinutes: 10080, usedPercent: 30 },
     { id: 'seven_day_opus', label: 'weekly Opus', models: 'opus', windowMinutes: 10080, usedPercent: 40 },
+    { id: 'codex:spark', label: 'Spark primary', models: 'spark', windowMinutes: 300, usedPercent: 45 },
     { id: 'deepseek:budget', label: 'budget USD 5.00', usedPercent: 50 },
     { id: 'provider-scope', label: '5-hour', scope: 'weekly', usedPercent: 60 },
   ] }) };
@@ -1436,12 +1438,14 @@ test('polled and event windows are tagged with their usage scope', async () => {
     assert.deepEqual(p.windows.map(({ id: windowId, scope }) => [windowId, scope]), [
       ['five_hour', 'session'],
       ['seven_day', 'weekly'],
-      ['seven_day_opus', 'model'],
+      ['seven_day_opus', 'weekly'],
+      ['codex:spark', 'session'],
       ['deepseek:budget', 'other'],
       ['provider-scope', 'weekly'],
     ]);
+    assert.equal(isSession(p.windows.find((w) => w.id === 'codex:spark')), true);
 
-    for (const [rateLimitType, scope] of [['five_hour', 'session'], ['seven_day', 'weekly'], ['seven_day_opus', 'model']]) {
+    for (const [rateLimitType, scope] of [['five_hour', 'session'], ['seven_day', 'weekly'], ['seven_day_opus', 'weekly']]) {
       const event = { rateLimitType, status: 'allowed', utilization: 0.25 };
       noteRateLimitEvent(id, event);
       assertStoredEvent(getLimits().providers[id].windows.find((w) => w.id === rateLimitType), event, scope);
