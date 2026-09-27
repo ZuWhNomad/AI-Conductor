@@ -36,10 +36,22 @@ function render(config = structuredClone(DEFAULTS)) {
 test('Settings shows the configured update policy and no guessed Grok hour', async () => {
   const view = render();
   assert.equal(view.field('conductor.autoUpdate').value, DEFAULTS.conductor.autoUpdate);
+  assert.equal(view.field('worker.efficiencyMode').checked, false);
   assert.equal(view.field('grok-reset-day').value, '-1');
   assert.equal(view.field('grok-reset-hour').value, '');
   await view.save();
   assert.deepEqual(view.posts[0].patch.scorecard.usageResets.grok, { periodHours: 0 });
+});
+
+test('Settings toggles and saves global efficiency mode', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.worker.efficiencyMode = true;
+  const view = render(config);
+  assert.equal(view.field('worker.efficiencyMode').type, 'checkbox');
+  assert.equal(view.field('worker.efficiencyMode').checked, true);
+  view.field('worker.efficiencyMode').checked = false;
+  await view.save();
+  assert.equal(view.posts[0].patch.worker.efficiencyMode, false);
 });
 
 test('a Grok reset needs an explicit valid hour, including midnight', async () => {

@@ -6,19 +6,16 @@ import { join } from 'node:path';
 
 const { loadConfig, saveConfig, publicConfig, DEFAULTS } = await import('../core/config.mjs');
 
-test('L6/P9: queued failover and task retention settings use the owner defaults and bounds', () => {
+test('efficiency mode and task retention settings use the owner defaults and bounds', () => {
   const previous = loadConfig().worker;
   try {
-    assert.equal(DEFAULTS.worker.failoverAfterBlockMinutes, 15);
+    assert.equal(DEFAULTS.worker.efficiencyMode, false);
     assert.equal(DEFAULTS.worker.tasksInMemory, 500);
-    for (const failoverAfterBlockMinutes of [0, 0.5, 15]) {
-      saveConfig({ worker: { failoverAfterBlockMinutes } });
-      assert.equal(loadConfig().worker.failoverAfterBlockMinutes, failoverAfterBlockMinutes);
-    }
-    for (const failoverAfterBlockMinutes of [-1, null, '15', Infinity, NaN]) {
-      saveConfig({ worker: { failoverAfterBlockMinutes } });
-      assert.equal(loadConfig().worker.failoverAfterBlockMinutes, 15);
-    }
+    saveConfig({ worker: { efficiencyMode: true } });
+    assert.equal(loadConfig().worker.efficiencyMode, true);
+    saveConfig({ worker: { efficiencyMode: false, failoverAfterBlockMinutes: 15 } });
+    assert.equal(loadConfig().worker.efficiencyMode, false);
+    assert.equal(loadConfig().worker.failoverAfterBlockMinutes, undefined, 'the superseded threshold is discarded');
     for (const tasksInMemory of [50, 500, 501]) {
       saveConfig({ worker: { tasksInMemory } });
       assert.equal(loadConfig().worker.tasksInMemory, tasksInMemory);

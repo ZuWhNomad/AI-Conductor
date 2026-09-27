@@ -291,6 +291,36 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
   }
 });
 
+test('efficiency mode keeps a mid-run limit task on the pinned model until the confirmed reset', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const scorecard = loadConfig().scorecard;
+  const reset = Date.now() + 60_000;
+  registryModels(ctx, [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }]);
+  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'] } });
+  recordRun({ id: 'efficiency-midrun-alt', status: 'done', provider: 'ollama', model: 'qwen', category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  rateTask('efficiency-midrun-alt', 'pass');
+  getLimits().providers.deepseek = { provider: 'deepseek', blocked: false, windows: [{ id: 'requests', usedPercent: 99, resetsAt: reset }] };
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, limitHit: true, error: 'usage limit' }));
+  const t = tk.createTask({ cwd: tmpDir('efficiency-midrun'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, efficiencyMode: true });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await tk.awaitTask(t.id, 1000);
+    assert.equal(done.status, 'parked');
+    assert.equal(done.resumeAt, reset);
+    assert.equal(done.failedOverTo, undefined, 'a waiting task is never rerouted on its own');
+    assert.equal(tk.getTask(t.id).model, 'deepseek-flash');
+    assert.ok(tk.describeTask(t).includes(`waiting for deepseek reset at ${new Date(reset).toISOString()} (efficiency mode)`));
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.cancelTask(t.id);
+    delete getLimits().providers.deepseek;
+    saveConfig({ scorecard });
+  }
+});
+
 test('failover excludes the whole current provider before choosing an eligible alternative', async (ctx) => {
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
   const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
@@ -1359,25 +1389,25 @@ test('I9: openTasks returns every non-terminal state without the list limit', ()
 });
 
 for (const scenario of [
-  { name: 'short 429', minutes: 15, remaining: 60_000, failover: false },
-  { name: 'threshold boundary', minutes: 15, remaining: 15 * 60_000, failover: false },
-  { name: 'long block', minutes: 15, remaining: 15 * 60_000 + 1, failover: true },
-  { name: 'disabled', minutes: 0, remaining: 15 * 60_000 + 1, failover: false },
-  { name: 'no alternative', minutes: 15, remaining: 15 * 60_000 + 1, failover: false, unavailable: true },
-]) test(`L6: queued failover respects ${scenario.name} and dispatches after collecting replacements`, async (ctx) => {
+  { name: 'default failover', global: false, remaining: 60_000, failover: true },
+  { name: 'global efficiency wait', global: true, remaining: 60_000, failover: false },
+  { name: 'per-task wait override', global: false, task: true, remaining: 60_000, failover: false },
+  { name: 'per-task failover override', global: true, task: false, remaining: 60_000, failover: true },
+  { name: 'no alternative', global: false, remaining: 60_000, failover: false, unavailable: true },
+]) test(`queued limit handling uses ${scenario.name} and dispatches after collecting replacements`, async (ctx) => {
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
   const { getLimits } = await import('../core/limits.mjs');
   const { recordRun, rateTask } = await import('../core/scorecard.mjs');
   const { bus } = await import('../core/bus.mjs');
   const previous = loadConfig(), provider = 'l6-blocked', model = 'l6-alternative';
   const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
-  saveConfig({ worker: { failoverAfterBlockMinutes: scenario.minutes }, scorecard: { minSamples: 1, classOrder: ['free'] } });
+  saveConfig({ worker: { efficiencyMode: scenario.global }, scorecard: { minSamples: 1, classOrder: ['free'] } });
   registryModels(ctx, scenario.unavailable ? [] : [{ provider: 'ollama', id: model, kind: 'agent', cost: 'free-local' }]);
   recordRun({ id: `l6-seed-${scenario.name}`, status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask(`l6-seed-${scenario.name}`, 'pass');
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: now + scenario.remaining, windows: [] };
   const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'ok' }));
-  const batch = ['first', 'second'].map((title) => tk.createTask({ cwd: tmpDir('l6'), provider, title, spec: 'x', category: 'review', difficulty: 2 }));
+  const batch = ['first', 'second'].map((title) => tk.createTask({ cwd: tmpDir('l6'), provider, title, spec: 'x', category: 'review', difficulty: 2, efficiencyMode: scenario.task }));
   const waiting = batch.map((t) => tk.awaitTask(t.id, scenario.remaining / 2)); // these waits end before the park
   const statesAtDispatch = [];
   const onTask = (e) => {
@@ -1398,7 +1428,10 @@ for (const scenario of [
       assert.ok(replacements.every((t) => t.spec === 'x'), 'a never-started task adds no handoff note');
       assert.ok(replacements.every((t) => t.provider === 'ollama' && t.model === model));
       for (const done of await Promise.all(replacements.map((t) => tk.awaitTask(t.id)))) assert.equal(done.status, 'done');
-    } else assert.ok(batch.every((t) => !t.failedOverTo && t.resumeAt === now + scenario.remaining));
+    } else {
+      assert.ok(batch.every((t) => !t.failedOverTo && t.resumeAt === now + scenario.remaining));
+      if (scenario.global || scenario.task) for (const t of batch) assert.ok(tk.describeTask(t).includes(`waiting for ${provider} reset at ${new Date(now + scenario.remaining).toISOString()} (efficiency mode)`));
+    }
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     bus.off('event', onTask);

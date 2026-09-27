@@ -962,6 +962,7 @@ function openSettings() {
   const grokReset = () => (Number(c.scorecard?.usageResets?.grok?.periodHours) > 0 ? c.scorecard.usageResets.grok : null); // periodHours 0 / absent = not set
   const grid = el('div', 'grid');
   const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
+  const toggleField = (label, id, checked, hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = 'checkbox'; i.id = 'cfg-' + id; i.checked = !!checked; grid.append(l, i); return i; };
   const selectField = (label, id, value, opts) => { grid.append(el('label', null, label)); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
   const pickerRow = (label, prefix, sel, opts) => {
     grid.append(el('label', null, label));
@@ -982,6 +983,7 @@ function openSettings() {
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
   body.append(el('h4', null, 'Worker behaviour'));
+  toggleField('Efficiency mode', 'worker.efficiencyMode', c.worker.efficiencyMode, 'Wait for the same model when it reaches a usage limit. Off fails over to the next available model.');
   const sbxRow = el('div', 'row');
   const sbxSel = el('select'); sbxSel.id = 'cfg-worker.codexSandbox';
   for (const o of ['read-only', 'workspace-write', 'danger-full-access']) sbxSel.append(new Option(o, o));
@@ -1022,7 +1024,7 @@ function openSettings() {
     const patch = {};
     for (const i of grid.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
-      const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'number' ? Number(i.value) : i.value;
+      const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'checkbox' ? !!i.checked : i.type === 'number' ? Number(i.value) : i.value;
       if (i.type === 'password') {
         if (v === '••••') continue;
         if (!v) {

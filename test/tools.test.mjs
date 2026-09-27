@@ -234,11 +234,23 @@ test('run_plan passes avoid_families through from a task or the defaults', async
   }
 });
 
-test('delegate no_failover makes a strict pin: the task carries noFailover', async () => {
-  const tools = conductorToolDefs({ sessionId: 'nofo', cwd: cwd() });
-  const msg = await tools.find((d) => d.name === 'delegate').handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, no_failover: true });
-  const id = /^Task (\S+)/.exec(msg)[1];
-  try { assert.equal(getTask(id).noFailover, true); } finally { cancelTask(id); }
+test('delegate efficiency_mode overrides the global switch for explicit pins', async () => {
+  const previous = loadConfig().worker;
+  const tools = conductorToolDefs({ sessionId: 'efficiency', cwd: cwd() });
+  const delegate = tools.find((d) => d.name === 'delegate');
+  const ids = [];
+  saveConfig({ worker: { efficiencyMode: true } });
+  try {
+    for (const [input, expected] of [[{}, true], [{ efficiency_mode: false }, false], [{ efficiency_mode: true }, true]]) {
+      const msg = await delegate.handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, ...input });
+      const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
+      assert.equal(getTask(id).efficiencyMode, expected);
+    }
+    assert.equal('no_failover' in delegate.schema.shape, false, 'the old public limit knob is gone');
+  } finally {
+    for (const id of ids) cancelTask(id);
+    saveConfig({ worker: previous });
+  }
 });
 
 test('model_scores archived returns the archived table without plans or bench hygiene', async () => {
