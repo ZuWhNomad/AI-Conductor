@@ -20,12 +20,23 @@ test('scores modal archived toggle requests and displays the archived score view
   const context = {
     el,
     openModal() {},
-    api: { get: async (path) => { gets.push(path); return path === '/api/bench' ? { text: 'due' } : { text: path.includes('archived=1') ? 'archived rows' : 'active rows' }; } },
+    api: { get: async (path) => { gets.push(path); return path === '/api/bench' ? { text: 'due' } : {
+      text: path.includes('archived=1') ? 'archived rows' : 'active rows',
+      grid: path.includes('archived=1') ? [] : [{ category: 'read', levels: [
+        { level: 1, status: 'pick', selection: 'codex:luna:low', quality: 1, evidenceSource: 'bench', shipped: true, n: 3, last: '2026-09-27' },
+        { level: 2, status: 'capped', selections: ['codex:terra:medium'], resetAt: Date.parse('2026-09-28T00:00:00Z') },
+        { level: 3, status: 'no-data' }, { level: 4, status: 'no-data' }, { level: 5, status: 'no-data' },
+      ] }],
+      benched: [{ selection: 'codex:bad:low', category: 'read', level: 1, quality: 0, n: 3, last: '2026-09-27' }],
+    }; } },
   };
   await runInNewContext(`${openScores}\nopenScores()`, context);
   const toggle = nodes.find((n) => n['aria-label'] === 'Show archived scores');
   assert.ok(toggle);
   assert.deepEqual(gets, ['/api/scores', '/api/bench']);
+  assert.ok(nodes.some((n) => n.tag === 'table' && n.className === 'score-grid'));
+  assert.ok(nodes.some((n) => /shipped bench · n=3/.test(n.textContent)));
+  assert.ok(nodes.some((n) => /codex:bad:low read@1/.test(n.textContent)));
   toggle.checked = true;
   await toggle.onchange();
   assert.deepEqual(gets, ['/api/scores', '/api/bench', '/api/scores?archived=1']);

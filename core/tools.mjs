@@ -309,7 +309,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'model_scores',
-      description: 'Scorecard. Default: the short view: best pick + runner-up per category and level, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. archived: true shows only archived history (full table, no routing plans or bench hygiene). `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
+      description: 'Scorecard. Default: the short view gives every category@level as a pick with n/date, capped selection/reset, or no data, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. archived: true shows only archived history (full table, no routing plans or bench hygiene). `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
       schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs'), detail: z.boolean().optional().describe('Full table, plans with reasons and error rates (long)'), archived: z.boolean().optional().describe('Show only archived selections') }),
       handler: async (a) => {
         if (a.archived) return formatScores({ category: a.category || null, source: a.source || null, archived: true });

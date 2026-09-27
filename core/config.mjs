@@ -86,8 +86,8 @@ export const DEFAULTS = {
   review: { everyDays: 0 },           // 0 = manual only
   scorecard: {                        // empirical worker selection (core/scorecard.mjs)
     shippedBatteries: true,           // use the aggregate smoke cells shipped with the repo; false = local evidence only
-    minSamples: 1,                    // rated runs before a model/category/level can be picked
-    benchMinSamples: 3,               // rated runs before a below-bar cell can bench a model
+    minSamples: 1,                    // recency-weighted rated evidence before a model/category/level can be picked
+    benchMinSamples: 3,               // recency-weighted rated evidence before a below-bar cell can bench a model
     quality: 0.75,                    // mean verdict (pass 1, fixable 0.5, fail 0) a final step must reach
     qualityValueUsd: 5,               // $ one full quality point is worth (≈ what a failed task costs you in review + redo)
     hourlyUsd: 0,                     // $ per hour of worker wall clock (0 = ignore speed)
