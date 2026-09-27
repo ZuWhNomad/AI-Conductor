@@ -328,31 +328,14 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     if (stage.for_each) {
       const groups = new Map();
       // L2: group by the item object reference expandStage passed, never by a worker-supplied id.
-      for (const d of done) {
-        const k = d.input.item;
-        if (!groups.has(k)) groups.set(k, { item: d.input.item, done: [] });
-        groups.get(k).done.push(d);
-      }
+      for (const d of done) { const k = d.input.item; if (!groups.has(k)) groups.set(k, { item: d.input.item, done: [] }); groups.get(k).done.push(d); }
       for (const g of groups.values()) {
-        const finished = g.done.filter((d) => d.ok);
-        const failed = g.done.filter((d) => !d.ok);
-        if (!finished.length) {
-          const failedTasks = failed.map((d) => d.id);
-          result.unverified.push({ ...g.item, votes: [], failedTasks, failedTaskIds: failedTasks });
-          continue;
-        }
+        const finished = g.done.filter((d) => d.ok), failed = g.done.filter((d) => !d.ok);
+        if (!finished.length) { result.unverified.push({ ...g.item, votes: [], failedTasks: failed.map((d) => d.id) }); continue; }
         const votes = finished.map((d) => ({ ...parseVerdict(d.report), taskId: d.id, ok: true }));
         const t = tally(votes, stage.pass || 'majority');
-        const failedCount = failed.length;
-        const tallyStr = failedCount > 0
-          ? `${t.real}/${t.total} (${failedCount} vote${failedCount === 1 ? '' : 's'} failed)`
-          : `${t.real}/${t.total}`;
-        const entry = {
-          ...g.item,
-          votes: votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)),
-          tally: tallyStr,
-          ...(failedCount > 0 ? { failedTasks: failed.map((d) => d.id) } : {}),
-        };
+        const tallyStr = failed.length ? `${t.real}/${t.total} (${failed.length} vote${failed.length === 1 ? '' : 's'} failed)` : `${t.real}/${t.total}`;
+        const entry = { ...g.item, votes: votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)), tally: tallyStr, ...(failed.length ? { failedTasks: failed.map((d) => d.id) } : {}) };
         (t.confirmed ? result.confirmed : result.rejected).push(entry);
       }
       result.findings = result.confirmed;
