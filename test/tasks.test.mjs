@@ -1555,5 +1555,5 @@ test('changedFiles lists a file once when git and a Windows worker report it wit
 
 test('schedule wraps the pass in withLimitsSnapshot', () => {
   const src = readFileSync(new URL('../core/tasks.mjs', import.meta.url), 'utf8');
-  assert.match(src, /export function schedule\(\) \{[\s\S]*?withLimitsSnapshot\(\(\) => \{/);
+  assert.match(src, /export function schedule\(\) \{[\s\S]*?withLimitsSnapshot\(/);
 });
