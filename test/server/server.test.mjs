@@ -526,17 +526,28 @@ test('POST /api/tasks defaults parallelOverride and overflowApi from the session
   await post(`/api/tasks/${explicit.id}/cancel`);
 });
 
-test('GET /api/scores returns text, the category-level grid, and benched cells', async () => {
+test('GET /api/scores returns text, the category-level grid, benched cells, and manual eligibility', async () => {
   const sc = await get('/api/scores');
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
   assert.equal(sc.grid.length, 15);
   assert.ok(sc.grid.every((row) => row.levels.length === 5));
   assert.ok(Array.isArray(sc.benched));
+  assert.ok(Array.isArray(sc.eligibility));
   const archived = await get('/api/scores?archived=1');
   assert.equal(typeof archived.text, 'string');
   assert.deepEqual(archived.grid, []);
   assert.ok(Array.isArray(archived.benched));
+  assert.deepEqual(archived.eligibility, []);
+});
+
+test('B10: score eligibility HTTP route appends the override and exposes its reason', async () => {
+  const saved = await post('/api/scores/eligibility', { sel: 'fixture:http-model:low', category: 'design', action: 'block', reason: 'owner HTTP decision' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.eligibility.sel, 'fixture:http-model:low');
+  const scores = await get('/api/scores?category=design');
+  assert.ok(scores.eligibility.some((r) => r.sel === 'fixture:http-model:low' && r.reason === 'owner HTTP decision'));
+  assert.match(scores.text, /BLOCK fixture:http-model:low for design: owner HTTP decision/);
 });
 
 test('POST /api/ollama/pull is gone', async () => {

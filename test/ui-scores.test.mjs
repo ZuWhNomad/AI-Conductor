@@ -42,3 +42,29 @@ test('scores modal archived toggle requests and displays the archived score view
   assert.deepEqual(gets, ['/api/scores', '/api/bench', '/api/scores?archived=1']);
   assert.equal(nodes.find((n) => n.tag === 'pre' && n.textContent === 'archived rows')?.textContent, 'archived rows');
 });
+
+test('B10: scores modal posts a manual eligibility decision and reloads the explanation', async () => {
+  const nodes = [], posts = [];
+  const el = (tag, cls, text) => {
+    const node = { tag, className: cls || '', textContent: text ?? '', children: [], hidden: false, checked: false, type: '', value: '',
+      append(...children) { this.children.push(...children); },
+      setAttribute(name, value) { this[name] = value; },
+    };
+    nodes.push(node); return node;
+  };
+  const context = {
+    el, openModal() {}, act: (fn) => fn(),
+    api: {
+      get: async (path) => path === '/api/bench' ? { text: '' } : { text: 'scores with eligibility' },
+      post: async (path, body) => { posts.push({ path, body }); return { eligibility: body }; },
+    },
+  };
+  await runInNewContext(`${openScores}\nopenScores()`, context);
+  nodes.find((n) => n['aria-label'] === 'Eligibility selection').value = 'codex:gpt-6-astra:high';
+  nodes.find((n) => n['aria-label'] === 'Eligibility category').value = 'review';
+  nodes.find((n) => n['aria-label'] === 'Eligibility reason').value = 'owner UI decision';
+  await nodes.find((n) => n.tag === 'button' && n.textContent === 'Block').onclick();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, '/api/scores/eligibility');
+  assert.equal(JSON.stringify(posts[0].body), JSON.stringify({ sel: 'codex:gpt-6-astra:high', category: 'review', action: 'block', reason: 'owner UI decision' }));
+});

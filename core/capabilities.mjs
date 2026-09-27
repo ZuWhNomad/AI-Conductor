@@ -3,7 +3,7 @@
 // `tools.index` (merged by name; null removes; an entry with only extra fields tags a shared one). Availability is
 // detected at startup and on Refresh, asynchronously and windowless, and cached in the state dir. Nothing here ever
 // installs anything: a missing program is offered to the user with its official link, once.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT, statePath, readJson, writeJson, nowIso } from './paths.mjs';
 import { loadConfig } from './config.mjs';
@@ -16,6 +16,18 @@ const PLATFORM = process.platform === 'win32' ? 'win' : process.platform === 'da
 const FILE = join(REPO_ROOT, 'core', 'policy', 'capabilities.json');
 const STATE = () => statePath('capabilities.json');
 
+function ledgerOcrCommand(cfg) {
+  if (Object.hasOwn(cfg.tools || {}, 'ledgerOcrCommand')) {
+    const configured = cfg.tools.ledgerOcrCommand;
+    return typeof configured === 'string' && configured.trim() && existsSync(configured.trim()) ? configured.trim() : null;
+  }
+  const candidates = [
+    'F:\\LedgerOCR\\dev\\run-ledger-ocr.cmd',
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'LedgerOCR', 'LedgerOCR.exe'),
+  ].filter(Boolean);
+  return candidates.find((p) => existsSync(p)) || null;
+}
+
 /** The merged index for this platform: [{ name, kind, categories, purpose, invoke, detect, install, platforms, added, keywords, match, providers, approved, source }]. */
 export function loadIndex(cfg = loadConfig()) {
   let shared = []; try { shared = JSON.parse(readFileSync(FILE, 'utf8')); } catch {}
@@ -24,7 +36,11 @@ export function loadIndex(cfg = loadConfig()) {
     if (e === null || e === false) out.delete(name);
     else if (e && typeof e === 'object') out.set(name, { ...(out.get(name) || {}), ...e, name, source: out.has(name) ? 'repo' : 'config' });
   }
-  return [...out.values()].filter((e) => !Array.isArray(e.platforms) || !e.platforms.length || e.platforms.includes(PLATFORM));
+  return [...out.values()].filter((e) => !Array.isArray(e.platforms) || !e.platforms.length || e.platforms.includes(PLATFORM)).map((e) => {
+    if (e.name !== 'ledger-ocr') return e;
+    const command = ledgerOcrCommand(cfg);
+    return { ...e, command, disabled: !command, ...(command ? { invoke: `"${command}" <file.pdf|image> --out <output-dir> --mode text --json` } : {}) };
+  });
 }
 
 let status = null; // name -> { available, version, checkedAt }; the last detection, loaded from the state dir on first use
@@ -47,8 +63,10 @@ export async function detectCapabilities(cfg = loadConfig()) {
   const next = {};
   await Promise.all(loadIndex(cfg).map(async (e) => {
     if (e.approved === false) return; // Research proposals cannot run detectors before approval.
+    if (e.disabled) { next[e.name] = { available: false, version: null, checkedAt: nowIso() }; return; }
     let available = false, version = null;
-    if (e.kind === 'cli' && e.detect?.command) { const bin = findCli(e.detect.command); if (bin) { version = await capture(bin, e.detect.args || ['--version']); available = version != null; } }
+    if (e.kind === 'cli' && e.command && /\.(cmd|bat)$/i.test(e.command)) { available = existsSync(e.command); version = available ? 'headless --json' : null; }
+    else if (e.kind === 'cli' && (e.command || e.detect?.command)) { const bin = e.command || findCli(e.detect.command); if (bin) { version = await capture(bin, e.detect?.args || ['--version']); available = version != null; } }
     else if (e.kind === 'mcp') available = !!mcpServers(cfg)[e.detect?.server || e.name];
     else if (e.kind === 'access') available = !e.providers?.length || e.providers.some((p) => getModels().providers?.[p]?.status === 'ok');
     else available = true; // recipe / python-lib / app: described, not probed
@@ -63,7 +81,7 @@ export async function detectCapabilities(cfg = loadConfig()) {
 /** Entries for a category (null = all), each with its detected availability (null = never checked). */
 export function capabilitiesFor(category, cfg = loadConfig()) {
   const st = detectionStatus();
-  return loadIndex(cfg).filter((e) => !category || (e.categories || []).includes(category)).map((e) => ({ ...e, available: st[e.name]?.available ?? null, version: st[e.name]?.version ?? null }));
+  return loadIndex(cfg).filter((e) => !category || (e.categories || []).includes(category)).map((e) => ({ ...e, available: e.disabled ? false : st[e.name]?.available ?? null, version: st[e.name]?.version ?? null }));
 }
 
 /**
@@ -71,10 +89,11 @@ export function capabilitiesFor(category, cfg = loadConfig()) {
  * entry that the user has not approved. These lines have their own character budget (worker.toolLineChars),
  * separate from the recipe; entries stop before exceeding maxChars.
  */
-export function capabilityLines(category, { maxChars = 1500, cfg = loadConfig() } = {}) {
+export function capabilityLines(category, { maxChars = 1500, cfg = loadConfig(), text = '' } = {}) {
   const lines = [];
   for (const e of capabilitiesFor(category, cfg)) {
     if ((e.kind !== 'access' && e.available !== true) || e.approved === false) continue;
+    if (e.requireMatch && e.match?.length && !e.match.some((m) => String(text).toLowerCase().includes(String(m).toLowerCase()))) continue;
     const l = e.kind === 'access' ? `- ${e.name}: ${e.purpose}` : `- ${e.name}${e.version ? ` (${e.version})` : ''}: ${e.purpose}. Invoke: ${e.invoke}`;
     if (lines.join('\n').length + l.length + 1 > maxChars) break;
     lines.push(l);

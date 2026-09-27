@@ -991,6 +991,7 @@ function openSettings() {
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
   body.append(el('h4', null, 'Worker behaviour'));
   toggleField('Efficiency mode', 'worker.efficiencyMode', c.worker.efficiencyMode, 'Wait for the same model when it reaches a usage limit. Off fails over to the next available model.');
+  selectField('Scorecard cold start', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors']);
   const sbxRow = el('div', 'row');
   const sbxSel = el('select'); sbxSel.id = 'cfg-worker.codexSandbox';
   for (const o of ['read-only', 'workspace-write', 'danger-full-access']) sbxSel.append(new Option(o, o));
@@ -1135,8 +1136,16 @@ async function openScores() {
   const benchedTitle = el('h4', null, 'Benched cells'); const benched = el('pre');
   const details = el('details', 'score-details'); const detailsLabel = el('summary', null, 'Full table and routing details');
   const scores = el('pre', null, 'Loading…'); details.append(detailsLabel, scores);
+  const eligibility = el('div', 'row');
+  const sel = el('input'); sel.placeholder = 'provider:model:effort'; sel.setAttribute('aria-label', 'Eligibility selection');
+  const category = el('select'); category.setAttribute('aria-label', 'Eligibility category');
+  for (const name of ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other']) { const o = el('option', null, name); o.value = name; category.append(o); }
+  category.value = 'read';
+  const reason = el('input'); reason.placeholder = 'reason'; reason.setAttribute('aria-label', 'Eligibility reason');
+  const block = el('button', 'sm danger', 'Block'); const allow = el('button', 'sm', 'Allow'); const eligibilityStatus = el('span', 'tiny muted');
+  eligibility.append(sel, category, reason, block, allow, eligibilityStatus);
   const benchTitle = el('h4', null, 'Due for benchmark'); const bench = el('pre');
-  body.append(head, gridTitle, grid, benchedTitle, benched, details, benchTitle, bench);
+  body.append(head, gridTitle, grid, benchedTitle, benched, details, eligibility, benchTitle, bench);
   openModal('Benchmarks & scores', body);
   let benchData;
   const renderGrid = (rows) => {
@@ -1168,10 +1177,20 @@ async function openScores() {
       benchData = bn; title.textContent = archived.checked ? 'Archived scores' : 'Scores (measured worker selection)'; scores.textContent = sc.text || '(no rated runs yet)'; renderGrid(sc.grid);
       benchedTitle.hidden = benched.hidden = !(sc.benched || []).length;
       benched.textContent = (sc.benched || []).map((c) => `${c.selection} ${c.category}@${c.level}: q${c.quality.toFixed(2)}, n=${c.n}, ${c.last ? String(c.last).slice(0, 10) : '-'}`).join('\n');
+      eligibility.hidden = archived.checked;
       benchTitle.hidden = bench.hidden = archived.checked || !bn?.text;
       bench.textContent = bn?.text || '';
     } catch (e) { scores.className = 'sysline err'; scores.textContent = e.message; }
   };
+  const submitEligibility = (action) => act(async () => {
+    eligibilityStatus.textContent = 'Saving…';
+    try {
+      const r = await api.post('/api/scores/eligibility', { sel: sel.value, category: category.value, action, reason: reason.value });
+      eligibilityStatus.textContent = `${r.eligibility.action} saved`;
+      await load();
+    } catch (e) { eligibilityStatus.textContent = e.message; }
+  });
+  block.onclick = () => submitEligibility('block'); allow.onclick = () => submitEligibility('allow');
   archived.onchange = load;
   await load();
 }

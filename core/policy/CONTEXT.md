@@ -16,6 +16,8 @@ not `core/*.mjs`.
   official installer link. Loaded by `core/capabilities.mjs`; only installed entries reach a worker's spec (after the
   recipe, using separate character budgets: `worker.recipeChars` / `worker.toolLineChars`). Machine-specific entries
   go in config `tools.index`, not here.
+- `priors.json` — shipped hand-picked scorecard tiers. Rules resolve category, then kind, then default; exact
+  machine overrides live in `scorecard.priors`. `core/priors.mjs` retains the code table as the no-file fallback.
 
 **Invariants.** Machine-independent: no absolute paths, no user names, tools referenced by name. Keep each file short
 enough that a small local model can hold it with the tools' schemas. Path-free: the loaders build paths from

@@ -314,7 +314,7 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   const recipeCap = wcfg.recipeChars;
   const toolsCap = wcfg.toolLineChars;
   if (recipe && recipe.length > recipeCap) logImprovement('friction', 'recipes', `recipe for '${t.category}'${t.variant ? ` (variant ${t.variant})` : ''} is ${recipe.length} chars, over the ${recipeCap} budget`, { taskId: t.id, title: t.title });
-  const tools = capabilityLines(t.category, { maxChars: toolsCap });
+  const tools = capabilityLines(t.category, { maxChars: toolsCap, text: `${t.title || ''}\n${t.spec || ''}\n${(t.paths || []).join('\n')}` });
   return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 

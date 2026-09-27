@@ -91,7 +91,8 @@ export const DEFAULTS = {
     quality: 0.75,                    // mean verdict (pass 1, fixable 0.5, fail 0) a final step must reach
     qualityValueUsd: 5,               // $ one full quality point is worth (≈ what a failed task costs you in review + redo)
     hourlyUsd: 0,                     // $ per hour of worker wall clock (0 = ignore speed)
-    usePriors: false,                 // route by public benchmark tier before any measured data exists
+    coldStart: 'off',                 // off | priors: route by hand-picked priors before measured data exists
+    priors: {},                       // exact "provider:model" tier overrides: { category, kind, default }
     prices: {},                       // "provider:model": { in, out, cached } $/M tokens; overrides core/priors.mjs
     archived: [],                     // hidden scorecard selections, exact "provider:model" matched case-insensitively
     effortSlackUsd: 0.01,             // a higher effort of the same model dominates a lower one when within max(this $/task, ...
@@ -192,10 +193,11 @@ export function codexSandboxFor(model, cfg = loadConfig()) {
 }
 
 export function loadConfig() {
-  return normalize(deepMerge(DEFAULTS, overrides()));
+  const raw = overrides();
+  return normalize(deepMerge(DEFAULTS, raw), raw);
 }
 
-function normalize(cfg) {
+function normalize(cfg, raw = {}) {
   if (!plain(cfg)) cfg = structuredClone(DEFAULTS);
   for (const [key, value] of Object.entries(DEFAULTS)) {
     if (plain(value) && !plain(cfg[key])) cfg[key] = structuredClone(value);
@@ -244,7 +246,12 @@ function normalize(cfg) {
   if (!Number.isInteger(cfg.worker.tasksInMemory) || cfg.worker.tasksInMemory < 50) cfg.worker.tasksInMemory = DEFAULTS.worker.tasksInMemory;
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
-  cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;
+  // Legacy config.json files used scorecard.usePriors. A real coldStart value wins; otherwise migrate the old key.
+  const rawScorecard = plain(raw) && plain(raw.scorecard) ? raw.scorecard : {};
+  if (!Object.hasOwn(rawScorecard, 'coldStart') && Object.hasOwn(rawScorecard, 'usePriors')) cfg.scorecard.coldStart = rawScorecard.usePriors ? 'priors' : 'off';
+  if (!['off', 'priors'].includes(cfg.scorecard.coldStart)) cfg.scorecard.coldStart = DEFAULTS.scorecard.coldStart;
+  delete cfg.scorecard.usePriors;
+  if (!plain(cfg.scorecard.priors)) cfg.scorecard.priors = {};
   cfg.scorecard.shippedBatteries = cfg.scorecard.shippedBatteries !== false;
   if (!plain(cfg.scorecard.prices)) cfg.scorecard.prices = {};
   cfg.scorecard.archived = Array.isArray(cfg.scorecard.archived) ? cfg.scorecard.archived.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean) : [];
@@ -392,6 +399,10 @@ function restoreMcpArgs(posted, stored) {
 export function saveConfig(patch) {
   if (!plain(patch)) throw Object.assign(new Error('settings must be a plain object'), { status: 400 });
   const clean = structuredClone(patch);
+  if (plain(clean.scorecard) && !Object.hasOwn(clean.scorecard, 'coldStart') && Object.hasOwn(clean.scorecard, 'usePriors')) {
+    clean.scorecard.coldStart = clean.scorecard.usePriors ? 'priors' : 'off';
+    delete clean.scorecard.usePriors;
+  }
   const parsed = tryReadJson(FILE());
   if (!parsed.ok && !parsed.missing) {
     noteBrokenConfig();
@@ -411,7 +422,8 @@ export function saveConfig(patch) {
   // Merge the patch onto the RAW file (the user's overrides), not onto loadConfig() (which already has DEFAULTS
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
-  const effective = normalize(deepMerge(DEFAULTS, deepMerge(stored, clean)));
+  const merged = deepMerge(stored, clean);
+  const effective = normalize(deepMerge(DEFAULTS, merged), merged);
   writeJson(FILE(), pruneToDefaults(effective, DEFAULTS), { secrets: true });
   fileCache = { key: null, value: {} }; // our own write: re-read on the next load even if size and mtime did not move
   return effective;

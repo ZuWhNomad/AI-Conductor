@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived } from './scorecard.mjs';
+import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived, setEligibility } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
@@ -306,6 +306,20 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         if (a.archived) return formatScores({ category: a.category || null, source: a.source || null, archived: true });
         const { dueForBench, formatBench } = await import('./bench.mjs'); const due = dueForBench();
         return (a.detail || a.category ? formatScores({ category: a.category || null, source: a.source || null }) : formatScoresShort({ source: a.source || null })) + (due.length ? `\n\nBench hygiene: ${formatBench(due)}` : '');
+      },
+    },
+    {
+      name: 'model_eligibility',
+      description: 'Manually block or allow one exact provider:model:effort selection for one scorecard category. The latest decision wins. Block prevents automatic picks; allow lifts a computed bench. Explicit pins and smoke probes remain available.',
+      schema: z.object({
+        sel: z.string().describe('Exact provider:model:effort selection shown by model_scores'),
+        category: z.enum(CATEGORIES),
+        action: z.enum(['block', 'allow']),
+        reason: z.string().min(1).describe('Why this manual override is needed; shown in score explanations'),
+      }),
+      handler: async (a) => {
+        const row = setEligibility(a.sel, a.category, a.action, a.reason);
+        return `${row.action === 'block' ? 'blocked' : 'allowed'} ${row.sel} for ${row.category}: ${row.reason}`;
       },
     },
     {

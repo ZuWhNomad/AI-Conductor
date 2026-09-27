@@ -12,7 +12,7 @@ const { saveConfig } = await import('../core/config.mjs');
 
 test('the index merges the shared catalogue with config (add, tag, remove) and filters by platform', () => {
   const names = cap.loadIndex({ tools: { index: {} } }).map((e) => e.name);
-  assert.ok(names.includes('tesseract') && names.includes('yt-dlp') && names.includes('youtube') && names.includes('x'));
+  assert.ok(names.includes('ledger-ocr') && names.includes('tesseract') && names.includes('yt-dlp') && names.includes('youtube') && names.includes('x'));
   const cfg = { tools: { index: { tesseract: null, ledger: { kind: 'cli', categories: ['read'], purpose: 'private OCR pipeline', invoke: 'ledger-ocr <pdf>', detect: { command: 'ledger-ocr' } }, pdftotext: { categories: ['read', 'summarize', 'search'] }, elsewhere: { kind: 'app', categories: ['read'], purpose: 'x', platforms: ['mac'] } } } };
   const idx = cap.loadIndex(cfg);
   assert.ok(!idx.find((e) => e.name === 'tesseract'));                                   // removed
@@ -22,8 +22,33 @@ test('the index merges the shared catalogue with config (add, tag, remove) and f
   assert.ok(!idx.find((e) => e.name === 'elsewhere'), 'a mac-only entry is not offered on this platform');
 });
 
+test('B10: Ledger-OCR is discovered, configurable, off when absent, and only shown for PDF/image work', () => {
+  const defaultEntry = cap.loadIndex({ tools: { index: {} } }).find((e) => e.name === 'ledger-ocr');
+  assert.equal(defaultEntry.disabled, !defaultEntry.command);
+  if (defaultEntry.command) assert.match(defaultEntry.invoke, /--mode text --json$/);
+  const configuredPath = process.execPath;
+  const configured = cap.loadIndex({ tools: { index: {}, ledgerOcrCommand: configuredPath } }).find((e) => e.name === 'ledger-ocr');
+  assert.equal(configured.command, configuredPath);
+  const off = cap.loadIndex({ tools: { index: {}, ledgerOcrCommand: '' } }).find((e) => e.name === 'ledger-ocr');
+  assert.equal(off.disabled, true);
+
+  const status = cap.detectionStatus(), previous = status['ledger-ocr'];
+  try {
+    status['ledger-ocr'] = { available: true, version: 'LedgerOCR 0.2.0' };
+    assert.doesNotMatch(cap.capabilityLines('read', { text: 'read notes.txt', cfg: { tools: { index: {} } } }), /ledger-ocr/i);
+    const line = cap.capabilityLines('read', { text: 'extract statement.pdf', cfg: { tools: { index: {} } } });
+    assert.match(line, /Ledger-OCR first/);
+    assert.match(line, /--mode text --json/);
+    assert.doesNotMatch(cap.capabilityLines('read', { text: 'extract scan.png', cfg: { tools: { index: {}, ledgerOcrCommand: '' } } }), /ledger-ocr/i);
+  } finally {
+    if (previous === undefined) delete status['ledger-ocr']; else status['ledger-ocr'] = previous;
+  }
+});
+
 test('spec lines list only installed entries, respect the budget, and never a proposed entry', () => {
-  writeFileSync(join(HOME, 'capabilities.json'), JSON.stringify({ tesseract: { available: true, version: 'tesseract 5.3.0' }, pdftotext: { available: false }, ledger: { available: true } }));
+  const detected = { tesseract: { available: true, version: 'tesseract 5.3.0' }, pdftotext: { available: false }, ledger: { available: true } };
+  writeFileSync(join(HOME, 'capabilities.json'), JSON.stringify(detected));
+  Object.assign(cap.detectionStatus(), detected);
   const cfg = { tools: { index: { ledger: { kind: 'cli', categories: ['read'], purpose: 'private OCR pipeline', invoke: 'ledger-ocr <pdf>' }, guess: { kind: 'cli', categories: ['read'], purpose: 'found by research', invoke: 'guess', install: { url: 'https://x' }, added: 'researched 2026-09-20', approved: false } } } };
   const text = cap.capabilityLines('read', { cfg });
   assert.match(text, /^# Programs and services/);
