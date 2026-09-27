@@ -914,7 +914,7 @@ export function describeTask(t) {
     `Task ${t.id} [${t.status}] ${t.title} — ${t.provider}${t.model ? `/${t.model}` : ''}${t.effort ? ` (${t.effort})` : ''}, round ${t.rounds + 1}${r.durationMs ? `, ${Math.round(r.durationMs / 1000)}s` : ''}${t.threadId ? `, thread ${t.threadId}` : ''}`,
   ];
   if (t.warning) lines.push(`Warning: ${t.warning}`);
-  if (t.isolation) lines.push(`Isolation: worktree ${t.isolation.dir} from ${t.isolation.base}${t.isolation.branch ? `, branch ${t.isolation.branch}` : ''}; uncommitted changes in the main checkout are not in the worktree`);
+  if (t.isolation) lines.push(`Isolation: worktree ${t.isolation.dir} from ${t.isolation.base}${t.isolation.branch ? `, branch ${t.isolation.branch}` : ''}; uncommitted changes in the main checkout are not in the worktree; remove it with worktree_cleanup, never plain `git worktree remove` (it follows the linked node_modules/.venv junctions and deletes their contents)`);
   if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
   if (t.status === 'parked') lines.push(t.efficiencyMode
