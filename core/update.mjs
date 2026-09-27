@@ -10,7 +10,7 @@ import { findCli } from './proc.mjs';
 import { bus } from './bus.mjs';
 
 let gitBin;
-const execFileAsync = promisify((cmd, args, opts, cb) => execFile(cmd, args, opts, (error, stdout, stderr) => error ? cb(Object.assign(error, { stdout, stderr })) : cb(null, { stdout, stderr })));
+const execFileAsync = promisify(execFile);
 async function git(args, { cwd = REPO_ROOT, timeout = 30_000, exec = execFileAsync } = {}) {
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) throw new Error('git is not installed (https://git-scm.com)');
@@ -52,7 +52,7 @@ export async function updateStatus({ cwd = REPO_ROOT, fetch = true, exec = execF
 
 /** Fast-forward to origin; refuses when there are local changes or local commits the remote lacks. */
 let applying = null;
-export function applyUpdate({ cwd = REPO_ROOT, npm = true, exec = execFileAsync } = {}) {
+export function applyUpdate({ cwd = applyUpdate.cwd ?? REPO_ROOT, npm = true, exec = applyUpdate.exec ?? execFileAsync } = {}) {
   if (applying) return applying;
   applying = (async () => {
     try {
