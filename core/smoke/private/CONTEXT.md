@@ -8,7 +8,8 @@ benchmark scripts (written into the scratch dir only while `check()` runs), test
 that prove the level 6-7 graders. Fixtures that are derived from a reference (a buggy file is its fix with the bug put
 back) or share a harness with a hidden test live here too. Task definitions stay in `../battery.mjs`.
 
-**Entry points.** `common.mjs` (`CANARY`, `bare`, `marked`, the seeded PRNG `RNG`/`rng`); `l1-5.mjs` (levels 1-5);
+**Entry points.** `common.mjs` (`CANARY`, `bare`, `marked`, the seeded PRNG `RNG`/`rng`); `l1-5.mjs` (original levels 1-5);
+`deterministic.mjs` (B10 gold JSON/rows, references and seeded review mutants);
 one module per level 6-7 task: `refactor-6.mjs`, `implement-6.mjs`, `implement-7.mjs`, `debug-7.mjs`, each exporting
 its bodies plus `MUTANTS`, `VARIANTS` and, where a mutant only fails by timing out, `SLOW_MUTANTS`.
 
