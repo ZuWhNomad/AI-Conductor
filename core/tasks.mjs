@@ -1,6 +1,6 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -760,7 +760,22 @@ async function linkIsolateDirs(t, sourceRoot, worktreeDir) {
 function unlinkIsolateLinks(sourceRoot, worktreeDir, taskCwd) {
   if (!worktreeDir || !existsSync(worktreeDir)) return;
   for (const { dst } of isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd)) {
-    try { if (lstatSync(dst).isSymbolicLink()) unlinkSync(dst); } catch {}
+    let linked = false;
+    try { linked = lstatSync(dst).isSymbolicLink(); }
+    catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot inspect isolate link ${dst}: ${e.message}`); }
+    if (!linked) continue;
+    try { rmdirSync(dst); }
+    catch {
+      try { unlinkSync(dst); } catch {}
+    }
+  }
+  // Fail closed: git worktree remove --force may recursively follow a surviving Windows junction into the source.
+  // Every configured destination must be absent before any worktree removal is allowed to begin.
+  for (const { dst } of isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd)) {
+    let remains = false;
+    try { remains = lstatSync(dst).isSymbolicLink(); } // a real folder (e.g. the worker ran npm ci) cannot reach the source
+    catch (e) { if (e.code === 'ENOENT') continue; throw new Error(`cannot verify isolate link removal ${dst}: ${e.message}`); }
+    if (remains) throw new Error(`isolate link still exists; worktree removal aborted: ${dst}`);
   }
 }
 
@@ -834,8 +849,7 @@ export async function cleanupWorktree(taskId, { deleteBranch = false } = {}) {
   const notes = [];
   if (existsSync(iso.dir)) {
     if (!root) return `worktree_cleanup failed: cannot find git repo for ${taskId}`;
-    unlinkIsolateLinks(root, iso.dir, t.cwd);
-    try { await gitExec(root, ['worktree', 'remove', '--force', iso.dir], 120_000); notes.push(`removed worktree ${iso.dir}`); }
+    try { unlinkIsolateLinks(root, iso.dir, t.cwd); await gitExec(root, ['worktree', 'remove', '--force', iso.dir], 120_000); notes.push(`removed worktree ${iso.dir}`); }
     catch (e) { return `worktree_cleanup failed: ${e.message}`; }
   } else notes.push(`worktree ${iso.dir} already gone`);
   if (deleteBranch && iso.branch && root) {

@@ -1,6 +1,7 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
@@ -1780,9 +1781,9 @@ test('isolate: worker can read ignored node_modules via a link; commit omits it;
   run('add', '--', '.gitignore');
   run('commit', '--quiet', '-m', 'ignore');
   mkdirSync(join(cwd, 'node_modules'));
-  writeFileSync(join(cwd, 'node_modules', 'x.js'), 'KEEP\n');
+  writeFileSync(join(cwd, 'node_modules', 'marker.txt'), 'KEEP\n');
   const tk = await tasksWithWorker(ctx, async (t) => {
-    const body = readFileSync(join(t.cwd, 'node_modules', 'x.js'), 'utf8');
+    const body = readFileSync(join(t.cwd, 'node_modules', 'marker.txt'), 'utf8');
     writeFileSync(join(t.cwd, 'same.txt'), body);
     return { ok: true, finalMessage: body.trim() };
   });
@@ -1798,7 +1799,47 @@ test('isolate: worker can read ignored node_modules via a link; commit omits it;
   assert.ok(!done.changedFiles.some((f) => f.includes('node_modules')));
   await tk.cleanupWorktree(t.id);
   assert.equal(existsSync(done.isolation.dir), false);
-  assert.equal(readFileSync(join(cwd, 'node_modules', 'x.js'), 'utf8'), 'KEEP\n');
+  assert.equal(readFileSync(join(cwd, 'node_modules', 'marker.txt'), 'utf8'), 'KEEP\n');
+});
+
+test('isolate: cleanup aborts before worktree removal when a dependency link cannot be unlinked', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-unlink-fail');
+  const run = initRepo(cwd);
+  writeFileSync(join(cwd, '.gitignore'), 'node_modules\n');
+  run('add', '--', '.gitignore');
+  run('commit', '--quiet', '-m', 'ignore');
+  mkdirSync(join(cwd, 'node_modules'));
+  const marker = join(cwd, 'node_modules', 'marker.txt');
+  writeFileSync(marker, 'KEEP\n');
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    writeFileSync(join(t.cwd, 'same.txt'), readFileSync(join(t.cwd, 'node_modules', 'marker.txt'), 'utf8'));
+    return { ok: true, finalMessage: 'ok' };
+  });
+  const t = tk.createTask({ cwd, title: 'unlink-failure', spec: 'x', provider: 'codex', isolate: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(done.status, 'done', done.error);
+  const link = join(done.isolation.dir, 'node_modules');
+  assert.equal(lstatSync(link).isSymbolicLink(), true);
+
+  const rmdir = ctx.mock.method(fs, 'rmdirSync', () => { throw Object.assign(new Error('forced rmdir failure'), { code: 'EPERM' }); });
+  const unlink = ctx.mock.method(fs, 'unlinkSync', () => { throw Object.assign(new Error('forced unlink failure'), { code: 'EPERM' }); });
+  syncBuiltinESMExports();
+  try {
+    const message = await tk.cleanupWorktree(t.id);
+    assert.match(message, new RegExp(`worktree_cleanup failed:.*${t.id}.*node_modules`, 'i'));
+    assert.equal(existsSync(done.isolation.dir), true, 'cleanup must not remove the worktree after unlink failure');
+    assert.equal(lstatSync(link).isSymbolicLink(), true, 'the failed link remains available for a later retry');
+    assert.equal(readFileSync(marker, 'utf8'), 'KEEP\n', 'the source dependency tree is untouched');
+  } finally {
+    rmdir.mock.restore(); unlink.mock.restore(); syncBuiltinESMExports();
+    await tk.cleanupWorktree(t.id);
+  }
+  assert.equal(existsSync(done.isolation.dir), false);
+  assert.equal(readFileSync(marker, 'utf8'), 'KEEP\n');
 });
 
 test('isolate: an unignored isolateLinks dir is kept out of the commit via info/exclude', async (ctx) => {
