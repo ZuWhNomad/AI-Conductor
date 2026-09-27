@@ -155,6 +155,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
   folder, create or update its `CONTEXT.md`: purpose, entry points, invariants, how to test.
   Keep projects modular so future tasks need only local context.
 - Keep your own context lean: summarize worker output, do not paste whole files into the chat.
+- Stay in this chat's folder. When a request names a path outside it, say so and offer to start a chat there
+  instead of working across folders.
 
 ## Self-improvement
 
