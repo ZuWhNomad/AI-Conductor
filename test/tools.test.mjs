@@ -244,7 +244,7 @@ test('delegate efficiency_mode overrides the global switch for explicit pins', a
   const ids = [];
   saveConfig({ worker: { efficiencyMode: true } });
   try {
-    for (const [input, expected] of [[{}, true], [{ efficiency_mode: false }, false], [{ efficiency_mode: true }, true]]) {
+    for (const [input, expected] of [[{}, true], [{ efficiency_mode: false }, false], [{ efficiency_mode: true }, true], [{ no_failover: false }, false]]) {
       const msg = await delegate.handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, ...input });
       const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
       assert.equal(getTask(id).efficiencyMode, expected);
@@ -257,6 +257,38 @@ test('delegate efficiency_mode overrides the global switch for explicit pins', a
   } finally {
     for (const id of ids) cancelTask(id);
     saveConfig({ worker: previous });
+  }
+});
+
+test('delegate pins wait by default while auto-picks keep the global setting', async () => {
+  const previous = loadConfig().worker;
+  saveConfig({ worker: { efficiencyMode: false } });
+  const delegate = defs({ sessionId: 'pin-default', cwd: cwd() }).find((d) => d.name === 'delegate');
+  const ids = [];
+  try {
+    for (const input of [{ provider: 'ollama', model: 'qwen3.8' }, { provider: 'ollama' }, { efficiency_mode: false, provider: 'ollama', model: 'qwen3.8' }]) {
+      const msg = await delegate.handler({ title: 't', spec: 's', background: true, ...input });
+      const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
+      assert.equal(getTask(id).efficiencyMode, input.efficiency_mode ?? (!!input.provider && !!input.model));
+    }
+  } finally { for (const id of ids) cancelTask(id); saveConfig({ worker: previous }); }
+});
+
+test('run_plan pins wait by default and an explicit false allows failover', async () => {
+  const sessionId = 'plan-pin', created = [];
+  const onTask = (e) => {
+    if (e.type !== 'task' || e.task.sessionId !== sessionId || e.task.status !== 'queued') return;
+    const task = getTask(e.task.id); created.push(task);
+    Object.assign(task, { status: 'done', result: { finalMessage: 'ok' } });
+  };
+  bus.on('event', onTask);
+  try {
+    const run = handler('run_plan', { sessionId });
+    await run({ goal: 'pin semantics', defaults: { provider: 'ollama', model: 'qwen3.8' }, stages: [{ id: 'a', tasks: [{ spec: 'pinned' }, { spec: 'override', efficiency_mode: false }] }] });
+    assert.deepEqual(created.map((t) => t.efficiencyMode), [true, false]);
+  } finally {
+    bus.off('event', onTask);
+    for (const task of created) cancelTask(task.id);
   }
 });
 

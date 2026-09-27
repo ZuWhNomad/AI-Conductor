@@ -75,6 +75,19 @@ test('tasks are journaled, default to the configured worker, and follow-ups need
   assert.equal(await awaitTask('missing'), null);
 });
 
+test('createTask resolves Claude aliases to exact registry ids and preserves unknown ids', (t) => {
+  const cwd = tmpDir('claude-alias');
+  registryModels(t, [
+    { provider: 'claude', id: 'claude-opus-5-5[1m]', aliasOf: ['opus', 'opus[1m]'] },
+    { provider: 'claude', id: 'claude-sonnet-5', aliasOf: ['sonnet'] },
+    { provider: 'claude', id: 'claude-haiku-5', aliasOf: ['haiku', 'default'] },
+  ]);
+  for (const [alias, exact] of [['opus', 'claude-opus-5-5[1m]'], ['opus[1m]', 'claude-opus-5-5[1m]'], ['sonnet', 'claude-sonnet-5'], ['haiku', 'claude-haiku-5'], ['default', 'claude-haiku-5']]) {
+    assert.equal(createTask({ cwd, provider: 'claude', model: alias, spec: 'x' }, { dispatch: false }).model, exact);
+  }
+  assert.equal(createTask({ cwd, provider: 'claude', model: 'claude-opus-4-6', spec: 'x' }, { dispatch: false }).model, 'claude-opus-4-6');
+});
+
 test('watchdog hang failure is terminal, labeled hung and journaled', () => {
   const t = createTask({ cwd: tmpDir('hung-task'), title: 'hung', spec: 'wait' }, { dispatch: false });
   t.status = 'running';

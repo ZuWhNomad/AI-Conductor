@@ -15,7 +15,7 @@ import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, ref
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
-import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
+import { findModel, getModels, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
@@ -211,6 +211,7 @@ export function createTask(i, { dispatch = true } = {}) {
     wakeEligible: true, // watchdog may summarize an un-awaited completion once this chat's whole background batch is done
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
+  if (t.provider === 'claude' && t.model) t.model = getModels().models.find((m) => m.provider === 'claude' && m.aliasOf?.includes(t.model))?.id || t.model;
   // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
   if (!t.sandbox && !i.followUpOf && t.provider === 'codex') t.sandbox = codexSandboxFor(t.model, cfg);
   if (t.followUpOf) {
