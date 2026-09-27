@@ -3,7 +3,8 @@
 // difficulty. Append-only ndjson. `recommend` turns the data into a *plan*: one model, or a ladder
 // (cheap model first, stronger model on fail), chosen by utility = value-of-quality - expected cost.
 import { statSync } from 'node:fs';
-import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
+import { join, resolve } from 'node:path';
+import { appendNdjson, readNdjson, readJson, writeJson, statePath, nowIso, REPO_ROOT } from './paths.mjs';
 import { getLimits, modelBlockedUntil, providerWindows, isSession, withLimitsSnapshot } from './limits.mjs';
 export { providerWindows } from './limits.mjs';
 import { getModels } from './models.mjs';
@@ -14,6 +15,8 @@ import { PROVIDERS } from './providers/index.mjs';
 import { cliVersionOf } from './cli-update.mjs';
 
 const FILE = () => statePath('scorecard.ndjson');
+export const BATTERIES_FILE = join(REPO_ROOT, 'core', 'policy', 'batteries.json');
+export const BATTERIES_SCHEMA_VERSION = 1;
 // Only Claude's SDK cost is a meaningful provider-reported list price today.
 const LIST_COST_PROVIDERS = new Set(['claude']);
 export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
@@ -41,6 +44,41 @@ const archivedSet = (cfg) => new Set((cfg?.scorecard?.archived || cfg?.archived 
 export function isArchived(provider, model, cfg = loadConfig().scorecard) {
   const set = cfg instanceof Set ? cfg : archivedSet(cfg);
   return set.has(`${provider}:${scorecardModelId(model) || 'default'}`.toLowerCase());
+}
+
+const BATTERY_CELL_KEYS = ['provider', 'model', 'effort', 'category', 'difficulty', 'rated', 'pass', 'fixable', 'fail', 'phantom', 'avgUsd', 'avgDurationMs', 'avgTokens', 'lastRunDate'];
+const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+const finiteOrNull = (v) => v === null || (Number.isFinite(v) && v >= 0);
+const count = (v) => Number.isInteger(v) && v >= 0;
+
+/** Strict aggregate-only schema: no task ids, titles, notes, or paths can be carried by this file. */
+export function validBatteriesDocument(doc) {
+  if (!plain(doc) || doc.schemaVersion !== BATTERIES_SCHEMA_VERSION || typeof doc.generatedAt !== 'string' || !Array.isArray(doc.cells)) return false;
+  if (Object.keys(doc).sort().join('|') !== ['cells', 'generatedAt', 'schemaVersion'].join('|')) return false;
+  return doc.cells.every((c) => plain(c)
+    && Object.keys(c).sort().join('|') === [...BATTERY_CELL_KEYS].sort().join('|')
+    && typeof c.provider === 'string' && c.provider.length > 0
+    && (c.model === null || typeof c.model === 'string')
+    && (c.effort === null || typeof c.effort === 'string')
+    && typeof c.category === 'string' && c.category.length > 0
+    && Number.isInteger(c.difficulty) && c.difficulty > 0
+    && ['rated', 'pass', 'fixable', 'fail', 'phantom'].every((k) => count(c[k]))
+    && c.pass + c.fixable + c.fail + c.phantom === c.rated
+    && finiteOrNull(c.avgUsd) && finiteOrNull(c.avgDurationMs) && finiteOrNull(c.avgTokens)
+    && /^\d{4}-\d{2}-\d{2}$/.test(c.lastRunDate));
+}
+
+let shippedCache = null;
+function shippedFingerprint() {
+  try { const st = statSync(BATTERIES_FILE); return `${st.size}:${st.mtimeMs}`; } catch { return 'none'; }
+}
+function shippedCells() {
+  const key = shippedFingerprint();
+  if (shippedCache?.key === key) return shippedCache.cells;
+  const doc = readJson(BATTERIES_FILE);
+  const cells = validBatteriesDocument(doc) ? doc.cells : [];
+  shippedCache = { key, cells };
+  return cells;
 }
 export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
 export function isPhantomCompletion({ ok, claimed = [], canVerify, observedCount }) { return !!ok && !!canVerify && claimed.length > 0 && observedCount === 0; }
@@ -238,7 +276,8 @@ function scorecardMemoKey(source) {
   const ledger = loadLedger();
   const cfg = loadConfig().scorecard;
   const reg = getModels();
-  return `${source || ''}|${ledger.size ?? 'none'}:${ledger.mtimeMs ?? 'none'}|${JSON.stringify(cfg)}|${reg.updatedAt || ''}`;
+  const shipped = (source == null || source === 'smoke') && cfg.shippedBatteries !== false && process.env.CONDUCTOR_NO_SHIPPED !== '1' ? shippedFingerprint() : 'off';
+  return `${source || ''}|${ledger.size ?? 'none'}:${ledger.mtimeMs ?? 'none'}|${JSON.stringify(cfg)}|${reg.updatedAt || ''}|shipped:${shipped}`;
 }
 
 export function rootRuns({ source = null } = {}) {
@@ -342,15 +381,37 @@ function rootRunsUncached({ source = null } = {}) {
  * Aggregate. Single-step rows (one per model/effort × category/difficulty, counting every attempt)
  * and path rows (ladders actually observed, e.g. "codex:luna:low>codex:terra:medium").
  */
-export function summarize({ source = null, archived = false } = {}) {
-  const key = `${scorecardMemoKey(source)}|archived:${archived ? 1 : 0}`;
+export function summarize({ source = null, archived = false, shipped = true } = {}) {
+  const key = `${scorecardMemoKey(source)}|archived:${archived ? 1 : 0}|shipped:${shipped ? 1 : 0}`;
   if (summarizeMemo?.key === key) return summarizeMemo.rows;
-  const out = summarizeUncached({ source, archived });
+  const out = summarizeUncached({ source, archived, shipped });
   summarizeMemo = { key, rows: out };
   return out;
 }
 
-function summarizeUncached({ source = null, archived = false } = {}) {
+const summarySort = (a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1);
+
+function shippedSummary(c) {
+  const sel = selOf(c), quality = c.rated ? (c.pass * SCORE.pass + c.fixable * SCORE.fixable) / c.rated : null;
+  return {
+    sel, steps: 1, provider: c.provider, model: c.model, effort: c.effort, category: c.category, difficulty: c.difficulty,
+    n: c.rated, rated: c.rated, pass: c.pass, fixable: c.fixable, fail: c.fail, phantom: c.phantom,
+    cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
+    quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
+    pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
+    errorRate: c.rated ? (c.fail + c.phantom) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
+    last: c.lastRunDate, shipped: true,
+  };
+}
+
+function mergeShipped(local, archive) {
+  const occupied = new Set(local.filter((g) => g.steps === 1).map((g) => [g.sel, g.category, g.difficulty].join('|')));
+  const fallback = shippedCells().filter((c) => !isArchived(c.provider, c.model, archive)).map(shippedSummary)
+    .filter((g) => !occupied.has([g.sel, g.category, g.difficulty].join('|')));
+  return [...local, ...fallback].sort(summarySort);
+}
+
+function summarizeUncached({ source = null, archived = false, shipped = true } = {}) {
   const archive = archivedSet(loadConfig().scorecard);
   const groups = new Map();
   const add = (sel, steps, cat, diff, x) => {
@@ -385,7 +446,7 @@ function summarizeUncached({ source = null, archived = false } = {}) {
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
+  const local = [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
     const cost = g.steps === 1 ? modelInRegistry(getModels(), g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
@@ -395,7 +456,29 @@ function summarizeUncached({ source = null, archived = false } = {}) {
       avgTokens: mean(_tok), avgUsd: mean(_usd), pricedShare: _attempts ? _priced / _attempts : null, avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
     };
-  }).sort((a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1));
+  }).sort(summarySort);
+  const cfg = loadConfig().scorecard;
+  const useShipped = shipped && !archived && (source == null || source === 'smoke') && cfg.shippedBatteries !== false && process.env.CONDUCTOR_NO_SHIPPED !== '1';
+  return useShipped ? mergeShipped(local, archive) : local;
+}
+
+/** Distill local smoke evidence into the aggregate-only shipped battery schema. */
+export function distillBatteries({ out = null } = {}) {
+  const file = out ? resolve(out) : BATTERIES_FILE;
+  const cells = summarize({ source: 'smoke', shipped: false })
+    .filter((g) => g.steps === 1 && g.rated > 0 && g.last)
+    .map((g) => ({
+      provider: g.provider, model: g.model, effort: g.effort, category: g.category, difficulty: g.difficulty,
+      rated: g.rated, pass: g.pass, fixable: g.fixable, fail: g.fail, phantom: g.phantom,
+      avgUsd: g.avgUsd, avgDurationMs: g.avgDurationMs, avgTokens: g.avgTokens, lastRunDate: String(g.last).slice(0, 10),
+    }))
+    .sort((a, b) => a.provider.localeCompare(b.provider) || String(a.model).localeCompare(String(b.model)) || String(a.effort).localeCompare(String(b.effort)) || a.category.localeCompare(b.category) || a.difficulty - b.difficulty);
+  const previous = readJson(file);
+  const unchanged = validBatteriesDocument(previous) && JSON.stringify(previous.cells) === JSON.stringify(cells);
+  const doc = { schemaVersion: BATTERIES_SCHEMA_VERSION, generatedAt: unchanged ? previous.generatedAt : nowIso(), cells };
+  if (!validBatteriesDocument(doc)) throw new Error('refusing to write invalid shipped battery aggregates');
+  if (!unchanged) writeJson(file, doc);
+  return { file, cells: cells.length, bytes: statSync(file).size, document: doc };
 }
 
 export function errorRates({ source = null, archived = false } = {}) {
@@ -850,7 +933,7 @@ export function formatScores({ category = null, source = null, archived = false,
   if (!rows.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
   const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
-  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
   const cfg = loadConfig().scorecard;
   if (!archived) {
     lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);

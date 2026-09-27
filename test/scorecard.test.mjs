@@ -383,6 +383,7 @@ test('scorecard config is normalized', () => {
   const cfg = loadConfig();
   assert.equal(cfg.scorecard.minSamples, 1);
   assert.equal(cfg.scorecard.benchMinSamples, 3);
+  assert.equal(cfg.scorecard.shippedBatteries, true);
   assert.equal(cfg.scorecard.quality, 0.75);
   assert.equal(cfg.scorecard.qualityValueUsd, 5);
   assert.equal(cfg.scorecard.hourlyUsd, 0);

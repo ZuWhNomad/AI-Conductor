@@ -85,6 +85,7 @@ export const DEFAULTS = {
   },
   review: { everyDays: 0 },           // 0 = manual only
   scorecard: {                        // empirical worker selection (core/scorecard.mjs)
+    shippedBatteries: true,           // use the aggregate smoke cells shipped with the repo; false = local evidence only
     minSamples: 1,                    // rated runs before a model/category/level can be picked
     benchMinSamples: 3,               // rated runs before a below-bar cell can bench a model
     quality: 0.75,                    // mean verdict (pass 1, fixable 0.5, fail 0) a final step must reach
@@ -243,6 +244,7 @@ function normalize(cfg) {
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
   cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;
+  cfg.scorecard.shippedBatteries = cfg.scorecard.shippedBatteries !== false;
   if (!plain(cfg.scorecard.prices)) cfg.scorecard.prices = {};
   cfg.scorecard.archived = Array.isArray(cfg.scorecard.archived) ? cfg.scorecard.archived.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean) : [];
   if (!plain(cfg.scorecard.providerWeight)) cfg.scorecard.providerWeight = { ...DEFAULTS.scorecard.providerWeight };
