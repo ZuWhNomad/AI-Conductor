@@ -984,9 +984,9 @@ test('R2B6: voids invalidate cached admission costs and are filtered on stat fal
   for (const [taskId, delta] of [['R2B6-valid', 3], ['R2B6-void', 90]]) {
     appendNdjson(statePath('scorecard.ndjson'), { op: 'run', taskId, provider, pct: { weekly: delta } });
   }
-  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 50 }];
+  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 60 }]; // headroom 40: average 46.5 does not fit; the remaining 3 does
   const cost = () => measuredCostByWindow(sc.runRows(), provider);
-  assert.deepEqual(cost(), { weekly: 90 });
+  assert.deepEqual(cost(), { weekly: 46.5 });
   const cached = sc.runRows();
   assert.equal(sc.runRows(), cached, 'unchanged ledger uses the cache');
   assert.equal(admit(windows, [{ costs: cost() }]).n, 0);

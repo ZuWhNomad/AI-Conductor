@@ -5,7 +5,7 @@ import { registerHooks } from 'node:module';
 const { measuredCostByWindow, targetFor, nextResetWindows, admit } = await import('../core/sweep.mjs');
 const lim = await import('../core/limits.mjs');
 
-test('measuredCostByWindow takes the largest delta per window, honouring model-group windows and concurrency', () => {
+test('measuredCostByWindow averages per-task deltas per window, honouring model-group windows and concurrency', () => {
   lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: [{ id: 'antigravity:gemini-5h', usedPercent: 10, models: '^(gemini)' }, { id: 'antigravity:3p-5h', usedPercent: 50, models: '^(claude|gpt)' }] };
   const rows = [
     { provider: 'antigravity', model: 'gemini-3.8-flash-low', pct: { 'antigravity:gemini-5h': 0.4, 'antigravity:3p-5h': 0.2 } }, // 3p-5h moved for someone else: not this model's window
@@ -15,7 +15,7 @@ test('measuredCostByWindow takes the largest delta per window, honouring model-g
   ];
   assert.deepEqual(measuredCostByWindow(rows, 'antigravity', { model: 'gemini-3.8-flash-low' }), { 'antigravity:gemini-5h': 0.4 });
   assert.deepEqual(measuredCostByWindow(rows, 'antigravity', { model: 'claude-sonnet-4-6' }), { 'antigravity:3p-5h': 3.1 });
-  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { 'codex:primary': 1 });
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { 'codex:primary': 0.75 }); // (1 + 0.5) / 2
   assert.deepEqual(measuredCostByWindow(rows, 'codex', { model: 'gpt-5.6-sol' }), { 'codex:primary': 0.5 });
   assert.deepEqual(measuredCostByWindow(rows, 'grok'), {});
   delete lim.getLimits().providers.antigravity;
@@ -38,6 +38,22 @@ test('measuredCostByWindow does not throw on an invalid models pattern', () => {
 test('OB2: a measured 0% delta still records the window so it is not treated as unmeasured', () => {
   const rows = [{ provider: 'codex', model: 'x', pct: { w1: 5, w2: 0 } }];
   assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w1: 5, w2: 0 });
+});
+
+test('measuredCostByWindow: an outlier among the last 30 rows does not dominate', () => {
+  const rows = [
+    ...Array.from({ length: 29 }, () => ({ provider: 'codex', model: 'm', pct: { w: 3 } })),
+    { provider: 'codex', model: 'm', pct: { w: 63 } },
+  ];
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w: 5 }); // (29 * 3 + 63) / 30
+});
+
+test('measuredCostByWindow averages only the last 30 matching values per window', () => {
+  const rows = [
+    { provider: 'codex', pct: { stale: 9, w: 100 } },
+    ...Array.from({ length: 30 }, () => ({ provider: 'codex', pct: { w: 2 } })),
+  ];
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { stale: 9, w: 2 });
 });
 
 
@@ -105,7 +121,7 @@ test('P1: sweep reads window targets once per admission and compiles each model 
     assert.deepEqual(sweep.measuredCostByWindow([
       { provider: 'w1-pattern', model: 'model', pct: { w: 2 } },
       { provider: 'w1-pattern', model: 'model', pct: { w: 3 } },
-    ], 'w1-pattern'), { w: 3 });
+    ], 'w1-pattern'), { w: 2.5 });
     assert.deepEqual(compiled, [['^model', 'i']]);
   } finally { hooks.deregister(); delete globalThis.__w1ConfigReads; delete lim.getLimits().providers['w1-pattern']; }
 });

@@ -6,13 +6,14 @@ export { isSession };
 import { loadConfig } from './config.mjs';
 
 /**
- * Per-task cost measured SEPARATELY for each window id: `{ windowId: %-per-task }`. A build that moves a 5-hour
- * window 13% but the weekly only 3% must be charged 13% against the 5-hour and 3% against the weekly — not 13%
- * against both (that wrongly parks a task the weekly has ample room for). The scheduler compares each window's own
- * cost to its own headroom.
+ * Per-task cost measured SEPARATELY for each window id: `{ windowId: %-per-task }`. Each value is the plain
+ * average of the last 30 matching ledger rows (ledger order; a window seen with a zero delta still counts).
+ * A build that moves a 5-hour window 13% but the weekly only 3% must be charged 13% against the 5-hour and 3%
+ * against the weekly — not 13% against both (that wrongly parks a task the weekly has ample room for). The
+ * scheduler compares each window's own cost to its own headroom.
  */
 export function measuredCostByWindow(rows, provider, { model = null } = {}) {
-  const cost = {};
+  const samples = {};
   const windows = getLimits().providers[provider]?.windows || []; // once: getLimits() stats the file on every call
   const matches = new Map(windows.filter((w) => w.models).map((w) => {
     try { const re = new RegExp(w.models, 'i'); return [w.id, (model) => re.test(model)]; }
@@ -25,8 +26,15 @@ export function measuredCostByWindow(rows, provider, { model = null } = {}) {
       if (r.model && matches.has(id) && !matches.get(id)(r.model)) continue;
       const per = d / ((r.concurrentByWindow?.[id] ?? r.concurrent ?? 0) + 1); // legacy rows have only the scalar
       // OB2: always record the window (even zero delta) so isUnmeasured knows it has been observed.
-      cost[id] = Math.max(cost[id] ?? 0, per);
+      (samples[id] ??= []).push(per);
     }
+  }
+  const cost = {};
+  for (const [id, vals] of Object.entries(samples)) {
+    const last = vals.slice(-30); // most recent 30 matching per-task values
+    let sum = 0;
+    for (const v of last) sum += v;
+    cost[id] = sum / last.length;
   }
   return cost;
 }
