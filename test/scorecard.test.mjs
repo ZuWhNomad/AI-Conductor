@@ -43,6 +43,24 @@ const seed = (provider, model, effort, category, difficulty, verdicts, { usage =
   return ids;
 };
 
+test('envFailure identifies provider and CLI environment failures without scanning report prose', () => {
+  for (const error of [
+    'HTTP status 503 from provider', '503 UNAVAILABLE', 'unknown option --effort',
+    'unexpected argument --effort', 'requires --effort', "invalid value for '--effort'", 'WinError 32: file locked',
+    'EBUSY: resource busy or locked', 'CUDA out of memory', 'CUDA error: driver', 'llama-server crashed',
+    'cudaMalloc failed', 'provider quota rejected task at startup',
+  ]) assert.ok(sc.envFailure({ error }), error);
+  assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: '503 UNAVAILABLE' }] } }));
+  assert.equal(sc.envFailure({ result: { finalMessage: 'This report discusses HTTP 503 handling in prose.' } }), null);
+  assert.ok(sc.envFailure({ error: '{"status": "UNAVAILABLE"}' }));
+  assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'feature unavailable in this build' }] } }), null);
+  for (const error of [
+    'max iterations reached', 'UnauthorizedAccessException', 'access was denied', 'permission denied', 'EACCES', 'EPERM',
+    'waiting for network', 'Connection failed', 'ECONNRESET', 'ENOTFOUND api.example', 'fetch failed',
+    'unexpected status 401', 'Incorrect API key provided', 'refresh token was already used',
+  ]) assert.ok(sc.envFailure({ error }), error);
+});
+
 test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna').tier, 'B');
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier, 'B');   // code: Terminal-Bench 84.7
@@ -124,6 +142,21 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   assert.equal(sc.rootRuns().find((r) => r.taskId === 'signin'), undefined);
   assert.equal(sc.recordRun({ id: 'img', imageOptions: {} }), null);
   assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
+});
+
+test('a usage-limit reroute skips the cut-off run in the quality chain', () => {
+  const source = 'failover-reroute';
+  run({ id: `${source}-a`, source, category: 'review', difficulty: 2 });
+  sc.rateTask(`${source}-a`, 'fail');
+  // B hit a usage limit and has no scorecard row. C keeps A as its quality predecessor and records B separately.
+  run({ id: `${source}-c`, source, category: 'review', difficulty: 2, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-a`, reroutedFrom: `${source}-b` });
+  sc.rateTask(`${source}-c`, 'pass');
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-a`);
+  assert.deepEqual(chain.path, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
+  assert.ok(!chain.attempts.some((a) => a.taskId === `${source}-b`));
+  assert.equal(sc.runRows().find((r) => r.taskId === `${source}-c`)?.reroutedFrom, `${source}-b`);
+  sc.voidTask(`${source}-a`, 'test fixture');
+  sc.voidTask(`${source}-c`, 'test fixture');
 });
 
 test('summarize: single-step rows count every attempt, path rows count observed ladders', () => {
@@ -1022,6 +1055,41 @@ test('D7: a run with no reported usage is unknown cost, except a zero list price
   assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'ollama').avgUsd, 0);
 });
 
+test('A2: Claude uses reported list cost, cells expose priced share, and chains estimate known steps', () => {
+  const source = 'A2-costs';
+  const claude = run({ id: 'A2-claude', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 2, result: { usage: { input_tokens: 100_000, output_tokens: 100_000 }, costUsd: 1.23 } });
+  assert.equal(claude.costBasis, 'list');
+  const codex = run({ id: 'A2-codex', source, category: 'read', difficulty: 2, result: { usage: USAGE, costUsd: 0 } });
+  assert.equal(codex.costBasis, 'tokens');
+  const claudeAttempt = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude').attempts[0];
+  assert.equal(claudeAttempt.usd, 1.23); assert.equal(claudeAttempt.costBasis, 'list');
+  run({ id: 'A2-claude-fix', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 1 } });
+  run({ id: 'A2-claude-fix-round', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, followUpOf: 'A2-claude-fix', result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 0 } });
+  const tokenClaude = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude-fix').attempts[0];
+  assert.equal(tokenClaude.costBasis, 'tokens'); assert.equal(tokenClaude.usd, 0.2);
+
+  const row = (id, model, usage, retryOf = null) => run({ id, source, provider: 'codex', model, effort: 'low', category: 'test', difficulty: 2, retryOf, result: { usage, durationMs: 1 } });
+  row('A2-history', 'gpt-5.6-luna', { input_tokens: 100_000, output_tokens: 0 });
+  row('A2-head', 'gpt-5.6-luna', null);
+  row('A2-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-head');
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-head');
+  const lunaMean = sc.rootRuns().flatMap((c) => c.attempts).filter((a) => a.sel === 'codex:gpt-5.6-luna:low' && a.category === 'test' && a.difficulty === 2 && a.usd != null).map((a) => a.usd).reduce((sum, usd, _, xs) => sum + usd / xs.length, 0);
+  assert.ok(Math.abs(chain.usd - (chain.attempts[1].usd + lunaMean)) < 1e-12);
+  assert.equal(chain.partialCost, false);
+
+  row('A2-no-history', 'gpt-6-astra', null);
+  row('A2-priced-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-no-history');
+  const partial = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-no-history');
+  assert.equal(partial.usd, null); assert.equal(partial.partialCost, true);
+
+  for (const id of ['A2-share-1', 'A2-share-2', 'A2-share-3']) run({ id, source, category: 'docs', difficulty: 4, result: { usage: { input_tokens: 100_000, output_tokens: 0 } } });
+  run({ id: 'A2-share-null', source, category: 'docs', difficulty: 4, result: { usage: null } });
+  const cell = sc.summarize({ source }).find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'docs' && g.difficulty === 4);
+  assert.equal(cell.pricedShare, 0.75);
+  assert.equal(cell.avgUsd, 0.02);
+  assert.match(sc.formatScores({ source }), /\(3\/4 priced\)/);
+});
+
 test('a ladder with an unpriced step ranks as cost unknown after priced plans', () => {
   const cfg = loadConfig().scorecard;
   try {
@@ -1159,7 +1227,8 @@ test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
     const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-chain-a`);
     assert.ok(chain.attempts[0].usd != null);
     assert.equal(chain.attempts[1].usd, null);
-    assert.equal(chain.usd, chain.attempts[0].usd);
+    assert.equal(chain.usd, null);
+    assert.equal(chain.partialCost, true);
 
     run({ id: `${source}-lad1a`, source, category: 'ui', difficulty: 2 });
     sc.rateTask(`${source}-lad1a`, 'fail');
@@ -1473,6 +1542,42 @@ test('L42: formatScoresShort memo key includes an hourly bucket', async (t) => {
     limits.providers.codex = previous;
     saveConfig({ scorecard: cfg });
   }
+});
+
+test('M8: summarize memoizes until the ledger or scorecard config changes', () => {
+  const source = 'M8-summary-memo';
+  const cfg = loadConfig().scorecard;
+  try {
+    run({ id: `${source}-0`, source, category: 'review', difficulty: 1 });
+    sc.rateTask(`${source}-0`, 'pass');
+    const first = sc.summarize({ source });
+    assert.strictEqual(sc.summarize({ source }), first);
+    run({ id: `${source}-1`, source, category: 'review', difficulty: 1 });
+    const afterLedger = sc.summarize({ source });
+    assert.notStrictEqual(afterLedger, first);
+    saveConfig({ scorecard: { reservePct: cfg.reservePct === 0.5 ? 0.6 : 0.5 } });
+    assert.notStrictEqual(sc.summarize({ source }), afterLedger);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('D8: short view memo key includes a future provider reset but not a past one', () => {
+  const now = Date.parse('2026-09-23T10:30:00Z');
+  const base = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now - 1 }] } } };
+  const future = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now + 60_000 }] } } };
+  assert.notEqual(sc.shortMemoKey({ source: 'D8', limits: base, now }), sc.shortMemoKey({ source: 'D8', limits: future, now }));
+});
+
+test('L2: the latest rating across a root and follow-up decides the attempt verdict', () => {
+  const check = (source, rootVerdictAt, followVerdictAt, expected) => {
+    const root = `${source}-root`, follow = `${source}-follow`;
+    run({ id: root, source, category: 'review', difficulty: 1 });
+    run({ id: follow, source, followUpOf: root, category: 'review', difficulty: 1 });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: rootVerdictAt, taskId: root, verdict: 'fail' });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: followVerdictAt, taskId: follow, verdict: 'pass' });
+    assert.equal(sc.rootRuns({ source })[0].attempts[0].verdict, expected);
+  };
+  check('L2-follow-latest', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z', 'pass');
+  check('L2-root-latest', '2026-01-01T00:00:01.000Z', '2026-01-01T00:00:00.000Z', 'fail');
 });
 
 test('P6: extrapolation reuses the already-folded summary', () => {

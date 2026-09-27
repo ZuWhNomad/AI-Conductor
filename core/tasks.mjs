@@ -14,7 +14,7 @@ import { contextBlock } from './context.mjs';
 import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
 import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -28,6 +28,7 @@ const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts'
 // MSW kernel (necessity test for every claim): measured 2026-09-09 on the battery as 5-15% faster and 3-10% fewer output tokens at equal pass rate.
 const MSW = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'msw.md'), 'utf8');
 const RESUME_NOTE = 'You were interrupted earlier (usage limit or restart). Continue from the current state of the files; do not redo finished work.\n\n';
+const FAILOVER_NOTE = 'Note: another worker was stopped by a usage limit part-way through this task and may have left edits in the working tree. Check the current state (git status / diff) first; do not redo finished work.\n';
 const TERMINAL = new Set(['done', 'failed', 'canceled']);
 
 const tasks = new Map();
@@ -178,6 +179,7 @@ export function createTask(i, { dispatch = true } = {}) {
     source: i.source === 'smoke' ? 'smoke' : 'live',
     smokeId: i.source === 'smoke' && typeof i.smokeId === 'string' ? i.smokeId : null, // battery id, kept out of the worker's prompt
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain
+    reroutedFrom: typeof i.reroutedFrom === 'string' && i.reroutedFrom ? i.reroutedFrom : null, // usage-limit handoff: audit link, not a quality-chain step
     variant: typeof i.variant === 'string' && i.variant ? i.variant.slice(0, 40) : null, // A/B label (e.g. a policy file under test); rows keep it
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it
     parallelOverride: !!i.parallelOverride, // the chat's parallel toggle at delegation time: skip the budget gate
@@ -465,6 +467,7 @@ async function run(t) {
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else if (!r.ok) {
       t.status = 'failed'; t.error = r.error || 'worker failed';
+      if (envFailure(t)) { t.failKind = 'env'; t.envFailed = true; t.error = `environment: ${t.error}`; }
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else if (phantom) {
       t.status = 'failed'; t.failKind = 'phantom';
@@ -509,7 +512,8 @@ function failover(t) {
     const avoid = t.avoidFamilies || [];
     const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
     if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec: t.spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
+    const spec = `${t.attempts > 0 ? FAILOVER_NOTE : ''}${t.spec}`;
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;

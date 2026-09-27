@@ -247,6 +247,7 @@ function normalize(cfg) {
   if (!plain(cfg.scorecard.providerWeight)) cfg.scorecard.providerWeight = { ...DEFAULTS.scorecard.providerWeight };
   if (!Number.isFinite(cfg.scorecard.quotaPressurePct)) cfg.scorecard.quotaPressurePct = DEFAULTS.scorecard.quotaPressurePct;
   if (!Number.isFinite(cfg.scorecard.reservePct) || cfg.scorecard.reservePct < 0) cfg.scorecard.reservePct = DEFAULTS.scorecard.reservePct;
+  else cfg.scorecard.reservePct = Math.min(2, cfg.scorecard.reservePct);
   if (!Array.isArray(cfg.scorecard.classOrder) || !cfg.scorecard.classOrder.length) cfg.scorecard.classOrder = [...DEFAULTS.scorecard.classOrder];
   if (!plain(cfg.scorecard.classes)) cfg.scorecard.classes = { ...DEFAULTS.scorecard.classes };
   if (!plain(cfg.scorecard.classCap)) cfg.scorecard.classCap = { ...DEFAULTS.scorecard.classCap };

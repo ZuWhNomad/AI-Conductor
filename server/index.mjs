@@ -19,7 +19,8 @@ import { listTasks, cancelChain, getTask, publicTask, schedule, createTask, abor
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
+import { summarize, formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
+import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
@@ -250,7 +251,9 @@ async function route(req, res, url) {
   if (p === '/api/bench' && m === 'GET') { const { dueForBench, formatBench } = await import('../core/bench.mjs'); const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
   if (p === '/api/scores' && m === 'GET') {
     const source = url.searchParams.get('source') || null;
-    return json(res, 200, { text: formatScores({ source, category: url.searchParams.get('category') || null, archived: url.searchParams.get('archived') === '1' }) });
+    const archived = url.searchParams.get('archived') === '1';
+    const summary = summarize({ source, archived });
+    return json(res, 200, { text: formatScores({ source, category: url.searchParams.get('category') || null, archived, summary }) });
   }
   if (p === '/api/limits/refresh' && m === 'POST') return json(res, 200, await refreshLimits());
 
@@ -384,8 +387,14 @@ export async function doctorReport() {
   rows.push({ name: 'codex', value: codexVersion || 'missing', status: codex ? ((await PROVIDERS.codex.account().catch(() => ({ loggedIn: false }))).loggedIn ? 'logged in' : 'NOT logged in → run: codex login') : 'install: npm i -g @openai/codex', path: codex ? [codex.command, ...codex.args].join(' ') : findCli('codex') });
   const ol = await PROVIDERS.ollama.detect();
   rows.push({ name: 'ollama', value: ol.version || (ol.installed ? 'installed (not running)' : 'missing'), status: ol.installed ? 'ok' : 'optional: https://ollama.com' });
+  const unpriced = unpricedModels(getModels());
+  rows.push({ name: 'priced agent models', value: String(unpriced.length), status: unpriced.length ? `${unpriced.length} unpriced: ${unpriced.join(', ')} — their cells rank last as cost unknown` : 'ok' });
   rows.push({ name: 'git', value: await versionOf(findCli('git')) || 'missing', status: '' });
   return { rows, capabilities: capabilityReport(), path: (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean), cwd: process.cwd(), stateDir: statePath(), eventLoop: lagStats() };
+}
+
+export function unpricedModels(reg = getModels()) {
+  return (reg.models || []).filter((m) => m.kind === 'agent' && m.provider !== 'ollama' && priceFor(m.provider, m.id) == null).map((m) => m.id);
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */

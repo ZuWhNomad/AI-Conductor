@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BATTERY } from './battery.mjs';
 import { createTask, awaitTask, cancelTask, getTask, flushRecords } from '../tasks.mjs';
-import { rateTask, voidTask } from '../scorecard.mjs';
+import { rateTask, voidTask, envFailure } from '../scorecard.mjs';
 import { providerAvailable } from '../scorecard.mjs';
 import { loadConfig } from '../config.mjs';
 import { bus } from '../bus.mjs';
@@ -81,15 +81,6 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
   return results;
 
   function push(r) { results.push(r); bus.publish('smoke', r); onResult?.(r); }
-}
-
-const ENV_FAIL = /max iterations reached|UnauthorizedAccessException|access (?:was |is )?denied|permission denied|EACCES|EPERM|waiting for network|Connection failed|ECONNRESET|ENOTFOUND|fetch failed|unexpected status 401|Incorrect API key provided|refresh token was already used/i; // 401s: a broken sign-in, not the model
-/** A workspace-access denial or network drop in the worker's own words (or its error) — the harness failed, not the model. */
-export function envFailure(t) {
-  if (t.failKind === 'auth' || t.failKind === 'env') return `${t.failKind === 'auth' ? 'sign-in' : 'harness'}: ${String(t.error || '').slice(0, 160)}`;
-  const texts = [t.result?.finalMessage || '', t.error || '', ...(t.result?.items || []).map((i) => i.text || i.output || '')];
-  const hit = texts.find((x) => ENV_FAIL.test(x));
-  return hit ? hit.match(ENV_FAIL)[0] : null;
 }
 
 function dispatched(id) {
