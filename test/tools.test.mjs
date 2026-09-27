@@ -246,7 +246,11 @@ test('delegate efficiency_mode overrides the global switch for explicit pins', a
       const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
       assert.equal(getTask(id).efficiencyMode, expected);
     }
-    assert.equal('no_failover' in delegate.schema.shape, false, 'the old public limit knob is gone');
+    // The deprecated no_failover knob still parses and means "wait", so older callers keep working.
+    saveConfig({ worker: { efficiencyMode: false } });
+    const msg = await delegate.handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, no_failover: true });
+    const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
+    assert.equal(getTask(id).efficiencyMode, true, 'no_failover is an alias of efficiency_mode: true');
   } finally {
     for (const id of ids) cancelTask(id);
     saveConfig({ worker: previous });
