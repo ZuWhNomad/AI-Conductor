@@ -168,8 +168,10 @@ export function codexMcpArgs(servers) {
   }
   for (const [name, s] of Object.entries(servers || {})) {
     if (s.source !== 'codex') {
-      if (s.url) put(name, 'url', q(s.url));
-      else {
+      if (s.url) {
+        put(name, 'url', q(s.url));
+        if (s.bearer_token_env_var) put(name, 'bearer_token_env_var', q(s.bearer_token_env_var));
+      } else {
         put(name, 'command', q(s.command));
         put(name, 'args', `[${(s.args || []).map(q).join(',')}]`);
         const forward = [], literal = {};

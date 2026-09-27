@@ -46,7 +46,7 @@ url = "https://example.test/retained"
 sandbox = "elevated"
 `;
 const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, mcpServersFor, readClaudeJson, DEFAULT_TOOL_TIMEOUT_SEC } = await import('../core/mcp.mjs');
-const { saveConfig } = await import('../core/config.mjs');
+const { saveConfig, loadConfig, publicConfig } = await import('../core/config.mjs');
 
 test('Codex config.toml MCP tables parse (url, command/args/env, disabled dropped)', () => {
   const s = parseCodexToml(`[mcp_servers.a]\nurl = "https://x/mcp"\n[mcp_servers.b]\ncommand = 'c.exe'\nargs = ["--x", "1"]\n[mcp_servers.b.env]\nK = "v"\n[other]\nurl = "no"\n[mcp_servers.c]\nenabled = false\nurl = "https://y"\n`);
@@ -273,6 +273,50 @@ test('a tagged server is attached only to worker tasks of its categories; untagg
   assert.deepEqual(names('modeling'), ['extra', 'node_repl', 'tool']);
   assert.deepEqual(names(null), ['extra', 'node_repl', 'tool', 'warehouse']);
   assert.equal(mcpServers(cfg).warehouse.source, 'codex');                // tagging does not change where it came from
+});
+
+test('a conductor URL server with bearer_token_env_var reaches the SDK and Codex args as the env var name, and attaches only to search', () => {
+  const secret = 'parallel-fixture-secret-value';
+  const previous = process.env.PARALLEL_API_KEY;
+  process.env.PARALLEL_API_KEY = secret;
+  const entry = { url: 'https://search.parallel.ai/mcp', bearer_token_env_var: 'PARALLEL_API_KEY', categories: ['search'] };
+  try {
+    saveConfig({ mcpServers: { parallel: entry } });
+    const cfg = loadConfig();
+    assert.equal(cfg.mcpServers.parallel.url, entry.url);
+    assert.equal(cfg.mcpServers.parallel.bearer_token_env_var, 'PARALLEL_API_KEY');
+    assert.deepEqual(cfg.mcpServers.parallel.categories, ['search']);
+
+    const leak = new RegExp(secret);
+    assert.doesNotMatch(JSON.stringify(cfg.mcpServers.parallel), leak);
+    assert.doesNotMatch(JSON.stringify(publicConfig(cfg).mcpServers.parallel), leak);
+    assert.equal(publicConfig(cfg).mcpServers.parallel.bearer_token_env_var, 'PARALLEL_API_KEY');
+
+    const registry = mcpServers(cfg);
+    assert.equal(registry.parallel.source, 'conductor');
+    assert.equal(mcpServersFor('search', cfg).parallel.bearer_token_env_var, 'PARALLEL_API_KEY');
+    assert.equal(mcpServersFor('implement', cfg).parallel, undefined);
+    assert.equal(mcpServersFor(null, cfg).parallel.url, entry.url);
+
+    const sdk = forClaudeSdk(mcpServersFor('search', cfg));
+    assert.deepEqual(sdk.parallel, {
+      type: 'http',
+      url: 'https://search.parallel.ai/mcp',
+      headers: { Authorization: 'Bearer ${PARALLEL_API_KEY}' },
+    });
+    assert.doesNotMatch(JSON.stringify(sdk), leak);
+
+    const { args, env } = codexMcpArgs(mcpServersFor('search', cfg));
+    const joined = args.join(' ');
+    assert.match(joined, /mcp_servers\.parallel\.url="https:\/\/search\.parallel\.ai\/mcp"/);
+    assert.match(joined, /mcp_servers\.parallel\.bearer_token_env_var="PARALLEL_API_KEY"/);
+    assert.doesNotMatch(joined, leak);
+    assert.doesNotMatch(JSON.stringify(env), leak);
+  } finally {
+    saveConfig({ mcpServers: { parallel: null } });
+    if (previous === undefined) delete process.env.PARALLEL_API_KEY;
+    else process.env.PARALLEL_API_KEY = previous;
+  }
 });
 
 test('quoted TOML names, escaped strings and inline comments preserve filtering and values', () => {

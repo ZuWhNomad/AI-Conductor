@@ -361,6 +361,32 @@ test('config validates ports, provider endpoints and malformed MCP entries', () 
   assert.deepEqual(cfg.mcpServers.typed, { command: 'node', args: ['ok'], env: { KEEP: 'value' } });
 });
 
+test('a conductor parallel MCP entry keeps url, bearer_token_env_var and categories through normalize and save', () => {
+  const secret = 'parallel-fixture-secret-value';
+  const previous = process.env.PARALLEL_API_KEY;
+  process.env.PARALLEL_API_KEY = secret;
+  const entry = { url: 'https://search.parallel.ai/mcp', bearer_token_env_var: 'PARALLEL_API_KEY', categories: ['search'] };
+  try {
+    const saved = saveConfig({ mcpServers: { parallel: entry } });
+    assert.deepEqual(saved.mcpServers.parallel, entry);
+    const loaded = loadConfig().mcpServers.parallel;
+    assert.equal(loaded.url, entry.url);
+    assert.equal(loaded.bearer_token_env_var, 'PARALLEL_API_KEY');
+    assert.deepEqual(loaded.categories, ['search']);
+    const stored = JSON.parse(readFileSync(join(process.env.CONDUCTOR_HOME, 'config.json'), 'utf8'));
+    assert.deepEqual(stored.mcpServers.parallel, entry);
+    assert.doesNotMatch(JSON.stringify(stored), new RegExp(secret));
+    const pub = publicConfig().mcpServers.parallel;
+    assert.equal(pub.bearer_token_env_var, 'PARALLEL_API_KEY');
+    assert.deepEqual(pub.categories, ['search']);
+    assert.doesNotMatch(JSON.stringify(pub), new RegExp(secret));
+  } finally {
+    saveConfig({ mcpServers: { parallel: null } });
+    if (previous === undefined) delete process.env.PARALLEL_API_KEY;
+    else process.env.PARALLEL_API_KEY = previous;
+  }
+});
+
 test('config filters invalid usage and category values, validates waste settings, and restores prompt budgets', () => {
   const badValues = [0, -1, null, '3', 'bad', NaN, Infinity];
   for (const value of badValues) {
