@@ -969,6 +969,10 @@ function openSettings() {
   selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
+  selectField('New models', 'bench.newModels', c.bench?.newModels || 'off', ['off', 'auto']);
+  field('Auto-bench off-peak start (local)', 'bench.offPeak.start', c.bench?.offPeak?.start ?? '', 'time', 'Leave both off-peak times empty for no restriction.');
+  field('Auto-bench off-peak end (local)', 'bench.offPeak.end', c.bench?.offPeak?.end ?? '', 'time', 'Windows may wrap past midnight, for example 22:00–06:00.');
+  toggleField('Auto-bench all weekend', 'bench.offPeak.weekends', c.bench?.offPeak?.weekends ?? true, 'Saturday and Sunday are off-peak all day in local time.');
   body.append(el('h4', null, 'Worker behaviour'));
   toggleField('Efficiency mode', 'worker.efficiencyMode', c.worker.efficiencyMode, 'Wait for the same model when it reaches a usage limit. Off fails over to the next available model.');
   selectField('Scorecard cold start', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors']);

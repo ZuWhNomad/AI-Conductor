@@ -184,11 +184,59 @@ async function defaultExecute(selection, task, { probe }) {
   return result;
 }
 
+const clockMinutes = (clock) => {
+  const match = /^(\d{2}):(\d{2})$/.exec(clock || '');
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+};
+
+/** Whether a Date falls in a configured local wall-clock window. Equal endpoints cover the full day. */
+export function isOffPeak(date, window = loadConfig().bench.offPeak) {
+  if (!window) return true;
+  if (window.weekends && (date.getDay() === 0 || date.getDay() === 6)) return true;
+  const start = clockMinutes(window.start), end = clockMinutes(window.end);
+  if (start == null || end == null) return true;
+  if (start === end) return true;
+  const minute = date.getHours() * 60 + date.getMinutes();
+  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
+}
+
+/** Next opening in local calendar time; Date construction keeps the wall clock stable across DST boundaries. */
+export function nextOffPeakStart(date, window = loadConfig().bench.offPeak) {
+  if (!window || isOffPeak(date, window)) return null;
+  const start = clockMinutes(window.start);
+  if (start == null) return null;
+  const hour = Math.floor(start / 60), minute = start % 60, candidates = [];
+  // Both offsets around a fall-back transition can represent the same wall time. Construct each valid instant
+  // explicitly; the native local constructor remains the gap-normalizing fallback for a skipped spring time.
+  for (const day of [0, 1]) {
+    const anchor = new Date(date.getFullYear(), date.getMonth(), date.getDate() + day, 12);
+    const y = anchor.getFullYear(), m = anchor.getMonth(), d = anchor.getDate();
+    const offsets = new Set([-1, 0, 1].map((delta) => new Date(y, m, d + delta, 12).getTimezoneOffset()));
+    for (const offset of offsets) {
+      const candidate = new Date(Date.UTC(y, m, d, hour, minute) + offset * 60_000);
+      if (candidate.getFullYear() === y && candidate.getMonth() === m && candidate.getDate() === d && candidate.getHours() === hour && candidate.getMinutes() === minute) candidates.push(candidate);
+    }
+    candidates.push(new Date(y, m, d, hour, minute, 0, 0));
+    if (window.weekends && (anchor.getDay() === 0 || anchor.getDay() === 6)) candidates.push(new Date(y, m, d, 0, 0, 0, 0));
+  }
+  return candidates.filter((candidate) => candidate > date).sort((a, b) => a - b)[0] || null;
+}
+
+/** Earliest useful automatic wake, combining durable provider parking with the local off-peak window. */
+export function nextBenchWakeAt(state, now = Date.now(), window = loadConfig().bench.offPeak) {
+  return Math.min(...Object.values(state.lanes).map((lane) => {
+    if (!lane.queue.length) return Infinity;
+    const ready = lane.parkedUntil > now ? lane.parkedUntil : now;
+    if (isOffPeak(new Date(ready), window)) return ready > now ? ready : Infinity;
+    return nextOffPeakStart(new Date(ready), window)?.getTime() || Infinity;
+  }));
+}
+
 /**
  * Drain all currently runnable lanes. Providers run in parallel; each provider runs one selection/task at a time.
  * A full/rejected provider is parked durably, live work wins, and every completed task is removed before returning.
  */
-export async function runBenchQueue({ execute = defaultExecute, tasks = defaultOpenTasks, blockedUntil = modelBlockedUntil, now = () => Date.now(), reg = getModels(), onResult = null } = {}) {
+export async function runBenchQueue({ execute = defaultExecute, tasks = defaultOpenTasks, blockedUntil = modelBlockedUntil, now = () => Date.now(), reg = getModels(), onResult = null, respectOffPeak = false } = {}) {
   const state = getBenchState(), results = [], listed = new Map(registrySelections(reg).map((s) => [seenKey(s), s]));
   const persist = () => saveState(state);
   // If the process died after the smoke row landed but before bench.json advanced, fold that durable evidence first.
@@ -217,6 +265,7 @@ export async function runBenchQueue({ execute = defaultExecute, tasks = defaultO
       lane.parkedUntil = null;
       const blocked = Number(blockedUntil(provider, current.selection.model)) || 0;
       if (blocked > at) { lane.parkedUntil = blocked; persist(); break; }
+      if (respectOffPeak && !isOffPeak(new Date(at))) break;
       const task = current.remaining[0];
       if (!task) { lane.queue.shift(); lane.running = null; persist(); continue; }
       const probe = current.probePending && task === 'read-1';
@@ -254,14 +303,13 @@ export function wakeBenchQueue() {
   if (queueRun) { queueAgain = true; return queueRun; }
   if (!Object.values(getBenchState().lanes).some((lane) => lane.queue.length)) return null;
   clearTimeout(queueWake); queueWake = null;
-  queueRun = runBenchQueue().catch((e) => {
+  queueRun = runBenchQueue({ respectOffPeak: true }).catch((e) => {
     try { logImprovement('error', 'bench', `bench queue paused: ${e?.message || e}`); } catch {}
   }).finally(() => {
     queueRun = null;
     if (!queueEnabled) return;
     if (queueAgain) { queueAgain = false; queueMicrotask(wakeBenchQueue); return; }
-    const now = Date.now();
-    const next = Math.min(...Object.values(getBenchState().lanes).map((lane) => lane.queue.length && lane.parkedUntil > now ? lane.parkedUntil : Infinity));
+    const now = Date.now(), next = nextBenchWakeAt(getBenchState(), now);
     if (Number.isFinite(next)) { queueWake = setTimeout(wakeBenchQueue, Math.min(2 ** 31 - 1, next - now)); queueWake.unref?.(); }
   });
   return queueRun;
@@ -282,7 +330,12 @@ export async function runBench({ days, onResult = null } = {}) {
   return [...bySelection.values()].map((x) => ({ ...x, probe: x.probe || 'none', battery: `${x.pass}/${x.total}` }));
 }
 
-export function formatBench(due) {
-  if (!due.length) return `Every listed selection meets the ${BENCH_COVERAGE.rated}/${BENCH_COVERAGE.total} battery coverage bar.`;
-  return [`${due.length} selection(s) due for a battery:`, ...due.map((d) => `- ${selId(d)} — ${d.why}`)].join('\n');
+export function formatBench(due, { cfg = loadConfig(), now = new Date() } = {}) {
+  const lines = due.length
+    ? [`${due.length} selection(s) due for a battery:`, ...due.map((d) => `- ${selId(d)} — ${d.why}`)]
+    : [`Every listed selection meets the ${BENCH_COVERAGE.rated}/${BENCH_COVERAGE.total} battery coverage bar.`];
+  if (cfg.bench.newModels === 'auto' && cfg.bench.offPeak && !isOffPeak(now, cfg.bench.offPeak)) {
+    lines.push(`auto-bench waits for off-peak (${cfg.bench.offPeak.start}${cfg.bench.offPeak.weekends ? '; weekends included' : ''})`);
+  }
+  return lines.join('\n');
 }

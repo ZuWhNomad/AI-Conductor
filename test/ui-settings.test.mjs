@@ -48,6 +48,10 @@ test('Settings update check refreshes header state', async () => {
 test('Settings shows the configured update policy and no guessed Grok hour', async () => {
   const view = render();
   assert.equal(view.field('conductor.autoUpdate').value, DEFAULTS.conductor.autoUpdate);
+  assert.equal(view.field('bench.newModels').value, DEFAULTS.bench.newModels);
+  assert.equal(view.field('bench.offPeak.start').value, DEFAULTS.bench.offPeak.start);
+  assert.equal(view.field('bench.offPeak.end').value, DEFAULTS.bench.offPeak.end);
+  assert.equal(view.field('bench.offPeak.weekends').checked, true);
   assert.equal(view.field('worker.efficiencyMode').checked, false);
   assert.equal(view.field('watchdog.killAfterStuckChecks').value, String(DEFAULTS.watchdog.killAfterStuckChecks));
   assert.equal(view.field('watchdog.loopRepeat').value, String(DEFAULTS.watchdog.loopRepeat));
@@ -55,7 +59,23 @@ test('Settings shows the configured update policy and no guessed Grok hour', asy
   assert.equal(view.field('grok-reset-day').value, '-1');
   assert.equal(view.field('grok-reset-hour').value, '');
   await view.save();
+  assert.deepEqual(view.posts[0].patch.bench, DEFAULTS.bench);
   assert.deepEqual(view.posts[0].patch.scorecard.usageResets.grok, { periodHours: 0 });
+});
+
+test('Settings exposes wrapping auto-bench hours and can clear the restriction', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.bench = { newModels: 'auto', offPeak: { start: '22:00', end: '06:00', weekends: true } };
+  const view = render(config);
+  assert.equal(view.field('bench.newModels').value, 'auto');
+  assert.equal(view.field('bench.offPeak.start').value, '22:00');
+  assert.equal(view.field('bench.offPeak.end').value, '06:00');
+  assert.equal(view.field('bench.offPeak.weekends').checked, true);
+  view.field('bench.offPeak.weekends').checked = false;
+  view.field('bench.offPeak.start').value = '';
+  view.field('bench.offPeak.end').value = '';
+  await view.save();
+  assert.deepEqual(view.posts[0].patch.bench, { newModels: 'auto', offPeak: { start: '', end: '', weekends: false } });
 });
 
 test('Settings toggles and saves global efficiency mode', async () => {

@@ -29,8 +29,16 @@ test('efficiency mode and task retention settings use the owner defaults and bou
 
 test('new-model benchmarking is opt-in and its mode is normalized', () => {
   assert.equal(DEFAULTS.bench.newModels, 'off');
+  assert.deepEqual(DEFAULTS.bench.offPeak, { start: '00:00', end: '07:00', weekends: true });
   for (const mode of ['off', 'auto']) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, mode);
   for (const mode of ['ask', 'yes', true, null]) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, 'off');
+  assert.deepEqual(saveConfig({ bench: { offPeak: { start: '22:00', end: '06:00', weekends: false } } }).bench.offPeak, { start: '22:00', end: '06:00', weekends: false });
+  assert.equal(saveConfig({ bench: { offPeak: { start: '22:00', end: '06:00', weekends: 'yes' } } }).bench.offPeak.weekends, true);
+  assert.equal(saveConfig({ bench: { offPeak: null } }).bench.offPeak, null);
+  assert.equal(saveConfig({ bench: { offPeak: { start: '', end: '' } } }).bench.offPeak, null);
+  for (const offPeak of [{ start: '24:00', end: '07:00' }, { start: '7:00', end: '08:00' }, 'overnight']) {
+    assert.deepEqual(saveConfig({ bench: { offPeak } }).bench.offPeak, DEFAULTS.bench.offPeak);
+  }
   saveConfig({ worker: { resumeMaxAgeHours: 6 } });
   assert.equal(loadConfig().worker.resumeMaxAgeHours, undefined);
 });

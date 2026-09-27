@@ -61,7 +61,7 @@ export const DEFAULTS = {
     timeoutByCategory: {},            // optional per-category hard caps; 0 = off
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
   },
-  bench: { newModels: 'off' },         // fresh clones never auto-bench; the one owner-designated copy opts in
+  bench: { newModels: 'off', offPeak: { start: '00:00', end: '07:00', weekends: true } }, // local wall-clock window; null/empty disables it
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
     ollama: { enabled: false, baseUrl: 'http://localhost:11434', autoStart: false, harness: 'openai-compat' }, // local models OFF by default (owner 2026-09-25): enabled = use Ollama at all, autoStart = spawn `ollama serve`; harness 'openai-compat' or 'claude'
@@ -297,6 +297,18 @@ function normalize(cfg, raw = {}) {
   if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(cfg.conductor.permissionMode)) cfg.conductor.permissionMode = DEFAULTS.conductor.permissionMode;
   if (!['auto', 'ask', 'off'].includes(cfg.conductor.autoUpdate)) cfg.conductor.autoUpdate = DEFAULTS.conductor.autoUpdate;
   if (!['auto', 'off'].includes(cfg.bench.newModels)) cfg.bench.newModels = DEFAULTS.bench.newModels;
+  const rawOffPeak = plain(raw) && plain(raw.bench) && Object.hasOwn(raw.bench, 'offPeak') ? raw.bench.offPeak : undefined;
+  const emptyOffPeak = rawOffPeak === null || rawOffPeak === '' || (plain(rawOffPeak) && (
+    Object.keys(rawOffPeak).length === 0 || [rawOffPeak.start, rawOffPeak.end].every((v) => v == null || String(v).trim() === '')
+  ));
+  const clock = (v) => typeof v === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v.trim());
+  if (emptyOffPeak) cfg.bench.offPeak = null;
+  else if (!plain(cfg.bench.offPeak) || !clock(cfg.bench.offPeak.start) || !clock(cfg.bench.offPeak.end)) cfg.bench.offPeak = structuredClone(DEFAULTS.bench.offPeak);
+  else cfg.bench.offPeak = {
+    start: cfg.bench.offPeak.start.trim(),
+    end: cfg.bench.offPeak.end.trim(),
+    weekends: typeof cfg.bench.offPeak.weekends === 'boolean' ? cfg.bench.offPeak.weekends : DEFAULTS.bench.offPeak.weekends,
+  };
   if (!SANDBOXES.includes(cfg.worker.codexSandbox)) cfg.worker.codexSandbox = DEFAULTS.worker.codexSandbox;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
@@ -440,6 +452,11 @@ export function saveConfig(patch) {
   // folded in). Then persist only the keys that still differ from DEFAULTS, so the file stays the user's overrides
   // and a future change to a DEFAULT actually reaches the user instead of being frozen at its old value.
   const merged = deepMerge(stored, clean);
+  // Ordinary object subtrees treat null as "no patch"; offPeak explicitly uses null as its unrestricted value.
+  if (plain(clean.bench) && Object.hasOwn(clean.bench, 'offPeak') && clean.bench.offPeak === null) {
+    merged.bench = plain(merged.bench) ? merged.bench : {};
+    merged.bench.offPeak = null;
+  }
   const effective = normalize(deepMerge(DEFAULTS, merged), merged);
   writeJson(FILE(), pruneToDefaults(effective, DEFAULTS), { secrets: true });
   fileCache = { key: null, value: {} }; // our own write: re-read on the next load even if size and mtime did not move

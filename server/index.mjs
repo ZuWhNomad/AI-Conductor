@@ -314,7 +314,7 @@ async function route(req, res, url) {
       const auChanged = prev.conductor.autoUpdate !== next.conductor.autoUpdate;
       const hoursChanged = prev.conductor.updateCheckHours !== next.conductor.updateCheckHours;
       if (auChanged || hoursChanged) startUpdateChecks({ initial: prev.conductor.autoUpdate === 'off' && next.conductor.autoUpdate !== 'off' });
-      schedule(); /* a raised concurrency cap starts queued work now */ bus.publish('settings', {}); return json(res, 200, publicConfig(next), true);
+      schedule(); /* a raised concurrency cap starts queued work now */ wakeBenchQueue(); bus.publish('settings', {}); return json(res, 200, publicConfig(next), true);
     }
   }
 
