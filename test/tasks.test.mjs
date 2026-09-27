@@ -1771,3 +1771,60 @@ test('conductor worktrees lists entries and prune-days removes ended worktrees n
   assert.equal(existsSync(done.isolation.dir), false);
   assert.match(run('branch', '--list', done.isolation.branch), new RegExp(done.isolation.branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
+
+test('isolate: worker can read ignored node_modules via a link; commit omits it; cleanup keeps the source', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-nm');
+  const run = initRepo(cwd);
+  writeFileSync(join(cwd, '.gitignore'), 'node_modules\n');
+  run('add', '--', '.gitignore');
+  run('commit', '--quiet', '-m', 'ignore');
+  mkdirSync(join(cwd, 'node_modules'));
+  writeFileSync(join(cwd, 'node_modules', 'x.js'), 'KEEP\n');
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    const body = readFileSync(join(t.cwd, 'node_modules', 'x.js'), 'utf8');
+    writeFileSync(join(t.cwd, 'same.txt'), body);
+    return { ok: true, finalMessage: body.trim() };
+  });
+  const t = tk.createTask({ cwd, title: 'use-nm', spec: 'x', provider: 'codex', isolate: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(done.status, 'done', done.error);
+  assert.equal(done.result.finalMessage, 'KEEP');
+  assert.equal(run('show', `${done.isolation.branch}:same.txt`).trim(), 'KEEP');
+  assert.doesNotMatch(run('ls-tree', '-r', '--name-only', done.isolation.branch), /node_modules/);
+  assert.ok(!done.changedFiles.some((f) => f.includes('node_modules')));
+  await tk.cleanupWorktree(t.id);
+  assert.equal(existsSync(done.isolation.dir), false);
+  assert.equal(readFileSync(join(cwd, 'node_modules', 'x.js'), 'utf8'), 'KEEP\n');
+});
+
+test('isolate: an unignored isolateLinks dir is kept out of the commit via info/exclude', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-excl');
+  const run = initRepo(cwd);
+  mkdirSync(join(cwd, 'vendor'));
+  writeFileSync(join(cwd, 'vendor', 'x.js'), 'FROM-VENDOR\n');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const previous = loadConfig().worker;
+  saveConfig({ worker: { isolateLinks: ['vendor'] } });
+  try {
+    const tk = await tasksWithWorker(ctx, async (t) => {
+      const body = readFileSync(join(t.cwd, 'vendor', 'x.js'), 'utf8');
+      writeFileSync(join(t.cwd, 'same.txt'), body);
+      return { ok: true, finalMessage: body.trim() };
+    });
+    const t = tk.createTask({ cwd, title: 'use-vendor', spec: 'x', provider: 'codex', isolate: true });
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await tk.awaitTask(t.id);
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    assert.equal(done.status, 'done', done.error);
+    assert.equal(done.result.finalMessage, 'FROM-VENDOR');
+    assert.doesNotMatch(run('ls-tree', '-r', '--name-only', done.isolation.branch), /vendor/);
+    await tk.cleanupWorktree(t.id);
+    assert.equal(readFileSync(join(cwd, 'vendor', 'x.js'), 'utf8'), 'FROM-VENDOR\n');
+  } finally { saveConfig({ worker: previous }); }
+});

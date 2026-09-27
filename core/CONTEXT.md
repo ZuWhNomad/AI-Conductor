@@ -12,9 +12,11 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
   probe exclusion until a post-completion limits poll and scoring settle, without holding worker concurrency slots.
   `isolate: true` (delegate / run_plan / createTask): the scheduler creates `git worktree add --detach` under
-  `statePath('worktrees', <attempt root id>)` before the worker starts, commits onto `conductor/<id>` when the
-  worker ends, and exposes `cleanupWorktree` / `listWorktrees` (`conductor worktrees [--prune-days N]`). Ignored
-  (one warning) for a non-git cwd or `sandbox: 'read-only'`. Follow-ups reuse the dir; `retry_of` gets a new one.
+  `statePath('worktrees', <attempt root id>)` before the worker starts, junctions/symlinks `worker.isolateLinks`
+  (`node_modules`, `.venv`) from the source checkout, commits onto `conductor/<id>` when the worker ends, and
+  exposes `cleanupWorktree` / `listWorktrees` (`conductor worktrees [--prune-days N]`). Cleanup unlinks those
+  junctions first (`git worktree remove --force` follows them on Windows). Ignored (one warning) for a non-git
+  cwd or `sandbox: 'read-only'`. Follow-ups reuse the dir; `retry_of` gets a new one.
 - `sweep.mjs` — the budget math: `admit` (a task must fit EVERY window under its target — session 95%,
   weekly/budget 100%), `measuredCostByWindow`, `targetFor`.
 - `experiment.mjs` — A/B records (`conductor experiment new|list|report`) over scorecard rows tagged by `CONDUCTOR_EXPERIMENT=<id>:<arm>`.

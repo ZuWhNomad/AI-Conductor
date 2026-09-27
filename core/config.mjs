@@ -64,6 +64,7 @@ export const DEFAULTS = {
     timeoutMinutes: 0,                // per worker run; 0 = off
     timeoutByCategory: {},            // optional per-category hard caps; 0 = off
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
+    isolateLinks: ['node_modules', '.venv'], // after isolate worktree add: junction/symlink these dirs from the source checkout so verify commands can run
   },
   models: { contextWindows: {} },
   plans: { warmupSeconds: 20 },
@@ -317,6 +318,9 @@ function normalize(cfg, raw = {}) {
     weekends: typeof cfg.bench.offPeak.weekends === 'boolean' ? cfg.bench.offPeak.weekends : DEFAULTS.bench.offPeak.weekends,
   };
   if (!SANDBOXES.includes(cfg.worker.codexSandbox)) cfg.worker.codexSandbox = DEFAULTS.worker.codexSandbox;
+  cfg.worker.isolateLinks = Array.isArray(cfg.worker.isolateLinks)
+    ? cfg.worker.isolateLinks.filter((n) => typeof n === 'string' && n && n !== '.' && n !== '..' && !/[\\/]/.test(n))
+    : [...DEFAULTS.worker.isolateLinks];
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
   if (!Number.isFinite(cfg.scorecard.effortSlackPct) || cfg.scorecard.effortSlackPct < 0) cfg.scorecard.effortSlackPct = DEFAULTS.scorecard.effortSlackPct;

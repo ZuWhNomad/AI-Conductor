@@ -47,6 +47,7 @@ test('defaults load, patches deep-merge, secrets redact', () => {
   const c = loadConfig();
   assert.equal(c.port, DEFAULTS.port);
   assert.equal(c.worker.provider, 'codex');
+  assert.deepEqual(c.worker.isolateLinks, ['node_modules', '.venv']);
   saveConfig({ providers: { deepseek: { apiKey: 'sk-test' } }, worker: { effort: 'high' } });
   const c2 = loadConfig();
   assert.equal(c2.providers.deepseek.apiKey, 'sk-test');

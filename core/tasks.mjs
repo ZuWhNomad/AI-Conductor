@@ -1,11 +1,11 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, join, isAbsolute, relative, resolve } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
 import { loadConfig, DEFAULTS, codexSandboxFor, runTimeoutMs } from './config.mjs';
 import { bus } from './bus.mjs';
@@ -623,12 +623,12 @@ async function git(cwd, args) {
   if (!gitBin) return null;
   try { return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
 }
-async function gitExec(cwd, args) {
+async function gitExec(cwd, args, timeout = 10_000) {
   const root = findGitRoot(cwd) || cwd;
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) throw new Error('git is not installed');
   try {
-    return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
+    return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 64 * 1024 * 1024 })).stdout;
   } catch (e) {
     throw new Error(String(e.stderr || e.message || e).trim() || `git ${args[0]} failed`);
   }
@@ -710,22 +710,57 @@ function isolatedCwd(t) {
   return join(t.isolation.dir, rel);
 }
 
-const ISOLATION_LINKS = ['node_modules', '.venv'];
-function linkWorktreeDeps(root, dir, t) {
-  for (const name of ISOLATION_LINKS) {
-    const source = join(root, name), target = join(dir, name);
-    if (!existsSync(source)) continue;
-    try { lstatSync(target); continue; } catch (e) { if (e.code !== 'ENOENT') continue; }
-    try { symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir'); }
-    catch (e) { t.warning = [t.warning, `isolate ${name} link skipped: ${e.message}`].filter(Boolean).join(' '); }
+function isolateLinkNames() {
+  const names = loadConfig().worker.isolateLinks;
+  return Array.isArray(names) ? names.filter((n) => typeof n === 'string' && n && !/[\\/]/.test(n)) : [...DEFAULTS.worker.isolateLinks];
+}
+
+function isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd) {
+  const rels = [''];
+  const rel = relative(sourceRoot, resolve(taskCwd || sourceRoot));
+  if (rel && !rel.startsWith('..') && rel !== '.') rels.push(rel);
+  const out = [];
+  for (const folder of rels) {
+    for (const name of isolateLinkNames()) {
+      const src = folder ? join(sourceRoot, folder, name) : join(sourceRoot, name);
+      const dst = folder ? join(worktreeDir, folder, name) : join(worktreeDir, name);
+      const pattern = (folder ? `${folder.replaceAll('\\', '/')}/${name}` : name);
+      out.push({ src, dst, pattern });
+    }
+  }
+  return out;
+}
+
+async function ensureExcluded(worktreeDir, pattern) {
+  try { await gitExec(worktreeDir, ['check-ignore', '-q', '--', pattern]); return; } catch {}
+  const gitPath = (await gitExec(worktreeDir, ['rev-parse', '--git-path', 'info/exclude'])).trim();
+  const file = isAbsolute(gitPath) ? gitPath : join(worktreeDir, gitPath);
+  mkdirSync(dirname(file), { recursive: true });
+  let cur = '';
+  try { cur = readFileSync(file, 'utf8'); } catch {}
+  if (cur.split(/\r?\n/).includes(pattern)) return;
+  appendFileSync(file, `${cur && !cur.endsWith('\n') ? '\n' : ''}${pattern}\n`);
+}
+
+async function linkIsolateDirs(t, sourceRoot, worktreeDir) {
+  const type = process.platform === 'win32' ? 'junction' : 'dir';
+  for (const { src, dst, pattern } of isolateLinkSpecs(sourceRoot, worktreeDir, t.cwd)) {
+    let srcDir = false;
+    try { srcDir = statSync(src).isDirectory(); } catch {}
+    if (!srcDir || existsSync(dst)) continue;
+    try {
+      symlinkSync(src, dst, type);
+      await ensureExcluded(worktreeDir, pattern);
+    } catch (e) {
+      t.warning = [t.warning, `isolate link ${pattern} failed: ${e.message}`].filter(Boolean).join(' ');
+    }
   }
 }
 
-function unlinkWorktreeDeps(dir) {
-  for (const name of ISOLATION_LINKS) {
-    const target = join(dir, name);
-    try { if (lstatSync(target).isSymbolicLink()) unlinkSync(target); }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
+function unlinkIsolateLinks(sourceRoot, worktreeDir, taskCwd) {
+  if (!worktreeDir || !existsSync(worktreeDir)) return;
+  for (const { dst } of isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd)) {
+    try { if (lstatSync(dst).isSymbolicLink()) unlinkSync(dst); } catch {}
   }
 }
 
@@ -735,10 +770,13 @@ async function prepareIsolation(t) {
   if (t.isolation?.dir && existsSync(t.isolation.dir)) { linkWorktreeDeps(root, t.isolation.dir, t); return isolatedCwd(t); }
   const dir = t.isolation?.dir || statePath('worktrees', chainRootId(t));
   mkdirSync(statePath('worktrees'), { recursive: true });
-  const base = (await gitExec(root, ['rev-parse', 'HEAD'])).trim();
-  await gitExec(root, ['worktree', 'add', '--detach', dir, 'HEAD']);
-  linkWorktreeDeps(root, dir, t);
-  t.isolation = { dir, base, branch: t.isolation?.branch ?? null };
+  let base = t.isolation?.base;
+  if (!existsSync(dir)) {
+    base = (await gitExec(root, ['rev-parse', 'HEAD'])).trim();
+    await gitExec(root, ['worktree', 'add', '--detach', dir, 'HEAD'], 120_000);
+  }
+  t.isolation = { dir, base: base || t.isolation?.base, branch: t.isolation?.branch ?? null };
+  await linkIsolateDirs(t, root, dir);
   persist(t);
   return isolatedCwd(t);
 }
@@ -754,7 +792,7 @@ async function finishIsolation(t, runCwd) {
   await gitExec(dir, ['add', '-A', '--', '.', ':(exclude)node_modules', ':(exclude).venv']);
   let committed = false;
   try {
-    await gitExec(dir, ['commit', '-m', `${t.title} (conductor task ${t.id})`]);
+    await gitExec(dir, ['commit', '-m', `${t.title} (conductor task ${t.id})`], 120_000);
     committed = true;
   } catch (e) {
     if (!/nothing to commit/i.test(String(e.message))) t.warning = [t.warning, `isolate commit skipped: ${e.message}`].filter(Boolean).join(' ');
@@ -796,7 +834,8 @@ export async function cleanupWorktree(taskId, { deleteBranch = false } = {}) {
   const notes = [];
   if (existsSync(iso.dir)) {
     if (!root) return `worktree_cleanup failed: cannot find git repo for ${taskId}`;
-    try { unlinkWorktreeDeps(iso.dir); await gitExec(root, ['worktree', 'remove', '--force', iso.dir]); notes.push(`removed worktree ${iso.dir}`); }
+    unlinkIsolateLinks(root, iso.dir, t.cwd);
+    try { await gitExec(root, ['worktree', 'remove', '--force', iso.dir], 120_000); notes.push(`removed worktree ${iso.dir}`); }
     catch (e) { return `worktree_cleanup failed: ${e.message}`; }
   } else notes.push(`worktree ${iso.dir} already gone`);
   if (deleteBranch && iso.branch && root) {
@@ -825,7 +864,10 @@ export async function listWorktrees({ pruneDays } = {}) {
     if (cutoff != null && endedAt && endedAt < cutoff) {
       const root = latest?.cwd ? findGitRoot(latest.cwd) : null;
       try {
-        if (root) { unlinkWorktreeDeps(dir); await gitExec(root, ['worktree', 'remove', '--force', dir]); }
+        if (root) {
+          unlinkIsolateLinks(root, dir, latest.cwd);
+          await gitExec(root, ['worktree', 'remove', '--force', dir], 120_000);
+        }
         entry.pruned = true;
       } catch (e) { entry.error = e.message; }
     }
