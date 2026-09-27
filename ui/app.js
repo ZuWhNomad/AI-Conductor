@@ -63,7 +63,7 @@ function renderSessions() {
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
     const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
-    const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', 'approve') : null;
+    const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', `approve ${s.pendingCount}`) : null;
     if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
     const ren = el('span', 'x', '✎'); ren.title = 'Rename chat'; ren.tabIndex = 0; ren.setAttribute('aria-label', 'Rename chat');
     ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
@@ -264,11 +264,15 @@ const modelLabel = (m, withProvider) => `${withProvider ? m.provider + ' · ' : 
 function resolveOther(prefix, interactive = false) {
   const P = $(`#${prefix}provider`), M = $(`#${prefix}model`);
   if (M.value !== '__other__') return;
-  if (!interactive) { M.selectedIndex = 0; return; }
+  if (!interactive) { M.value = M.dataset.selection; return false; }
   const all = P.value === ALL;
   const typed = (window.prompt(all ? 'Model id (provider:model, e.g. claude:claude-opus-4-8 or codex:gpt-5.6-sol):' : `Model id for ${P.value}:`) || '').trim();
-  if (!typed) { M.selectedIndex = 0; return; }
-  const value = all ? (typed.includes(':') ? typed : `claude:${typed}`) : typed;
+  if (!typed || (all && !/^[^:]+:.+$/.test(typed))) {
+    M.value = M.dataset.selection;
+    if (typed) alert('Enter a model id as provider:model.');
+    return false;
+  }
+  const value = typed;
   M.add(new Option(value.replace(':', ' · '), value), M.options[M.options.length - 1]);
   M.value = value;
 }
@@ -303,6 +307,7 @@ function fillPicker(prefix, sel, opts = {}) {
   M.value = match ? (all ? `${match.provider}:${match.id}` : match.id) : (all ? 'claude:' : '');
   if (!match && sel.model && sel.model !== 'default') { const v = all ? `${sel.provider || 'claude'}:${sel.model}` : sel.model; M.append(new Option(`${all ? (sel.provider || 'claude') + ' · ' : ''}${sel.model}`, v)); M.value = v; } // keep an explicit id even if not listed yet
   M.append(new Option('Other… (type a model id)', '__other__'));
+  M.dataset.selection = M.value;
   const cur = ms.find((m) => (all ? `${m.provider}:${m.id}` : m.id) === M.value);
   const prov = cur?.provider || (all ? (M.value.includes(':') ? M.value.split(':')[0] : 'claude') : P.value);
   const fallbackEfforts = prov === 'claude' ? CLAUDE_EFFORTS : EFFORTS;
@@ -752,7 +757,7 @@ function closeCmdMenu() { const m = $('#cmd-menu'); if (!m) return; m.hidden = t
 function cmdItemsFor(query) {
   const q = query.toLowerCase(); const items = [];
   for (const c of COMMANDS) if (!q || c.cmd.startsWith(q)) items.push({ label: `/${c.cmd} ${c.args}`, help: c.help, insert: `/${c.cmd} ` });
-  for (const m of S.models.models) if (m.kind === 'agent' && (!q || m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))) items.push({ label: `/worker ${m.id}`, help: m.provider, insert: `/worker ${m.id} ` });
+  if (q) for (const m of S.models.models) if (m.kind === 'agent' && (m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))) items.push({ label: `/worker ${m.id}`, help: m.provider, insert: `/worker ${m.id} ` });
   return items;
 }
 /** Open only when the whole composer is a single leading `/token` (no space yet); otherwise close. */
@@ -973,7 +978,7 @@ function openSettings() {
     setTimeout(() => {
       fillPicker(prefix, sel, opts);
       $(`#${prefix}provider`).onchange = (e) => { const v = e.target.value; fillPicker(prefix, v === ALL ? pickerValue(prefix) : { ...pickerValue(prefix), provider: v, model: '' }, { ...opts, forceProvider: true }); };
-      $(`#${prefix}model`).onchange = () => { resolveOther(prefix, true); fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
+      $(`#${prefix}model`).onchange = () => { if (resolveOther(prefix, true) === false) return; fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
     }, 0);
   };
   body.append(el('h4', null, 'Default worker (the grunt coder) — provider : model : effort'));
@@ -1024,6 +1029,7 @@ function openSettings() {
     const patch = {};
     for (const i of grid.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
+      if (i.type === 'number' && i.value.trim() === '') continue;
       const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'number' ? Number(i.value) : i.value;
       if (i.type === 'password') {
         if (v === '••••') continue;
@@ -1057,11 +1063,6 @@ function openSettings() {
     if (changedProviders.length > 0) api.post('/api/models/refresh', { only: changedProviders }).catch(() => {});
   });
   body.append(save);
-  // Quit: stop the server process from the browser (also available top-left in the brand row).
-  const quit = el('button', 'sm danger', 'Quit conductor (stop the server)');
-  quit.style.marginLeft = '8px';
-  quit.onclick = () => quitServer(quit);
-  body.append(quit);
   openModal('Settings', body);
 }
 async function openImprovements(showResolved = false) {
@@ -1163,7 +1164,7 @@ async function boot() {
   $('#btn-send').onclick = send;
   $('#btn-stop').onclick = () => S.current && act(() => api.post(`/api/sessions/${S.current.id}/interrupt`));
   $('#btn-refresh').onclick = (e) => act(async () => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } });
-  $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
+  $('#auto-refresh').onchange = (e) => act(async () => { S.config = await api.post('/api/settings', { ui: { autoRefresh: e.target.checked } }); applyAutoRefresh(); }, e.target);
   $('#btn-settings').onclick = openSettings;
   $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);
   $('#btn-budget-details').onclick = () => revealProviders();
@@ -1191,12 +1192,12 @@ async function boot() {
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
   // Switching back to "all providers" must keep the last real selection (the bare model id in the select no longer carries its provider).
   $('#new-provider').onchange = (e) => { const v = e.target.value; fillPicker('new-', v === ALL ? savedSelection() : { ...savedSelection(), provider: v, model: '' }, { forceProvider: v !== ALL }); refreshNewPicker(true, v !== ALL); };
-  $('#new-model').onchange = () => { resolveOther('new-', true); refreshNewPicker(true, true); };
+  $('#new-model').onchange = () => { if (resolveOther('new-', true) === false) return; refreshNewPicker(true, true); };
   $('#new-effort').onchange = () => refreshNewPicker(true, true);
   $('#provider').onchange = (e) => { const v = e.target.value; const cur = { provider: S.current?.provider || 'claude', model: S.current?.model || '', effort: S.current?.effort || 'high' }; fillPicker('', v === ALL ? cur : { ...cur, provider: v, model: v === cur.provider ? cur.model : '' }, { forceProvider: v !== ALL }); };
   $('#model').onchange = (e) => {
     if (!S.current) return;
-    resolveOther('', true);
+    if (resolveOther('', true) === false) return;
     const v = pickerValue('');
     if (v.provider !== S.current.provider) {
       $('#stt-hint').textContent = 'Provider can only be chosen for a new chat; the model switched within ' + S.current.provider + ' only if it belongs to it.';

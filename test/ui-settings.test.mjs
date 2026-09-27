@@ -30,7 +30,7 @@ function render(config = structuredClone(DEFAULTS)) {
     pickerValue: (prefix) => prefix === 'wk-' ? config.worker : config.conductor,
     api: { post: async (path, patch) => { posts.push({ path, patch: structuredClone(patch) }); return config; } },
   });
-  return { field: (id) => nodes.find((n) => n.id === 'cfg-' + id), save: () => nodes.find((n) => n.textContent === 'Save').onclick(), posts };
+  return { field: (id) => nodes.find((n) => n.id === 'cfg-' + id), save: () => nodes.find((n) => n.textContent === 'Save').onclick(), posts, nodes };
 }
 
 test('Settings shows the configured update policy and no guessed Grok hour', async () => {
@@ -107,4 +107,33 @@ test('Settings shows each worker CLI update mode and saves it per provider', asy
   await view.save();
   assert.equal(view.posts[0].patch.providers.kimi.cliUpdate, 'off');
   assert.equal(view.posts[0].patch.providers.grok.cliUpdate, 'auto');
+});
+
+test('empty optional numbers stay unset and Settings has no duplicate Quit', async () => {
+  const view = render();
+  view.field('worker.timeoutByCategory.modeling').value = '';
+  view.field('providers.deepseek.budgetUsd').value = '';
+  await view.save();
+  assert.equal(view.posts[0].patch.worker.timeoutByCategory, undefined);
+  assert.equal(view.posts[0].patch.providers?.deepseek?.budgetUsd, undefined);
+  assert.equal(view.nodes.some((n) => n.textContent === 'Quit conductor (stop the server)'), false);
+});
+
+test('all-providers Other keeps the selection and hints when provider is missing', () => {
+  const other = source.slice(source.indexOf('function resolveOther('), source.indexOf('/** Read a picker.', source.indexOf('function resolveOther(')));
+  const model = { value: '__other__', dataset: { selection: 'codex:gpt-6-sol' }, options: [{}], add(option) { this.options.push(option); } };
+  const hints = [];
+  const context = {
+    ALL: '*',
+    $: (selector) => selector.endsWith('provider') ? { value: '*' } : model,
+    window: { prompt: () => 'gpt-6-astra' }, alert: (message) => hints.push(message),
+    Option: function (label, value) { return { label, value }; },
+  };
+  runInNewContext(other + '\nresolveOther("new-", true);', context);
+  assert.equal(model.value, 'codex:gpt-6-sol');
+  assert.match(hints[0], /provider:model/);
+  assert.equal(model.options.length, 1);
+  model.value = '__other__'; context.window.prompt = () => 'codex:gpt-6-astra';
+  runInNewContext(other + '\nresolveOther("new-", true);', context);
+  assert.equal(model.value, 'codex:gpt-6-astra');
 });

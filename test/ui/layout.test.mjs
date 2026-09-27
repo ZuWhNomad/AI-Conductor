@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { runInNewContext } from 'node:vm';
 
 const html = readFileSync(new URL('../../ui/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../ui/styles.css', import.meta.url), 'utf8');
@@ -30,6 +31,21 @@ test('icon buttons have aria-labels, modal has dialog role, and favicon link is 
   assert.match(html, /<button id="fleet-collapse"[^>]*aria-label="Collapse \/ expand fleet"/);
   assert.match(html, /<button id="modal-close"[^>]*aria-label="Close dialog"/);
   assert.match(html, /<div id="modal"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="modal-title"/);
+});
+
+test('new-chat toggles wrap inside the sidebar', () => {
+  assert.match(html, /<div class="row between wrap"><span id="new-selection"/);
+});
+
+test('bare slash lists commands; model suggestions need a query', () => {
+  const start = app.indexOf('function cmdItemsFor(query)');
+  const code = app.slice(start, app.indexOf('/** Open only', start));
+  const models = [{ kind: 'agent', id: 'gpt-6-astra', label: 'Astra', provider: 'codex' }];
+  const items = runInNewContext(code + '\n({ empty: cmdItemsFor(""), query: cmdItemsFor("ast") })', {
+    S: { models: { models } }, COMMANDS: [{ cmd: 'worker', args: '<spec>', help: 'Default worker' }],
+  });
+  assert.deepEqual(Array.from(items.empty, (item) => item.label), ['/worker <spec>']);
+  assert.deepEqual(Array.from(items.query, (item) => item.label), ['/worker gpt-6-astra']);
 });
 
 test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable' }, async (t) => {
@@ -224,7 +240,7 @@ test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWS
       renderSessions();
     `);
     const pillText = await evaluate(`$('#sessions .item .pill.warn')?.textContent`);
-    assert.equal(pillText, 'approve');
+    assert.equal(pillText, 'approve 2');
   });
   await t.test('U12: session updated event resyncs checkboxes', async () => {
     await evaluate(`
