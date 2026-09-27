@@ -52,6 +52,12 @@ const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
         const gate = (globalThis.__claudeGates || []).shift();
         if (gate) await gate.promise;
         yield { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0, duration_ms: 1, num_turns: 1, queued_turn_count: (globalThis.__claudeGates || []).length };
+        if (globalThis.__claudeExtraTurn) {
+          const extra = globalThis.__claudeExtraTurn;
+          globalThis.__claudeExtraTurn = null;
+          if (extra.gate) await extra.gate.promise;
+          for await (const m of extra.messages || []) yield m;
+        }
       }
     })();
   }
@@ -105,6 +111,8 @@ afterEach(() => {
   globalThis.__claudeEndWithoutResult = false;
   globalThis.__claudeAskPermission = false;
   globalThis.__claudeStream = false;
+  globalThis.__claudeExtraTurn?.gate?.resolve?.();
+  globalThis.__claudeExtraTurn = null;
   globalThis.__histHold?.resolve?.();
   globalThis.__histHold = null;
   globalThis.__codexHold?.resolve?.();
@@ -381,3 +389,45 @@ test('the conductor prompt points at this install\'s review framework, whatever 
   assert.ok(existsSync(path));
   assert.ok(PROMPT.includes('{{results:find}}'), 'run_plan placeholders are left alone');
 });
+
+test('an SDK-initiated turn without a user message sets status to running and returns to idle on result', async () => {
+  const wakeGate = Promise.withResolvers();
+  const finishGate = Promise.withResolvers();
+  globalThis.__claudeExtraTurn = {
+    gate: wakeGate,
+    messages: (async function* () {
+      yield { type: 'system', subtype: 'task_notification', task_id: 'task-sub', status: 'completed' };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'background subagent finished' }] } };
+      await finishGate.promise;
+      yield { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0, duration_ms: 1, num_turns: 1, queued_turn_count: 0 };
+    })(),
+  };
+  const s = createSession({ cwd: tmpDir('sdk-initiated-turn') });
+  const statuses = [];
+  const h = (e) => { if (e.type === 'session' && e.sessionId === s.id && e.kind === 'status') statuses.push(e.status); };
+  bus.on('event', h);
+
+  const firstResult = onceSession(s.id, 'result');
+  await sendMessage(s.id, 'launch background subagent');
+  await firstResult;
+  assert.equal((await getSession(s.id)).status, 'idle');
+  assert.deepEqual(statuses, ['running', 'idle']);
+
+  // Wake the SDK loop with an SDK-initiated message (no sendMessage called)
+  const wakeEvent = onceSession(s.id, 'status');
+  wakeGate.resolve();
+  const running = await wakeEvent;
+  assert.equal(running.status, 'running');
+  assert.equal((await getSession(s.id)).status, 'running');
+  assert.deepEqual(statuses, ['running', 'idle', 'running']);
+
+  // Complete the SDK-initiated turn with result
+  const finishResult = onceSession(s.id, 'result');
+  finishGate.resolve();
+  await finishResult;
+  bus.off('event', h);
+
+  assert.equal((await getSession(s.id)).status, 'idle');
+  assert.deepEqual(statuses, ['running', 'idle', 'running', 'idle']);
+});
+
