@@ -380,7 +380,8 @@ The note states a twelve-month price target of $300, which is inconsistent with 
 
 ## R4 — Implied return and rating
 ### Answer
-The corrected target of $204 against a spot price of $160.00 implies a return of 27.5%. The rating is BUY because the target exceeds the spot price by more than 10%.
+The corrected target of $204 against a spot price of $160.00 implies a return of 27.5%.
+Rating: BUY
 ### Citation
 [8-K]
 ### Quote
@@ -419,7 +420,7 @@ export function research4Pack() {
       { id: 'R1', quote: R4_REV, claims: [['412\\s+million'], ['2\\.18'], ['2\\.05'], ['beat|exceed', '0\\.13']] },
       { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [['1\\.62\\s+billion'], ['1\\.40\\s+billion'], ['conflict|differ|inconsisten|stale|disagree']] },
       { id: 'R3', quote: R4_TARGET, trap: 'target', claims: [['\\$204\\b'], ['24'], ['8\\.50']] },
-      { id: 'R4', quote: R4_SPOT, trap: 'rating', claims: [['27\\.5'], ['\\bBUY\\b']] },
+      { id: 'R4', quote: R4_SPOT, trap: 'rating', rating: 'BUY', claims: [['27\\.5']] },
       { id: 'R5', quote: R4_CASH, claims: [['86\\s+million']] },
     ],
   };
@@ -434,7 +435,7 @@ const R5_CEO = 'Ada Pell has served as chief executive officer for 6 years and p
 const R5_CFO = 'Jon Vesper has served as chief financial officer for 3 years and previously was treasurer of Kite Board Company.';
 const R5_MATRIX = 'The board diversity matrix reports that 4 of 9 directors are women and that 3 of 9 directors self-identify as members of an underrepresented group.';
 const R5_ROSTER = ['Ada Pell', 'Jon Vesper', 'Ruth Hale', 'Omar Shah', 'Priya Nunez', 'Cole Brandt', 'Helen Cho', 'Marco Ibarra', 'June Okada'];
-const R5_DIVIDEND = 'The quarterly report describes capital returns only by reference to the dividend declared in March.';
+const R5_DIVIDEND = 'The quarterly report describes capital returns only by reference to the dividend of $12 million declared in March.';
 const R5_MILL = 'The Redhook mill remains in service and no closure has been authorized.';
 const R5_GUIDE = 'Management set full-year net revenue guidance at $900 million.';
 const R5_GUIDE_STALE = 'An earlier desk note had repeated full-year net revenue guidance of $840 million.';
@@ -509,7 +510,7 @@ export function research5Pack() {
     roster: R5_ROSTER,
     anchors: [
       anchor('sources/10-K.md', R5_SEGMENTS), anchor('sources/10-K.md', R5_RISK_FIBER), anchor('sources/10-K.md', R5_RISK_PORT),
-      anchor('sources/proxy-DEF14A.md', R5_CEO), anchor('sources/proxy-DEF14A.md', R5_CFO), anchor('sources/proxy-DEF14A.md', R5_MATRIX),
+      anchor('sources/proxy-DEF14A.md', roster), anchor('sources/proxy-DEF14A.md', R5_CEO), anchor('sources/proxy-DEF14A.md', R5_CFO), anchor('sources/proxy-DEF14A.md', R5_MATRIX),
       anchor('sources/10-Q.md', R5_DIVIDEND), anchor('sources/10-Q.md', R5_MILL),
       anchor('sources/transcript.md', R5_GUIDE),
       anchor('sources/news.md', R5_GUIDE_STALE), anchor('sources/news.md', R5_MILL_NEWS),
