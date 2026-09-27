@@ -17,7 +17,7 @@ import { OVERLAP_SLOW, OVERLAP_FAST, OVERLAP_TEST, OVERLAP_HIDDEN, OVERLAP_BENCH
 import { PATCH, PATCH_TEST, PATCH_HIDDEN, patchHidden } from './private/implement-6.mjs';
 import { MULTIPART, MULTIPART_TEST, MULTIPART_HIDDEN } from './private/implement-7.mjs';
 import { CLOCK, CACHE_BUGGY, CACHE_FIXED, CACHE_TEST, CACHE_HIDDEN } from './private/debug-7.mjs';
-import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD, RESEARCH_EXCERPTS, RESEARCH_GOLD, RESEARCH_REFERENCE, research4Pack, research5Pack, RESEARCH4_REFERENCE, RESEARCH5_REFERENCE, WRITING_CREATIVE_REFERENCE, WRITING_COPY_REFERENCE, VIDEO_TRANSCRIPT, VIDEO_GOLD } from './private/deterministic.mjs';
+import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD, RESEARCH_EXCERPTS, RESEARCH_GOLD, RESEARCH_REFERENCE, research4Pack, research5Pack, RESEARCH4_REFERENCE, RESEARCH5_REFERENCE, WRITING_CREATIVE_REFERENCE, WRITING_COPY_REFERENCE, VIDEO_TRANSCRIPT, VIDEO_GOLD, money } from './private/deterministic.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -81,18 +81,49 @@ const researchSub = (section, name) => {
   return next ? rest.slice(0, next.index) : rest;
 };
 const researchSentences = (s) => s.split(/(?<=[.!?])\s+/);
+const researchClauses = (s) => researchSentences(s).flatMap((sentence) => sentence.split(/\b(?:but|whereas|while|although)\b|[;:]/i));
+const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
+const normalizeVerbatim = (s) => String(s || '')
+  .replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[–—]/g, '-')
+  .replace(/\s+/g, ' ').trim().replace(/\.$/, '');
+const quoted = (s) => [...String(s || '').replace(/[“”]/g, '"').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+function hasVerbatimSentenceRun(source, quote, minLength = 30) {
+  const wanted = normalizeVerbatim(quote);
+  if (wanted.length < minLength) return false;
+  const sentences = [...sentenceSegmenter.segment(String(source || ''))]
+    .map(({ segment }) => segment.trim())
+    .filter((sentence) => /[.!?][\s]*$/.test(sentence));
+  for (let i = 0; i < sentences.length; i++) {
+    let run = '';
+    for (let j = i; j < sentences.length; j++) {
+      run += `${run ? ' ' : ''}${sentences[j]}`;
+      const normalized = normalizeVerbatim(run);
+      if (normalized === wanted) return true;
+      if (normalized.length > wanted.length) break;
+    }
+  }
+  return false;
+}
+const excerpt = (source, label) => {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const start = new RegExp(`^${escaped}\\b[^\\r\\n]*`, 'mi').exec(source);
+  if (!start) return '';
+  const rest = source.slice(start.index + start[0].length);
+  const next = /^Excerpt\s+[A-Z]\b[^\r\n]*/mi.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+};
 // R3 answer rule (the Quote may still repeat the source sentence): a sentence that contains both
 // "target" and the note's $300 figure fails unless an inconsistency word is in that same sentence.
-const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|not equal|differ/i;
+const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|not equal|differ|not support|does not support|unsupported/i;
 function researchTrap(item, ans, roster) {
   if (item.trap === 'backlog') {
-    for (const s of researchSentences(ans)) {
-      if (/1\.40\s+billion/i.test(s) && /\bcurrent\b/i.test(s) && !/conflict|differ|inconsisten|stale|disagree|not current|no longer/i.test(s)) return 'R2 treats the stale backlog as current';
+    for (const s of researchClauses(ans)) {
+      if (new RegExp(money('1.40', 'billion'), 'i').test(s) && /\bcurrent\b/i.test(s) && !/conflict|differ|inconsisten|stale|disagree|not current|no longer/i.test(s)) return 'R2 treats the stale backlog as current';
     }
   }
   if (item.trap === 'target') {
     for (const s of researchSentences(ans)) {
-      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && !INCONSISTENT.test(s)) return 'R3 presents the wrong target';
+      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && ((/\bsupport(?:s|ed)?\b/i.test(s) && !INCONSISTENT.test(s)) || !INCONSISTENT.test(ans))) return 'R3 presents the wrong target';
     }
   }
   if (item.trap === 'rating') {
@@ -106,11 +137,15 @@ function researchTrap(item, ans, roster) {
     }
   }
   if (item.trap === 'absent') {
-    if (/\$\s?\d/.test(ans) || /\d[\d,]*\s+(?:million|billion)/i.test(ans)) return 'D4 contains a figure for an undisclosed item';
+    for (const clause of researchClauses(ans)) {
+      const figures = clause.match(/\$\s*\d[\d,.]*\s*(?:m(?:illion|n)?|b(?:illion|n)?)?|\d[\d,.]*\s*(?:m(?:illion|n)?|b(?:illion|n)?)\b/gi) || [];
+      const disclosedDividend = /\bdividend\b/i.test(clause) && figures.every((figure) => new RegExp(`^${money(12, 'million')}$`, 'i').test(figure));
+      if (figures.length && !disclosedDividend) return 'D4 contains a figure for an undisclosed item';
+    }
   }
   if (item.trap === 'guidance') {
     for (const s of researchSentences(ans)) {
-      if (/840\s+million/i.test(s) && /\b(?:current|latest)\b/i.test(s) && !/stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree|not current/i.test(s)) return 'D5 treats the stale guidance as current';
+      if (new RegExp(money(840, 'million'), 'i').test(s) && /\b(?:current|latest)\b/i.test(s) && !/stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree|not current/i.test(s)) return 'D5 treats the stale guidance as current';
     }
   }
   return '';
@@ -131,24 +166,22 @@ function checkFilingResearch(dir, t, pack) {
     if (trap) return { pass: false, notes: trap };
     const labels = [...researchSub(section, 'Citation').matchAll(/\[([^\]]+)\]/g)].map((m) => m[1].trim());
     if (!labels.length) return { pass: false, notes: `${item.id} missing a citation label` };
-    const quotes = item.quotes || [item.quote];
-    const used = quotes.find((q) => section.includes(`"${q}"`));
+    const rels = labels.map((label) => pack.docs[label]);
+    if (rels.some((rel) => !rel)) return { pass: false, notes: `${item.id} quote is not verbatim from the cited document` };
+    const sources = rels.map((rel) => pack.files[rel]);
+    const used = quoted(researchSub(section, 'Quote')).find((q) => sources.some((source) => hasVerbatimSentenceRun(source, q)));
     if (!used) return { pass: false, notes: `${item.id} quote is not verbatim from the cited document` };
-    for (const label of labels) {
-      const rel = pack.docs[label];
-      if (!rel || !pack.files[rel].includes(used)) return { pass: false, notes: `${item.id} quote is not verbatim from the cited document` };
-    }
   }
   return { pass: true, notes: '' };
 }
 const filingJudge = (dir, t, pack) => {
   const out = answer(t);
-  const quoted = [...out.matchAll(/"([^"\n]+)"/g)].map((m) => m[1]).filter((q) => q.length > 40);
+  const responseQuotes = quoted(out).filter((q) => normalizeVerbatim(q).length > 40);
   const paras = [];
   for (const [rel, body] of Object.entries(pack.files)) {
     for (const para of body.split(/\n\n+/)) {
       const fact = (pack.anchors || []).some((a) => a.file === rel && para.includes(a.sentence));
-      const used = quoted.some((q) => para.includes(q));
+      const used = responseQuotes.some((q) => hasVerbatimSentenceRun(para, q));
       if (fact || used) paras.push(`FILE ${rel}\n${para.trim()}`);
     }
   }
@@ -160,6 +193,12 @@ const timestampSeconds = (s) => {
   if ((p.length !== 2 && p.length !== 3) || p.some((n) => !Number.isFinite(n))) return null;
   return p.length === 2 ? p[0] * 60 + p[1] : p[0] * 3600 + p[1] * 60 + p[2];
 };
+const transcriptCues = (transcript) => String(transcript || '').split(/\r?\n\s*\r?\n/).flatMap((block) => {
+  const lines = block.trim().split(/\r?\n/), timing = lines.findIndex((line) => line.includes('-->'));
+  if (timing < 0) return [];
+  const [from, to] = lines[timing].split('-->').map((s) => timestampSeconds(s.trim()));
+  return from == null || to == null ? [] : [{ start: from, end: to, text: lines.slice(timing + 1).join(' ') }];
+});
 
 function buildSqlDb(file) {
   rmSync(file, { force: true });
@@ -408,7 +447,8 @@ const TASKS = [
         const claims = /^###\s+Claims\s*$([\s\S]*?)(?=^###\s+)/mi.exec(section)?.[1] || '';
         for (const claim of q.claims) if (!claim.every((pattern) => new RegExp(pattern, 'iu').test(claims))) return { pass: false, notes: `${q.id} missing a required gold claim` };
         if (!section.includes(`[${q.citation}]`)) return { pass: false, notes: `${q.id} missing citation [${q.citation}]` };
-        if (!excerpts.includes(q.quote) || !section.includes(`"${q.quote}"`)) return { pass: false, notes: `${q.id} quote is not verbatim from the cited excerpt` };
+        const used = quoted(researchSub(section, 'Quote')).find((candidate) => hasVerbatimSentenceRun(excerpt(excerpts, q.citation), candidate));
+        if (!used) return { pass: false, notes: `${q.id} quote is not verbatim from the cited excerpt` };
       }
       return { pass: true, notes: '' };
     },
@@ -472,15 +512,16 @@ const TASKS = [
     spec: 'Read transcript.vtt and write claims.json as a JSON array of exactly three objects in source order, each with exactly {timestamp, claim, quote}. Use an MM:SS timestamp that falls inside the cue supporting the claim, a concise factual claim, and an exact full-sentence quote copied verbatim from that cue. Cover the enrollment, demand and reliability results. Do not modify transcript.vtt and add no prose.',
     setup(dir) { write(dir, { 'transcript.vtt': bare(VIDEO_TRANSCRIPT) }); },
     check(dir) {
-      const got = readJson(dir, 'claims.json'), gold = privateJson(VIDEO_GOLD), transcript = read(dir, 'transcript.vtt') || '';
+      const got = readJson(dir, 'claims.json'), gold = privateJson(VIDEO_GOLD), transcript = read(dir, 'transcript.vtt') || '', cues = transcriptCues(transcript);
       if (!Array.isArray(got) || got.length !== gold.length) return { pass: false, notes: `claims.json must contain exactly ${gold.length} claims` };
       for (let i = 0; i < gold.length; i++) {
         const row = got[i], want = gold[i];
         if (!row || Object.keys(row).sort().join('|') !== 'claim|quote|timestamp' || !['claim', 'quote', 'timestamp'].every((k) => typeof row[k] === 'string')) return { pass: false, notes: `claim ${i + 1} has the wrong shape` };
-        if (row.quote !== want.quote || !transcript.includes(row.quote)) return { pass: false, notes: `claim ${i + 1} quote is not verbatim` };
         if (!want.patterns.every((pattern) => new RegExp(pattern, 'iu').test(row.claim))) return { pass: false, notes: `claim ${i + 1} misses required facts` };
         const at = timestampSeconds(row.timestamp);
         if (at == null || at < want.start || at > want.end) return { pass: false, notes: `claim ${i + 1} timestamp is outside its transcript cue` };
+        const cue = cues.find((candidate) => at >= candidate.start && at <= candidate.end);
+        if (!cue || !hasVerbatimSentenceRun(cue.text, row.quote, 1)) return { pass: false, notes: `claim ${i + 1} quote is not verbatim` };
       }
       return { pass: true, notes: '' };
     },

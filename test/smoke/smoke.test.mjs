@@ -123,16 +123,44 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const variant5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Women hold 4 of 9 board seats in the disclosed aggregate.');
   assert.equal((await run('research-4', variant4)).pass, true, 'research-4 variant');
   assert.equal((await run('research-5', variant5)).pass, true, 'research-5 variant');
+  const differentQuote4 = ref4
+    .replace('Third-quarter revenue was $412 million', 'Third-quarter revenue was $412M')
+    .replace('current order backlog of $1.62 billion', 'current order backlog of $1.62B')
+    .replace("$1.40 billion backlog", "$1.40 bn backlog")
+    .replace('Cash and cash equivalents were $86 million at quarter end.\n### Citation', 'Cash and cash equivalents were $86M at quarter end.\n### Citation')
+    .replace('"Corvane Grid Systems reported third-quarter revenue of $412 million and diluted earnings per share of $2.18."', '“Cash and cash equivalents were $86 million at quarter end”');
+  assert.equal((await run('research-4', differentQuote4)).pass, true, 'research-4 accepts a different cited sentence and abbreviated money');
+  const differentQuote5 = ref5
+    .replace('54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent', '54% of net revenue, consumer packaging for 31%, and all other activities for 15%')
+    .replace('guidance is $900 million', 'guidance is $900M')
+    .replace('$840 million figure', '$840 mn figure')
+    .replace('"Industrial products accounted for 54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent."', '"A sustained rise in recovered-fiber prices would compress margins before contracts reset."');
+  assert.equal((await run('research-5', differentQuote5)).pass, true, 'research-5 accepts a different cited sentence and compact numbers');
+  const phrasing4 = ref4.replace('The 10-Q reports a current order backlog of $1.62 billion. The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'The 10-Q reports a current backlog of $1.62 billion, whereas the analyst note records $1.40 billion as prepared before the quarter closed.');
+  assert.equal((await run('research-4', phrasing4)).pass, true, 'research-4 does not attach current to a stale figure in another clause');
+  const targetPhrasing4 = ref4.replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The analyst\'s stated twelve-month target is $300. It is not supported by the note\'s own numbers: a 24 times multiple applied to $8.50 yields a target of $204.');
+  assert.equal((await run('research-4', targetPhrasing4)).pass, true, 'research-4 accepts a separately stated correction of the analyst target');
+  const phrasing5 = ref5
+    .replace('Ada Pell has served as chief executive officer for 6 years', 'Ada Pell has served as chief executive officer for six years')
+    .replace('Jon Vesper has served as chief financial officer for 3 years', 'Jon Vesper has served as chief financial officer for three years')
+    .replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'The board has 9 directors. In aggregate, 4 are women.')
+    .replace('A share repurchase authorization was not disclosed in the sources.', 'A share repurchase authorization was not disclosed in the sources. The 10-Q discusses a $12 million dividend, not a buyback.');
+  assert.equal((await run('research-5', phrasing5)).pass, true, 'research-5 accepts equivalent counts and the disclosed dividend');
   const fail = async (id, message, note) => assert.match((await run(id, message)).notes, note);
   await fail('research-4', ref4.replace('The corrected product is $204 and that corrected figure is the target.', 'The corrected product is $204. The price target of $300 is supported by the note.'), /wrong target/);
   await fail('research-4', ref4.replace('The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'The documents agree on the order backlog of $1.62 billion and also mention $1.40 billion.'), /R2/);
+  await fail('research-4', ref4.replace('The 10-Q reports a current order backlog of $1.62 billion. The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'Although the documents conflict, the 10-Q mentions $1.62B. The current backlog is $1.40B.'), /treats the stale backlog as current/);
   await fail('research-4', ref4.replace('Rating: BUY', 'Rating: SELL'), /does not match the rule/);
   await fail('research-4', ref4.replace('Rating: BUY\n', ''), /rating line is missing/);
   await fail('research-4', ref4.replace('"Corvane Grid Systems reported third-quarter', '"Corvane Grid Systems posted third-quarter'), /quote is not verbatim/);
+  await fail('research-4', ref4.replace('"Corvane Grid Systems reported third-quarter revenue of $412 million and diluted earnings per share of $2.18."', '"The note sets a twelve-month price target of $300 by applying a 24 times multiple to an earnings basis of $8.50."'), /quote is not verbatim/);
   await fail('research-5', ref5.replace('not disclosed in the sources.', 'not disclosed in the sources, aside from a $250 million program.'), /D4 contains a figure/);
   await fail('research-5', ref5.replace('4 of 9 directors are women.', '4 of 9 directors are women. Ada Pell is a woman.'), /named individual/);
   await fail('research-5', ref5.replace('The $840 million figure repeated in the news item is stale.', 'The $840 million figure repeated in the news item is stale. The latest full-year print of $840 million is the one to use.'), /stale guidance/);
+  await fail('research-5', ref5.replace('The latest full-year net revenue guidance is $900 million. The $840 million figure repeated in the news item is stale.', 'The latest full-year net revenue guidance is $840M. The $900M figure is stale.'), /stale guidance/);
   await fail('research-5', ref5.replace(/\n## D6[\s\S]*$/, ''), /exactly 6 D sections/);
+  await fail('research-5', ref5.replace('"Industrial products accounted for 54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent."', '"Industrial products supplied 54 percent of revenue, consumer packaging 31 percent, and other activities 15 percent."'), /quote is not verbatim/);
+  await fail('research-5', ref5.replace('"Industrial products accounted for 54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent."', '"Management set full-year net revenue guidance at $900 million."'), /quote is not verbatim/);
   assert.match(ref5, /\$12 million/);
   assert.equal((await run('research-5', ref5)).pass, true, 'D4 answer says not disclosed while the quote states an amount');
   for (const id of ['research-4', 'research-5']) assert.doesNotMatch(BATTERY.find((x) => x.id === id).spec, /stale|contradicted|does not equal|inconsistent/i, id);
@@ -158,8 +186,21 @@ test('research-3 requires gold claims, sections, citations and verbatim excerpt 
   const b = BATTERY.find((x) => x.id === 'research-3'), dir = tmpDir('research-checks');
   b.setup(dir); const solved = b.solve(dir);
   assert.equal((await b.check(dir, { result: solved })).pass, true);
+  const variant = solved.finalMessage
+    .replace('Revenue increased 14% to $228 million', 'Revenue increased 14 percent to $228M')
+    .replace('Gross margin expanded from 41% to 46%.', 'Gross margin expanded from 41 per cent to 46 per cent.')
+    .replace('$72 million in cash', '72 million dollars in cash')
+    .replace('$18 million for a second assembly line', '$18 mn for a second assembly line')
+    .replace('"Brindle Components ended the quarter with $72 million of cash and no long-term debt."', '“The company expects capital spending of $18 million in FY2027, primarily for a second assembly line scheduled to enter service in October”');
+  assert.equal((await b.check(dir, { result: { finalMessage: variant } })).pass, true, 'different cited sentence and compact numbers');
+  const singular = solved.finalMessage.replace('Industry shipments are forecast to grow 9% as regional grid upgrades accelerate.', 'Forecast 9% shipment growth driven by regional grid upgrades is the opportunity.');
+  assert.equal((await b.check(dir, { result: { finalMessage: singular } })).pass, true, 'singular shipment phrasing');
   const noQuote = solved.finalMessage.replace('"Alder Systems reported', '"Alder reported');
   assert.match((await b.check(dir, { result: { finalMessage: noQuote } })).notes, /quote is not verbatim/);
+  const wrongExcerpt = solved.finalMessage.replace('"Brindle Components ended the quarter with $72 million of cash and no long-term debt."', '"Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%."');
+  assert.match((await b.check(dir, { result: { finalMessage: wrongExcerpt } })).notes, /quote is not verbatim/);
+  const sentenceRun = solved.finalMessage.replace('"Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%."', '“Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%.\nManagement attributed most of the margin gain to a richer mix of subscription contracts rather than lower staffing costs”');
+  assert.equal((await b.check(dir, { result: { finalMessage: sentenceRun } })).pass, true, 'contiguous sentence run with normalized whitespace and quotes');
   const noClaim = solved.finalMessage.replace('Revenue increased 14% to $228 million in FY2026.', 'Revenue increased in FY2026.');
   assert.match((await b.check(dir, { result: { finalMessage: noClaim } })).notes, /required gold claim/);
   rmSync(dir, { recursive: true, force: true });
@@ -198,6 +239,15 @@ test('video-extraction-2 requires verbatim quotes and timestamps inside the supp
   b.setup(dir); b.solve(dir);
   const good = JSON.parse(readFileSync(join(dir, 'claims.json'), 'utf8'));
   assert.equal((await b.check(dir)).pass, true);
+  good[0].quote = 'Enrollment was distributed across the full service area.';
+  good[1].claim = 'Peak electricity demand fell 8% during the six-week trial.';
+  write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.equal((await b.check(dir)).pass, true, 'different transcript sentence and percent format');
+  good[0].quote = 'Enrollment covered most of the service area.'; write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.match((await b.check(dir)).notes, /quote is not verbatim/);
+  good[0].quote = good[1].quote; write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.match((await b.check(dir)).notes, /quote is not verbatim/);
+  good[0].quote = 'The pilot enrolled 120 households across three neighborhoods.';
   good[0].timestamp = '00:11'; write(dir, { 'claims.json': JSON.stringify(good) });
   assert.match((await b.check(dir)).notes, /outside its transcript cue/);
   good[0].timestamp = '00:07'; good[0].quote = good[0].quote.replace('120', '121'); write(dir, { 'claims.json': JSON.stringify(good) });

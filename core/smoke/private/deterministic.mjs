@@ -195,6 +195,11 @@ Excerpt C — market conditions
 Industry shipments are forecast to grow 9% next year as regional grid upgrades accelerate. Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.
 `;
 
+const number = (n) => String(n).replace('.', '\\.');
+const pct = (n) => `${number(n)}\\s*(?:%|percent|per\\s+cent)`;
+export const money = (n, unit) => `(?:\\$\\s*)?${number(n)}\\s*(?:${unit}|${unit === 'million' ? 'm|mn' : 'b|bn'})(?:\\s+dollars?)?\\b`;
+const count = (n, word, unit) => `(?:${n}|${word})\\s+${unit}`;
+
 export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
 [
   {
@@ -202,8 +207,8 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "citation": "Excerpt A",
     "quote": "Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%.",
     "claims": [
-      ["revenue", "14\\\\s*%", "228\\\\s+million"],
-      ["gross margin", "41\\\\s*%", "46\\\\s*%"]
+      ["revenue", ${JSON.stringify(pct(14))}, ${JSON.stringify(money(228, 'million'))}],
+      ["gross margin", ${JSON.stringify(pct(41))}, ${JSON.stringify(pct(46))}]
     ]
   },
   {
@@ -211,8 +216,8 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "citation": "Excerpt B",
     "quote": "Brindle Components ended the quarter with $72 million of cash and no long-term debt.",
     "claims": [
-      ["72\\\\s+million", "cash", "no long-term debt"],
-      ["capital spending", "18\\\\s+million", "second assembly line", "October"]
+      [${JSON.stringify(money(72, 'million'))}, "cash", "no long-term debt"],
+      ["capital spending", ${JSON.stringify(money(18, 'million'))}, "second assembly line", "October"]
     ]
   },
   {
@@ -220,7 +225,7 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "citation": "Excerpt C",
     "quote": "Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.",
     "claims": [
-      ["shipments", "9\\\\s*%", "grid upgrades"],
+      ["shipments?", ${JSON.stringify(pct(9))}, "grid upgrades"],
       ["lead times", "11\\\\s+weeks", "7\\\\s+weeks", "pricing power"]
     ]
   }
@@ -275,13 +280,13 @@ export const VIDEO_TRANSCRIPT = `// kq7Vx2Lm9Rt4
 WEBVTT
 
 00:00:04.000 --> 00:00:10.000
-The pilot enrolled 120 households across three neighborhoods.
+The pilot enrolled 120 households across three neighborhoods. Enrollment was distributed across the full service area.
 
 00:00:15.000 --> 00:00:22.000
-During the six-week trial, peak electricity demand fell by 8 percent.
+During the six-week trial, peak electricity demand fell by 8 percent. The comparison used each household's pre-trial peak.
 
 00:00:28.000 --> 00:00:35.000
-No battery faults were reported, although two homes lost Wi-Fi briefly.
+No battery faults were reported, although two homes lost Wi-Fi briefly. Both connections recovered without a site visit.
 `;
 
 export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
@@ -300,7 +305,7 @@ export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
     "end": 22,
     "claim": "Peak electricity demand fell 8 percent during the six-week trial.",
     "quote": "During the six-week trial, peak electricity demand fell by 8 percent.",
-    "patterns": ["peak electricity demand", "8\\\\s+percent", "six-week trial"]
+    "patterns": ["peak electricity demand", ${JSON.stringify(pct(8))}, "six-week trial"]
   },
   {
     "timestamp": "00:31",
@@ -417,11 +422,11 @@ export function research4Pack() {
       anchor('filings/10-Q.md', R4_BACKLOG), anchor('filings/10-Q.md', R4_CASH),
     ],
     items: [
-      { id: 'R1', quote: R4_REV, claims: [['412\\s+million'], ['2\\.18'], ['2\\.05'], ['beat|exceed', '0\\.13']] },
-      { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [['1\\.62\\s+billion'], ['1\\.40\\s+billion'], ['conflict|differ|inconsisten|stale|disagree']] },
+      { id: 'R1', quote: R4_REV, claims: [[money(412, 'million')], ['2\\.18'], ['2\\.05'], ['beat|exceed', '0\\.13']] },
+      { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [[money('1.62', 'billion')], [money('1.40', 'billion')], ['conflict|differ|inconsisten|stale|disagree|before (?:the )?quarter|pre-quarter']] },
       { id: 'R3', quote: R4_TARGET, trap: 'target', claims: [['\\$204\\b'], ['24'], ['8\\.50']] },
       { id: 'R4', quote: R4_SPOT, trap: 'rating', rating: 'BUY', claims: [['27\\.5']] },
-      { id: 'R5', quote: R4_CASH, claims: [['86\\s+million']] },
+      { id: 'R5', quote: R4_CASH, claims: [[money(86, 'million')]] },
     ],
   };
   return pack4;
@@ -516,15 +521,14 @@ export function research5Pack() {
       anchor('sources/news.md', R5_GUIDE_STALE), anchor('sources/news.md', R5_MILL_NEWS),
     ],
     items: [
-      { id: 'D1', quote: R5_SEGMENTS, claims: [['[Ii]ndustrial', '54\\s+percent'], ['consumer packaging', '31\\s+percent'], ['15\\s+percent']] },
-      { id: 'D2', quote: R5_CEO, claims: [['Ada Pell', '6\\s+years', 'Northline Pulp'], ['Jon Vesper', '3\\s+years', 'Kite Board']] },
-      { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['4\\s+of\\s+9', 'women']] },
+      { id: 'D1', quote: R5_SEGMENTS, claims: [['[Ii]ndustrial', pct(54)], ['consumer packaging', pct(31)], [pct(15)]] },
+      { id: 'D2', quote: R5_CEO, claims: [['Ada Pell', count(6, 'six', 'years?'), 'Northline Pulp'], ['Jon Vesper', count(3, 'three', 'years?'), 'Kite Board']] },
+      { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['\\b4\\b', '\\b9\\b', 'women']] },
       { id: 'D4', quote: R5_DIVIDEND, trap: 'absent', claims: [['not disclosed|not found in the sources']] },
-      { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [['900\\s+million'], ['840\\s+million'], ['stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree']] },
+      { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [[money(900, 'million')], [money(840, 'million')], ['stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree']] },
       { id: 'D6', quotes: [R5_RISK_FIBER, R5_RISK_PORT], claims: [['recovered-fiber'], ['port terminal']] },
     ],
   };
   return pack5;
 }
 export const RESEARCH5_REFERENCE = `// kq7Vx2Lm9Rt4\n${R5_REFERENCE}`;
-
