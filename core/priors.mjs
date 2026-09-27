@@ -77,6 +77,7 @@ export const PRIORS = [
   { re: /^codex:gpt-5\.3-codex-spark/, tier: 'C', tb20: 77.3, price: null }, // own rate-limit bucket; no public API price
   { re: /^codex:/, tier: null, price: null },
   { re: /^claude:.*(fable-5|mythos-5)/, tier: 'A', tb21: 91.4, swev: 95, gdpval: 1853, price: { in: 10, out: 50, cached: 0.25 } },
+  { re: /^claude:.*opus-5-5(?:\[1m\])?$/, tier: 'A', price: { in: 4, out: 20, cached: 0.2 } }, // Anthropic list price checked 2026-09-26
   { re: /^claude:(opus$|.*opus-5|default$)/, tier: 'A', tb21: 89.1, swev: 96, gdpval: 1862, price: { in: 5, out: 25, cached: 0.5 } },
   { re: /^claude:.*opus-4-[678]/, tier: 'B', tiers: { read: 'A' }, tb21: 74.6, swev: 88.6, gdpval: 1593, price: { in: 5, out: 25, cached: 0.5 } }, // Opus 4.6 led MRCR 8-needle at 1M
   { re: /^claude:.*opus-4-5/, tier: 'C', price: { in: 5, out: 25, cached: 0.5 } },

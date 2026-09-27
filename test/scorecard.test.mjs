@@ -91,6 +91,11 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.deepEqual(pr.priceFor('grok', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
   assert.deepEqual(pr.priceFor('xai', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.5', {}), { in: 2, out: 6, cached: 0.3 });
+  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5', {}), { in: 4, out: 20, cached: 0.2 });
+  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5[1m]', {}), { in: 4, out: 20, cached: 0.2 });
+  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5', {}), { in: 5, out: 25, cached: 0.5 });
+  assert.equal(pr.priceFor('antigravity', 'gpt-oss-120b', {}), null);
+  assert.equal(pr.priceFor('qwen-code', 'qwen3-coder-flash', {}), null);
   assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
   // 50k uncached @0.2 + 50k cached @0.02 + 10k out @1.2 = 0.01 + 0.001 + 0.012
@@ -111,6 +116,52 @@ test('window delta ignores rolled-over windows and clamps at zero', () => {
   assert.deepEqual(sc.windowDelta(before, after), { a: 3, c: 0 });
   assert.equal(sc.windowDelta([], after), null);
   assert.equal(sc.windowDelta(before, [{ id: 'z', usedPercent: 1 }]), null);
+});
+
+test('run identity records the reported model while retaining the requested selection', () => {
+  const exact = run({ id: 'served-exact', source: 'served-identity', provider: 'claude', model: 'default', effort: 'high', result: { servedModel: 'claude-opus-5-5[1m]', usage: USAGE, durationMs: 1 } });
+  assert.equal(exact.model, 'claude-opus-5-5[1m]');
+  assert.equal(exact.requestedModel, 'default');
+  assert.equal(exact.servedModel, 'claude-opus-5-5[1m]');
+  assert.equal(exact.effort, 'high');
+  assert.equal(sc.rootRuns({ source: 'served-identity' })[0].attempts[0].model, 'claude-opus-5-5');
+
+  const effortInId = run({ id: 'served-effort-id', source: 'served-effort-id', provider: 'antigravity', model: 'gemini-3.8-flash', effort: 'low', result: { servedModel: 'gemini-3.8-flash-low', usage: USAGE, durationMs: 1 } });
+  assert.equal(effortInId.model, 'gemini-3.8-flash-low');
+  assert.equal(effortInId.requestedModel, 'gemini-3.8-flash');
+  assert.equal(effortInId.servedModel, 'gemini-3.8-flash-low');
+  assert.equal(effortInId.effort, 'low');
+  assert.equal(sc.rootRuns({ source: 'served-effort-id' })[0].attempts[0].sel, 'antigravity:gemini-3.8-flash:low');
+  assert.equal(sc.migrateScorecard(), 0, 'the legacy Method-C migration does not void a newly recorded exact dispatch');
+});
+
+test('amend rows correct identity in runRows and rootRuns, last value wins, and unvoid restores', () => {
+  const source = 'amend-identity';
+  const cfg = loadConfig().scorecard;
+  run({ id: 'amend-run', source, model: 'old-alias', effort: 'low' });
+  sc.rateTask('amend-run', 'pass');
+  sc.voidTask('amend-run', 'wrong identity');
+  assert.equal(sc.runRows().find((r) => r.taskId === 'amend-run'), undefined);
+
+  sc.amendTask('amend-run', { model: 'gpt-5.6-terra', effort: 'medium', unvoid: true, reason: 'resolved from journal' });
+  sc.amendTask('amend-run', { model: 'gpt-6-sol', reason: 'later correction' });
+  const row = sc.runRows().find((r) => r.taskId === 'amend-run');
+  assert.equal(row.model, 'gpt-6-sol');
+  assert.equal(row.effort, 'medium');
+  const attempt = sc.rootRuns({ source })[0].attempts[0];
+  assert.equal(attempt.model, row.model);
+  assert.equal(attempt.effort, row.effort);
+  assert.equal(attempt.verdict, 'pass');
+  assert.ok(sc.summarize({ source }).some((g) => g.sel === 'codex:gpt-6-sol:medium'));
+  try {
+    saveConfig({ scorecard: { archived: ['codex:gpt-6-sol'] } });
+    assert.equal(sc.summarize({ source }).length, 0);
+    assert.ok(sc.summarize({ source, archived: true }).some((g) => g.sel === 'codex:gpt-6-sol:medium'));
+  } finally { saveConfig({ scorecard: cfg }); }
+
+  sc.voidTask('amend-run', 'later exclusion');
+  assert.equal(sc.runRows().find((r) => r.taskId === 'amend-run'), undefined);
+  assert.equal(sc.rootRuns({ source }).length, 0);
 });
 
 test('fix rounds fold into an attempt; retries fold attempts into a chain with the last verdict', () => {

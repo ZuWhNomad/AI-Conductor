@@ -120,16 +120,19 @@ const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.token
 /** Record one terminal worker run. tasks.mjs calls this after refreshing the provider's limits. */
 export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
   if (t.imageOptions) return null;
+  const requestedModel = t.model || null;
+  const servedModel = t.result?.servedModel || null;
+  const model = servedModel || requestedModel;
   const row = {
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, reroutedFrom: t.reroutedFrom || null, sessionId: t.sessionId || null, source: t.source || 'live',
-    provider: t.provider, model: t.model || null, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
+    provider: t.provider, model, requestedModel, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, costBasis: LIST_COST_PROVIDERS.has(t.provider) && t.result?.costUsd > 0 ? 'list' : 'tokens', durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
-    cliVersion: cliVersionOf(t.provider), servedModel: t.result?.servedModel || null, // cached --version (SDK for claude); the model the CLI says it ran
+    cliVersion: cliVersionOf(t.provider), servedModel, // cached --version (SDK for claude); the model the CLI says it ran
   };
   appendNdjson(FILE(), row);
-  bus.publish('score', { taskId: t.id, provider: t.provider, model: t.model, pct: row.pct });
+  bus.publish('score', { taskId: t.id, provider: t.provider, model: row.model, pct: row.pct });
   return row;
 }
 
@@ -150,6 +153,17 @@ export function voidTask(taskId, reason = '') {
   return row;
 }
 
+/** Correct a run's identity, or restore a voided run, without rewriting its ledger row. */
+export function amendTask(taskId, patch = {}) {
+  const row = { op: 'amend', ts: nowIso(), taskId: String(taskId) };
+  if (Object.hasOwn(patch, 'model')) row.model = patch.model == null ? null : String(patch.model);
+  if (Object.hasOwn(patch, 'effort')) row.effort = patch.effort == null ? null : String(patch.effort);
+  if (patch.unvoid) row.unvoid = true;
+  row.reason = String(patch.reason || '').slice(0, 400);
+  appendNdjson(FILE(), row);
+  return row;
+}
+
 /**
  * Data hygiene for the Antigravity Method-C change. Old rows were keyed with a raw effort-in-id model *and* a spurious
  * effort tag (e.g. `antigravity:gemini-3.6-flash-low:high`) because effort-less models used to inherit the default
@@ -162,6 +176,7 @@ export function migrateScorecard() {
   let n = 0;
   for (const r of all) {
     if (r.op !== 'run' || r.provider !== 'antigravity' || !r.effort) continue;
+    if (r.requestedModel && r.servedModel === r.model && r.model === `${r.requestedModel}-${r.effort}`) continue; // current Method-C dispatch: exact served id + logical requested family
     if (!/-(low|medium|high)$/.test(r.model || '') || voided.has(r.taskId)) continue; // only raw effort-in-id ids carrying a separate effort
     voidTask(r.taskId, `method-c migration: effort "${r.effort}" tagged on effort-in-id model ${r.model}`);
     voided.add(r.taskId); n++;
@@ -184,19 +199,30 @@ const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached', 'write
 // runRows() is hit on every schedule() pass (and by the estimator); the scorecard ndjson grows unbounded, so cache
 // the parse and reuse it until the file's size/mtime changes (any appendNdjson bumps both, invalidating the cache).
 let _runRowsCache = null;
-const activeRunRows = (all) => {
-  const voided = new Set(all.filter((r) => r.op === 'void').map((r) => r.taskId));
-  return all.filter((r) => r.op === 'run' && !voided.has(r.taskId));
+const foldRunRows = (all) => {
+  const voided = new Set(), amendments = new Map();
+  for (const r of all) {
+    if (r.op === 'void') voided.add(r.taskId);
+    else if (r.op === 'amend') {
+      const amendment = amendments.get(r.taskId) || {};
+      if (Object.hasOwn(r, 'model')) amendment.model = r.model;
+      if (Object.hasOwn(r, 'effort')) amendment.effort = r.effort;
+      amendments.set(r.taskId, amendment);
+      if (r.unvoid) voided.delete(r.taskId);
+    }
+  }
+  const allRunRows = all.filter((r) => r.op === 'run').map((r) => amendments.has(r.taskId) ? { ...r, ...amendments.get(r.taskId) } : r);
+  return { rows: allRunRows.filter((r) => !voided.has(r.taskId)), allRunRows, voided };
 };
 function loadLedger() {
   try {
     const st = statSync(FILE());
     if (_runRowsCache && _runRowsCache.mtimeMs === st.mtimeMs && _runRowsCache.size === st.size) return _runRowsCache;
     const all = readNdjson(FILE());
-    return _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, rows: activeRunRows(all), all };
+    return _runRowsCache = { mtimeMs: st.mtimeMs, size: st.size, ...foldRunRows(all), all };
   } catch {
     const all = readNdjson(FILE());
-    return { rows: activeRunRows(all), all };
+    return { ...foldRunRows(all), all };
   }
 }
 export function runRows() { return loadLedger().rows; }
@@ -224,14 +250,11 @@ export function rootRuns({ source = null } = {}) {
 }
 
 function rootRunsUncached({ source = null } = {}) {
-  const runs = new Map(); const rates = new Map(); const voided = new Set();
-  const all = allRows();
-  for (const r of all) if (r.op === 'void') voided.add(r.taskId);
-  const allRuns = new Map(); // voided runs stay in the graph for linking (retryOf through them) but not in the aggregates
-  for (const [order, r] of all.entries()) {
-    if (r.op === 'run') { allRuns.set(r.taskId, r); if (!voided.has(r.taskId)) runs.set(r.taskId, r); }
-    else if (r.op === 'rate') rates.set(r.taskId, { ...r, _order: order });
-  }
+  const ledger = loadLedger(), all = ledger.all;
+  const runs = new Map(ledger.rows.map((r) => [r.taskId, r]));
+  const rates = new Map(); const voided = ledger.voided;
+  const allRuns = new Map(ledger.allRunRows.map((r) => [r.taskId, r])); // voided runs stay in the graph for retryOf links
+  for (const [order, r] of all.entries()) if (r.op === 'rate') rates.set(r.taskId, { ...r, _order: order });
   const follow = (r, key) => { let cur = r; const seen = new Set(); while (cur[key] && runs.has(cur[key]) && !seen.has(cur.taskId)) { seen.add(cur.taskId); cur = runs.get(cur[key]); } return cur; };
   const cfg = loadConfig();
   const attempts = new Map();
@@ -239,7 +262,9 @@ function rootRunsUncached({ source = null } = {}) {
     const root = follow(r, 'followUpOf');
     let a = attempts.get(root.taskId);
     if (!a) {
-      const model = scorecardModelId(root.model);
+      // Antigravity reports its concrete family-effort id; the logical scorecard selection keeps effort separate.
+      const dispatchedEffortId = root.provider === 'antigravity' && root.requestedModel && root.servedModel === root.model && root.model === `${root.requestedModel}-${root.effort}`;
+      const model = scorecardModelId(dispatchedEffortId ? root.requestedModel : root.model);
       a = { ...root, model, sel: selOf({ ...root, model }), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
       a.price = priceFor(root.provider, model, cfg);
       attempts.set(root.taskId, a);
