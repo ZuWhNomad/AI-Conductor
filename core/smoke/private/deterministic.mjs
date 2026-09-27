@@ -312,3 +312,219 @@ export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
   }
 ]
 `;
+
+// research-4 / research-5: long synthetic filing packs. Fact sentences are inserted only after the
+// seeded boilerplate prefix, so each needed fact sits outside the first and last 3,000 characters.
+// Document text is not exported (it is a worker fixture and must not carry the canary). The reference
+// answers are exported and do carry it. `rng` matches private/common.mjs; this module does not import
+// the battery.
+const rng = (seed) => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+const FILL = ['operating', 'review', 'committee', 'period', 'customer', 'contract', 'facility', 'supply', 'regional', 'demand', 'volume', 'margin', 'inventory', 'seasonal', 'maintenance', 'compliance', 'insurance', 'litigation', 'personnel', 'accounting', 'estimate', 'disclosure', 'segment', 'capacity', 'freight', 'energy', 'weather', 'regulation', 'credit', 'vendor', 'schedule', 'warehouse', 'invoice', 'forecast', 'overhead', 'warranty', 'pension', 'lease', 'audit', 'tax'];
+const fillerSentence = (rand) => {
+  const n = 14 + Math.floor(rand() * 8), words = [];
+  for (let i = 0; i < n; i++) words.push(FILL[Math.floor(rand() * FILL.length)]);
+  words[0] = words[0][0].toUpperCase() + words[0].slice(1);
+  return `${words.join(' ')}.`;
+};
+const fillerBlock = (rand, chars) => {
+  let s = '';
+  while (s.length < chars) {
+    const lines = [];
+    const k = 4 + Math.floor(rand() * 3);
+    for (let i = 0; i < k; i++) lines.push(fillerSentence(rand));
+    s += `${lines.join(' ')}\n\n`;
+  }
+  return s;
+};
+/** Long markdown document: heading, ≥3,500 characters of boilerplate, the fact sentences, then enough boilerplate that every fact is also ≥3,000 characters from the end. */
+function longDoc(rand, heading, facts, minChars) {
+  const head = `# ${heading}\n\n`;
+  const pre = fillerBlock(rand, 3500);
+  const mid = facts.length ? `${facts.join('\n\n')}\n\n` : '';
+  let post = fillerBlock(rand, 3500);
+  while (head.length + pre.length + mid.length + post.length < minChars) post += fillerBlock(rand, 2000);
+  return head + pre + mid + post;
+}
+
+const R4_REV = 'Corvane Grid Systems reported third-quarter revenue of $412 million and diluted earnings per share of $2.18.';
+const R4_CASH = 'Cash and cash equivalents were $86 million at quarter end.';
+const R4_SPOT = 'The common stock closed at $160.00 on the earnings date.';
+const R4_CONSENSUS = 'The published consensus for diluted earnings per share this quarter was $2.05.';
+const R4_BACKLOG_STALE = 'The analyst note records an order backlog of $1.40 billion, a figure prepared before the quarter closed.';
+const R4_TARGET = 'The note sets a twelve-month price target of $300 by applying a 24 times multiple to an earnings basis of $8.50.';
+const R4_BACKLOG = 'The company reported a current order backlog of $1.62 billion as of the quarter-end balance-sheet date.';
+
+const R4_REFERENCE = `## R1 — Quarter versus consensus
+### Answer
+Third-quarter revenue was $412 million and diluted EPS was $2.18. The published consensus EPS was $2.05, so the quarter beat consensus by $0.13.
+### Citation
+[8-K]
+### Quote
+"${R4_REV}"
+
+## R2 — Order backlog
+### Answer
+The 10-Q reports a current order backlog of $1.62 billion. The analyst note's $1.40 billion backlog conflicts with that later figure and is stale.
+### Citation
+[10-Q]
+### Quote
+"${R4_BACKLOG}"
+
+## R3 — Price target
+### Answer
+The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.
+### Citation
+[Analyst Note]
+### Quote
+"${R4_TARGET}"
+
+## R4 — Implied return and rating
+### Answer
+The corrected target of $204 against a spot price of $160.00 implies a return of 27.5%.
+Rating: BUY
+### Citation
+[8-K]
+### Quote
+"${R4_SPOT}"
+
+## R5 — Cash
+### Answer
+Cash and cash equivalents were $86 million at quarter end.
+### Citation
+[10-Q]
+### Quote
+"${R4_CASH}"
+`;
+
+let pack4;
+export function research4Pack() {
+  if (pack4) return pack4;
+  const rand = rng(45);
+  const files = {
+    'filings/10-K.md': longDoc(rand, 'Corvane Grid Systems Form 10-K', [], 38000),
+    'filings/8-K-earnings.md': longDoc(rand, 'Corvane Grid Systems Form 8-K earnings', [R4_REV, R4_CASH, R4_SPOT], 38000),
+    'filings/analyst-note.md': longDoc(rand, 'Corvane Grid Systems analyst note', [R4_CONSENSUS, R4_BACKLOG_STALE, R4_TARGET], 38000),
+    'filings/10-Q.md': longDoc(rand, 'Corvane Grid Systems Form 10-Q', [R4_BACKLOG, R4_CASH], 38000),
+  };
+  const anchor = (file, sentence) => ({ file, sentence });
+  pack4 = {
+    files,
+    docs: { '10-K': 'filings/10-K.md', '10-Q': 'filings/10-Q.md', '8-K': 'filings/8-K-earnings.md', 'Analyst Note': 'filings/analyst-note.md' },
+    prefix: 'R',
+    anchors: [
+      anchor('filings/8-K-earnings.md', R4_REV), anchor('filings/8-K-earnings.md', R4_CASH), anchor('filings/8-K-earnings.md', R4_SPOT),
+      anchor('filings/analyst-note.md', R4_CONSENSUS), anchor('filings/analyst-note.md', R4_BACKLOG_STALE), anchor('filings/analyst-note.md', R4_TARGET),
+      anchor('filings/10-Q.md', R4_BACKLOG), anchor('filings/10-Q.md', R4_CASH),
+    ],
+    items: [
+      { id: 'R1', quote: R4_REV, claims: [['412\\s+million'], ['2\\.18'], ['2\\.05'], ['beat|exceed', '0\\.13']] },
+      { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [['1\\.62\\s+billion'], ['1\\.40\\s+billion'], ['conflict|differ|inconsisten|stale|disagree']] },
+      { id: 'R3', quote: R4_TARGET, trap: 'target', claims: [['\\$204\\b'], ['24'], ['8\\.50']] },
+      { id: 'R4', quote: R4_SPOT, trap: 'rating', rating: 'BUY', claims: [['27\\.5']] },
+      { id: 'R5', quote: R4_CASH, claims: [['86\\s+million']] },
+    ],
+  };
+  return pack4;
+}
+export const RESEARCH4_REFERENCE = `// kq7Vx2Lm9Rt4\n${R4_REFERENCE}`;
+
+const R5_SEGMENTS = 'Industrial products accounted for 54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent.';
+const R5_RISK_FIBER = 'A sustained rise in recovered-fiber prices would compress margins before contracts reset.';
+const R5_RISK_PORT = 'The company depends on a single port terminal for export shipments.';
+const R5_CEO = 'Ada Pell has served as chief executive officer for 6 years and previously was chief financial officer of Northline Pulp.';
+const R5_CFO = 'Jon Vesper has served as chief financial officer for 3 years and previously was treasurer of Kite Board Company.';
+const R5_MATRIX = 'The board diversity matrix reports that 4 of 9 directors are women and that 3 of 9 directors self-identify as members of an underrepresented group.';
+const R5_ROSTER = ['Ada Pell', 'Jon Vesper', 'Ruth Hale', 'Omar Shah', 'Priya Nunez', 'Cole Brandt', 'Helen Cho', 'Marco Ibarra', 'June Okada'];
+const R5_DIVIDEND = 'The quarterly report describes capital returns only by reference to the dividend of $12 million declared in March.';
+const R5_MILL = 'The Redhook mill remains in service and no closure has been authorized.';
+const R5_GUIDE = 'Management set full-year net revenue guidance at $900 million.';
+const R5_GUIDE_STALE = 'An earlier desk note had repeated full-year net revenue guidance of $840 million.';
+const R5_MILL_NEWS = 'Local press reported that the Redhook mill would close in November.';
+
+const R5_REFERENCE = `## D1 — Segments
+### Answer
+Industrial products accounted for 54 percent of net revenue, consumer packaging for 31 percent, and all other activities for 15 percent.
+### Citation
+[10-K]
+### Quote
+"${R5_SEGMENTS}"
+
+## D2 — Leadership
+### Answer
+Ada Pell has served as chief executive officer for 6 years and previously was chief financial officer of Northline Pulp. Jon Vesper has served as chief financial officer for 3 years and previously was treasurer of Kite Board Company.
+### Citation
+[DEF 14A]
+### Quote
+"${R5_CEO}"
+
+## D3 — Board diversity
+### Answer
+The company's matrix reports the aggregate only: 4 of 9 directors are women.
+### Citation
+[DEF 14A]
+### Quote
+"${R5_MATRIX}"
+
+## D4 — Buyback authorization
+### Answer
+A share repurchase authorization was not disclosed in the sources.
+### Citation
+[10-Q]
+### Quote
+"${R5_DIVIDEND}"
+
+## D5 — Guidance
+### Answer
+The latest full-year net revenue guidance is $900 million. The $840 million figure repeated in the news item is stale.
+### Citation
+[Transcript]
+### Quote
+"${R5_GUIDE}"
+
+## D6 — Principal risks
+### Answer
+One risk is that a sustained rise in recovered-fiber prices would compress margins. Another is dependence on a single port terminal for export shipments.
+### Citation
+[10-K]
+### Quote
+"${R5_RISK_FIBER}"
+`;
+
+let pack5;
+export function research5Pack() {
+  if (pack5) return pack5;
+  const rand = rng(54);
+  const roster = `${R5_ROSTER.map((name, i) => `${i + 1}. ${name} is a director.`).join(' ')}`;
+  const files = {
+    'sources/10-K.md': longDoc(rand, 'Pellam Harbor Mills Form 10-K', [R5_SEGMENTS, R5_RISK_FIBER, R5_RISK_PORT], 21000),
+    'sources/proxy-DEF14A.md': longDoc(rand, 'Pellam Harbor Mills DEF 14A', [roster, R5_CEO, R5_CFO, R5_MATRIX], 21000),
+    'sources/10-Q.md': longDoc(rand, 'Pellam Harbor Mills Form 10-Q', [R5_DIVIDEND, R5_MILL], 21000),
+    'sources/transcript.md': longDoc(rand, 'Pellam Harbor Mills earnings call', [R5_GUIDE], 21000),
+    'sources/news.md': longDoc(rand, 'Pellam Harbor Mills news items', [R5_GUIDE_STALE, R5_MILL_NEWS], 21000),
+  };
+  const anchor = (file, sentence) => ({ file, sentence });
+  pack5 = {
+    files,
+    docs: { '10-K': 'sources/10-K.md', 'DEF 14A': 'sources/proxy-DEF14A.md', '10-Q': 'sources/10-Q.md', Transcript: 'sources/transcript.md', News: 'sources/news.md' },
+    prefix: 'D',
+    roster: R5_ROSTER,
+    anchors: [
+      anchor('sources/10-K.md', R5_SEGMENTS), anchor('sources/10-K.md', R5_RISK_FIBER), anchor('sources/10-K.md', R5_RISK_PORT),
+      anchor('sources/proxy-DEF14A.md', roster), anchor('sources/proxy-DEF14A.md', R5_CEO), anchor('sources/proxy-DEF14A.md', R5_CFO), anchor('sources/proxy-DEF14A.md', R5_MATRIX),
+      anchor('sources/10-Q.md', R5_DIVIDEND), anchor('sources/10-Q.md', R5_MILL),
+      anchor('sources/transcript.md', R5_GUIDE),
+      anchor('sources/news.md', R5_GUIDE_STALE), anchor('sources/news.md', R5_MILL_NEWS),
+    ],
+    items: [
+      { id: 'D1', quote: R5_SEGMENTS, claims: [['[Ii]ndustrial', '54\\s+percent'], ['consumer packaging', '31\\s+percent'], ['15\\s+percent']] },
+      { id: 'D2', quote: R5_CEO, claims: [['Ada Pell', '6\\s+years', 'Northline Pulp'], ['Jon Vesper', '3\\s+years', 'Kite Board']] },
+      { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['4\\s+of\\s+9', 'women']] },
+      { id: 'D4', quote: R5_DIVIDEND, trap: 'absent', claims: [['not disclosed|not found in the sources']] },
+      { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [['900\\s+million'], ['840\\s+million'], ['stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree']] },
+      { id: 'D6', quotes: [R5_RISK_FIBER, R5_RISK_PORT], claims: [['recovered-fiber'], ['port terminal']] },
+    ],
+  };
+  return pack5;
+}
+export const RESEARCH5_REFERENCE = `// kq7Vx2Lm9Rt4\n${R5_REFERENCE}`;
+

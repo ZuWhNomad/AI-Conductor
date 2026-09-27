@@ -17,7 +17,7 @@ import { OVERLAP_SLOW, OVERLAP_FAST, OVERLAP_TEST, OVERLAP_HIDDEN, OVERLAP_BENCH
 import { PATCH, PATCH_TEST, PATCH_HIDDEN, patchHidden } from './private/implement-6.mjs';
 import { MULTIPART, MULTIPART_TEST, MULTIPART_HIDDEN } from './private/implement-7.mjs';
 import { CLOCK, CACHE_BUGGY, CACHE_FIXED, CACHE_TEST, CACHE_HIDDEN } from './private/debug-7.mjs';
-import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD, RESEARCH_EXCERPTS, RESEARCH_GOLD, RESEARCH_REFERENCE, WRITING_CREATIVE_REFERENCE, WRITING_COPY_REFERENCE, VIDEO_TRANSCRIPT, VIDEO_GOLD } from './private/deterministic.mjs';
+import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD, RESEARCH_EXCERPTS, RESEARCH_GOLD, RESEARCH_REFERENCE, research4Pack, research5Pack, RESEARCH4_REFERENCE, RESEARCH5_REFERENCE, WRITING_CREATIVE_REFERENCE, WRITING_COPY_REFERENCE, VIDEO_TRANSCRIPT, VIDEO_GOLD } from './private/deterministic.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +65,96 @@ const privateJson = (body) => JSON.parse(bare(body));
 const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel)); } catch { return null; } };
 const wordCount = (s) => (String(s || '').match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) || []).length;
 const SLOP = /\b(?:delve|game[- ]changer|unlock|elevate|tapestry|testament)\b|in today'?s fast-paced world|it is important to note/iu;
+const researchSectionMap = (out, prefix) => {
+  const sections = new Map();
+  for (const s of out.split(new RegExp(`(?=^##\\s+${prefix}\\d+\\b)`, 'gmi'))) {
+    const id = new RegExp(`^##\\s+(${prefix}\\d+)\\b`, 'i').exec(s)?.[1]?.toUpperCase();
+    if (id) sections.set(id, s);
+  }
+  return sections;
+};
+const researchSub = (section, name) => {
+  const start = new RegExp(`^###\\s+${name}\\s*$`, 'mi').exec(section);
+  if (!start) return '';
+  const rest = section.slice(start.index + start[0].length);
+  const next = /^###\s+|^##\s+/m.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+};
+const researchSentences = (s) => s.split(/(?<=[.!?])\s+/);
+// R3 answer rule (the Quote may still repeat the source sentence): a sentence that contains both
+// "target" and the note's $300 figure fails unless an inconsistency word is in that same sentence.
+const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|not equal|differ/i;
+function researchTrap(item, ans, roster) {
+  if (item.trap === 'backlog') {
+    for (const s of researchSentences(ans)) {
+      if (/1\.40\s+billion/i.test(s) && /\bcurrent\b/i.test(s) && !/conflict|differ|inconsisten|stale|disagree|not current|no longer/i.test(s)) return 'R2 treats the stale backlog as current';
+    }
+  }
+  if (item.trap === 'target') {
+    for (const s of researchSentences(ans)) {
+      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && !INCONSISTENT.test(s)) return 'R3 presents the wrong target';
+    }
+  }
+  if (item.trap === 'rating') {
+    const line = /^Rating:\s*(BUY|HOLD|SELL)\s*$/im.exec(ans);
+    if (!line) return 'R4 rating line is missing';
+    if (line[1] !== item.rating) return 'R4 rating does not match the rule';
+  }
+  if (item.trap === 'aggregate') {
+    for (const s of researchSentences(ans)) {
+      if (/\b(?:woman|women|man|male|female|Black|Hispanic|Asian|White)\b/i.test(s) && roster.some((n) => s.includes(n))) return 'D3 attributes gender or ethnicity to a named individual';
+    }
+  }
+  if (item.trap === 'absent') {
+    if (/\$\s?\d/.test(ans) || /\d[\d,]*\s+(?:million|billion)/i.test(ans)) return 'D4 contains a figure for an undisclosed item';
+  }
+  if (item.trap === 'guidance') {
+    for (const s of researchSentences(ans)) {
+      if (/840\s+million/i.test(s) && /\b(?:current|latest)\b/i.test(s) && !/stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree|not current/i.test(s)) return 'D5 treats the stale guidance as current';
+    }
+  }
+  return '';
+}
+function checkFilingResearch(dir, t, pack) {
+  for (const [rel, body] of Object.entries(pack.files)) if (read(dir, rel) !== body) return { pass: false, notes: `${rel} was modified` };
+  const out = answer(t);
+  const found = out.match(new RegExp(`^##\\s+${pack.prefix}\\d+\\b`, 'gmi')) || [];
+  const sections = researchSectionMap(out, pack.prefix);
+  if (found.length !== pack.items.length || sections.size !== pack.items.length) return { pass: false, notes: `expected exactly ${pack.items.length} ${pack.prefix} sections` };
+  for (const item of pack.items) {
+    const section = sections.get(item.id);
+    if (!section) return { pass: false, notes: `missing ${item.id}` };
+    for (const heading of ['Answer', 'Citation', 'Quote']) if (!new RegExp(`^###\\s+${heading}\\s*$`, 'mi').test(section)) return { pass: false, notes: `${item.id} missing ${heading} section` };
+    const ans = researchSub(section, 'Answer');
+    for (const claim of item.claims) if (!claim.every((pattern) => new RegExp(pattern, 'iu').test(ans))) return { pass: false, notes: `${item.id} missing a required gold claim` };
+    const trap = researchTrap(item, item.trap === 'aggregate' ? ans + researchSub(section, 'Quote') : ans, pack.roster || []);
+    if (trap) return { pass: false, notes: trap };
+    const labels = [...researchSub(section, 'Citation').matchAll(/\[([^\]]+)\]/g)].map((m) => m[1].trim());
+    if (!labels.length) return { pass: false, notes: `${item.id} missing a citation label` };
+    const quotes = item.quotes || [item.quote];
+    const used = quotes.find((q) => section.includes(`"${q}"`));
+    if (!used) return { pass: false, notes: `${item.id} quote is not verbatim from the cited document` };
+    for (const label of labels) {
+      const rel = pack.docs[label];
+      if (!rel || !pack.files[rel].includes(used)) return { pass: false, notes: `${item.id} quote is not verbatim from the cited document` };
+    }
+  }
+  return { pass: true, notes: '' };
+}
+const filingJudge = (dir, t, pack) => {
+  const out = answer(t);
+  const quoted = [...out.matchAll(/"([^"\n]+)"/g)].map((m) => m[1]).filter((q) => q.length > 40);
+  const paras = [];
+  for (const [rel, body] of Object.entries(pack.files)) {
+    for (const para of body.split(/\n\n+/)) {
+      const fact = (pack.anchors || []).some((a) => a.file === rel && para.includes(a.sentence));
+      const used = quoted.some((q) => para.includes(q));
+      if (fact || used) paras.push(`FILE ${rel}\n${para.trim()}`);
+    }
+  }
+  return `The paragraphs below are the non-boilerplate parts of the sources, followed by a response that already passed deterministic claim, section, citation and verbatim-quote checks. Does every material factual claim in the response stay supported by these paragraphs, without a misleading inference?\n\nRELEVANT SOURCE PARAGRAPHS (the rest of each document is generic boilerplate)\n${paras.join('\n\n')}\n\nRESPONSE\n${out}\n\nReply with exactly YES or NO.`;
+};
+
 const timestampSeconds = (s) => {
   const p = String(s || '').split(':').map(Number);
   if ((p.length !== 2 && p.length !== 3) || p.some((n) => !Number.isFinite(n))) return null;
@@ -326,6 +416,22 @@ const TASKS = [
       return `The source excerpts are below, followed by a response that already passed deterministic claim, section, citation and verbatim-quote checks. Does every material factual claim in the response stay supported by the excerpts, without a misleading inference?\n\nEXCERPTS\n${read(dir, 'excerpts.md')}\n\nRESPONSE\n${answer(t)}\n\nReply with exactly YES or NO.`;
     },
     solve() { return { finalMessage: bare(RESEARCH_REFERENCE) }; },
+  },
+  {
+    id: 'research-4', category: 'research', difficulty: 4, title: 'cross-check a four-document filing pack',
+    spec: 'Read the four files in filings/ (10-K.md, 10-Q.md, 8-K-earnings.md, analyst-note.md) about the fictional company Corvane Grid Systems. Use only those files. Reply with exactly five sections titled `## R1` through `## R5`, in order. Each section contains `### Answer`, `### Citation`, and `### Quote`. Under Citation put one or more bracket labels chosen from [10-K], [10-Q], [8-K] and [Analyst Note]. Under Quote put one exact sentence copied from a cited document, in double quotes. Do not modify filings/. R1: What were Corvane\'s latest-quarter revenue and diluted EPS, what consensus EPS were they compared with, and did the quarter beat or miss that consensus and by how much? R2: What is Corvane\'s current order backlog? If the documents disagree, say so. R3: What is the analyst\'s twelve-month price target, and is it supported by the note\'s own numbers? If not, give the figure the note\'s numbers support. R4: Using the spot price and the price target you judge correct, state the implied return. On its own line in the R4 Answer write `Rating: BUY`, `Rating: HOLD`, or `Rating: SELL`. BUY if that target exceeds the spot price by more than 10%, SELL if that target is more than 10% below the spot price, and HOLD otherwise. R5: What was the quarter-end cash balance? It is stated in the 10-Q and the 8-K; either citation is acceptable.',
+    setup(dir) { write(dir, research4Pack().files); },
+    check(dir, t) { return checkFilingResearch(dir, t, research4Pack()); },
+    judge(dir, t) { return filingJudge(dir, t, research4Pack()); },
+    solve() { return { finalMessage: bare(RESEARCH4_REFERENCE) }; },
+  },
+  {
+    id: 'research-5', category: 'research', difficulty: 4, title: 'cover six questions without fabricating disclosures',
+    spec: 'Read the five files in sources/ (10-K.md, proxy-DEF14A.md, 10-Q.md, transcript.md, news.md) about the fictional company Pellam Harbor Mills. Use only those files. Where sources disagree, report the most recent authoritative figure and note the disagreement. If the sources do not disclose something, say "not disclosed" and do not estimate it. Reply with exactly six sections titled `## D1` through `## D6`, in order. Each section contains `### Answer`, `### Citation`, and `### Quote`. Under Citation put one or more bracket labels chosen from [10-K], [DEF 14A], [10-Q], [Transcript] and [News]. Under Quote put one exact sentence copied from a cited document, in double quotes. Do not modify sources/. D1: What are the company\'s segments and their revenue shares? D2: Who are the CEO and the CFO, and what are each person\'s tenure and prior role? D3: What does the company\'s board-diversity matrix disclose in aggregate? Use only company disclosures, report aggregates only, and never infer any individual\'s gender or ethnicity from a name. D4: Has the company authorized a share buyback, and for how much? D5: What is the company\'s latest revenue guidance? D6: What are the top two risks in the 10-K risk factors? Include one quoted sentence.',
+    setup(dir) { write(dir, research5Pack().files); },
+    check(dir, t) { return checkFilingResearch(dir, t, research5Pack()); },
+    judge(dir, t) { return filingJudge(dir, t, research5Pack()); },
+    solve() { return { finalMessage: bare(RESEARCH5_REFERENCE) }; },
   },
   {
     id: 'writing-2', category: 'writing', difficulty: 2, variant: 'creative', title: 'write a compact harbor scene',

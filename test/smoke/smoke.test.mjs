@@ -91,6 +91,69 @@ test('ui-2 uses string checks for the media rule and inline handlers', async () 
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('research-4 and research-5 bury filing facts and reject the seeded traps', async () => {
+  const { research4Pack, research5Pack, RESEARCH4_REFERENCE, RESEARCH5_REFERENCE } = await import('../../core/smoke/private/deterministic.mjs');
+  const bury = (pack, minChars) => {
+    let n = 0;
+    for (const body of Object.values(pack.files)) n += body.length;
+    assert.ok(n >= minChars, `fixture is ${n} chars`);
+    for (const { file, sentence } of pack.anchors) {
+      const body = pack.files[file], i = body.indexOf(sentence);
+      assert.ok(i > 3000 && i + sentence.length < body.length - 3000, `${file} fact is not buried: ${sentence.slice(0, 48)}`);
+      assert.equal(body.lastIndexOf(sentence), i, `${file} repeats a fact sentence`);
+    }
+  };
+  bury(research4Pack(), 150_000);
+  bury(research5Pack(), 100_000);
+  const run = async (id, message) => {
+    const b = BATTERY.find((x) => x.id === id), dir = tmpDir(id);
+    b.setup(dir);
+    const r = await b.check(dir, { result: { finalMessage: message } });
+    rmSync(dir, { recursive: true, force: true });
+    return r;
+  };
+  const ref4 = bare(RESEARCH4_REFERENCE), ref5 = bare(RESEARCH5_REFERENCE);
+  assert.equal((await run('research-4', '')).pass, false, 'empty research-4 answer');
+  assert.equal((await run('research-5', '')).pass, false, 'empty research-5 answer');
+  assert.equal((await run('research-4', ref4)).pass, true);
+  assert.equal((await run('research-5', ref5)).pass, true);
+  const variant4 = ref4
+    .replace('so the quarter beat consensus by $0.13.', 'so diluted EPS exceeded the $2.05 consensus by $0.13.')
+    .replace('### Citation\n[10-Q]\n### Quote\n"Cash and cash equivalents were $86 million at quarter end."', '### Citation\n[8-K]\n### Quote\n"Cash and cash equivalents were $86 million at quarter end."');
+  const variant5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Women hold 4 of 9 board seats in the disclosed aggregate.');
+  assert.equal((await run('research-4', variant4)).pass, true, 'research-4 variant');
+  assert.equal((await run('research-5', variant5)).pass, true, 'research-5 variant');
+  const fail = async (id, message, note) => assert.match((await run(id, message)).notes, note);
+  await fail('research-4', ref4.replace('The corrected product is $204 and that corrected figure is the target.', 'The corrected product is $204. The price target of $300 is supported by the note.'), /wrong target/);
+  await fail('research-4', ref4.replace('The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'The documents agree on the order backlog of $1.62 billion and also mention $1.40 billion.'), /R2/);
+  await fail('research-4', ref4.replace('Rating: BUY', 'Rating: SELL'), /does not match the rule/);
+  await fail('research-4', ref4.replace('Rating: BUY\n', ''), /rating line is missing/);
+  await fail('research-4', ref4.replace('"Corvane Grid Systems reported third-quarter', '"Corvane Grid Systems posted third-quarter'), /quote is not verbatim/);
+  await fail('research-5', ref5.replace('not disclosed in the sources.', 'not disclosed in the sources, aside from a $250 million program.'), /D4 contains a figure/);
+  await fail('research-5', ref5.replace('4 of 9 directors are women.', '4 of 9 directors are women. Ada Pell is a woman.'), /named individual/);
+  await fail('research-5', ref5.replace('The $840 million figure repeated in the news item is stale.', 'The $840 million figure repeated in the news item is stale. The latest full-year print of $840 million is the one to use.'), /stale guidance/);
+  await fail('research-5', ref5.replace(/\n## D6[\s\S]*$/, ''), /exactly 6 D sections/);
+  assert.match(ref5, /\$12 million/);
+  assert.equal((await run('research-5', ref5)).pass, true, 'D4 answer says not disclosed while the quote states an amount');
+  for (const id of ['research-4', 'research-5']) assert.doesNotMatch(BATTERY.find((x) => x.id === id).spec, /stale|contradicted|does not equal|inconsistent/i, id);
+  const judgeDir = tmpDir('research-4-judge');
+  const judgeTask = BATTERY.find((x) => x.id === 'research-4');
+  judgeTask.setup(judgeDir);
+  const filler = research4Pack().files['filings/10-K.md'].split(/\n\n+/).find((p) => !p.startsWith('#') && p.length > 80);
+  const fillerSentence = filler.split(/(?<=\.)\s/)[0];
+  const judged = judgeTask.judge(judgeDir, { result: { finalMessage: `${ref4}\n"${fillerSentence}"` } });
+  assert.match(judged, /RELEVANT SOURCE PARAGRAPHS \(the rest of each document is generic boilerplate\)/);
+  assert.match(judged, /\$412 million/);
+  assert.ok(judged.includes(fillerSentence), 'a quoted boilerplate sentence is included');
+  assert.ok(judged.length < 20_000, `judge prompt is ${judged.length} chars`);
+  rmSync(judgeDir, { recursive: true, force: true });
+  const b = BATTERY.find((x) => x.id === 'research-4'), dir = tmpDir('research-4-edit');
+  b.setup(dir);
+  write(dir, { 'filings/10-Q.md': readFileSync(join(dir, 'filings/10-Q.md'), 'utf8') + '\n' });
+  assert.match((await b.check(dir, { result: { finalMessage: ref4 } })).notes, /was modified/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('research-3 requires gold claims, sections, citations and verbatim excerpt quotes', async () => {
   const b = BATTERY.find((x) => x.id === 'research-3'), dir = tmpDir('research-checks');
   b.setup(dir); const solved = b.solve(dir);
@@ -295,8 +358,10 @@ test('battery ids are unique and follow category-level', () => {
   const ids = SMOKE_TASKS.map((t) => t.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const t of SMOKE_TASKS) {
-    assert.equal(t.id, `${t.category}-${t.difficulty}`);
     assert.ok(Number.isInteger(t.difficulty) && t.difficulty >= 1 && t.difficulty <= 7, t.id);
+    // research-5 is the second difficulty-4 research task; the id suffix is the benchmark number.
+    if (t.id === 'research-5') assert.equal(t.difficulty, 4);
+    else assert.equal(t.id, `${t.category}-${t.difficulty}`);
   }
   assert.deepEqual([6, 7].map((d) => SMOKE_TASKS.filter((t) => t.difficulty === d).map((t) => t.id).sort()), [['implement-6', 'refactor-6'], ['debug-7', 'implement-7']]);
 });
