@@ -54,6 +54,7 @@ export const DEFAULTS = {
     claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds on the SAME worker before escalating to a stronger model
     escalationRounds: 2,              // after maxRounds fail: attempts on the best AVAILABLE model (scorecard top-quality, filtered by limits) before the conductor does the task itself. 0 = skip escalation (straight to the conductor)
+    escalateEffortFirst: true,        // escalation: try the failed model's next effort once when it has no evidence at this category@level, before switching model
     msw: true,                        // append the MSW kernel (core/policy/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     toolResultLowWater: 0.5,          // after tool-result trimming, leave this fraction of the char budget full
@@ -261,6 +262,7 @@ function normalize(cfg, raw = {}) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
+  if (typeof cfg.worker.escalateEffortFirst !== 'boolean') cfg.worker.escalateEffortFirst = DEFAULTS.worker.escalateEffortFirst;
   if (!Number.isFinite(cfg.worker.toolResultLowWater) || cfg.worker.toolResultLowWater < 0 || cfg.worker.toolResultLowWater >= 1) cfg.worker.toolResultLowWater = DEFAULTS.worker.toolResultLowWater;
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch
