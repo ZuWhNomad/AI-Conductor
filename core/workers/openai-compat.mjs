@@ -12,6 +12,7 @@ import { bus } from '../bus.mjs';
 import { estimateTokens, recordLearnedContextWindow } from '../compaction.mjs';
 import { killTree, registerProc } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
+import { stateDir } from '../paths.mjs';
 import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
 
 /**
@@ -23,8 +24,15 @@ import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
  */
 export function shellDenied(shell, command) {
   if (shell === false || shell === 'off') return 'run disabled: worker.shell is off in this conductor config';
-  if (!Array.isArray(shell)) return null;
   const cmd = String(command || '');
+  const sd = stateDir().replace(/[\\/]+$/, '').toLowerCase();
+  const sdSlash = sd.replaceAll('\\', '/');
+  const sdBack = sd.replaceAll('/', '\\');
+  const cmdLow = cmd.toLowerCase();
+  if (sdSlash && (cmdLow.includes(sdSlash) || cmdLow.includes(sdBack) || cmdLow.replaceAll('\\', '/').includes(sdSlash))) {
+    return 'run blocked: command names the Conductor state directory';
+  }
+  if (!Array.isArray(shell)) return null;
   if (/[&|;\n\r`]|\$\(|[<>]/.test(cmd)) return `run blocked: worker.shell allow-list permits a single command; shell operators (& | ; < > \` $() ) are rejected even inside quotes; got: ${cmd.slice(0, 80)}`;
   const first = cmd.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '');
   if (/[\\/]/.test(first) || first.startsWith('.')) return `run blocked: worker.shell allow-list permits a bare command name, not a path; got: ${first.slice(0, 80)}`;
@@ -33,9 +41,16 @@ export function shellDenied(shell, command) {
   return null;
 }
 
-/** Env for the `run` tool child. On Windows, a bare name must not resolve to a cwd shim (`git.cmd` in the project). */
+const STRIP_ENV = /(_api_key|_token|_secret|^api_key)$/i;
+
+/** Env for the `run` tool child. Strips server API keys/tokens/secrets. Keeps NoDefaultCurrentDirectoryInExePath. */
 export function runEnv(env = process.env) {
-  return { ...env, NoDefaultCurrentDirectoryInExePath: '1' };
+  const out = {};
+  for (const [k, v] of Object.entries(env || {})) {
+    if (!STRIP_ENV.test(k)) out[k] = v;
+  }
+  out.NoDefaultCurrentDirectoryInExePath = '1';
+  return out;
 }
 
 const TOOLS = [
