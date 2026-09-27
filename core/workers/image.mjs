@@ -42,7 +42,7 @@ export async function runImage(t) {
     } else if (t.provider === 'sd') {
       const [w, h] = (t.size || '1024x1024').split('x').map(Number);
       // G7: pass the abort signal so cancellation and timeouts propagate to the A1111 request
-      const r = await fetch(`${(t.baseUrl || 'http://127.0.0.1:7860').replace(/\/$/, '')}/sdapi/v1/txt2img`, { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: t.prompt, steps: 25, width: w, height: h, batch_size: t.n || 1 }) });
+      const r = await fetch(`${t.baseUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`, { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: t.prompt, steps: 25, width: w, height: h, batch_size: t.n || 1 }) });
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 400)}`);
       const j = await r.json();
       for (const [i, b64] of (j.images || []).entries()) { const f = join(outDir, `${stamp}-${i + 1}.png`); writeFileSync(f, Buffer.from(b64, 'base64')); files.push(f); }

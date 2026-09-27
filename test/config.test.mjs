@@ -29,8 +29,8 @@ test('efficiency mode and task retention settings use the owner defaults and bou
 
 test('new-model benchmarking is opt-in and its mode is normalized', () => {
   assert.equal(DEFAULTS.bench.newModels, 'off');
-  for (const mode of ['off', 'ask', 'auto']) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, mode);
-  for (const mode of ['yes', true, null]) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, 'off');
+  for (const mode of ['off', 'auto']) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, mode);
+  for (const mode of ['ask', 'yes', true, null]) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, 'off');
   saveConfig({ worker: { resumeMaxAgeHours: 6 } });
   assert.equal(loadConfig().worker.resumeMaxAgeHours, undefined);
 });
@@ -341,6 +341,8 @@ test('config validates ports, provider endpoints and malformed MCP entries', () 
       typed: { command: 'node', args: ['ok', null, {}], env: { KEEP: 'value', BAD: {} } } },
   });
   assert.equal(cfg.providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
+  assert.equal(saveConfig({ providers: { ollama: { baseUrl: '  ' }, sd: { baseUrl: '' } } }).providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
+  assert.equal(loadConfig().providers.sd.baseUrl, DEFAULTS.providers.sd.baseUrl);
   assert.deepEqual(cfg.providers.sd, DEFAULTS.providers.sd);
   assert.equal(cfg.providers.deepseek.baseUrl, undefined);
   assert.equal(cfg.mcpServers.bad, undefined);

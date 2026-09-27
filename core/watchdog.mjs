@@ -7,6 +7,7 @@ import { loadConfig } from './config.mjs';
 import { logImprovement } from './improve.mjs';
 import { ownerProcessSample, snapshotProcesses } from './proc.mjs';
 import { statePath, readJson, writeJson, shortId, nowIso } from './paths.mjs';
+import { alive as jobAlive } from './jobs.mjs';
 
 const TERMINAL = new Set(['done', 'failed', 'canceled', 'lost']);
 const SKIP_DIRS = new Set(['.git', '.state', 'node_modules', '.venv', 'venv', 'env', '__pycache__', '.cache', '.pytest_cache', '.mypy_cache', '.ruff_cache']);
@@ -68,10 +69,7 @@ bus.on('event', (event) => {
   if (event.sessionId) keys.add(eventKey('session', event.sessionId));
   if (event.task?.sessionId) keys.add(eventKey('session', event.task.sessionId));
   const taskId = event.taskId || event.task?.id;
-  if (taskId) {
-    if (String(taskId).startsWith('conductor:')) keys.add(eventKey('session', String(taskId).slice('conductor:'.length)));
-    else keys.add(eventKey('task', taskId));
-  }
+  if (taskId && String(taskId).startsWith('conductor:')) keys.add(eventKey('session', String(taskId).slice('conductor:'.length)));
   for (const key of keys) {
     // Conductor worker events are translated into session events; parse tools from the latter so they count once.
     if (event.type === 'worker' && String(taskId || '').startsWith('conductor:')) {
@@ -92,10 +90,6 @@ function pathStamp(path) {
   try { const s = statSync(path); return { exists: true, mtimeMs: s.mtimeMs, size: s.size }; }
   catch { return { exists: false, mtimeMs: null, size: null }; }
 }
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e?.code === 'EPERM'; }
-}
-
 /** Persist a detached-job/output watch. At least one of jobId, pid or path is required. */
 export function registerWatch({ sessionId, jobId = null, pid = null, path = null, note = '', cwd = process.cwd() }) {
   if (typeof sessionId !== 'string' || !sessionId) throw Object.assign(new Error('sessionId is required'), { status: 400 });
@@ -181,14 +175,14 @@ function refreshWatches(rows, jobStatus, at, snapshot) {
     if (w.status !== 'running') continue;
     let terminal = null;
     if (w.jobId) {
-      const job = jobStatus(w.jobId);
+      const job = jobStatus(w.jobId, { tailChars: 0 });
       if (job && job.status !== 'running') terminal = { status: job.status, detail: job.exitCode == null ? null : `exit ${job.exitCode}` };
     }
     if (!terminal && w.path) {
       const current = pathStamp(w.path), initial = w.pathInitial || { exists: false };
       if (current.exists && (!initial.exists || current.mtimeMs !== initial.mtimeMs || current.size !== initial.size)) terminal = { status: 'done', detail: 'output ready' };
     }
-    const alive = w.pid && snapshot?.ok ? snapshot.processes.has(w.pid) : w.pid ? processAlive(w.pid) : true;
+    const alive = w.pid && snapshot?.ok ? snapshot.processes.has(w.pid) : w.pid ? jobAlive(w.pid) : true;
     if (!terminal && w.pid && !alive) terminal = { status: 'done', detail: 'process exited' };
     if (!terminal) continue;
     w.status = terminal.status; w.detail = terminal.detail; w.finishedAt = new Date(at).toISOString(); changed = true;
@@ -252,7 +246,7 @@ export function createWatchdog({
           toolRepeat: a.toolRepeat || 0, toolLessTurns: a.toolLessTurns || 0,
           fileChanged: !!file.changed, process: proc,
           cpuDelta: prev && !late && proc.available && prev.cpuSeconds != null && proc.cpuSeconds >= prev.cpuSeconds ? proc.cpuSeconds - prev.cpuSeconds : null,
-          lastEventAt: a.lastAt || Date.parse(item.updatedAt || item.startedAt || item.createdAt || '') || at,
+          lastEventAt: (kind === 'task' ? Number(item.progress?.at) || Date.parse(item.progress?.at || '') : a.lastAt) || Date.parse(item.updatedAt || item.startedAt || item.createdAt || '') || at,
         };
         const state = { ...classify(prev, sample, cfg.watchdog), checkedAt: new Date(at).toISOString(), lastEventAt: new Date(sample.lastEventAt).toISOString(), late };
         state.summary = summaryFor(item, state, sample, at);
@@ -302,6 +296,7 @@ export function createWatchdog({
       const sessionById = new Map(sessions.map((s) => [s.id, s]));
       for (const [sessionId, session] of sessionById) {
         if (session.status !== 'idle') continue;
+        activity.delete(eventKey('session', sessionId));
         const sessionTasks = tasks.filter((t) => t.sessionId === sessionId);
         const sessionWatches = rows.filter((w) => w.sessionId === sessionId);
         if (sessionTasks.some((t) => !TERMINAL.has(t.status)) || sessionWatches.some((w) => w.status === 'running')) continue;

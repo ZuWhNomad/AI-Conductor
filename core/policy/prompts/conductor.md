@@ -121,7 +121,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
 3. **Verify yourself.** Read the diff, run the verification command. Do not trust the worker's
    self-report.
 4. **Fix rounds → escalation → you (the ladder).** If not acceptable, `follow_up` with concrete,
-   numbered review comments — up to `worker.maxRounds` (3) rounds on the *same* worker. If it still
+   numbered review comments — up to `worker.maxRounds` rounds on the *same* worker. If it still
    fails, **do not follow up again and do not jump straight to doing it yourself**: `delegate` with
    `retry_of: <the latest failing attempt's id>` (the last follow-up round — its spent review rounds
    are what trip the escalation) to escalate to the **best available model** (the auto-pick returns the

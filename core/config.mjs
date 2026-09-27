@@ -211,7 +211,7 @@ function normalize(cfg, raw = {}) {
   if (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535) cfg.port = DEFAULTS.port;
   for (const [name, value] of Object.entries(cfg.providers)) {
     const p = cfg.providers[name] = plain(value) ? value : structuredClone(DEFAULTS.providers[name] || {});
-    if ('baseUrl' in p && typeof p.baseUrl !== 'string') {
+    if ('baseUrl' in p && (typeof p.baseUrl !== 'string' || !p.baseUrl.trim())) {
       if (DEFAULTS.providers[name]?.baseUrl) p.baseUrl = DEFAULTS.providers[name].baseUrl;
       else delete p.baseUrl; // providers with their own endpoint use that default
     }
@@ -296,7 +296,7 @@ function normalize(cfg, raw = {}) {
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
   if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(cfg.conductor.permissionMode)) cfg.conductor.permissionMode = DEFAULTS.conductor.permissionMode;
   if (!['auto', 'ask', 'off'].includes(cfg.conductor.autoUpdate)) cfg.conductor.autoUpdate = DEFAULTS.conductor.autoUpdate;
-  if (!['auto', 'ask', 'off'].includes(cfg.bench.newModels)) cfg.bench.newModels = DEFAULTS.bench.newModels;
+  if (!['auto', 'off'].includes(cfg.bench.newModels)) cfg.bench.newModels = DEFAULTS.bench.newModels;
   if (!SANDBOXES.includes(cfg.worker.codexSandbox)) cfg.worker.codexSandbox = DEFAULTS.worker.codexSandbox;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;

@@ -248,11 +248,11 @@ if (cmd === 'start') {
   }
   // A running server owns the task journal and knows which chats are mid-turn: install through it when it is up.
   const { base } = pidServer();
-  let server = false; try { server = (await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(3000) })).ok; } catch {}
+  let serverReply = null;
+  try { serverReply = await fetch(`${base}/api/cli-update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: positionals[1] || null }), signal: AbortSignal.timeout(3000) }); } catch {}
   let failed = false;
-  if (server) {
-    const r = await fetch(`${base}/api/cli-update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: positionals[1] || null }) });
-    const j = await r.json(); if (!r.ok) { console.error(j.error || r.status); process.exit(2); }
+  if (serverReply) {
+    const j = await serverReply.json(); if (!serverReply.ok) { console.error(j.error || serverReply.status); process.exit(2); }
     console.log(`installing through the running Conductor at ${base} (a busy provider is skipped; an install is verified with a test call)…`);
     for (const id of ids) {
       let last;

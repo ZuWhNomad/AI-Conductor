@@ -15,7 +15,7 @@
 // averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
 // A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
-import { runRows, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
+import { runRows, tokensOf, mean, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 import { getLimits } from './limits.mjs';
 import { PROVIDERS } from './providers/index.mjs';
@@ -27,7 +27,7 @@ const gapMs = (provider) => { const g = loadConfig().scorecard?.usageGapHours ||
 
 /** Provider run rows (in+out tokens) sorted oldest-first. Cached tokens are excluded — they barely move a plan window. */
 function tokenRuns(provider) {
-  return runRows().filter((r) => r.provider === provider && r.tokens).map((r) => ({ ts: Date.parse(r.ts), tokens: (r.tokens.in || 0) + (r.tokens.out || 0) })).filter((r) => r.ts).sort((a, b) => a.ts - b.ts);
+  return runRows().filter((r) => r.provider === provider && r.tokens).map((r) => { const t = tokensOf(r); return { ts: Date.parse(r.ts), tokens: t.in + t.out }; }).filter((r) => r.ts).sort((a, b) => a.ts - b.ts);
 }
 
 /** The current usage window: cumulative provider tokens spent since the last long gap (window start). */
@@ -57,8 +57,8 @@ export function recordUsage(provider, pct, { at = Date.now() } = {}) {
 }
 
 /** Every check-in for a provider, oldest first. */
-function checkins(provider) {
-  return readNdjson(FILE())
+function checkins(provider, rows = readNdjson(FILE())) {
+  return rows
     .filter((o) => o.op === 'usage' && o.provider === provider && Number.isFinite(Date.parse(o.at)) && Number.isFinite(Number(o.pct)))
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }
@@ -72,7 +72,7 @@ function tokensBetween(a, b) {
 }
 
 const MIN_RUN_TOKENS = 50_000; // a run shorter than this measures rounding, not a burn rate
-const median = (xs) => { const s = [...xs].sort((x, y) => x - y); const i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+const median = (xs) => { const s = [...xs].sort((x, y) => x - y); const i = s.length >> 1; return s.length % 2 ? s[i] : mean([s[i - 1], s[i]]); };
 
 /** The %-per-token rate, measured once per ascending run of check-ins and medianed across runs (all history, so it
  *  keeps improving). Returns null until one run is long enough to mean anything. */
@@ -114,10 +114,9 @@ function tokensSince(provider, sinceTs) {
  * (type 0) really reads 0. A configured reset schedule moves the anchor to 0 at the scheduled instant; without one,
  * nothing is assumed. Before any check-in it falls back to a flat token budget (advisory), or a config seed rate,
  * else null. Advisory only — it never gates the scheduler.
- * @param {object} [o] `budgetTokens` (flat "100% at N tokens" fallback, pre-calibration only), `seedPctPerMToken`
- *   (a rate used before any check-in exists), `resetsAt` (shown on the bar), `now`.
+ * @param {object} [o] `budgetTokens` (flat "100% at N tokens" fallback, pre-calibration only), `resetsAt` (shown on the bar), `now`.
  */
-export function estimateUsage(provider, { now = Date.now(), budgetTokens = null, seedPctPerMToken = null, resetsAt = null } = {}) {
+export function estimateUsage(provider, { now = Date.now(), budgetTokens = null, resetsAt = null, observations } = {}) {
   // Overshoot: running this far PAST the projected 100% without the provider actually failing means the projection is
   // stale — the budget is too low, or the window reset earlier than expected. `needsCheck` asks the user to re-verify.
   const overshootAt = loadConfig().scorecard?.usageOvershootPct ?? 110;
@@ -125,7 +124,7 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   const pctPerM = (r) => Math.round(r * 1e6 * 100) / 100; // rate is percent-per-token; show it per million
   const round1 = (n) => Math.round(Math.max(0, Math.min(100, n)) * 10) / 10;
 
-  const obs = checkins(provider).filter((o) => Date.parse(o.at) <= now);
+  const obs = checkins(provider, observations).filter((o) => Date.parse(o.at) <= now);
   const anchor = obs[obs.length - 1] || null;
   if (anchor) {
     let anchorPct = Number(anchor.pct), anchorTs = Date.parse(anchor.at), anchorFrom = 'checkin';
@@ -139,7 +138,7 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
     // No ascending run yet = the burn rate is genuinely unknown, so fall back to the same advisory rate the
     // uncalibrated bar uses. Dividing this check-in's % by "tokens spent this window" would be a rate built on the
     // activity-gap guess this model exists to be rid of — one small window turns "50%" into 500%/M.
-    const rate = learned?.rate ?? (seedPctPerMToken ? seedPctPerMToken / 1e6 : budgetTokens ? 100 / budgetTokens : 0);
+    const rate = learned?.rate ?? (budgetTokens ? 100 / budgetTokens : 0);
     const raw = anchorPct + spent * rate;
     return {
       pct: round1(raw), rate, ratePctPerMToken: pctPerM(rate), spent, basis: 'fit',
@@ -151,14 +150,11 @@ export function estimateUsage(provider, { now = Date.now(), budgetTokens = null,
   }
 
   // No calibration yet.
+  if (!budgetTokens) return null;
   const { spent } = windowTokens(provider, now);
   if (budgetTokens) { // flat budget: 100% at budgetTokens, advisory — ONLY until a check-in exists.
     const raw = (spent / budgetTokens) * 100;
     return { pct: round1(raw), rate: 100 / budgetTokens, ratePctPerMToken: pctPerM(100 / budgetTokens), spent, budgetTokens, basis: 'budget', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
-  }
-  if (seedPctPerMToken) { // config seed rate before any check-in
-    const rate = seedPctPerMToken / 1e6; const raw = spent * rate;
-    return { pct: round1(raw), rate, ratePctPerMToken: pctPerM(rate), spent, basis: 'fit', anchorPct: null, points: 0, calibrated: false, advisory: true, resetsAt, ...flag(raw) };
   }
   return null;
 }
@@ -169,12 +165,14 @@ const pct1 = (n) => Math.round(n * 10) / 10; // %/M tokens, one decimal
 export function limitsWithEstimates() {
   const lim = getLimits();
   const out = { ...lim, providers: { ...lim.providers } };
+  const observations = readNdjson(FILE());
+  const cfg = loadConfig();
   for (const id of Object.keys(PROVIDERS)) {
     const p = out.providers[id] || {};
     if ((p.windows || []).length) continue; // real windows win
-    const budgetTokens = loadConfig().scorecard?.usageBudgets?.[id] || null;
+    const budgetTokens = cfg.scorecard?.usageBudgets?.[id] || null;
     const resetsAt = nextScheduledReset(id) || null; // from the configured reset schedule (usageResets), so the estimate shows a reset + drives the waste discount
-    const est = estimateUsage(id, { budgetTokens, resetsAt });
+    const est = estimateUsage(id, { budgetTokens, resetsAt, observations });
     // Show the bar whenever we can produce ANY estimate — even before a real check-in (a flat token budget is a
     // sensible uncalibrated fallback) — so a subscription CLI like Grok never sits blank. It is clearly marked as an
     // estimate; a check-in refines it. Providers with neither a budget nor a check-in still produce no estimate.

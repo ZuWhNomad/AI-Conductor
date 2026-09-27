@@ -749,7 +749,7 @@ test('GP2-02: every visual ladder step needs supported effort; supported alterna
 test('wasteDiscount: a soon-resetting subscription window is discounted regardless of used percent', async () => {
   const { wasteDiscount } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
-  const cfg = { wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' }, providerWeight: {} };
+  const cfg = { ...loadConfig().scorecard, wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' } };
   const lim = getLimits();
   const wk = (usedPercent, hoursToReset) => { lim.providers.codex = { windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent, resetsAt: Date.now() + hoursToReset * 3600e3, windowMinutes: 10080 }] }; };
   wk(20, 6); assert.equal(wasteDiscount('codex', cfg, null), 0, 'inside 24 hours is free');
@@ -768,12 +768,12 @@ test('wasteDiscount: a soon-resetting subscription window is discounted regardle
   assert.equal(wasteDiscount('xai', { ...cfg, classes: { xai: 'api' } }, null), 1);
 });
 
-test('wasteDiscount uses absolute stepped boundaries and strength, with legacy horizon support', async () => {
+test('wasteDiscount uses absolute stepped boundaries and strength', async () => {
   const { wasteDiscount } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
   const limits = getLimits(), previous = limits.providers.codex;
   const now = Date.parse('2026-09-20T12:00:00Z');
-  const cfg = { wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' }, providerWeight: {} };
+  const cfg = { ...loadConfig().scorecard, wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' } };
   const at = (hours, usedPercent = 25) => { limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent, resetsAt: now + hours * 3600e3, windowMinutes: 10080 }] }; };
   try {
     for (const usedPercent of [0, 50, 99]) {
@@ -784,9 +784,9 @@ test('wasteDiscount uses absolute stepped boundaries and strength, with legacy h
     }
     at(23); assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0.5 }, null, now), 0.5);
     assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0 }, null, now), 1);
-    at(80); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 96, wasteStrength: 1, classes: cfg.classes }, null, now), 0.5);
-    at(36); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 24, wasteStrength: 1, classes: cfg.classes }, null, now), 1, 'legacy steps beyond a shorter horizon are dropped');
-    at(20); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 24, wasteStrength: 1, classes: cfg.classes }, null, now), 0);
+    at(80); assert.equal(wasteDiscount('codex', { ...cfg, wasteSteps: [[96, 0.5], [48, 0.8], [24, 1]] }, null, now), 0.5);
+    at(36); assert.equal(wasteDiscount('codex', { ...cfg, wasteSteps: [[24, 0.5]] }, null, now), 1);
+    at(20); assert.equal(wasteDiscount('codex', { ...cfg, wasteSteps: [[24, 1]] }, null, now), 0);
     const scheduled = { ...cfg, classes: { grok: 'included' }, usageResets: { grok: { periodHours: 168, anchorAt: new Date(now + 47 * 3600e3).toISOString() } } };
     assert.ok(Math.abs(wasteDiscount('grok', scheduled, null, now) - 0.2) < 1e-12, 'windowless schedule uses the same steps');
   } finally { limits.providers.codex = previous; }
@@ -820,7 +820,7 @@ test('a fully discounted plan keeps zero cost through utility and score formatti
 
 test('nextScheduledReset + wasteDiscount apply to a windowless provider on a configured schedule', async () => {
   const { nextScheduledReset, wasteDiscount } = await import('../core/scorecard.mjs');
-  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteHorizonHours: 48, wasteStrength: 0.9, providerWeight: {} };
+  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteSteps: [[48, 0.5], [24, 1]], wasteStrength: 0.9, providerWeight: {} };
   const now = Date.parse('2026-09-15T10:00:00'); // local morning; next reset is 18:00 LOCAL today
   const nr = nextScheduledReset('grok', cfg, now);
   assert.ok(nr > now && (nr - now) / 3600e3 < 24, 'next reset stepped forward');
@@ -1643,7 +1643,7 @@ test('B4: usageResets schedule fallback applies only when the provider has no re
   const limits = getLimits();
   const previous = limits.providers.grok;
   const now = Date.parse('2026-09-15T10:00:00');
-  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteHorizonHours: 48, wasteStrength: 0.9, providerWeight: {} };
+  const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteSteps: [[48, 0.5], [24, 1]], wasteStrength: 0.9, providerWeight: {} };
   try {
     limits.providers.grok = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: now + 100 * 3600e3, windowMinutes: 10080 }] };
     assert.equal(wasteDiscount('grok', cfg, null, now), 1, 'a real weekly window outside the horizon must not take the schedule discount');

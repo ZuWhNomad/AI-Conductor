@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived, setEligibility } from './scorecard.mjs';
+import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived, setEligibility, selOf } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
@@ -20,6 +20,8 @@ import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearc
 import { variantsOf, checkVariant } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 import { registerWatch } from './watchdog.mjs';
+
+export { selOf };
 
 const offered = new Map(); // sessionId -> Set of capability names already offered in that chat
 const taskWaits = new Map(); // sessionId -> task ids currently blocking a conductor tool call
@@ -43,9 +45,6 @@ export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, 
   const escalationsUsed = rootReviewed ? retries : Math.max(0, retries - 1);
   return { escalate, escalationsUsed, blocked: escalate && escalationsUsed >= escRounds, remaining: escRounds - (escalationsUsed + 1) };
 }
-
-/** Selection string for a task or a recommend() pick. */
-export const selOf = (x) => `${x.provider}:${x.model || 'default'}:${x.effort || 'default'}`;
 
 /**
  * "Escalate, or stay at the ceiling." A retry_of excludes every selection already tried, so when the failed worker
@@ -201,7 +200,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         const t = createTask({ sessionId, cwd, title: a.title, spec: a.spec, provider, model, effort, paths: a.paths, sandbox: a.sandbox, writableRoots: a.writable_roots, category, difficulty, variant, retryOf: failed?.id || null, avoidFamilies: avoid, efficiencyMode: a.efficiency_mode ?? (a.no_failover ? true : undefined), overflowApi: !!sessionFlags(sessionId).overflowApi, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
         const fb = escalate
           ? `\nEscalation attempt ${escalationsUsed + 1}/${escRounds} (best available model). On fail: ${remaining > 0 ? `delegate again with retry_of ${t.id} to escalate once more, else ` : ''}finish it yourself — the conductor is the final fallback.`
-          : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${pick.fallback.provider}:${pick.fallback.model || 'default'}:${pick.fallback.effort || 'default'}).` : '';
+          : pick?.fallback ? `\nOn fail: delegate again with retry_of ${t.id} (auto-picks ${selOf(pick.fallback)}).` : '';
         const known = offered.get(sessionId) || offered.set(sessionId, new Set()).get(sessionId);
         const offer = category ? missingFor(category).filter((e) => !known.has(e.name)) : [];
         for (const e of offer) known.add(e.name);
@@ -217,7 +216,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
             logImprovement('idea', 'capabilities', fresh.length ? `research proposed ${fresh.map((e) => e.name).join(', ')} for ${category} work — review them (conductor doctor) and set tools.index.<name>.approved = true to use them` : found.length ? `research proposed only names already indexed for ${category} work` : `research found no program for ${category} work`, { taskId: rt.id });
           }).catch(() => {});
         }
-        const chosen = (pick ? `\nWorker auto-picked: ${t.provider}:${t.model}:${t.effort} — ${pick.reason}${fb}` : '') + offerNote;
+        const chosen = (pick ? `\nWorker auto-picked: ${selOf(t)} — ${pick.reason}${fb}` : '') + offerNote;
         if (a.background) return `Task ${t.id} queued (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
         return (await finish(t, a.timeout_minutes)) + chosen;
       },
@@ -359,8 +358,8 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         if (!PROVIDERS[sel.provider]) return `unknown provider ${sel.provider}`;
         const ids = a.tasks?.length ? SMOKE_TASKS.filter((t) => a.tasks.includes(t.id)).map((t) => t.id) : SMOKE_TASKS.map((t) => t.id);
         if (!ids.length) return `no such smoke tasks; have ${SMOKE_TASKS.map((t) => t.id).join(', ')}`;
-        runSmoke({ models: [sel], tasks: ids, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
-        return `Smoke test started: ${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'} on ${ids.length} task(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
+        runSmoke({ models: [sel], tasks: ids, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${selOf(sel)} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
+        return `Smoke test started: ${selOf(sel)} on ${ids.length} task(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
       },
     },
     {

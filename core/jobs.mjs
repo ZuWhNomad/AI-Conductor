@@ -75,6 +75,6 @@ export function formatJob(j) {
   return `Job ${j.id} [${j.status}]${j.exitCode != null ? ` exit ${j.exitCode}` : ''}${took} — ${j.command} (in ${j.cwd}, pid ${j.pid ?? '?'})${j.error ? `\nError: ${j.error}` : ''}${j.tail ? `\nOutput tail:\n${j.tail}` : ''}`;
 }
 
-function alive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
+export function alive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
 
 const tail = (file, chars) => readTail(file, Math.max(0, chars) * 4).slice(-chars);

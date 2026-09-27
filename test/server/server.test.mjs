@@ -358,7 +358,7 @@ test('changing the update cadence preserves startup and busy rechecks; off cance
   const context = {
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-    conductor: { listSessions: () => [{ status: 'running' }] }, listTasks: () => [], lastActivity: Date.now(), isIdle,
+    conductor: { listSessions: () => [{ status: 'running' }] }, openTasks: () => [], lastActivity: Date.now(), isIdle,
     checkForUpdates: async () => ({ git: true, behind: 1 }), lastUpdateStatus: () => ({ git: true, behind: 1 }), logImprovement() {},
   };
   runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
@@ -388,7 +388,7 @@ test('auto-update defers relaunch when work starts during applyUpdate, then rela
   const context = {
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-    conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, listTasks: () => [], lastActivity: 0, isIdle,
+    conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, openTasks: () => [], lastActivity: 0, isIdle,
     checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
     lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
     applyUpdate: () => {
@@ -430,7 +430,7 @@ test('stopped update checks do not pull or relaunch from an in-flight run', asyn
     const context = {
       loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
       clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-      conductor: { listSessions: () => [] }, listTasks: () => [], lastActivity: 0, isIdle,
+      conductor: { listSessions: () => [] }, openTasks: () => [], lastActivity: 0, isIdle,
       lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
       bus: { publish() {} },
       ...extra,

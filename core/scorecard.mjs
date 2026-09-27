@@ -163,7 +163,7 @@ export function normalizeUsage(u) {
   return t;
 }
 // Rows written before v2 stored inclusive input for non-Claude providers.
-const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.tokens, in: r.provider === 'claude' ? r.tokens.in : Math.max(0, (r.tokens.in || 0) - (r.tokens.cached || 0)) });
+export const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.tokens, in: r.provider === 'claude' ? r.tokens.in : Math.max(0, (r.tokens.in || 0) - (r.tokens.cached || 0)) });
 
 /** Record one terminal worker run. tasks.mjs calls this after refreshing the provider's limits. */
 export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
@@ -235,7 +235,7 @@ export function migrateScorecard() {
 }
 
 const maxPct = (pct) => { const xs = Object.values(pct || {}); return xs.length ? Math.max(...xs) : null; };
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+export const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const meanKnown = (xs) => mean(xs.filter((x) => x != null)); // unknown costs are skipped, not poison
 const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached', 'write']) a[k] += b[k] || 0; };
 
@@ -805,13 +805,8 @@ export function providerWeight(provider, cfg = loadConfig().scorecard, model = n
 export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = null, now = Date.now()) {
   const cls = providerClass(provider, cfg);
   if (cls !== 'subscription' && cls !== 'included') return 1;
-  const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? DEFAULTS.scorecard.wasteStrength));
-  let steps = (Array.isArray(cfg.wasteSteps) ? cfg.wasteSteps : DEFAULTS.scorecard.wasteSteps).map((s) => [...s]);
-  if (!Array.isArray(cfg.wasteSteps) && Number.isFinite(cfg.wasteHorizonHours)) {
-    const horizon = Math.max(1, cfg.wasteHorizonHours);
-    steps[0][0] = horizon;
-    steps = steps.filter(([hours]) => hours <= horizon).sort((a, b) => b[0] - a[0]);
-  }
+  const strength = Math.min(1, Math.max(0, cfg.wasteStrength));
+  const steps = cfg.wasteSteps.map((s) => [...s]);
   const discount = (ms) => {
     const step = Math.max(0, ...steps.filter((s) => ms > 0 && ms <= s[0] * 3600e3).map((s) => s[1]));
     return 1 - step * strength;

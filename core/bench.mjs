@@ -24,7 +24,7 @@ const cloneSelection = (s) => ({ provider: s.provider, model: scorecardModelId(s
 const sorted = (xs) => [...xs].sort((a, b) => a.provider.localeCompare(b.provider) || String(a.model).localeCompare(String(b.model)) || effortRank(a.effort) - effortRank(b.effort));
 
 function emptyState() {
-  return { version: 1, seededAt: null, updatedAt: null, seen: [], aliases: {}, answers: {}, lanes: {} };
+  return { version: 1, seededAt: null, updatedAt: null, seen: [], aliases: {}, lanes: {} };
 }
 
 function normalizeState(value) {
@@ -34,7 +34,6 @@ function normalizeState(value) {
   out.updatedAt = typeof s.updatedAt === 'string' ? s.updatedAt : null;
   out.seen = [...new Set((Array.isArray(s.seen) ? s.seen : []).filter((x) => typeof x === 'string').map((x) => x.toLowerCase()))];
   out.aliases = s.aliases && typeof s.aliases === 'object' && !Array.isArray(s.aliases) ? { ...s.aliases } : {};
-  out.answers = s.answers && typeof s.answers === 'object' && !Array.isArray(s.answers) ? { ...s.answers } : {};
   if (s.lanes && typeof s.lanes === 'object' && !Array.isArray(s.lanes)) for (const [provider, lane] of Object.entries(s.lanes)) {
     if (!lane || typeof lane !== 'object' || Array.isArray(lane)) continue;
     out.lanes[provider] = {
@@ -135,6 +134,7 @@ export function noteNewModels(before, after) {
   for (const s of all) if (!seen.has(seenKey(s))) fresh.push(cloneSelection(s));
   const aliases = aliasTargets(after), movedTargets = new Set();
   for (const [alias, target] of Object.entries(aliases)) if (state.aliases[alias] && state.aliases[alias] !== target) movedTargets.add(target);
+  if (!fresh.length && !movedTargets.size) return [];
   for (const s of all) if (movedTargets.has(modelKey(s))) fresh.push({ ...cloneSelection(s), aliasMoved: true });
 
   for (const s of all) seen.add(seenKey(s)); // excluded/covered listings are still remembered, so flaps stay silent
@@ -144,27 +144,10 @@ export function noteNewModels(before, after) {
   const listed = new Map(all.map((s) => [seenKey(s), s]));
   const cfg = loadConfig(), mode = cfg.bench.newModels, listingChange = candidates.length > 5;
   const automatic = candidates.filter((s) => mode === 'auto' && !listingChange && listed.get(seenKey(s))?.cost !== 'api');
-  const automaticKeys = new Set(automatic.map(seenKey));
-  for (const s of candidates) state.answers[seenKey(s)] = { selection: cloneSelection(s), answer: mode === 'off' ? 'no' : (automaticKeys.has(seenKey(s)) ? 'bench' : 'ask'), detectedAt: stamp, aliasMoved: !!s.aliasMoved };
   saveState(state);
   if (automatic.length) enqueueBench(automatic, { reg: after });
   if (candidates.length) logImprovement('idea', 'models', `new benchmark selection${candidates.length === 1 ? '' : 's'} listed: ${candidates.map(selId).join(', ')}${listingChange ? ' (listing change: approval required)' : ''}`);
   return candidates;
-}
-
-/** Persist a decision for detected selections. `bench` queues them; other answers only record intent. */
-export function answerNewModels(keys, answer, { reg = getModels() } = {}) {
-  if (!['bench', 'later', 'no', 'never'].includes(answer)) throw Object.assign(new Error('answer must be bench|later|no|never'), { status: 400 });
-  const state = getBenchState(), selections = [];
-  for (const key of keys || []) {
-    const k = String(key).toLowerCase(), prior = state.answers[k];
-    if (!prior?.selection) continue;
-    state.answers[k] = { ...prior, answer, answeredAt: nowIso() };
-    if (answer === 'bench') selections.push(prior.selection);
-  }
-  saveState(state);
-  if (selections.length) enqueueBench(selections, { reg });
-  return getBenchState();
 }
 
 /** Add selections to durable provider lanes, cheapest effort first, without starting work. */

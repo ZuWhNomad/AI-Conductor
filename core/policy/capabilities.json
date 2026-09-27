@@ -6,7 +6,7 @@
     "detect": { "command": "run-ledger-ocr", "args": ["--version"] },
     "platforms": ["win"], "added": "curated", "keywords": ["ocr", "pdf", "image to text", "local"],
     "match": [".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".heic", ".webp"], "requireMatch": true,
-    "note": "Set tools.ledgerOcrCommand to an executable or launcher path to override discovery; set it to an empty value to disable the capability"
+    "note": "Set tools.ledgerOcrCommand to an executable or launcher path, including a dev checkout, to override discovery; set it to an empty value to disable the capability"
   },
   {
     "name": "tesseract", "kind": "cli", "categories": ["read"],

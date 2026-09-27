@@ -15,7 +15,7 @@ export const kind = 'ollama';
 export const auth = { type: 'none', setup: 'Install Ollama from https://ollama.com and pull a model (e.g. `ollama pull qwen3.8`).' };
 export const installCommand = () => (process.platform === 'win32' ? 'start https://ollama.com/download' : 'curl -fsSL https://ollama.com/install.sh | sh');
 
-export const baseUrl = () => (loadConfig().providers.ollama?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
+export const baseUrl = () => loadConfig().providers.ollama.baseUrl.replace(/\/$/, '');
 /** Owner's on/off switch for local models: opt-in, providers.ollama.enabled === true to start, list or use Ollama. */
 export const enabled = () => loadConfig().providers.ollama?.enabled === true;   // opt-in: OFF unless set true
 

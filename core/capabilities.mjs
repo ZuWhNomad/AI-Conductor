@@ -22,7 +22,6 @@ function ledgerOcrCommand(cfg) {
     return typeof configured === 'string' && configured.trim() && existsSync(configured.trim()) ? configured.trim() : null;
   }
   const candidates = [
-    'F:\\LedgerOCR\\dev\\run-ledger-ocr.cmd',
     process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'LedgerOCR', 'LedgerOCR.exe'),
   ].filter(Boolean);
   return candidates.find((p) => existsSync(p)) || null;

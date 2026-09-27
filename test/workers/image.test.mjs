@@ -35,7 +35,7 @@ test('sd txt2img fetch is aborted by the task signal', { timeout: 5_000 }, async
       opts.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
     });
   });
-  const p = runImage({ cwd: tmpDir('sd-abort'), provider: 'sd', prompt: 'x', signal: ac.signal });
+  const p = runImage({ cwd: tmpDir('sd-abort'), provider: 'sd', baseUrl: 'http://127.0.0.1:7860', prompt: 'x', signal: ac.signal });
   await new Promise((r) => setTimeout(r, 20));
   ac.abort();
   const r = await p;

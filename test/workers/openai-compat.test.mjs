@@ -78,6 +78,12 @@ test('DeepSeek balance parses and providers expose a homepage', async () => {
   const sums = providerSummaries();
   assert.equal(sums.find((p) => p.id === 'deepseek').url, 'https://platform.deepseek.com');
   assert.equal(sums.find((p) => p.id === 'codex').url, 'https://chatgpt.com/codex');
+  const sdBaseUrl = loadConfig().providers.sd.baseUrl;
+  assert.equal(sums.find((p) => p.id === 'sd').url, sdBaseUrl);
+  try {
+    saveConfig({ providers: { sd: { baseUrl: 'http://sd.test:9000' } } });
+    assert.equal(providerSummaries().find((p) => p.id === 'sd').url, 'http://sd.test:9000');
+  } finally { saveConfig({ providers: { sd: { baseUrl: sdBaseUrl } } }); }
   const { PROVIDERS } = await import('../../core/providers/index.mjs');
   for (const s of sums) {
     assert.equal(s.canLogin, !!PROVIDERS[s.id].loginCommand);

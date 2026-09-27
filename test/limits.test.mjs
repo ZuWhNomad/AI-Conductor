@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 
-const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlockedUntil, providerWindows, quotaIds, sameGroup } = await import('../core/limits.mjs');
+const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
 const { PROVIDERS } = await import('../core/providers/index.mjs');
 
@@ -16,16 +16,15 @@ test('quota groups are derived from the windows that meter each model', () => {
     { id: 'third-party', label: 'Claude and GPT', models: '^(claude|gpt)' },
   ] };
   try {
-    assert.deepEqual(quotaIds(id, 'gemini-pro'), ['gemini', 'shared']);
+    assert.deepEqual(groupOf(id, 'gemini-pro').ids, ['gemini', 'shared']);
     assert.deepEqual(groupOf(id, 'claude-sonnet'), {
       ids: ['shared', 'third-party'],
       own: [{ id: 'third-party', label: 'Claude and GPT', models: '^(claude|gpt)' }],
-      shared: [{ id: 'shared', label: 'shared' }],
     });
-    assert.equal(sameGroup(id, 'claude-sonnet', 'gpt-oss'), true);
-    assert.equal(sameGroup(id, 'claude-sonnet', 'gemini-pro'), false);
+    assert.deepEqual(groupOf(id, 'claude-sonnet').ids, groupOf(id, 'gpt-oss').ids);
+    assert.notDeepEqual(groupOf(id, 'claude-sonnet').ids, groupOf(id, 'gemini-pro').ids);
     getLimits().providers[id].windows = [];
-    assert.deepEqual(quotaIds(id, 'anything'), [id]);
+    assert.deepEqual(groupOf(id, 'anything').ids, [id]);
   } finally { delete getLimits().providers[id]; }
 });
 

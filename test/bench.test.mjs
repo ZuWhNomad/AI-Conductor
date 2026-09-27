@@ -8,7 +8,7 @@ import { writeJson } from '../core/paths.mjs';
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
 const { BENCH_TASK_IDS, dueForBench, noteNewModels, getBenchState, enqueueBench, runBenchQueue } = await import('../core/bench.mjs');
 const FILE = join(HOME, 'bench.json');
-const reset = () => writeJson(FILE, { version: 1, seededAt: null, updatedAt: null, seen: [], aliases: {}, answers: {}, lanes: {} });
+const reset = () => writeJson(FILE, { version: 1, seededAt: null, updatedAt: null, seen: [], aliases: {}, lanes: {} });
 const reg = (models, providers = [...new Set(models.map((m) => m.provider))]) => ({ updatedAt: new Date().toISOString(), providers: Object.fromEntries(providers.map((p) => [p, { status: 'ok' }])), models });
 const model = (provider, id, efforts = [], extra = {}) => ({ provider, id, efforts, kind: 'agent', cost: 'subscription', ...extra });
 const attempt = (provider, modelId, effort, smokeId, verdict = 'pass') => ({ provider, model: modelId, effort, smokeId, verdict, ts: new Date().toISOString() });
@@ -29,7 +29,7 @@ test('coverage is per offered effort at 8/11; a probe is not a battery and effor
   assert.equal(dueForBench({ days: Infinity, reg: probeRegistry, runs })[0].covered, 1);
 });
 
-test('bench.json silently seeds once, absorbs list flaps, records answers, and detects new efforts once', () => {
+test('bench.json silently seeds once, absorbs list flaps, and detects new efforts once', () => {
   const previous = loadConfig().bench;
   try {
     reset(); saveConfig({ bench: { newModels: 'off' }, scorecard: { archived: [] } });
@@ -38,9 +38,12 @@ test('bench.json silently seeds once, absorbs list flaps, records answers, and d
 
     const expanded = reg([model('codex', 'steady', ['low', 'high'])]);
     assert.deepEqual(noteNewModels(first, expanded).map((s) => s.effort), ['high']);
-    assert.equal(getBenchState().answers['codex:steady:high'].answer, 'no');
+    assert.equal('answers' in getBenchState(), false);
     assert.deepEqual(noteNewModels(expanded, first), []);
     assert.deepEqual(noteNewModels(first, expanded), [], 'a disappeared effort remains in the durable seen-set');
+    const unchanged = readFileSync(FILE, 'utf8');
+    assert.deepEqual(noteNewModels(expanded, expanded), []);
+    assert.equal(readFileSync(FILE, 'utf8'), unchanged, 'unchanged models and aliases do not rewrite bench.json');
 
     const excluded = reg([
       ...expanded.models,
@@ -64,7 +67,7 @@ test('alias moves are noticed once even when the new exact target was already se
   assert.deepEqual(noteNewModels(moved, moved), []);
 });
 
-test('auto mode queues new selections but never executes them during detection', () => {
+test('auto mode queues eligible selections but never executes them during detection', () => {
   const previous = loadConfig().bench;
   try {
     reset(); saveConfig({ bench: { newModels: 'auto' }, scorecard: { archived: [] } });
@@ -74,8 +77,8 @@ test('auto mode queues new selections but never executes them during detection',
     noteNewModels(first, next);
     const state = getBenchState();
     assert.deepEqual(state.lanes.codex.queue.map((q) => `${q.selection.model}:${q.selection.effort}`), ['new:low', 'new:high']);
-    assert.equal(state.lanes.deepseek, undefined, 'pay-per-token providers still require an answer');
-    assert.equal(state.answers['deepseek:paid:low'].answer, 'ask');
+    assert.equal(state.lanes.deepseek, undefined, 'pay-per-token providers are not auto-benched');
+    assert.equal('answers' in state, false);
     assert.equal(state.lanes.codex.running, null);
   } finally { saveConfig({ bench: previous }); }
 });

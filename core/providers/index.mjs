@@ -27,6 +27,7 @@ const imageProviders = {
   sd: {
     id: 'sd', label: 'Stable Diffusion (local A1111 API)', kind: 'image',
     auth: { type: 'none', setup: 'Run AUTOMATIC1111 with --api; set the URL in Settings.' },
+    get url() { return loadConfig().providers.sd.baseUrl; },
     detect: async () => { try { const r = await fetch(`${loadConfig().providers.sd.baseUrl}/sdapi/v1/sd-models`, { signal: AbortSignal.timeout(1500) }); return { installed: r.ok, running: r.ok }; } catch { return { installed: false, running: false }; } },
     listModels: async () => { try { const r = await fetch(`${loadConfig().providers.sd.baseUrl}/sdapi/v1/sd-models`, { signal: AbortSignal.timeout(3000) }); if (!r.ok) return []; return (await r.json()).map((m) => ({ provider: 'sd', id: m.model_name, label: m.title || m.model_name, description: 'local image generation', efforts: [], kind: 'image', cost: 'free-local' })); } catch { return []; } },
     pollLimits: async () => ({ provider: 'sd', plan: 'local', blocked: false, windows: [] }),
@@ -49,7 +50,7 @@ export function getProvider(id) {
   return p;
 }
 
-export const PROVIDER_URLS = { claude: 'https://claude.ai', codex: 'https://chatgpt.com/codex', ollama: 'https://ollama.com', antigravity: 'https://antigravity.google', grok: 'https://grok.com', kimi: 'https://www.kimi.com', 'qwen-code': 'https://qwen.ai', 'openai-images': 'https://platform.openai.com', stability: 'https://platform.stability.ai', sd: 'http://127.0.0.1:7860' };
+export const PROVIDER_URLS = { claude: 'https://claude.ai', codex: 'https://chatgpt.com/codex', ollama: 'https://ollama.com', antigravity: 'https://antigravity.google', grok: 'https://grok.com', kimi: 'https://www.kimi.com', 'qwen-code': 'https://qwen.ai', 'openai-images': 'https://platform.openai.com', stability: 'https://platform.stability.ai' };
 export function providerSummaries() {
   return Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, kind: p.kind, auth: p.auth, url: p.url || PROVIDER_URLS[p.id] || null, canInstall: !!p.installCommand?.(), canLogin: !!p.loginCommand, canRelogin: !!p.loginCommand }));
 }

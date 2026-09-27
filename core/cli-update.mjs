@@ -92,15 +92,14 @@ export const RECIPES = {
     version: cliVersion('codex'),
     latest: npmLatest('@openai/codex'),
     manual: (x) => { const c = x.bin('codex'); return c && ![c.command, ...c.args].some((s) => /node_modules[\\/]@openai[\\/]codex/.test(s)) ? 'this codex was not installed with npm: update it with the app that installed it' : null; },
-    apply: npmGlobal('@openai/codex'), rollback: npmGlobal('@openai/codex'),
+    apply: npmGlobal('@openai/codex'),
   },
-  'qwen-code': { version: cliVersion('qwen-code'), latest: npmLatest('@qwen-code/qwen-code'), apply: npmGlobal('@qwen-code/qwen-code'), rollback: npmGlobal('@qwen-code/qwen-code') },
+  'qwen-code': { version: cliVersion('qwen-code'), latest: npmLatest('@qwen-code/qwen-code'), apply: npmGlobal('@qwen-code/qwen-code') },
   grok: {
     version: cliVersion('grok'),
     // `grok update --check --json` (grok 1.0.30): {"currentVersion","latestVersion","channel":"stable",...}; --version <v> installs an exact release.
     latest: async (x) => { const line = (await x.run(binOf(x, 'grok'), ['update', '--check', '--json'], { timeoutMs: 60_000 })).out.split('\n').find((l) => l.trim().startsWith('{')); return line ? JSON.parse(line).latestVersion || null : null; },
     apply: (x, v) => x.run(binOf(x, 'grok'), ['update', '--version', v], { timeoutMs: 600_000 }),
-    rollback: (x, v) => x.run(binOf(x, 'grok'), ['update', '--version', v], { timeoutMs: 600_000 }),
   },
   antigravity: {
     version: cliVersion('antigravity'),
@@ -113,7 +112,7 @@ export const RECIPES = {
     version: cliVersion('kimi'),
     latest: async (x) => (await x.fetchJson('https://pypi.org/pypi/kimi-cli/json'))?.info?.version || null,
     manual: (x) => (kimiPip(x) ? null : 'kimi was not installed with pip --user under a PythonXY folder: update it the way it was installed'),
-    apply: pipInstall, rollback: pipInstall,
+    apply: pipInstall,
   },
   claude: {
     version: async (x) => parseVersion(x.sdkVersion()),
@@ -121,7 +120,6 @@ export const RECIPES = {
     manual: (x) => (x.devCheckout() ? null : 'release it through dev'),
     noAuto: true, // a dependency bump is reviewed and released, never installed behind the user's back
     apply: (x, v) => x.npm(['i', `${SDK}@${v}`], { cwd: REPO_ROOT, timeoutMs: 600_000 }),
-    rollback: (x, v) => x.npm(['i', `${SDK}@${v}`], { cwd: REPO_ROOT, timeoutMs: 600_000 }),
     // The running server keeps the SDK it loaded; the suite is the check. The change stays uncommitted for review.
     verify: async (x) => { const r = await x.npm(['test'], { cwd: REPO_ROOT, timeoutMs: 1_800_000 }); return r.code === 0 ? null : `npm test failed: ${r.out.trim().slice(-300)}`; },
   },
@@ -193,7 +191,7 @@ export async function applyCliUpdate(id, { x = EXEC } = {}) {
         const fail = inst.code !== 0 ? `install failed: ${tail(inst.out)}` : await verify(id, r, x, to);
         if (!fail) res = { applied: true, from, to };
         else {
-          const back = await r.rollback(x, from).catch((e) => ({ code: 1, out: String(e?.message || e) }));
+          const back = await (r.rollback || r.apply)(x, from).catch((e) => ({ code: 1, out: String(e?.message || e) }));
           const now = await r.version(x).catch(() => null);
           res = { applied: false, from, to, error: fail, rolledBack: now === from, rollback: back.code === 0 ? `reinstalled ${from}` : `rollback failed: ${tail(back.out)}` };
           logImprovement('error', `cli-update:${id}`, `${id} ${from} → ${to} failed and was rolled back${now === from ? '' : ` INCOMPLETELY (now ${now || 'missing'})`}: ${fail}`, { from, to, now, rollback: res.rollback });

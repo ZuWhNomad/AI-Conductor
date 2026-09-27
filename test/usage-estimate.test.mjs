@@ -6,7 +6,7 @@ const { windowTokens, recordUsage, estimateUsage, learnedRate, limitsWithEstimat
 const { saveConfig, loadConfig } = await import('../core/config.mjs');
 const { nextScheduledReset, prevScheduledReset } = await import('../core/scorecard.mjs');
 
-const runAt = (provider, iso, inTok, outTok) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: iso, provider, model: 'm', tokens: { in: inTok, out: outTok, cached: 999999 }, status: 'done' });
+const runAt = (provider, iso, inTok, outTok, cached = 0) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: iso, provider, model: 'm', tokens: { in: inTok, out: outTok, cached }, status: 'done' });
 
 test('windowTokens sums in+out since the last long gap (a new usage window), ignoring cached', () => {
   runAt('xai', '2026-01-01T10:00:00Z', 100000, 0);   // old window
@@ -33,10 +33,16 @@ test('one check-in anchors the bar but does NOT invent a burn rate', () => {
   assert.equal(est.pct, 20);                 // anchored on the newest reading, nothing spent since
 });
 
-test('estimateUsage is null with no check-in and no seed, but honours a seed rate', () => {
+test('estimateUsage is null with no check-in or budget', () => {
   runAt('zzz', '2026-02-01T10:00:00Z', 1_000_000, 0);
   assert.equal(estimateUsage('zzz'), null);
-  assert.equal(estimateUsage('zzz', { seedPctPerMToken: 10 }).pct, 10); // 1M * 10%/M
+  assert.equal(estimateUsage('zzz', { budgetTokens: 10_000_000 }).pct, 10);
+});
+
+test('v1 rows subtract cached input tokens when estimating usage', () => {
+  runAt('legacy', '2026-02-02T10:00:00Z', 1_000_000, 0, 999_999);
+  assert.equal(windowTokens('legacy').spent, 1);
+  assert.equal(estimateUsage('legacy', { budgetTokens: 10_000_000 }).pct, 0);
 });
 
 test('a budget estimate switches to the calibrated fit once a check-in exists (Calibrate actually moves the bar)', () => {

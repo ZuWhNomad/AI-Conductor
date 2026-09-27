@@ -1,6 +1,6 @@
 // Local HTTP server: static UI, JSON API, SSE event stream. Binds to 127.0.0.1 only.
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { readdir, access } from 'node:fs/promises';
 import { join, extname, resolve, dirname, sep } from 'node:path';
@@ -11,7 +11,7 @@ import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 import { getModels, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
 import { getLimits, refreshLimits, startLimitPolling, stopLimitPolling } from '../core/limits.mjs';
-import { killProbes } from '../core/proc.mjs';
+import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
@@ -25,8 +25,8 @@ import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '..
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
 import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
-import { startBenchQueue, stopBenchQueue, wakeBenchQueue } from '../core/bench.mjs';
-import { jobStatus } from '../core/jobs.mjs';
+import { startBenchQueue, stopBenchQueue, wakeBenchQueue, dueForBench, formatBench } from '../core/bench.mjs';
+import { jobStatus, startJob, cancelJob, listJobs } from '../core/jobs.mjs';
 import { createWatchdog } from '../core/watchdog.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
@@ -124,8 +124,10 @@ function startLagMonitor() {
   loopLag.enable();
   lagTimer = setInterval(() => {
     const { p99Ms } = lagStats(); loopLag.reset();
-    const tasks = listTasks({ limit: 10000 });
-    const v = lagVerdict(p99Ms, loadConfig().server.lagWarnMs, { running: tasks.filter((t) => t.status === 'running').length, queued: tasks.filter((t) => t.status === 'queued').length, sessions: conductor.listSessions().filter((s) => s.status === 'running').length });
+    const threshold = loadConfig().server.lagWarnMs;
+    if (p99Ms <= threshold) return;
+    const tasks = openTasks();
+    const v = lagVerdict(p99Ms, threshold, { running: tasks.filter((t) => t.status === 'running').length, queued: tasks.filter((t) => t.status === 'queued').length, sessions: conductor.listSessions().filter((s) => s.status === 'running').length });
     if (v) { try { logImprovement('friction', 'server', v.message, v.context); } catch {} }
   }, 60_000).unref();
 }
@@ -220,7 +222,6 @@ async function route(req, res, url) {
   }
 
   if (seg[1] === 'jobs') { // detached long jobs (core/jobs.mjs); `conductor job` calls these from a worker's shell
-    const { startJob, jobStatus, cancelJob, listJobs } = await import('../core/jobs.mjs');
     if (m === 'GET' && !seg[2]) return json(res, 200, listJobs());
     if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, startJob({ command: b.command, cwd: b.cwd })); }
     const j = m === 'POST' && seg[3] === 'cancel' ? cancelJob(seg[2]) : m === 'GET' && !seg[3] ? jobStatus(seg[2], { tailChars: Number(url.searchParams.get('tail')) || 4000 }) : undefined;
@@ -268,7 +269,7 @@ async function route(req, res, url) {
     const row = recordUsage(seg[2], pct); bus.publish('limits', { updatedAt: getLimits().updatedAt });
     return json(res, 200, { ok: true, recorded: row, estimate: estimateUsage(seg[2], { budgetTokens: loadConfig().scorecard?.usageBudgets?.[seg[2]] || null }) });
   }
-  if (p === '/api/bench' && m === 'GET') { const { dueForBench, formatBench } = await import('../core/bench.mjs'); const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
+  if (p === '/api/bench' && m === 'GET') { const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
   if (p === '/api/scores/eligibility' && m === 'POST') {
     const b = await readBody(req);
     return json(res, 200, { ok: true, eligibility: setEligibility(b.sel, b.category, b.action, b.reason) });
@@ -401,9 +402,6 @@ function openTerminal(title, command) {
 
 /** Environment check shared by `conductor doctor` and the UI. */
 export async function doctorReport() {
-  const { PROVIDERS } = await import('../core/providers/index.mjs');
-  const { codexCommand, findCli } = await import('../core/proc.mjs');
-  const { execFile } = await import('node:child_process');
   // Timeout 10_000 is the existing execFileSync budget this function already used for `codex --version`.
   const versionOf = (command, args = ['--version']) => new Promise((resolve) => {
     if (!command) return resolve(null);
@@ -511,7 +509,7 @@ let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch
 function workInFlight() {
   try {
     if (conductor.listSessions().some((s) => s.status === 'running')) return true;
-    if (listTasks({ limit: 10000 }).some((t) => !['done', 'failed', 'canceled'].includes(t.status))) return true;
+    if (openTasks().length) return true;
     return false;
   } catch { return true; }
 }
@@ -539,7 +537,7 @@ function startUpdateChecks({ initial = true } = {}) {
     try {
       return isIdle({
         runningSessions: conductor.listSessions().filter((s) => s.status === 'running').length,
-        openTasks: listTasks({ limit: 10000 }).filter((t) => !['done', 'failed', 'canceled'].includes(t.status)).length,
+        openTasks: openTasks().length,
         lastActivity, quietMs: loadConfig().conductor.updateQuietMinutes * 60_000,
       });
     } catch { return false; } // can't tell → defer rather than risk interrupting work
