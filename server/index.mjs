@@ -15,7 +15,7 @@ import { killProbes } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, touchTaskAlive, markTaskWakeReported } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
@@ -26,13 +26,20 @@ import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
 import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
 import { startBenchQueue, stopBenchQueue, wakeBenchQueue } from '../core/bench.mjs';
+import { jobStatus } from '../core/jobs.mjs';
+import { createWatchdog } from '../core/watchdog.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
 let boundPort = null;              // the port this server actually bound — the self-restart relauncher reuses it
 const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding while the outgoing process releases the port
+const watchdog = createWatchdog({
+  listSessions: conductor.listSessions, listTasks, touchTaskAlive, markTaskWakeReported,
+  recordSessionCheckIn: conductor.recordWatchdogCheckIn, sendMessage: conductor.sendMessage, jobStatus,
+});
 
 export function stopBackgroundWork() {
+  try { watchdog.stop(); } catch {}
   stopUpdateChecks();
   try { clearInterval(lagTimer); loopLag.disable(); } catch {}
   try { stopModelPolling(); } catch {}
@@ -300,6 +307,7 @@ async function route(req, res, url) {
       const prev = loadConfig();
       const next = saveConfig(b);
       applyPolling(next); applyDetectSweep(next);
+      if (prev.watchdog.intervalMinutes !== next.watchdog.intervalMinutes) watchdog.start();
       const auChanged = prev.conductor.autoUpdate !== next.conductor.autoUpdate;
       const hoursChanged = prev.conductor.updateCheckHours !== next.conductor.updateCheckHours;
       if (auChanged || hoursChanged) startUpdateChecks({ initial: prev.conductor.autoUpdate === 'off' && next.conductor.autoUpdate !== 'off' });
@@ -630,6 +638,7 @@ export function startServer({ port = null } = {}) {
       delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);
+      watchdog.start();
       startLagMonitor();
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on

@@ -24,6 +24,9 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
   that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID.
+- `watchdog.mjs` — the server-owned basic check-in loop. It journals task `aliveAt` without a `task` event, publishes
+  `watchdog` UI events, persists detached-job/output watches, and wakes an idle chat once after its whole background
+  batch is terminal. It never restarts the server or interrupts work in phase 1.
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
   category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
   `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.
@@ -46,6 +49,7 @@ for runs whose model matches.
 | a usage bar is wrong, stale or missing | `providers/<vendor>.mjs` `pollLimits()` → `limits.mjs`; windowless providers (Grok): `usage-estimate.mjs` |
 | a model is missing from the picker, or has the wrong efforts | `providers/<vendor>.mjs` `listModels()` → `models.mjs`; subscription CLIs: `providers/vendors.mjs` (`collapseEffortFamilies`) |
 | a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.mjs` |
+| a check-in, detached watch or background-completion wake is wrong | `watchdog.mjs`, then `tasks.mjs` wake-consumption markers and `conductor.mjs` session state |
 | the worker got the wrong instructions (notes, recipe, MCP servers, programs) | `tasks.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs` (scoped by category), `capabilities.mjs` + `policy/capabilities.json`, `prompts/worker.md` |
 | the conductor chat misbehaves (streaming, permissions, model switch, history) | `conductor.mjs`; what it is told: `policy/prompts/conductor*.md`, `policy/prompts/orchestration.md` |
 | a conductor tool is missing or returns the wrong thing | `tools.mjs` (defined once, served to all three runtimes) |

@@ -184,7 +184,7 @@ export const VENDORS = {
       const args = [];
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
-      args.push('--output-format', 'stream-json', '--add-dir', t.cwd, ...(t.writableRoots || []).flatMap((d) => ['--add-dir', d]), '--print-timeout', `${Math.max(60, Math.round((t.timeoutMs || 3600_000) / 1000))}s`);
+      args.push('--output-format', 'stream-json', '--add-dir', t.cwd, ...(t.writableRoots || []).flatMap((d) => ['--add-dir', d]), '--print-timeout', `${t.timeoutMs ? Math.max(60, Math.round(t.timeoutMs / 1000)) : 7 * 24 * 60 * 60}s`);
       if (t.sandbox === 'read-only') args.push('--mode', 'plan');
       else args.push('--dangerously-skip-permissions');
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);

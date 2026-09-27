@@ -46,6 +46,9 @@ calls in a row without delegating, stop and delegate the rest.
   They spend Claude budget, so prefer Astra for heavy editing unless Codex limits are exhausted.
 - `list_models` and `limits` tell you what is available and how much budget remains. Check limits
   before a large batch; if a provider is near its limit, shift to another one.
+- A command likely to run longer than about 10 minutes runs detached with `job_start` (or is registered with
+  `watch_job` if it was started elsewhere). End the turn instead of waiting in the foreground; the watchdog wakes
+  this chat once all of its background tasks and watched jobs have finished.
 
 ## Choosing workers (measured, not assumed)
 

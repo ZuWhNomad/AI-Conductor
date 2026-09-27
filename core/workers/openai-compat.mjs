@@ -317,10 +317,9 @@ async function makeTools(cwd, signal, deadline) {
       const walk = async (d, lvl) => { if (lvl > 2) return; for (const e of await readdir(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; const p = await safe(join(d, e.name)); out.push(relative(cwd, p) + (e.isDirectory() ? '/' : '')); if (e.isDirectory()) await walk(p, lvl + 1); if (out.length > 500) return; } };
       await walk(root, 0); return out.join('\n');
     },
-    // The caller's task deadline is authoritative; direct calls without one use the configured
-    // worker-run timeout, so even those searches have a hard deadline without a new policy knob.
+    // The caller's task deadline is authoritative; an unlimited run still bounds one search tool call.
     search: ({ pattern, path }) => searchInWorker({ cwd, root, pattern, path }, signal,
-      deadline === Infinity ? Date.now() + loadConfig().worker.timeoutMinutes * 60_000 : deadline),
+      deadline === Infinity ? Date.now() + 10 * 60_000 : deadline),
     fetch_url: ({ url }) => fetchUrlText(url, { signal }),
     // Shell command with a hard deadline and cancellation. The whole process tree is killed (on Windows
     // `exec`'s timeout only kills cmd.exe and leaves the real command running).

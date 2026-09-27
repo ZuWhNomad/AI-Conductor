@@ -5,3 +5,4 @@ for reading, small edits and running verification commands. Use the workbench to
 on the MCP server named `conductor` — see `tools/list`. There is no Claude
 subagent tool here: for fan-out, use `delegate` with `background: true` and `await_task`.
 Delegated workers may be Claude models (provider `claude`), Codex models, Ollama or API models.
+Do not hold this turn open on a long command; use the shared `job_start` / `watch_job` flow.

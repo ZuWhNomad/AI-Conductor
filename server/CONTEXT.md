@@ -8,7 +8,8 @@ stream, static files from `ui/`, and a minimal MCP endpoint for Codex conductors
 state of its own: every route is a thin call into a `core/` module.
 
 **Entry points.** `startServer({ port })` (used by `bin/conductor.mjs` and the tests), `doctorReport()`,
-`scheduleRelaunch()` (self-restart after an update), `stopBackgroundWork()`.
+`scheduleRelaunch()` (self-restart after an update), `stopBackgroundWork()`. Server start/stop also owns the basic
+watchdog interval; the watchdog may wake an idle chat but never restarts the server.
 
 **Routes.** All in `route()`; find one by grepping its path (`/api/<resource>` or `seg[1] === '<resource>'`).
 

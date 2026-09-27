@@ -174,14 +174,14 @@ test('a long recipe cannot starve the capability lines (they have separate budge
   assert.ok(withRecipe.includes(expected), 'capability lines survive a recipe longer than the old shared cap');
 });
 
-test('worker timeout can be raised per category; long runs are logged', async () => {
+test('worker timeout defaults off and can be enabled per category', async () => {
   const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
-  assert.equal(DEFAULTS.worker.timeoutByCategory.modeling, 240);
+  assert.deepEqual(DEFAULTS.worker.timeoutByCategory, {});
   saveConfig({ worker: { timeoutByCategory: 'x' } });
-  assert.equal(loadConfig().worker.timeoutByCategory.modeling, 240);
+  assert.deepEqual(loadConfig().worker.timeoutByCategory, {});
   saveConfig({ worker: { timeoutByCategory: { modeling: 300 } } });
   assert.equal(loadConfig().worker.timeoutByCategory.modeling, 300);
-  saveConfig({ worker: { timeoutByCategory: { modeling: 240 } } });
+  saveConfig({ worker: { timeoutByCategory: {} } });
 });
 
 test('the conductor prompt defers budget percentages to configuration', async () => {

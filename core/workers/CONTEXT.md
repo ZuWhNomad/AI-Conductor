@@ -15,8 +15,8 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
   and `gpt-6-astra` defaults to `danger-full-access`. `fetch_url` has an SSRF guard.
 - `openai-compat-files.mjs` — async canonical-path checks and bounded file reads; the disposable search worker
-  runs the entire traversal and regex off the server thread. Search terminates at the task deadline (or the configured
-  worker-run timeout when none was supplied), and on cancellation. The tool waits for termination before settling.
+  runs the entire traversal and regex off the server thread. Search terminates at the task deadline (or a fixed
+  10-minute tool deadline when the run is unlimited), and on cancellation. The tool waits for termination before settling.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs
   (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
 - `image.mjs` — image generation.
