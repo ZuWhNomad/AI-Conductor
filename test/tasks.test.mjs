@@ -1158,12 +1158,14 @@ test('L10: a live follow-up owns its thread through queued, running and parked s
 
 test('P1: one scheduling pass measures each provider/model once and the next pass remeasures', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
   const conductor = loadConfig().conductor;
   saveConfig({ conductor: { maxWorkerConcurrency: 3 } });
   ctx.after(() => saveConfig({ conductor }));
+  PROVIDERS['w1-cost'] = { id: 'w1-cost' };
   getLimits().providers['w1-cost'] = { windows: [{ id: 'budget', usedPercent: 0 }, { id: 'weekly', usedPercent: 0 }] };
-  ctx.after(() => delete getLimits().providers['w1-cost']);
+  ctx.after(() => { delete PROVIDERS['w1-cost']; delete getLimits().providers['w1-cost']; });
   const finish = Promise.withResolvers();
   const tk = await tasksWithWorker(ctx, () => finish.promise);
   const cwd = tmpDir('cost-cache');
@@ -1194,8 +1196,10 @@ test('P1: one scheduling pass measures each provider/model once and the next pas
 
 test('P2: rate and null-percent windows do not serialize a provider behind a probe', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
   const finish = Promise.withResolvers();
   const tk = await tasksWithWorker(ctx, () => finish.promise);
+  PROVIDERS['w1-rate'] = { id: 'w1-rate' };
   getLimits().providers['w1-rate'] = { windows: [{ id: 'requests', rate: true, usedPercent: 90 }, { id: 'unknown', usedPercent: null }] };
   const batch = ['one', 'two'].map((spec) => tk.createTask({ cwd: tmpDir('rate-probe'), provider: 'w1-rate', spec }));
   try {
@@ -1205,7 +1209,7 @@ test('P2: rate and null-percent windows do not serialize a provider behind a pro
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     finish.resolve({ ok: true, finalMessage: 'ok' });
     await Promise.all(batch.map((t) => tk.awaitTask(t.id)));
-  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); delete getLimits().providers['w1-rate']; }
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); delete PROVIDERS['w1-rate']; delete getLimits().providers['w1-rate']; }
 });
 
 test('P8: lists and task events omit bulky results while the full record preserves them', async () => {

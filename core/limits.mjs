@@ -9,8 +9,14 @@ import { loadConfig } from './config.mjs';
 
 const blockedMs = () => (loadConfig().scorecard.blockedMinutes) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after
 
+const pruneUnknown = (providers) => {
+  const cfg = loadConfig().providers || {};
+  return Object.fromEntries(Object.entries(providers || {}).filter(([id]) => Object.hasOwn(PROVIDERS, id) || Object.hasOwn(cfg, id)));
+};
+
 const FILE = () => statePath('limits.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {} });
+cache.providers = pruneUnknown(cache.providers);
 const inflightByScope = new Map(); // coalesce concurrent polls, keyed by scope so a codex-only poll is never returned to a full refresh
 let refreshGeneration = 0;
 const committedByProvider = new Map(); // a newer pending poll must not discard a post-completion sample
@@ -54,7 +60,7 @@ let restatHold = 0;
 export function getLimits() {
   if (!restatHold) {
     const m = fileMtime();
-    if (m !== seenMtime) { seenMtime = m; const fresh = readJson(FILE(), null); if (fresh?.providers) { cache.updatedAt = fresh.updatedAt; cache.providers = fresh.providers; } }
+    if (m !== seenMtime) { seenMtime = m; const fresh = readJson(FILE(), null); if (fresh?.providers) { cache.updatedAt = fresh.updatedAt; cache.providers = pruneUnknown(fresh.providers); } }
   }
   return cache;
 }
@@ -66,7 +72,8 @@ export function withLimitsSnapshot(fn) {
   finally { restatHold--; }
 }
 
-function save(publish = true) {
+export function save(publish = true) {
+  cache.providers = pruneUnknown(cache.providers);
   cache.updatedAt = nowIso();
   writeJson(FILE(), cache);
   seenMtime = fileMtime();

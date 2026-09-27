@@ -6,6 +6,7 @@ import { readJson } from '../core/paths.mjs';
 
 const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
+const { PROVIDERS } = await import('../core/providers/index.mjs');
 
 test('P11: refresh metadata distinguishes joined polls without changing promise identity or result', async () => {
   const { refreshLimits, refreshLimitsWithMeta } = await import('../core/limits.mjs');
@@ -62,6 +63,7 @@ for (const scenario of [
       },
     };
     PROVIDERS.slow = { id: 'slow', pollLimits: () => slow.promise };
+    PROVIDERS.live = { id: 'live' };
     const olderScope = scenario.olderFull ? {} : { only: [id] };
     const newerScope = scenario.olderFull ? { only: [id] } : {};
     const olderRefresh = refreshLimits(olderScope);
@@ -121,15 +123,15 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         const info = { rateLimitType, status, utilization: status === 'rejected' ? 1 : 0, resetsAt: reset };
         const initial = { ...info, status: status === 'rejected' ? 'allowed' : 'rejected', utilization: status === 'rejected' ? 0.2 : 1 };
         const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset };
+        const poll = Promise.withResolvers(), entered = Promise.withResolvers(), slow = Promise.withResolvers();
+        PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
+        PROVIDERS[slowId] = { id: slowId, pollLimits: () => slow.promise };
         getLimits().providers[id] = { provider: id, blocked: false, windows: [unrelated] };
         noteRateLimitEvent(id, initial);
         const stale = {
           provider: id, blocked: rateLimitType === 'five_hour' && status === 'allowed',
           windows: [windowFromEvent(initial), { ...unrelated, usedPercent: 40 }],
         };
-        const poll = Promise.withResolvers(), entered = Promise.withResolvers(), slow = Promise.withResolvers();
-        PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
-        PROVIDERS[slowId] = { id: slowId, pollLimits: () => slow.promise };
         const refresh = refreshLimits({ only: [id, slowId] });
         const assertEvent = () => {
           const p = getLimits().providers[id];
@@ -174,10 +176,10 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
       const id = 'fake-live-reset', now = Date.now();
       ctx.mock.method(Date, 'now', () => now);
       const allowed = { rateLimitType, status: 'allowed', utilization: 0, resetsAt };
-      getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
-      noteRateLimitEvent(id, allowed);
       let poll = Promise.withResolvers();
       PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+      getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+      noteRateLimitEvent(id, allowed);
       let refresh = refreshLimits({ only: [id] });
       try {
         noteRateLimitEvent(id, { rateLimitType, status: 'rejected', resetsAt }); // utilization is unknown
@@ -263,13 +265,13 @@ for (const scenario of [
     const id = 'fake-warning-recovery', now = Date.now();
     ctx.mock.method(Date, 'now', () => now);
     const reset = now + loadConfig().scorecard.blockedMinutes * 60_000;
+    const poll = Promise.withResolvers(), entered = Promise.withResolvers();
+    PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
     getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
     if (scenario.remaining) noteRateLimitEvent(id, { rateLimitType: 'seven_day', status: 'rejected', utilization: 1, resetsAt: reset });
     noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'rejected', utilization: 1, resetsAt: reset });
     assert.equal(modelBlockedUntil(id, 'claude-sonnet'), reset);
     const stale = structuredClone(getLimits().providers[id]);
-    const poll = Promise.withResolvers(), entered = Promise.withResolvers();
-    PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
     const refresh = refreshLimits({ only: [id] });
     const warning = { rateLimitType: scenario.rateLimitType, status: 'allowed_warning', utilization: 0.9, resetsAt: reset };
     const assertState = () => {
@@ -300,10 +302,10 @@ test('live global recovery keeps an unrelated polled global rejection and a newe
   const { PROVIDERS } = await import('../core/providers/index.mjs');
   const { refreshLimits } = await import('../core/limits.mjs');
   const id = 'fake-live-global', reset = Date.now() + 60_000;
-  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
-  noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'rejected', resetsAt: reset });
   const poll = Promise.withResolvers();
   PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+  noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'rejected', resetsAt: reset });
   const refresh = refreshLimits({ only: [id] });
   try {
     noteRateLimitEvent(id, { rateLimitType: 'five_hour', status: 'allowed', utilization: 0, resetsAt: reset });
@@ -369,12 +371,12 @@ for (const independentBlock of [false, true]) {
     const { PROVIDERS } = await import('../core/providers/index.mjs');
     const { refreshLimits } = await import('../core/limits.mjs');
     const id = 'fake-http-block-observation';
+    const poll = Promise.withResolvers();
+    PROVIDERS[id] = { id, pollLimits: () => poll.promise };
     getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
     noteHttp(id, 429, { 'Retry-After': '60' });
     const stale = { ...getLimits().providers[id], httpRetryUntil: blockedUntil(id) };
     if (independentBlock) stale.blockedReason = 'balance exhausted';
-    const poll = Promise.withResolvers();
-    PROVIDERS[id] = { id, pollLimits: () => poll.promise };
     const refresh = refreshLimits({ only: [id] });
     try {
       noteHttp(id, 200);
@@ -398,10 +400,10 @@ test('a repeated newer 429 with identical timestamps cannot be cleared by an old
   const { refreshLimits } = await import('../core/limits.mjs');
   const id = 'fake-http-repeated', now = Date.now();
   ctx.mock.timers.enable({ apis: ['Date'], now });
-  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
-  noteHttp(id, 429, { 'Retry-After': '60' });
   const poll = Promise.withResolvers();
   PROVIDERS[id] = { id, pollLimits: () => poll.promise };
+  getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+  noteHttp(id, 429, { 'Retry-After': '60' });
   const refresh = refreshLimits({ only: [id] });
   try {
     noteHttp(id, 429, { 'Retry-After': '60' });
@@ -505,6 +507,7 @@ test('a confirmed limit survives an estimated refresh until real availability is
 
 test('a confirmed limit expires at blockedUntil', (ctx) => {
   const id = 'confirmed-expiry', now = Date.now(), reset = now + 60_000;
+  PROVIDERS[id] = { id };
   let clock = now;
   ctx.mock.method(Date, 'now', () => clock);
   try {
@@ -515,11 +518,12 @@ test('a confirmed limit expires at blockedUntil', (ctx) => {
     assert.equal(blockedUntil(id), null);
     assert.equal(getLimits().providers[id].confirmedLimit, undefined);
     assert.deepEqual(getLimits().providers[id].windows, []);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('a confirmed hit on a model-scoped window blocks only that model', () => {
   const id = 'confirmed-model', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [
       { id: 'session', label: '5-hour', usedPercent: 30, resetsAt: reset },
@@ -536,11 +540,12 @@ test('a confirmed hit on a model-scoped window blocks only that model', () => {
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), reset);
     assert.equal(noteLimitAvailable(id, 'claude-opus-5', p.confirmedLimit.hitAt + 1), true);
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('confirmed recovery requires every recorded window and reset evidence for each', () => {
   const id = 'confirmed-reset-proof', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [
       { id: 'weekly-a', models: 'opus', usedPercent: 60, resetsAt: reset },
@@ -561,11 +566,12 @@ test('confirmed recovery requires every recorded window and reset evidence for e
       { id: 'weekly-b', models: 'opus', usedPercent: 69, resetsAt: reset + 60_000 },
     ]), hit);
     assert.equal(recovered.confirmedLimit, undefined);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('a hit refreshes confirmation even when the model was already blocked', (ctx) => {
   const id = 'confirmed-existing', now = Date.now(), reset = now + 60_000;
+  PROVIDERS[id] = { id };
   let clock = now; ctx.mock.method(Date, 'now', () => clock);
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 100, resetsAt: reset }] };
@@ -575,13 +581,14 @@ test('a hit refreshes confirmation even when the model was already blocked', (ct
     assert.equal(noteLimitHit(id, { model: 'opus', resetsAt: now + 1000 }), reset);
     assert.equal(getLimits().providers[id].confirmedLimit.hitAt, clock);
     assert.equal(getLimits().providers[id].confirmedLimit.blockedUntil, reset);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('a near-full global window makes an ambiguous model hit provider-wide', () => {
   const reset = Date.now() + 60_000;
   for (const [usedPercent, global] of [[89, false], [90, true], [undefined, true]]) {
     const id = `confirmed-scope-${String(usedPercent)}`;
+    PROVIDERS[id] = { id };
     try {
       getLimits().providers[id] = { provider: id, blocked: false, windows: [
         { id: 'session', label: '5-hour', usedPercent, resetsAt: reset },
@@ -592,12 +599,13 @@ test('a near-full global window makes an ambiguous model hit provider-wide', () 
       assert.equal(p.confirmedLimit.global, global);
       assert.equal(p.windows.find((w) => w.id === (global ? 'session' : 'weekly')).usedPercent, 100);
       assert.equal(modelBlockedUntil(id, 'claude-sonnet') !== null, global);
-    } finally { delete getLimits().providers[id]; }
+    } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
   }
 });
 
 test('null-model availability ignores model-scoped blocks but display keeps their windows', () => {
   const id = 'confirmed-null-model', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly-fable', label: 'weekly Fable', usedPercent: 100, resetsAt: reset }] };
     assert.equal(providerWindows(id, null).length, 1, 'display callers still receive all windows');
@@ -605,12 +613,13 @@ test('null-model availability ignores model-scoped blocks but display keeps thei
     assert.equal(modelBlockedUntil(id, 'fable'), reset);
     noteLimitHit(id, { model: 'fable' });
     assert.equal(modelBlockedUntil(id, null), null, 'a scoped confirmation is also invisible to default selection');
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('confirmed deadlines use targeted resets and only shorten for retry-after', (ctx) => {
   const now = Date.now(), sessionReset = now + 5 * 60 * 60_000, weeklyReset = now + 7 * 24 * 60 * 60_000;
   ctx.mock.method(Date, 'now', () => now);
+  for (const id of ['confirmed-target-reset', 'confirmed-short-retry', 'confirmed-long-retry']) PROVIDERS[id] = { id };
   const state = (id) => { getLimits().providers[id] = { provider: id, blocked: false, windows: [
     { id: 'session', label: '5-hour', usedPercent: 40, resetsAt: sessionReset },
     { id: 'weekly', label: 'weekly Opus', models: 'opus', usedPercent: 40, resetsAt: weeklyReset },
@@ -623,12 +632,16 @@ test('confirmed deadlines use targeted resets and only shorten for retry-after',
     state('confirmed-long-retry');
     assert.equal(noteLimitHit('confirmed-long-retry', { model: 'opus', retryAfterMs: 8 * 24 * 60 * 60_000 }), weeklyReset);
   } finally {
-    for (const id of ['confirmed-target-reset', 'confirmed-short-retry', 'confirmed-long-retry']) delete getLimits().providers[id];
+    for (const id of ['confirmed-target-reset', 'confirmed-short-retry', 'confirmed-long-retry']) {
+      delete PROVIDERS[id];
+      delete getLimits().providers[id];
+    }
   }
 });
 
 test('legacy Fable labels share one scope helper for hits, display, and recovery', () => {
   const id = 'confirmed-legacy-fable', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [
       { id: 'session', label: '5-hour', usedPercent: 20, resetsAt: reset },
@@ -641,11 +654,12 @@ test('legacy Fable labels share one scope helper for hits, display, and recovery
     assert.equal(p.windows.find((w) => w.id === 'fable').usedPercent, 100);
     assert.equal(noteLimitAvailable(id, 'other', p.confirmedLimit.hitAt + 1), false);
     assert.equal(noteLimitAvailable(id, 'another-fable', p.confirmedLimit.hitAt + 1), true);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('clearing confirmation does not overwrite newer utilization', () => {
   const id = 'confirmed-newer-usage', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
     noteLimitHit(id, { model: 'opus' });
@@ -653,11 +667,12 @@ test('clearing confirmation does not overwrite newer utilization', () => {
     p.windows[0].usedPercent = 55;
     assert.equal(noteLimitAvailable(id, 'opus', startedAt), true);
     assert.equal(p.windows[0].usedPercent, 55);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('a full fresh poll retains pre-hit utilization for later clearing', () => {
   const id = 'confirmed-retain-prior', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
     noteLimitHit(id, { model: 'opus' });
@@ -667,11 +682,12 @@ test('a full fresh poll retains pre-hit utilization for later clearing', () => {
     getLimits().providers[id] = retained;
     assert.equal(noteLimitAvailable(id, 'opus', retained.confirmedLimit.hitAt + 1), true);
     assert.equal(retained.windows[0].usedPercent, 40);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('success on a different model clears a shared scoped window', () => {
   const id = 'confirmed-shared-model', reset = Date.now() + 60_000;
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly-opus', models: 'opus', usedPercent: 40, resetsAt: reset }] };
     noteLimitHit(id, { model: 'claude-opus-5' });
@@ -679,7 +695,7 @@ test('success on a different model clears a shared scoped window', () => {
     assert.equal(noteLimitAvailable(id, 'claude-sonnet-5', hitAt + 1), false);
     assert.equal(noteLimitAvailable(id, 'opus-preview', hitAt + 1), true);
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('funded balance refresh preserves a 429 deadline until expiration', async (t) => {
@@ -710,6 +726,7 @@ test('empty and failed refreshes preserve the active HTTP retry deadline', async
   const { refreshLimits } = await import('../core/limits.mjs');
   const { PROVIDERS } = await import('../core/providers/index.mjs');
   const id = 'fake-http-retry';
+  PROVIDERS[id] = { id };
   try {
     noteHttp(id, 429, { 'Retry-After': '60' });
     const until = blockedUntil(id);
@@ -765,6 +782,8 @@ test('poll merging keeps the stronger global block without globalizing model quo
   assert.equal(mergePoll(indefinite, { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blockedUntil, until);
   assert.equal(mergePoll(indefinite, { blocked: false, windows: [{ id: 'requests', usedPercent: 50 }] }).blocked, false);
   const id = 'fake-http-scoped';
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  PROVIDERS[id] = { id };
   try {
     getLimits().providers[id] = indefinite;
     noteHttp(id, 200);
@@ -774,7 +793,10 @@ test('poll merging keeps the stronger global block without globalizing model quo
     assert.equal(blockedUntil(id), null);
     assert.equal(modelBlockedUntil(id, 'opus'), scoped.resetsAt);
     assert.equal(modelBlockedUntil(id, 'sonnet'), null);
-  } finally { delete getLimits().providers[id]; }
+  } finally {
+    delete PROVIDERS[id];
+    delete getLimits().providers[id];
+  }
 });
 
 test('blockedUntil sees an external block without a prior explicit getLimits call', async () => {
@@ -792,33 +814,43 @@ test('live writers (noteHttp, noteRateLimitEvent) preserve externally updated un
   const { writeFileSync, readFileSync, utimesSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { HOME } = await import('./_env.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
   const f = join(HOME, 'limits.json');
   writeFileSync(f, JSON.stringify({ updatedAt: new Date().toISOString(), providers: {} }));
 
-  // External update introduces external-provider-1
-  const j1 = JSON.parse(readFileSync(f, 'utf8'));
-  j1.providers['ext-1'] = { provider: 'ext-1', plan: 'pro', windows: [{ id: 'w1', usedPercent: 10 }] };
-  writeFileSync(f, JSON.stringify(j1));
-  const t1 = new Date(Date.now() + 10_000); utimesSync(f, t1, t1);
+  PROVIDERS['ext-1'] = { id: 'ext-1' };
+  PROVIDERS['ext-2'] = { id: 'ext-2' };
+  try {
+    // External update introduces external-provider-1
+    const j1 = JSON.parse(readFileSync(f, 'utf8'));
+    j1.providers['ext-1'] = { provider: 'ext-1', plan: 'pro', windows: [{ id: 'w1', usedPercent: 10 }] };
+    writeFileSync(f, JSON.stringify(j1));
+    const t1 = new Date(Date.now() + 10_000); utimesSync(f, t1, t1);
 
-  // Local noteHttp write
-  noteHttp('deepseek', 429, { 'retry-after': '60' });
-  const disk1 = JSON.parse(readFileSync(f, 'utf8'));
-  assert.ok(disk1.providers['ext-1'], 'ext-1 must be preserved after noteHttp');
-  assert.equal(disk1.providers['ext-1'].windows[0].usedPercent, 10);
-  assert.equal(disk1.providers.deepseek.blocked, true);
+    // Local noteHttp write
+    noteHttp('deepseek', 429, { 'retry-after': '60' });
+    const disk1 = JSON.parse(readFileSync(f, 'utf8'));
+    assert.ok(disk1.providers['ext-1'], 'ext-1 must be preserved after noteHttp');
+    assert.equal(disk1.providers['ext-1'].windows[0].usedPercent, 10);
+    assert.equal(disk1.providers.deepseek.blocked, true);
 
-  // External update introduces external-provider-2
-  const j2 = JSON.parse(readFileSync(f, 'utf8'));
-  j2.providers['ext-2'] = { provider: 'ext-2', plan: 'max', windows: [{ id: 'w2', usedPercent: 20 }] };
-  writeFileSync(f, JSON.stringify(j2));
-  const t2 = new Date(Date.now() + 20_000); utimesSync(f, t2, t2);
+    // External update introduces external-provider-2
+    const j2 = JSON.parse(readFileSync(f, 'utf8'));
+    j2.providers['ext-2'] = { provider: 'ext-2', plan: 'max', windows: [{ id: 'w2', usedPercent: 20 }] };
+    writeFileSync(f, JSON.stringify(j2));
+    const t2 = new Date(Date.now() + 20_000); utimesSync(f, t2, t2);
 
-  // Local noteRateLimitEvent write
-  noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3 });
-  const disk2 = JSON.parse(readFileSync(f, 'utf8'));
-  assert.ok(disk2.providers['ext-2'], 'ext-2 must be preserved after noteRateLimitEvent');
-  assert.equal(disk2.providers['ext-2'].windows[0].usedPercent, 20);
+    // Local noteRateLimitEvent write
+    noteRateLimitEvent('claude', { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3 });
+    const disk2 = JSON.parse(readFileSync(f, 'utf8'));
+    assert.ok(disk2.providers['ext-2'], 'ext-2 must be preserved after noteRateLimitEvent');
+    assert.equal(disk2.providers['ext-2'].windows[0].usedPercent, 20);
+  } finally {
+    delete PROVIDERS['ext-1'];
+    delete PROVIDERS['ext-2'];
+    delete getLimits().providers['ext-1'];
+    delete getLimits().providers['ext-2'];
+  }
 });
 
 test('malformed/null poll result alongside valid provider records error and preserves valid result', async () => {
@@ -872,6 +904,8 @@ test('deferred stub poll success and failure do not discard external updates whi
 
   const origFake = PROVIDERS['fake-poll'];
   const origErr = PROVIDERS['fake-err'];
+  const origEdp = PROVIDERS['ext-during-poll'];
+  PROVIDERS['ext-during-poll'] = { id: 'ext-during-poll' };
   try {
     let resolvePoll;
     const pollPromise = new Promise((res) => { resolvePoll = res; });
@@ -932,6 +966,8 @@ test('deferred stub poll success and failure do not discard external updates whi
   } finally {
     if (origFake) PROVIDERS['fake-poll'] = origFake; else delete PROVIDERS['fake-poll'];
     if (origErr) PROVIDERS['fake-err'] = origErr; else delete PROVIDERS['fake-err'];
+    if (origEdp) PROVIDERS['ext-during-poll'] = origEdp; else delete PROVIDERS['ext-during-poll'];
+    delete getLimits().providers['ext-during-poll'];
   }
 });
 
@@ -1135,6 +1171,7 @@ test('D6: normalizeCodexPollResult scopes non-primary buckets to their limitName
 
 test('G2: noteHttp preserves existing non-requests windows when updating requests', () => {
   const id = 'g2-merge-test';
+  PROVIDERS[id] = { id };
   try {
     // Set up provider with a budget window already present
     getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'budget', label: 'budget', usedPercent: 30, resetsAt: null }] };
@@ -1143,11 +1180,12 @@ test('G2: noteHttp preserves existing non-requests windows when updating request
     assert.ok(ws.find((w) => w.id === 'budget'), 'budget window must survive noteHttp requests update');
     assert.ok(ws.find((w) => w.id === 'requests'), 'requests window must be added');
     assert.equal(ws.find((w) => w.id === 'requests').usedPercent, 50);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset-requests (seconds epoch)', () => {
   const id = 'g2-reset-epoch';
+  PROVIDERS[id] = { id };
   const resetEpochMs = Date.now() + 60_000;
   const resetEpochS = Math.round(resetEpochMs / 1000);
   try {
@@ -1157,7 +1195,7 @@ test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset-requests
     // resetsAt must be set (not null) — close to resetEpochMs
     assert.ok(w.resetsAt != null, 'resetsAt must not be null when reset header is present');
     assert.ok(Math.abs(w.resetsAt - resetEpochMs) < 2000, 'resetsAt must be close to the reset header value');
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('B6: parseResetAt keeps epoch milliseconds as ms; epoch seconds ×1000; small values are seconds from now', () => {
@@ -1168,17 +1206,19 @@ test('B6: parseResetAt keeps epoch milliseconds as ms; epoch seconds ×1000; sma
     ['b6-from-now', '45', now + 45_000, 'small numeric values are seconds from now'],
   ];
   for (const [id, header, expected, msg] of cases) {
+    PROVIDERS[id] = { id };
     try {
       noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': header });
       const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
       assert.ok(Math.abs(w.resetsAt - expected) < 2000, msg);
-    } finally { delete getLimits().providers[id]; }
+    } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
   }
 });
 
 
 test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset (ISO date string)', () => {
   const id = 'g2-reset-iso';
+  PROVIDERS[id] = { id };
   const resetMs = Date.now() + 120_000;
   const resetIso = new Date(resetMs).toISOString();
   try {
@@ -1186,11 +1226,12 @@ test('G2: noteHttp requests window gets resetsAt from x-ratelimit-reset (ISO dat
     const w = getLimits().providers[id].windows.find((w) => w.id === 'requests');
     assert.ok(w?.resetsAt != null, 'resetsAt must be set from ISO date header');
     assert.ok(Math.abs(w.resetsAt - resetMs) < 2000);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('G2: 200 with remaining=0 and known resetsAt does not park for 30 min', () => {
   const id = 'g2-no-30min-park';
+  PROVIDERS[id] = { id };
   const resetSoon = Date.now() + 5_000; // reset in 5 seconds
   const resetEpochS = Math.round(resetSoon / 1000);
   try {
@@ -1199,11 +1240,12 @@ test('G2: 200 with remaining=0 and known resetsAt does not park for 30 min', () 
     // Should block until the reset (~5 seconds), not 30 min
     assert.ok(until != null, 'requests at 100% must produce a block');
     assert.ok(until <= resetSoon + 2000, `block should not exceed reset time (got ${until - Date.now()}ms, reset in 5s)`);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('G2: 200 with remaining=0 and no reset header parks (no resetsAt)', () => {
   const id = 'g2-no-reset-header';
+  PROVIDERS[id] = { id };
   const now = Date.now();
   try {
     noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100' });
@@ -1214,7 +1256,7 @@ test('G2: 200 with remaining=0 and no reset header parks (no resetsAt)', () => {
     const until = modelBlockedUntil(id, null);
     assert.ok(until != null, 'a 100% requests window with no reset must produce a block');
     assert.ok(until <= now + 62_000, 'must not park for the 30-min default');
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 // R: review corrections — regex-escaped model scopes, noteHttp resetsAt, duration reset strings
@@ -1272,6 +1314,7 @@ test('R: Nimbus Quill scope matches hyphenated ids; invalid models regex falls b
 
 test('R: 429 with no reset header sets requests resetsAt to the Retry-After deadline', async (t) => {
   const id = 'r-429-retry-resets';
+  PROVIDERS[id] = { id };
   const now = Date.now();
   t.mock.method(Date, 'now', () => now);
   try {
@@ -1283,35 +1326,38 @@ test('R: 429 with no reset header sets requests resetsAt to the Retry-After dead
     t.mock.method(Date, 'now', () => now + 45_000);
     assert.equal(blockedUntil(id), null, 'provider 429 expires at Retry-After');
     assert.equal(modelBlockedUntil(id, null), null, 'requests window must not become a 30-min park');
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('R: remaining 0 with no reset header anywhere gets resetsAt = now + 60s', () => {
   const id = 'r-rem0-60s';
+  PROVIDERS[id] = { id };
   const now = Date.now();
   try {
     noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100' });
     const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
     assert.ok(Math.abs(w.resetsAt - now - 60_000) < 2000);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('R: OpenAI x-ratelimit-reset-requests duration strings parse', () => {
   const cases = [['1s', 1000], ['6m0s', 6 * 60_000], ['1h2m3.5s', 3_600_000 + 120_000 + 3500], ['20ms', 20]];
   for (const [raw, ms] of cases) {
     const id = `r-dur-${raw}`;
+    PROVIDERS[id] = { id };
     const now = Date.now();
     try {
       noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-limit-requests': '100', 'x-ratelimit-reset-requests': raw });
       const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
       assert.ok(w?.resetsAt != null, `${raw} must parse to a resetsAt`);
       assert.ok(Math.abs(w.resetsAt - now - ms) < 2000, `${raw}: expected ~${ms}ms from now, got ${w.resetsAt - now}`);
-    } finally { delete getLimits().providers[id]; }
+    } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
   }
 });
 
 test('L15: missing utilization keeps the previous usedPercent, except rejected → allowed', () => {
   const id = 'l15-carry';
+  PROVIDERS[id] = { id };
   try {
     noteRateLimitEvent(id, { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.42, resetsAt: Math.floor(Date.now() / 1000) + 600 });
     assert.equal(getLimits().providers[id].windows[0].usedPercent, 42);
@@ -1321,17 +1367,18 @@ test('L15: missing utilization keeps the previous usedPercent, except rejected �
     assert.equal(getLimits().providers[id].windows[0].usedPercent, 42, 'rejection without utilization keeps 42');
     noteRateLimitEvent(id, { status: 'allowed', rateLimitType: 'five_hour' });
     assert.equal(getLimits().providers[id].windows[0].usedPercent, null, 'rejected → allowed without utilization does not carry');
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('P2: noteHttp requests windows are tagged rate:true', () => {
   const id = 'p2-rate';
+  PROVIDERS[id] = { id };
   try {
     noteHttp(id, 200, { 'x-ratelimit-remaining-requests': '50', 'x-ratelimit-limit-requests': '100' });
     const w = getLimits().providers[id].windows.find((x) => x.id === 'requests');
     assert.equal(w.rate, true);
     assert.equal(w.usedPercent, 50);
-  } finally { delete getLimits().providers[id]; }
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
 });
 
 test('I13: isSession is the session-window predicate', async () => {
@@ -1347,15 +1394,22 @@ test('P7: withLimitsSnapshot skips restat until the callback returns', async () 
   const { withLimitsSnapshot } = await import('../core/limits.mjs');
   const { writeFileSync, utimesSync } = await import('node:fs');
   const { statePath } = await import('../core/paths.mjs');
-  getLimits();
-  const f = statePath('limits.json');
-  const inside = withLimitsSnapshot(() => {
-    writeFileSync(f, JSON.stringify({ updatedAt: 'snap', providers: { 'p7-ext': { provider: 'p7-ext', windows: [] } } }));
-    const t = new Date(Date.now() + 5000); utimesSync(f, t, t);
-    return getLimits().providers['p7-ext'];
-  });
-  assert.equal(inside, undefined, 'in-flight snapshot does not pick up an external write');
-  assert.ok(getLimits().providers['p7-ext'], 'after the snapshot, the next getLimits restats');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  PROVIDERS['p7-ext'] = { id: 'p7-ext' };
+  try {
+    getLimits();
+    const f = statePath('limits.json');
+    const inside = withLimitsSnapshot(() => {
+      writeFileSync(f, JSON.stringify({ updatedAt: 'snap', providers: { 'p7-ext': { provider: 'p7-ext', windows: [] } } }));
+      const t = new Date(Date.now() + 5000); utimesSync(f, t, t);
+      return getLimits().providers['p7-ext'];
+    });
+    assert.equal(inside, undefined, 'in-flight snapshot does not pick up an external write');
+    assert.ok(getLimits().providers['p7-ext'], 'after the snapshot, the next getLimits restats');
+  } finally {
+    delete PROVIDERS['p7-ext'];
+    delete getLimits().providers['p7-ext'];
+  }
 });
 
 test('a window at its limit is re-polled when its reset passes (no stale "100%, resets hours ago")', async (ctx) => {
@@ -1380,3 +1434,58 @@ test('a window at its limit is re-polled when its reset passes (no stale "100%, 
   assert.equal(poll.mock.callCount(), 2, 're-polled once the reset passed');
   assert.equal(getLimits().providers.antigravity.windows[0].usedPercent, 0);
 });
+
+test('C3: unknown providers are dropped on load and persist, while known and config-defined providers survive', async () => {
+  const { getLimits, save } = await import('../core/limits.mjs');
+  const { saveConfig, loadConfig } = await import('../core/config.mjs');
+  const { formatLimits } = await import('../core/tools.mjs');
+  const { writeFileSync, readFileSync, utimesSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { HOME } = await import('./_env.mjs');
+  const f = join(HOME, 'limits.json');
+
+  const origProviders = structuredClone(loadConfig().providers);
+  try {
+    saveConfig({ providers: { 'custom-compat': { apiKey: 'test-key', baseUrl: 'https://api.example.com/v1' } } });
+
+    const initial = {
+      updatedAt: new Date().toISOString(),
+      providers: {
+        'test-null-model': { provider: 'test-null-model', windows: [{ id: 'w1', usedPercent: 50 }] },
+        'test-prov-avail': { provider: 'test-prov-avail', windows: [{ id: 'w2', usedPercent: 60 }] },
+        claude: { provider: 'claude', windows: [{ id: 'five_hour', usedPercent: 20 }] },
+        'custom-compat': { provider: 'custom-compat', windows: [{ id: 'budget', usedPercent: 10 }] },
+      },
+    };
+    writeFileSync(f, JSON.stringify(initial));
+    const t = new Date(Date.now() + 5000);
+    utimesSync(f, t, t);
+
+    const limits = getLimits();
+    assert.equal(limits.providers['test-null-model'], undefined, 'unknown provider test-null-model must be dropped from limits');
+    assert.equal(limits.providers['test-prov-avail'], undefined, 'unknown provider test-prov-avail must be dropped from limits');
+    assert.ok(limits.providers.claude, 'known provider claude must survive in limits');
+    assert.equal(limits.providers.claude.windows[0].usedPercent, 20);
+    assert.ok(limits.providers['custom-compat'], 'config-defined provider custom-compat must survive in limits');
+    assert.equal(limits.providers['custom-compat'].windows[0].usedPercent, 10);
+
+    const formatted = formatLimits(limits);
+    assert.ok(!formatted.includes('test-null-model'), 'test-null-model must not appear in formatLimits output');
+    assert.ok(!formatted.includes('test-prov-avail'), 'test-prov-avail must not appear in formatLimits output');
+
+    save(false);
+    const persisted = JSON.parse(readFileSync(f, 'utf8'));
+    assert.equal(persisted.providers['test-null-model'], undefined, 'test-null-model must be gone from persisted file');
+    assert.equal(persisted.providers['test-prov-avail'], undefined, 'test-prov-avail must be gone from persisted file');
+    assert.ok(persisted.providers.claude, 'known provider claude must survive in persisted file');
+    assert.equal(persisted.providers.claude.windows[0].usedPercent, 20);
+    assert.ok(persisted.providers['custom-compat'], 'config-defined provider custom-compat must survive in persisted file');
+    assert.equal(persisted.providers['custom-compat'].windows[0].usedPercent, 10);
+  } finally {
+    saveConfig({ providers: origProviders });
+    delete getLimits().providers['custom-compat'];
+    delete getLimits().providers['test-null-model'];
+    delete getLimits().providers['test-prov-avail'];
+  }
+});
+
