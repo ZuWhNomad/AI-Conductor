@@ -407,6 +407,28 @@ test('source filter separates smoke from live runs', () => {
   assert.ok(!sc.rootRuns({ source: 'live' }).some((r) => r.taskId === 'sm1'));
 });
 
+test('B11: avgPct is per-window concurrency-adjusted and ignores other quota groups', async () => {
+  const lim = await import('../core/limits.mjs');
+  const source = 'B11-avg-pct', provider = 'b11-provider', model = 'gemini-pro';
+  const previous = lim.getLimits().providers[provider];
+  lim.getLimits().providers[provider] = { provider, windows: [
+    { id: 'shared' }, { id: 'gemini', models: 'gemini' }, { id: 'third-party', models: 'claude|gpt' },
+  ] };
+  try {
+    for (const [i, pct] of [{ shared: 8, gemini: 6, 'third-party': 90 }, { shared: 4, gemini: 4, 'third-party': 80 }, { 'third-party': 70 }].entries()) {
+      const id = `${source}-${i}`;
+      appendNdjson(statePath('scorecard.ndjson'), {
+        op: 'run', taskId: id, ts: new Date(Date.now() + i).toISOString(), source, provider, model, effort: null, category: 'edit', difficulty: 2,
+        status: 'done', tokens: { in: 100, out: 0, cached: 0, v: 2 }, durationMs: 1, rounds: 1,
+        pct, concurrentByWindow: i ? { shared: 0, gemini: 0, 'third-party': 0 } : { shared: 3, gemini: 1, 'third-party': 0 },
+      });
+      sc.rateTask(id, 'pass');
+    }
+    const cell = sc.summarize({ source, shipped: false }).find((g) => g.model === model);
+    assert.equal(cell.avgPct, 3.5); // maxes are 3 and 4 after divisors; a run with only an unrelated window adds no value
+  } finally { lim.getLimits().providers[provider] = previous; }
+});
+
 test('scorecard config is normalized', () => {
   const cfg = loadConfig();
   assert.equal(cfg.scorecard.minSamples, 1);

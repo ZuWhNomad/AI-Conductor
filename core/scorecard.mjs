@@ -5,8 +5,9 @@
 import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { appendNdjson, readNdjson, readJson, writeJson, statePath, nowIso, REPO_ROOT } from './paths.mjs';
-import { getLimits, modelBlockedUntil, providerWindows, isSession, withLimitsSnapshot } from './limits.mjs';
+import { getLimits, groupOf, modelBlockedUntil, providerWindows, isSession, withLimitsSnapshot } from './limits.mjs';
 export { providerWindows } from './limits.mjs';
+import { perTaskPct } from './sweep.mjs';
 import { getModels } from './models.mjs';
 import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
@@ -233,7 +234,7 @@ export function migrateScorecard() {
   return n;
 }
 
-const maxPct = (pct) => (pct ? Math.max(...Object.values(pct)) : null);
+const maxPct = (pct) => { const xs = Object.values(pct || {}); return xs.length ? Math.max(...xs) : null; };
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const meanKnown = (xs) => mean(xs.filter((x) => x != null)); // unknown costs are skipped, not poison
 const addTok = (a, b) => { if (b) for (const k of ['in', 'out', 'cached', 'write']) a[k] += b[k] || 0; };
@@ -354,7 +355,7 @@ function rootRunsUncached({ source = null } = {}) {
     if (tokensOf(r)) a._anyUsage = true;
     addTok(a.tokens, tokensOf(r));
     a.durationMs += r.durationMs || 0;
-    if (r.pct) { a.pct = a.pct || {}; for (const [k, v] of Object.entries(r.pct)) a.pct[k] = (a.pct[k] || 0) + v; }
+    if (r.pct) { a.pct = a.pct || {}; for (const [k, v] of Object.entries(perTaskPct(r))) a.pct[k] = (a.pct[k] || 0) + v; }
   }
   for (const a of attempts.values()) {
     const rated = a.members.map((id) => rates.get(id)).filter(Boolean).reduce((latest, rate) =>
@@ -614,10 +615,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const gate = passGate(category, reg);
   const rows = all.filter((g) => g.category === category && evidenceRated(g) > 0 && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && !excluded(g.sel) && !manuallyBlocked(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
   // Reservation capacity is live-only and shared only by models metered by the same quota/window group.
-  const quotaGroup = (provider, model) => {
-    const ids = providerWindows(provider, model).map((w) => w.id || `${w.label || ''}:${w.models || '*'}`).sort();
-    return `${provider}|${ids.length ? ids.join(',') : '*'}`;
-  };
+  const quotaGroup = (provider, model) => `${provider}|${groupOf(provider, model).ids.join(',')}`;
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && cellLiveWeightedRated(g) >= cfg.minSamples && (g.liveQuality ?? g.quality) >= cfg.quality) {
     const key = quotaGroup(g.provider, g.model);

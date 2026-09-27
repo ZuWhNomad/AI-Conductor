@@ -2,7 +2,7 @@ import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
-const { measuredCostByWindow, targetFor, admit } = await import('../core/sweep.mjs');
+const { measuredCostByWindow, ownPct, targetFor, admit } = await import('../core/sweep.mjs');
 const lim = await import('../core/limits.mjs');
 
 test('measuredCostByWindow averages per-task deltas per window, honouring model-group windows and concurrency', () => {
@@ -62,6 +62,36 @@ test('measuredCostByWindow: an outlier among the last 30 rows does not dominate'
     { provider: 'codex', model: 'm', pct: { w: 63 } },
   ];
   assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w: 5 }); // (29 * 3 + 63) / 30
+});
+
+test('ownPct keeps shared and vanished windows but drops another model group', () => {
+  const id = 'own-pct';
+  lim.getLimits().providers[id] = { provider: id, windows: [
+    { id: 'shared' }, { id: 'gemini', models: 'gemini' }, { id: 'third-party', models: 'claude|gpt' },
+  ] };
+  try {
+    assert.deepEqual(ownPct({ provider: id, model: 'gemini-pro', pct: { shared: 1, gemini: 2, 'third-party': 90, vanished: 3 } }), { shared: 1, gemini: 2, vanished: 3 });
+  } finally { delete lim.getLimits().providers[id]; }
+});
+
+test('measuredCostByWindow fits a model/window rate from solo runs and applies cell expected tokens', () => {
+  const id = 'fitted-window-cost', model = 'model-a';
+  lim.getLimits().providers[id] = { provider: id, windows: [{ id: 'weekly', models: 'model-a' }, { id: 'other', models: 'model-b' }] };
+  const row = (taskId, tokens, pct, concurrent, category = 'edit') => ({
+    taskId, provider: id, model, effort: 'high', category, difficulty: 3,
+    tokens: { in: tokens, out: 0, cached: 0, v: 2 }, pct: { weekly: pct, other: 99 }, concurrentByWindow: { weekly: concurrent, other: 0 },
+  });
+  const rows = [
+    row('solo-1', 100, 1, 0),
+    row('solo-2', 200, 4, 0),
+    row('overlap', 300, 100, 1),
+    { ...row('token-only', 400, 0, 0), pct: null },
+    row('different-cell', 1000, 10, 1, 'debug'),
+  ];
+  try {
+    assert.deepEqual(measuredCostByWindow(rows, id, { model, effort: 'high', category: 'edit', difficulty: 3 }), { weekly: 4.5 });
+    assert.deepEqual(measuredCostByWindow([row('overlap-only', 300, 100, 1)], id, { model, effort: 'high', category: 'edit', difficulty: 3 }), { weekly: 50 }, 'without a solo rate, keep the concurrency-adjusted last-30 average');
+  } finally { delete lim.getLimits().providers[id]; }
 });
 
 test('measuredCostByWindow averages only the last 30 matching values per window', () => {

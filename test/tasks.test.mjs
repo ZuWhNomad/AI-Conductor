@@ -1268,7 +1268,7 @@ test('P1: one scheduling pass measures each provider/model once and the next pas
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     tk.schedule();
     assert.deepEqual(batch.map((t) => t.status), ['running', 'queued', 'queued']);
-    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a' }]]);
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a', effort: 'medium', category: null, difficulty: null }]]);
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     finish.resolve({ ok: true, finalMessage: 'ok' });
     await tk.awaitTask(batch[0].id);
@@ -1276,14 +1276,14 @@ test('P1: one scheduling pass measures each provider/model once and the next pas
     globalThis.__w1Costs.length = 0;
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     tk.schedule();
-    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a' }], ['w1-cost', { model: 'b' }]], 'the measured model and the next unmeasured model are each scanned once');
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'a', effort: 'medium', category: null, difficulty: null }], ['w1-cost', { model: 'b', effort: 'medium', category: null, difficulty: null }]], 'the measured model/cell and the next unmeasured model are each scanned once');
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     await tk.awaitTask(batch[1].id);
     await tk.flushRecords();
     globalThis.__w1Costs.length = 0;
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     tk.schedule();
-    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'b' }]]);
+    assert.deepEqual(globalThis.__w1Costs, [['w1-cost', { model: 'b', effort: 'medium', category: null, difficulty: null }]]);
     await tk.awaitTask(batch[2].id);
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true }); await tk.flushRecords(); }
 });

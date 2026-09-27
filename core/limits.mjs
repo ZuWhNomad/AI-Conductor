@@ -422,6 +422,23 @@ export function providerWindows(provider, model = null) {
   return (getLimits().providers[provider]?.windows || []).filter((w) => windowApplies(w, model));
 }
 
+/** Stable, derived identity for the quota windows that meter a model. */
+export function quotaIds(provider, model = null) {
+  const ids = providerWindows(provider, model).map((w) => w.id).sort();
+  return ids.length ? ids : [provider];
+}
+
+export function groupOf(provider, model = null) {
+  const windows = providerWindows(provider, model);
+  const ids = windows.map((w) => w.id).sort();
+  return { ids: ids.length ? ids : [provider], own: windows.filter(modelScoped), shared: windows.filter((w) => !modelScoped(w)) };
+}
+
+export function sameGroup(provider, a, b) {
+  const aa = quotaIds(provider, a), bb = quotaIds(provider, b);
+  return aa.length === bb.length && aa.every((id, i) => id === bb[i]);
+}
+
 /** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
 export function modelBlockedUntil(provider, model = null) {
   const global = blockedUntil(provider);
