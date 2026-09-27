@@ -27,6 +27,14 @@ test('efficiency mode and task retention settings use the owner defaults and bou
   } finally { saveConfig({ worker: previous }); }
 });
 
+test('new-model benchmarking is opt-in and its mode is normalized', () => {
+  assert.equal(DEFAULTS.bench.newModels, 'off');
+  for (const mode of ['off', 'ask', 'auto']) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, mode);
+  for (const mode of ['yes', true, null]) assert.equal(saveConfig({ bench: { newModels: mode } }).bench.newModels, 'off');
+  saveConfig({ worker: { resumeMaxAgeHours: 6 } });
+  assert.equal(loadConfig().worker.resumeMaxAgeHours, undefined);
+});
+
 test('defaults load, patches deep-merge, secrets redact', () => {
   const c = loadConfig();
   assert.equal(c.port, DEFAULTS.port);

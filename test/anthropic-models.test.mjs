@@ -18,6 +18,7 @@ test('the Claude model list holds exact ids only: aliases become the model they 
   assert.deepEqual(list.map((m) => m.id), ['claude-opus-5-5[1m]', 'claude-sonnet-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1[1m]', 'claude-opus-5-5', 'claude-opus-5']);
   const by = Object.fromEntries(list.map((m) => [m.id, m]));
   assert.equal(by['claude-opus-5-5[1m]'].label, 'Claude Opus 5.5 (1M context)');
+  assert.deepEqual(by['claude-opus-5-5[1m]'].aliasOf, ['default', 'opus[1m]']);
   assert.deepEqual(by['claude-sonnet-5'].efforts, ['low', 'medium', 'high'], 'the alias entry keeps the efforts the CLI reports');
   assert.equal(by['claude-fable-5-1[1m]'].label, 'Claude Fable 5.1 (1M context)');
   assert.ok(list.every((m) => m.provider === 'claude' && m.kind === 'agent' && !('resolved' in m)));

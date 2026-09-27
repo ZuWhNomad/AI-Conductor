@@ -1,58 +1,305 @@
-// Benchmark hygiene: which selections have no battery yet (new models, new subscriptions) or a stale one,
-// and a runner that probes each (one cheap task, short timeout) before spending a full battery on it.
+// Benchmark hygiene + durable auto-bench plan state. Detection and queueing never execute a benchmark by
+// themselves; a caller must explicitly drain the per-provider lanes.
 import { getModels } from './models.mjs';
-import { rootRuns, isArchived, scorecardModelId } from './scorecard.mjs';
+import { rootRuns, isArchived, scorecardModelId, EFFORTS } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 import { runSmoke } from './smoke/index.mjs';
 import { logImprovement } from './improve.mjs';
+import { openTasks } from './tasks.mjs';
+import { modelBlockedUntil } from './limits.mjs';
+import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 
-const selId = (s) => `${s.provider}:${s.model}:${s.effort || 'default'}`;
+const FILE = () => statePath('bench.json');
+const EXCLUDED_PROVIDERS = new Set(['ollama', 'qwen-code', 'kimi']);
+// The scorecard plan's coverage battery is the original eleven L1-L5 tasks. Newer fixtures do not silently move
+// this bar; changing it is a scorecard-policy decision.
+export const BENCH_TASK_IDS = ['read-1', 'search-1', 'edit-1', 'implement-2', 'test-2', 'refactor-3', 'debug-3', 'debug-4', 'implement-4', 'test-4', 'debug-5'];
+export const BENCH_COVERAGE = Object.freeze({ rated: 8, total: 11 });
 
-/** Selections due for a battery: every agent model of an available provider at its cheapest effort, unless a rated battery newer than `days` exists. */
-export function dueForBench({ days = loadConfig().scorecard.rebenchDays, reg = getModels() } = {}) {
-  const cfg = loadConfig().scorecard;
-  const newest = new Map();
-  for (const c of rootRuns({ source: 'smoke' })) for (const a of c.attempts) { if (!a.verdict) continue; const k = selId(a); if (!newest.has(k) || newest.get(k) < a.ts) newest.set(k, a.ts); }
-  const cutoff = Date.now() - days * 86_400_000;
-  const due = [];
-  const checked = new Set();
-  for (const m of reg.models) {
-    if (m.kind !== 'agent' || reg.providers[m.provider]?.status !== 'ok' || /embed/i.test(m.id)) continue;
-    const model = scorecardModelId(m.id), key = `${m.provider}:${model}`.toLowerCase();
-    if (checked.has(key) || isArchived(m.provider, model, cfg)) continue;
-    checked.add(key);
-    const sel = { provider: m.provider, model, effort: m.efforts?.includes('low') ? 'low' : null };
-    const seen = newest.get(selId(sel));
-    if (!seen) due.push({ ...sel, why: 'never benchmarked' });
-    else if (Date.parse(seen) < cutoff) due.push({ ...sel, why: `last battery ${seen.slice(0, 10)}` });
-  }
-  return due;
+const effortRank = (effort) => effort == null ? -1 : (EFFORTS.indexOf(effort) < 0 ? EFFORTS.length : EFFORTS.indexOf(effort));
+const selId = (s) => `${s.provider}:${scorecardModelId(s.model) || 'default'}:${s.effort || 'default'}`;
+const seenKey = (s) => selId(s).toLowerCase();
+const modelKey = (s) => `${s.provider}:${scorecardModelId(s.model) || 'default'}`.toLowerCase();
+const cloneSelection = (s) => ({ provider: s.provider, model: scorecardModelId(s.model) || null, effort: s.effort || null });
+const sorted = (xs) => [...xs].sort((a, b) => a.provider.localeCompare(b.provider) || String(a.model).localeCompare(String(b.model)) || effortRank(a.effort) - effortRank(b.effort));
+
+function emptyState() {
+  return { version: 1, seededAt: null, updatedAt: null, seen: [], aliases: {}, answers: {}, lanes: {} };
 }
 
-/** Probe each due selection with one cheap task; run the full battery only where the probe passes. */
+function normalizeState(value) {
+  const s = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = emptyState();
+  out.seededAt = typeof s.seededAt === 'string' ? s.seededAt : null;
+  out.updatedAt = typeof s.updatedAt === 'string' ? s.updatedAt : null;
+  out.seen = [...new Set((Array.isArray(s.seen) ? s.seen : []).filter((x) => typeof x === 'string').map((x) => x.toLowerCase()))];
+  out.aliases = s.aliases && typeof s.aliases === 'object' && !Array.isArray(s.aliases) ? { ...s.aliases } : {};
+  out.answers = s.answers && typeof s.answers === 'object' && !Array.isArray(s.answers) ? { ...s.answers } : {};
+  if (s.lanes && typeof s.lanes === 'object' && !Array.isArray(s.lanes)) for (const [provider, lane] of Object.entries(s.lanes)) {
+    if (!lane || typeof lane !== 'object' || Array.isArray(lane)) continue;
+    out.lanes[provider] = {
+      parkedUntil: Number.isFinite(lane.parkedUntil) ? lane.parkedUntil : null,
+      running: lane.running && typeof lane.running === 'object' ? lane.running : null,
+      queue: (Array.isArray(lane.queue) ? lane.queue : []).filter((item) => item?.selection?.provider === provider && Array.isArray(item.remaining)).map((item) => ({
+        selection: cloneSelection(item.selection),
+        remaining: item.remaining.filter((id) => typeof id === 'string'),
+        probePending: !!item.probePending,
+        probeFailed: !!item.probeFailed,
+        queuedAt: typeof item.queuedAt === 'string' ? item.queuedAt : null,
+        lastError: typeof item.lastError === 'string' ? item.lastError : null,
+      })),
+    };
+  }
+  return out;
+}
+
+export function getBenchState() { return normalizeState(readJson(FILE(), null)); }
+function saveState(state) {
+  state.updatedAt = nowIso();
+  writeJson(FILE(), state);
+  return state;
+}
+
+function registryModels(reg = getModels()) {
+  const grouped = new Map();
+  for (const m of reg?.models || []) {
+    if (m.kind !== 'agent' || /embed/i.test(m.id) || reg.providers?.[m.provider]?.status !== 'ok') continue;
+    const model = scorecardModelId(m.id), key = `${m.provider}:${model}`.toLowerCase();
+    let g = grouped.get(key);
+    if (!g) { g = { provider: m.provider, model, efforts: new Set(), aliases: new Set(), cost: m.cost || null }; grouped.set(key, g); }
+    for (const effort of Array.isArray(m.efforts) ? m.efforts : []) g.efforts.add(effort);
+    const aliases = Array.isArray(m.aliasOf) ? m.aliasOf : (typeof m.aliasOf === 'string' ? [m.aliasOf] : []);
+    for (const alias of aliases) g.aliases.add(alias);
+    if (m.cost === 'free-local') g.cost = m.cost;
+  }
+  return [...grouped.values()].map((g) => ({ ...g, efforts: EFFORTS.filter((e) => g.efforts.has(e)).concat([...g.efforts].filter((e) => !EFFORTS.includes(e)).sort()), aliases: [...g.aliases] }));
+}
+
+function registrySelections(reg = getModels()) {
+  return registryModels(reg).flatMap((m) => (m.efforts.length ? m.efforts : [null]).map((effort) => ({ provider: m.provider, model: m.model, effort, cost: m.cost, aliases: m.aliases, offeredEfforts: m.efforts })));
+}
+
+function allowed(s, cfg = loadConfig()) {
+  return !EXCLUDED_PROVIDERS.has(s.provider) && s.cost !== 'free-local' && !isArchived(s.provider, s.model, cfg.scorecard);
+}
+
+function coverageFor(selection, offeredEfforts, runs) {
+  const ids = new Set(); let newest = null;
+  for (const chain of runs) for (const a of chain.attempts || []) {
+    if (a.provider !== selection.provider || scorecardModelId(a.model) !== selection.model || !a.verdict || a.verdict === 'phantom') continue;
+    if (offeredEfforts.length && (a.effort || null) !== selection.effort) continue;
+    if (!BENCH_TASK_IDS.includes(a.smokeId)) continue;
+    ids.add(a.smokeId);
+    if (!newest || Date.parse(a.ts) > Date.parse(newest)) newest = a.ts;
+  }
+  return { ids, newest };
+}
+
+/** Every uncovered offered effort. Coverage requires 8/11 distinct, rated, non-voided smoke tasks. */
+export function dueForBench({ days = loadConfig().scorecard.rebenchDays, reg = getModels(), runs = rootRuns({ source: 'smoke' }) } = {}) {
+  const cfg = loadConfig(), cutoff = Date.now() - days * 86_400_000, due = [];
+  for (const s of registrySelections(reg)) {
+    if (!allowed(s, cfg)) continue;
+    const coverage = coverageFor(s, s.offeredEfforts, runs);
+    if (coverage.ids.size < BENCH_COVERAGE.rated) {
+      due.push({ ...cloneSelection(s), covered: coverage.ids.size, remaining: BENCH_TASK_IDS.filter((id) => !coverage.ids.has(id)), why: coverage.ids.size ? `${coverage.ids.size}/${BENCH_COVERAGE.total} battery tasks rated` : 'never benchmarked' });
+    } else if (coverage.newest && Date.parse(coverage.newest) < cutoff) {
+      due.push({ ...cloneSelection(s), covered: coverage.ids.size, remaining: BENCH_TASK_IDS.filter((id) => !coverage.ids.has(id)), why: `last battery ${coverage.newest.slice(0, 10)}` });
+    }
+  }
+  return sorted(due);
+}
+
+function aliasTargets(reg) {
+  const out = {};
+  for (const m of registryModels(reg)) for (const alias of m.aliases) out[`${m.provider}:${alias}`.toLowerCase()] = `${m.provider}:${m.model}`.toLowerCase();
+  return out;
+}
+
+/**
+ * Called after a registry refresh. The first usable registry is silently seeded; later exact selection/effort
+ * additions and alias moves are returned once, persisted before any notice is logged, and optionally queued.
+ */
+export function noteNewModels(before, after) {
+  const state = getBenchState(), stamp = nowIso();
+  if (!state.seededAt) {
+    const seed = before?.models?.length ? before : after;
+    state.seen = registrySelections(seed).map(seenKey);
+    state.aliases = aliasTargets(seed);
+    state.seededAt = stamp;
+    saveState(state);
+    return [];
+  }
+
+  const seen = new Set(state.seen), all = registrySelections(after), fresh = [];
+  for (const s of all) if (!seen.has(seenKey(s))) fresh.push(cloneSelection(s));
+  const aliases = aliasTargets(after), movedTargets = new Set();
+  for (const [alias, target] of Object.entries(aliases)) if (state.aliases[alias] && state.aliases[alias] !== target) movedTargets.add(target);
+  for (const s of all) if (movedTargets.has(modelKey(s))) fresh.push({ ...cloneSelection(s), aliasMoved: true });
+
+  for (const s of all) seen.add(seenKey(s)); // excluded/covered listings are still remembered, so flaps stay silent
+  state.seen = [...seen]; state.aliases = aliases;
+  const due = new Set(dueForBench({ days: Infinity, reg: after }).map(seenKey));
+  const candidates = sorted([...new Map(fresh.filter((s) => due.has(seenKey(s))).map((s) => [seenKey(s), s])).values()]);
+  const listed = new Map(all.map((s) => [seenKey(s), s]));
+  const cfg = loadConfig(), mode = cfg.bench.newModels, listingChange = candidates.length > 5;
+  const automatic = candidates.filter((s) => mode === 'auto' && !listingChange && listed.get(seenKey(s))?.cost !== 'api');
+  const automaticKeys = new Set(automatic.map(seenKey));
+  for (const s of candidates) state.answers[seenKey(s)] = { selection: cloneSelection(s), answer: mode === 'off' ? 'no' : (automaticKeys.has(seenKey(s)) ? 'bench' : 'ask'), detectedAt: stamp, aliasMoved: !!s.aliasMoved };
+  saveState(state);
+  if (automatic.length) enqueueBench(automatic, { reg: after });
+  if (candidates.length) logImprovement('idea', 'models', `new benchmark selection${candidates.length === 1 ? '' : 's'} listed: ${candidates.map(selId).join(', ')}${listingChange ? ' (listing change: approval required)' : ''}`);
+  return candidates;
+}
+
+/** Persist a decision for detected selections. `bench` queues them; other answers only record intent. */
+export function answerNewModels(keys, answer, { reg = getModels() } = {}) {
+  if (!['bench', 'later', 'no', 'never'].includes(answer)) throw Object.assign(new Error('answer must be bench|later|no|never'), { status: 400 });
+  const state = getBenchState(), selections = [];
+  for (const key of keys || []) {
+    const k = String(key).toLowerCase(), prior = state.answers[k];
+    if (!prior?.selection) continue;
+    state.answers[k] = { ...prior, answer, answeredAt: nowIso() };
+    if (answer === 'bench') selections.push(prior.selection);
+  }
+  saveState(state);
+  if (selections.length) enqueueBench(selections, { reg });
+  return getBenchState();
+}
+
+/** Add selections to durable provider lanes, cheapest effort first, without starting work. */
+export function enqueueBench(selections, { reg = getModels(), taskIds = BENCH_TASK_IDS, probe = true } = {}) {
+  const cfg = loadConfig(), state = getBenchState(), listed = new Map(registrySelections(reg).map((s) => [seenKey(s), s]));
+  const attempts = rootRuns({ source: 'smoke' }), existing = new Set(Object.values(state.lanes).flatMap((lane) => (lane.queue || []).map((item) => seenKey(item.selection))));
+  const additions = [];
+  for (const requested of sorted(selections || [])) {
+    const meta = listed.get(seenKey(requested));
+    if (!meta || !allowed(meta, cfg) || existing.has(seenKey(meta))) continue;
+    const coverage = coverageFor(cloneSelection(meta), meta.offeredEfforts, attempts);
+    const requestedRemaining = Array.isArray(requested.remaining) ? requested.remaining : taskIds;
+    const remaining = requestedRemaining.filter((id) => taskIds.includes(id) && !coverage.ids.has(id));
+    if (!remaining.length) continue;
+    additions.push({ meta, coverage, remaining }); existing.add(seenKey(meta));
+  }
+  const probedModels = new Set(Object.values(state.lanes).flatMap((lane) => (lane.queue || []).filter((item) => item.probePending).map((item) => modelKey(item.selection))));
+  for (const chain of attempts) for (const a of chain.attempts || []) if (a.smokeId && a.verdict && a.verdict !== 'phantom') probedModels.add(modelKey(a));
+  for (const { meta, coverage, remaining } of additions) {
+    const lane = state.lanes[meta.provider] ||= { parkedUntil: null, running: null, queue: [] };
+    const firstForModel = !probedModels.has(modelKey(meta));
+    const probePending = probe && firstForModel && coverage.ids.size === 0 && remaining.includes('read-1');
+    if (probePending) probedModels.add(modelKey(meta));
+    lane.queue.push({ selection: cloneSelection(meta), remaining, probePending, probeFailed: false, queuedAt: nowIso(), lastError: null });
+  }
+  for (const lane of Object.values(state.lanes)) lane.queue.sort((a, b) => String(a.selection.model).localeCompare(String(b.selection.model)) || effortRank(a.selection.effort) - effortRank(b.selection.effort));
+  if (additions.length) saveState(state);
+  return getBenchState();
+}
+
+function defaultOpenTasks() { return openTasks(); }
+async function defaultExecute(selection, task, { probe }) {
+  const [result] = await runSmoke({ models: [selection], tasks: [task], timeoutMinutes: probe ? 3 : undefined });
+  return result;
+}
+
+/**
+ * Drain all currently runnable lanes. Providers run in parallel; each provider runs one selection/task at a time.
+ * A full/rejected provider is parked durably, live work wins, and every completed task is removed before returning.
+ */
+export async function runBenchQueue({ execute = defaultExecute, tasks = defaultOpenTasks, blockedUntil = modelBlockedUntil, now = () => Date.now(), reg = getModels(), onResult = null } = {}) {
+  const state = getBenchState(), results = [], listed = new Map(registrySelections(reg).map((s) => [seenKey(s), s]));
+  const persist = () => saveState(state);
+  // If the process died after the smoke row landed but before bench.json advanced, fold that durable evidence first.
+  const attempts = rootRuns({ source: 'smoke' });
+  for (const lane of Object.values(state.lanes)) for (let i = lane.queue.length - 1; i >= 0; i--) {
+    const item = lane.queue[i], meta = listed.get(seenKey(item.selection));
+    if (!meta) continue;
+    const done = coverageFor(item.selection, meta.offeredEfforts, attempts).ids;
+    item.remaining = item.remaining.filter((id) => !done.has(id));
+    if (item.probePending && done.has('read-1')) item.probePending = false;
+    if (lane.running && seenKey(lane.running.selection) === seenKey(item.selection) && done.has(lane.running.task)) lane.running = null;
+    if (!item.remaining.length) lane.queue.splice(i, 1);
+  }
+  persist();
+  const laneRuns = Object.entries(state.lanes).map(async ([provider, lane]) => {
+    while (lane.queue.length) {
+      const current = lane.queue[0], meta = listed.get(seenKey(current.selection));
+      if (!meta) break; // a flapping/temporarily unavailable listing pauses durable work; it does not erase it
+      if (!allowed(meta)) { lane.queue.shift(); lane.running = null; persist(); continue; }
+      if (current.probeFailed) break;
+      const open = tasks() || [];
+      if (open.some((t) => t.source !== 'smoke' && ['queued', 'running'].includes(t.status))) break;
+      if (open.some((t) => t.provider === provider && ['queued', 'running', 'parked'].includes(t.status))) break;
+      const at = Number(now());
+      if (lane.parkedUntil && lane.parkedUntil > at) break;
+      lane.parkedUntil = null;
+      const blocked = Number(blockedUntil(provider, current.selection.model)) || 0;
+      if (blocked > at) { lane.parkedUntil = blocked; persist(); break; }
+      const task = current.remaining[0];
+      if (!task) { lane.queue.shift(); lane.running = null; persist(); continue; }
+      const probe = current.probePending && task === 'read-1';
+      lane.running = { selection: current.selection, task, probe, startedAt: nowIso() };
+      persist();
+      let result;
+      try { result = await execute(current.selection, task, { probe }); }
+      catch (e) { current.lastError = String(e?.message || e); lane.running = null; persist(); throw e; }
+      const row = { ...result, provider, model: current.selection.model, effort: current.selection.effort, task, probe };
+      results.push(row); lane.running = null;
+      if (['pass', 'fail', 'fixable'].includes(row.verdict)) {
+        current.remaining.shift(); current.lastError = null;
+        if (probe) { current.probePending = false; if (row.verdict !== 'pass') current.probeFailed = true; }
+        if (!current.remaining.length) lane.queue.shift();
+      } else {
+        current.lastError = String(row.notes || row.verdict || 'benchmark did not complete');
+        const retryAt = Number(blockedUntil(provider, current.selection.model)) || 0;
+        if (retryAt > Number(now())) lane.parkedUntil = retryAt;
+      }
+      persist();
+      onResult?.(row);
+      if (!['pass', 'fail', 'fixable'].includes(row.verdict) || current.probeFailed) break;
+    }
+  });
+  await Promise.all(laneRuns);
+  return { results, state: getBenchState() };
+}
+
+let queueEnabled = false, queueRun = null, queueWake = null, queueAgain = false;
+/** Server lifecycle hook: resume durable work now, then again at its earliest provider reset. */
+export function startBenchQueue() { queueEnabled = true; wakeBenchQueue(); }
+export function stopBenchQueue() { queueEnabled = false; queueAgain = false; clearTimeout(queueWake); queueWake = null; }
+export function wakeBenchQueue() {
+  if (!queueEnabled || process.env.CONDUCTOR_NO_SCHEDULE) return queueRun;
+  if (queueRun) { queueAgain = true; return queueRun; }
+  if (!Object.values(getBenchState().lanes).some((lane) => lane.queue.length)) return null;
+  clearTimeout(queueWake); queueWake = null;
+  queueRun = runBenchQueue().catch((e) => {
+    try { logImprovement('error', 'bench', `bench queue paused: ${e?.message || e}`); } catch {}
+  }).finally(() => {
+    queueRun = null;
+    if (!queueEnabled) return;
+    if (queueAgain) { queueAgain = false; queueMicrotask(wakeBenchQueue); return; }
+    const now = Date.now();
+    const next = Math.min(...Object.values(getBenchState().lanes).map((lane) => lane.queue.length && lane.parkedUntil > now ? lane.parkedUntil : Infinity));
+    if (Number.isFinite(next)) { queueWake = setTimeout(wakeBenchQueue, Math.min(2 ** 31 - 1, next - now)); queueWake.unref?.(); }
+  });
+  return queueRun;
+}
+
+/** Explicit CLI/manual runner: queue the current due set, then drain whatever is runnable. */
 export async function runBench({ days, onResult = null } = {}) {
   const due = dueForBench({ days });
-  const results = [];
-  for (const sel of due) {
-    const probe = await runSmoke({ models: [sel], tasks: ['read-1'], timeoutMinutes: 3, onResult });
-    const ok = probe.length && probe[0].verdict === 'pass';
-    results.push({ ...sel, probe: probe[0]?.verdict || 'none', notes: probe[0]?.notes || '' });
-    if (!ok) continue;
-    const battery = await runSmoke({ models: [sel], onResult });
-    results[results.length - 1].battery = `${battery.filter((r) => r.verdict === 'pass').length}/${battery.length}`;
+  enqueueBench(due);
+  const { results } = await runBenchQueue({ onResult });
+  const bySelection = new Map();
+  for (const r of results) {
+    const key = selId(r), x = bySelection.get(key) || { provider: r.provider, model: r.model, effort: r.effort, probe: null, pass: 0, total: 0, notes: '' };
+    if (r.probe) x.probe = r.verdict;
+    x.total++; if (r.verdict === 'pass') x.pass++; if (r.notes) x.notes = r.notes;
+    bySelection.set(key, x);
   }
-  return results;
-}
-
-/** Called after a registry refresh: note newly listed models so the periodic review (or the user) benches them. */
-export function noteNewModels(before, after) {
-  const had = new Set((before?.models || []).map((m) => `${m.provider}:${m.id}`));
-  const fresh = (after?.models || []).filter((m) => m.kind === 'agent' && !had.has(`${m.provider}:${m.id}`));
-  if (fresh.length && had.size) logImprovement('idea', 'models', `new models listed: ${fresh.map((m) => `${m.provider}:${m.id}`).join(', ')} — run \`conductor bench --run\` (or smoke_test) before the scorecard can route to them`);
-  return fresh;
+  return [...bySelection.values()].map((x) => ({ ...x, probe: x.probe || 'none', battery: `${x.pass}/${x.total}` }));
 }
 
 export function formatBench(due) {
-  if (!due.length) return 'Every listed model has a recent battery.';
+  if (!due.length) return `Every listed selection meets the ${BENCH_COVERAGE.rated}/${BENCH_COVERAGE.total} battery coverage bar.`;
   return [`${due.length} selection(s) due for a battery:`, ...due.map((d) => `- ${selId(d)} — ${d.why}`)].join('\n');
 }

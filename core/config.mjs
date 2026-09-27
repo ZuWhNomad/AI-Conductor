@@ -32,7 +32,6 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     efficiencyMode: false,             // on a confirmed usage limit, wait for this model's reset instead of failing over
-    resumeMaxAgeHours: 6,             // a task interrupted longer ago than this is not replayed at start (canceled with a reason)
     tasksInMemory: 500,               // newest terminal task records retained alongside all open tasks; older records stay on disk
     recipeChars: 10000,               // log recipes over this character budget (the full recipe is still appended). Headroom over the longest shipped recipe (image-to-3d-model.b.md, 9443 chars on 2026-09-25).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
@@ -62,6 +61,7 @@ export const DEFAULTS = {
     timeoutByCategory: { modeling: 240 }, // categories that legitimately run long (image->3D iterates); watch the durations in the scorecard
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
   },
+  bench: { newModels: 'off' },         // fresh clones never auto-bench; the one owner-designated copy opts in
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
     ollama: { enabled: false, baseUrl: 'http://localhost:11434', autoStart: false, harness: 'openai-compat' }, // local models OFF by default (owner 2026-09-25): enabled = use Ollama at all, autoStart = spawn `ollama serve`; harness 'openai-compat' or 'claude'
@@ -240,6 +240,7 @@ function normalize(cfg) {
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch
+  delete cfg.worker.resumeMaxAgeHours; // interrupted work is durable; age no longer cancels it at startup
   if (!Number.isInteger(cfg.worker.tasksInMemory) || cfg.worker.tasksInMemory < 50) cfg.worker.tasksInMemory = DEFAULTS.worker.tasksInMemory;
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
@@ -276,6 +277,7 @@ function normalize(cfg) {
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
   if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(cfg.conductor.permissionMode)) cfg.conductor.permissionMode = DEFAULTS.conductor.permissionMode;
   if (!['auto', 'ask', 'off'].includes(cfg.conductor.autoUpdate)) cfg.conductor.autoUpdate = DEFAULTS.conductor.autoUpdate;
+  if (!['auto', 'ask', 'off'].includes(cfg.bench.newModels)) cfg.bench.newModels = DEFAULTS.bench.newModels;
   if (!SANDBOXES.includes(cfg.worker.codexSandbox)) cfg.worker.codexSandbox = DEFAULTS.worker.codexSandbox;
   cfg.conductor.overflowApi = !!cfg.conductor.overflowApi;
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;

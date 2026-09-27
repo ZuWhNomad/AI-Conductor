@@ -477,20 +477,19 @@ test('class walk: the first budget class proven at the level wins; capped classe
 });
 
 test('bench: lists models with no battery or a stale one', async () => {
-  const { writeJson } = await import('../core/paths.mjs');
-  const { join } = await import('node:path');
-  const { dueForBench, formatBench } = await import('../core/bench.mjs');
+  const { BENCH_TASK_IDS, dueForBench, formatBench } = await import('../core/bench.mjs');
   const reg = { updatedAt: 'x', providers: { codex: { status: 'ok' }, ollama: { status: 'ok' }, kimi: { status: 'unavailable' } }, models: [
     { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low', 'high'] },
     { provider: 'codex', id: 'brand-new', kind: 'agent', efforts: ['low'] },
-    { provider: 'ollama', id: 'qwen', kind: 'agent', efforts: [] },
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local', efforts: [] },
     { provider: 'kimi', id: 'kimi-k3', kind: 'agent', efforts: [] },
   ] };
-  run({ id: 'smk1', source: 'smoke', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'read', difficulty: 1 }); sc.rateTask('smk1', 'pass');
-  const due = dueForBench({ days: 21, reg });
-  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}`), ['codex:brand-new', 'ollama:qwen']);   // luna is fresh; kimi unavailable
+  const attempt = (effort, smokeId, i) => ({ provider: 'codex', model: 'gpt-5.6-luna', effort, smokeId, verdict: 'pass', ts: new Date(Date.now() - i).toISOString() });
+  const runs = [{ attempts: BENCH_TASK_IDS.slice(0, 8).map((id, i) => attempt('low', id, i)).concat(BENCH_TASK_IDS.slice(0, 7).map((id, i) => attempt('high', id, i))) }];
+  const due = dueForBench({ days: 21, reg, runs });
+  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}:${d.effort}`), ['codex:brand-new:low', 'codex:gpt-5.6-luna:high']);
   assert.match(formatBench(due), /2 selection\(s\) due/);
-  assert.equal(dueForBench({ days: -1, reg }).length, 3);                                              // cutoff in the future: everything stale
+  assert.equal(dueForBench({ days: -1, reg, runs }).length, 3); // covered low is stale; local and ignored providers remain excluded
 });
 
 test("the conductor's plan is capped on its session window only; weekly (Fable weekly included) may run to 100%", async () => {
@@ -1940,15 +1939,17 @@ test('[1m] scorecard rows group, price, route and satisfy bench hygiene as the b
     assert.ok(row.avgUsd > 0, 'the suffixed run uses the base model price');
     assert.equal(sc.recommend({ category: 'docs', difficulty: 2, source }).model, 'claude-fable-5-1');
 
-    run({ id: `${source}-smoke`, source: 'smoke', provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
-    sc.rateTask(`${source}-smoke`, 'pass');
+    const { BENCH_TASK_IDS, dueForBench } = await import('../core/bench.mjs');
+    for (const [i, smokeId] of BENCH_TASK_IDS.slice(0, 8).entries()) {
+      run({ id: `${source}-smoke-${i}`, source: 'smoke', smokeId, provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
+      sc.rateTask(`${source}-smoke-${i}`, 'pass');
+    }
     saveConfig({ scorecard: { archived: ['claude:claude-opus-5-5[1m]'] } });
     const reg = { providers: { claude: { status: 'ok' } }, models: [
       { provider: 'claude', id: 'claude-fable-5-1', kind: 'agent', efforts: ['low'] },
       { provider: 'claude', id: 'claude-fable-5-1[1m]', kind: 'agent', efforts: ['low'] },
       { provider: 'claude', id: 'claude-opus-5-5[1m]', kind: 'agent', efforts: ['low'] },
     ] };
-    const { dueForBench } = await import('../core/bench.mjs');
     assert.deepEqual(dueForBench({ days: 21, reg }), [], 'suffix/base duplicates are satisfied once and archived aliases are skipped');
   } finally { saveConfig({ scorecard: cfg }); }
 });

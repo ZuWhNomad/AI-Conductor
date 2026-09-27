@@ -50,7 +50,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | a setting does not apply or does not persist | `config.mjs` (`DEFAULTS`, `loadConfig`, `saveConfig`) |
 | update / self-restart problems | `update.mjs`, then `server/index.mjs` (`scheduleRelaunch`, `startUpdateChecks`) |
 | a worker CLI is stale, an update failed or was rolled back | `cli-update.mjs` (`RECIPES`, `applyCliUpdate`); history in `<state>/cli-updates.ndjson` |
-| smoke battery or re-benchmark scheduling | `smoke/` (see its `CONTEXT.md`), `bench.mjs` |
+| smoke battery, new-model detection or durable benchmark lanes | `smoke/` (see its `CONTEXT.md`), `bench.mjs` |
 | improvement log, self-review, feedback bundle | `improve.mjs`, `feedback.mjs` |
 
 **Invariants.**

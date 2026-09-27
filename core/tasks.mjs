@@ -53,15 +53,13 @@ function trimTasks(keep = loadConfig().worker.tasksInMemory) {
   }
 }
 
-// Load the journal so history survives restarts and interrupted work resumes. Work interrupted long ago is NOT
-// replayed: a start after a crash used to requeue day-old tasks all at once (the 09-16 hang), and the manual recovery
-// was to edit every journal file by hand.
+// Load the journal so history survives restarts and interrupted work resumes. Age must not silently cancel work:
+// queued and parked tasks are durable until the user cancels them or they finish.
 export function recoverTasks() {
   // Never replace objects owned by this process's in-flight workers.
   if (running.size || settling.size) return;
   try {
     const cfg = loadConfig().worker;
-    const hours = cfg.resumeMaxAgeHours ?? DEFAULTS.worker.resumeMaxAgeHours; let stale = 0;
     const saved = readJson(INDEX(), {});
     journalIndex = new Map();
     for (const f of readdirSync(DIR())) {
@@ -82,15 +80,12 @@ export function recoverTasks() {
       const file = join(DIR(), `${entry.id}.json`), t = readJson(file);
       if (t?.id !== entry.id) continue;
       if (t.status === 'running' || t.status === 'parked' || (t.status === 'queued' && t.resume)) {
-        const last = Math.max(Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0, t.status === 'parked' ? Number(t.resumeAt) || 0 : 0);
-        if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(file, t); indexTask(t, file); }
-        else if (t.status !== 'queued') { t.resume = t.status === 'running' || t.attempts > 0; t.status = 'queued'; } // never-started parked tasks need no interruption note
+        if (t.status !== 'queued') { t.resume = t.status === 'running' || t.attempts > 0; t.status = 'queued'; } // never-started parked tasks need no interruption note
       }
       tasks.set(t.id, t);
     }
     trimTasks(cfg.tasksInMemory);
     saveIndex();
-    if (stale) logImprovement('friction', 'tasks', `${stale} interrupted task(s) older than ${hours} h were not resumed at start`, { count: stale });
   } catch {}
 }
 recoverTasks();
