@@ -32,6 +32,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   provider's queue → install → verify version, sign-in and a read-1 task → roll back and `logImprovement` on failure),
   `cliVersionOf` (the cached version every scorecard run row records). `providers.<id>.cliUpdate`: off | notify | auto.
 
+A window is model-scoped when it has a `models` regex, or when that field is absent and the label matches Fable
+(`windowModels` in `limits.mjs`). `measuredCostByWindow` uses the same helper, so the gate charges a Fable window only
+for runs whose model matches.
+
 **Symptom → file.** Start here instead of reading the folder.
 
 | symptom | look in |

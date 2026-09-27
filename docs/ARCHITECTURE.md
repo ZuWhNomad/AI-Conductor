@@ -252,7 +252,8 @@ launcher. Friends log in to their own Claude / ChatGPT accounts once (`claude au
 
 Every run's cost is measured in % of each provider window (the scorecard records the window deltas, divided by how
 many other tasks shared that particular window at dispatch: `concurrentByWindow`, with the legacy `concurrent`
-scalar as fallback in `measuredCostByWindow`) and charged against a **target per window**: a session window
+scalar as fallback in `measuredCostByWindow`). The cost charged for a window is the average of the last 30
+matching runs. It is charged against a **target per window**: a session window
 (5-hour and the like) is used to 95%, everything else (weekly, monthly, a budget) to 100% (`targetFor`,
 `scorecard.windowTargets`); so Codex with only a weekly window is planned against 100% of it.
 
@@ -271,4 +272,4 @@ model all obey the same budget. Two rules matter:
   cost is measured, so a batch can't flood an unmetered window.
 
 Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
-`admit` also returns `until` (the earliest reset among full windows, `nextResetWindows`); the scheduler does not use it today.
+`admit` returns `{ n }`, how many of the pending tasks fit.

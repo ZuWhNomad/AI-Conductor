@@ -671,7 +671,7 @@ test('recorded concurrency divides global and model-exclusive window costs indep
     assert.deepEqual(measuredCostByWindow([rows[0]], 'claude'), { five_hour: 12, seven_day: 6 });
     assert.deepEqual(measuredCostByWindow([rows[1]], 'claude'), { five_hour: 6, seven_day: 3, seven_day_sonnet: 8 });
     assert.deepEqual(measuredCostByWindow([rows[2]], 'claude'), { five_hour: 4, seven_day: 2, seven_day_sonnet: 4 });
-    assert.deepEqual(measuredCostByWindow(rows, 'claude', { model: 'sonnet' }), { five_hour: 6, seven_day: 3, seven_day_sonnet: 8 });
+    assert.deepEqual(measuredCostByWindow(rows, 'claude', { model: 'sonnet' }), { five_hour: 5, seven_day: 2.5, seven_day_sonnet: 6 });
     const { concurrentByWindow, ...legacy } = rows[1];
     assert.deepEqual(measuredCostByWindow([legacy], 'claude'), { five_hour: 6, seven_day: 3, seven_day_sonnet: 4 });
   } finally {

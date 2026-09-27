@@ -243,7 +243,7 @@ async function route(req, res, url) {
   }
 
   if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
-  if (p === '/api/models/refresh' && m === 'POST') { const b = await readBody(req).catch(() => ({})); const only = Array.isArray(b?.only) && b.only.length ? b.only : null; const r = await refreshModels(only ? { only } : undefined); if (!only) detectCapabilities().catch(() => {}); return json(res, 200, r); }
+  if (p === '/api/models/refresh' && m === 'POST') { const b = await readBody(req); const only = Array.isArray(b?.only) && b.only.length ? b.only : null; const r = await refreshModels(only ? { only } : undefined); if (!only) detectCapabilities().catch(() => {}); return json(res, 200, r); }
   if (p === '/api/limits' && m === 'GET') return json(res, 200, limitsWithEstimates());
   if (seg[1] === 'providers' && seg[2] && seg[3] === 'usage' && m === 'POST') {
     if (!PROVIDERS[seg[2]]) return json(res, 400, { error: 'unknown provider' });
@@ -322,7 +322,7 @@ async function route(req, res, url) {
   }
   if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? await updateStatus() : lastUpdateStatus() || await updateStatus({ fetch: false }));
   if (p === '/api/update' && m === 'POST') { // pull, then self-restart into the new version; relaunching:false falls back to the manual-restart message
-    const b = await readBody(req).catch(() => ({}));
+    const b = await readBody(req);
     const r = await applyUpdate();
     const need = !!(r.updated && r.restartNeeded && !r.npmError);
     if (!need) return json(res, 200, { ...r, relaunching: false });
@@ -338,7 +338,7 @@ async function route(req, res, url) {
   // for an idle provider and verifies with a real task), and its result lands in providers[id].last.
   if (p === '/api/cli-update' && m === 'GET') return json(res, 200, cliUpdateStatus());
   if (p === '/api/cli-update' && m === 'POST') {
-    const b = await readBody(req).catch(() => ({}));
+    const b = await readBody(req);
     const ids = b?.provider ? [String(b.provider)] : CLI_UPDATE_IDS;
     if (b?.check) return json(res, 200, { providers: await Promise.all(ids.map((id) => checkCliUpdate(id, { manual: true }))) });
     for (const id of ids) if (!CLI_UPDATE_IDS.includes(id)) return json(res, 400, { error: `no CLI update recipe for "${id}"` });

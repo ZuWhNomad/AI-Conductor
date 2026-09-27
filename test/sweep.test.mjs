@@ -2,10 +2,10 @@ import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
-const { measuredCostByWindow, targetFor, nextResetWindows, admit } = await import('../core/sweep.mjs');
+const { measuredCostByWindow, targetFor, admit } = await import('../core/sweep.mjs');
 const lim = await import('../core/limits.mjs');
 
-test('measuredCostByWindow takes the largest delta per window, honouring model-group windows and concurrency', () => {
+test('measuredCostByWindow averages per-task deltas per window, honouring model-group windows and concurrency', () => {
   lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: [{ id: 'antigravity:gemini-5h', usedPercent: 10, models: '^(gemini)' }, { id: 'antigravity:3p-5h', usedPercent: 50, models: '^(claude|gpt)' }] };
   const rows = [
     { provider: 'antigravity', model: 'gemini-3.8-flash-low', pct: { 'antigravity:gemini-5h': 0.4, 'antigravity:3p-5h': 0.2 } }, // 3p-5h moved for someone else: not this model's window
@@ -15,10 +15,26 @@ test('measuredCostByWindow takes the largest delta per window, honouring model-g
   ];
   assert.deepEqual(measuredCostByWindow(rows, 'antigravity', { model: 'gemini-3.8-flash-low' }), { 'antigravity:gemini-5h': 0.4 });
   assert.deepEqual(measuredCostByWindow(rows, 'antigravity', { model: 'claude-sonnet-4-6' }), { 'antigravity:3p-5h': 3.1 });
-  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { 'codex:primary': 1 });
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { 'codex:primary': 0.75 }); // (1 + 0.5) / 2
   assert.deepEqual(measuredCostByWindow(rows, 'codex', { model: 'gpt-5.6-sol' }), { 'codex:primary': 0.5 });
   assert.deepEqual(measuredCostByWindow(rows, 'grok'), {});
   delete lim.getLimits().providers.antigravity;
+});
+
+test('measuredCostByWindow charges a Fable-labelled window only for Fable runs', () => {
+  lim.getLimits().providers.claude = { provider: 'claude', windows: [
+    { id: 'claude:5h', label: '5-hour', usedPercent: 10 },
+    { id: 'claude:wf', label: 'weekly Fable', usedPercent: 40 },
+  ] };
+  try {
+    const rows = [
+      { provider: 'claude', model: 'claude-opus-4-8', pct: { 'claude:5h': 2, 'claude:wf': 9 } },
+      { provider: 'claude', model: 'claude-fable-5-1', pct: { 'claude:5h': 4, 'claude:wf': 6 } },
+    ];
+    assert.deepEqual(measuredCostByWindow(rows, 'claude', { model: 'claude-opus-4-8' }), { 'claude:5h': 2 });
+    assert.deepEqual(measuredCostByWindow(rows, 'claude', { model: 'claude-fable-5-1' }), { 'claude:5h': 4, 'claude:wf': 6 });
+    assert.deepEqual(measuredCostByWindow(rows, 'claude'), { 'claude:5h': 3, 'claude:wf': 6 });
+  } finally { delete lim.getLimits().providers.claude; }
 });
 
 test('measuredCostByWindow does not throw on an invalid models pattern', () => {
@@ -40,24 +56,36 @@ test('OB2: a measured 0% delta still records the window so it is not treated as 
   assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w1: 5, w2: 0 });
 });
 
-
-test('per-window targets: session windows to 95%, weekly and budgets to 100%', () => {
-  const t5 = Date.now() + 3600e3, tw = Date.now() + 5 * 86400e3;
-  assert.equal(targetFor({ id: 'claude:5h', label: '5-hour' }), 95);
-  assert.equal(targetFor({ id: 'claude:w', label: 'weekly' }), 100);
-  assert.equal(nextResetWindows([{ id: 'x', label: '5-hour', usedPercent: 95, resetsAt: t5 }, { id: 'y', label: 'weekly', usedPercent: 99, resetsAt: tw }]), t5);
-  assert.equal(nextResetWindows([{ id: 'codex:primary', label: 'Codex weekly', usedPercent: 92, resetsAt: tw, windowMinutes: 10080 }]), null); // 92% of a 100% target: not full
+test('measuredCostByWindow: an outlier among the last 30 rows does not dominate', () => {
+  const rows = [
+    ...Array.from({ length: 29 }, () => ({ provider: 'codex', model: 'm', pct: { w: 3 } })),
+    { provider: 'codex', model: 'm', pct: { w: 63 } },
+  ];
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { w: 5 }); // (29 * 3 + 63) / 30
 });
 
-test('admit: gates dispatch on per-window headroom under targets, and reports the reset when a provider is tapped out', () => {
+test('measuredCostByWindow averages only the last 30 matching values per window', () => {
+  const rows = [
+    { provider: 'codex', pct: { stale: 9, w: 100 } },
+    ...Array.from({ length: 30 }, () => ({ provider: 'codex', pct: { w: 2 } })),
+  ];
+  assert.deepEqual(measuredCostByWindow(rows, 'codex'), { stale: 9, w: 2 });
+});
+
+
+test('per-window targets: session windows to 95%, weekly and budgets to 100%', () => {
+  assert.equal(targetFor({ id: 'claude:5h', label: '5-hour' }), 95);
+  assert.equal(targetFor({ id: 'claude:w', label: 'weekly' }), 100);
+});
+
+test('admit: gates dispatch on per-window headroom under targets', () => {
   const tw = Date.now() + 5 * 86400e3;
   const c = (n) => ({ costs: { 'codex:w': n } });
   const codex91 = [{ id: 'codex:w', label: 'Codex weekly', usedPercent: 91, resetsAt: tw, windowMinutes: 10080 }]; // weekly target 100 -> 9% headroom
   assert.equal(admit(codex91, [c(3), c(3), c(3), c(3)]).n, 3);                                  // 3+3+3=9 fits, 4th does not
   assert.equal(admit(codex91, [c(3)], { runningByWindow: { 'codex:w': 8 } }).n, 0);             // 8% already in flight: only 1% free
   const full = [{ id: 'codex:w', label: 'Codex weekly', usedPercent: 100, resetsAt: tw }];
-  const r = admit(full, [c(1)]);
-  assert.equal(r.n, 0); assert.equal(r.until, tw);                                              // tapped out -> reset time
+  assert.equal(admit(full, [c(1)]).n, 0);                                                       // tapped out
   assert.equal(admit([], [c(5)]).n, 1);                                                         // no windows reported (grok/ollama): not gated
   const sess = [{ id: 'c:5h', label: '5-hour', usedPercent: 94, resetsAt: Date.now() + 3600e3 }]; // session target 95 -> 1% headroom
   assert.equal(admit(sess, [{ costs: { 'c:5h': 2 } }]).n, 0);                                   // 2% > 1% (session capped at 95%, not 100%)
@@ -96,16 +124,13 @@ test('P1: sweep reads window targets once per admission and compiles each model 
     const windows = [{ id: 'session', label: 'session', usedPercent: 96, resetsAt: 100 }, { id: 'weekly', label: 'weekly', usedPercent: 100, resetsAt: 200 }];
     assert.equal(sweep.admit(windows, [{ costs: { session: 1, weekly: 1 } }]).n, 0);
     assert.equal(globalThis.__w1ConfigReads, 1);
-    globalThis.__w1ConfigReads = 0;
-    assert.equal(sweep.nextResetWindows(windows), 100);
-    assert.equal(globalThis.__w1ConfigReads, 1);
     lim.getLimits().providers['w1-pattern'] = { windows: [{ id: 'w', models: '^model' }] };
     const NativeRegExp = RegExp, compiled = [];
     ctx.mock.method(globalThis, 'RegExp', new Proxy(NativeRegExp, { construct(target, args) { compiled.push(args); return new target(...args); } }));
     assert.deepEqual(sweep.measuredCostByWindow([
       { provider: 'w1-pattern', model: 'model', pct: { w: 2 } },
       { provider: 'w1-pattern', model: 'model', pct: { w: 3 } },
-    ], 'w1-pattern'), { w: 3 });
+    ], 'w1-pattern'), { w: 2.5 });
     assert.deepEqual(compiled, [['^model', 'i']]);
   } finally { hooks.deregister(); delete globalThis.__w1ConfigReads; delete lim.getLimits().providers['w1-pattern']; }
 });
@@ -113,7 +138,6 @@ test('P1: sweep reads window targets once per admission and compiles each model 
 test('P2: admission excludes rate and unknown-percentage windows without weakening budget windows', () => {
   const ignored = [{ id: 'rate', rate: true, usedPercent: 100, resetsAt: 1 }, { id: 'unknown', usedPercent: null }];
   assert.equal(admit(ignored, [{ costs: {} }, { costs: {} }]).n, 2);
-  assert.equal(nextResetWindows(ignored), null);
   const windows = [...ignored, { id: 'budget', usedPercent: 90 }];
   assert.equal(admit(windows, [{ costs: { budget: 5 } }, { costs: { budget: 5 } }]).n, 2);
   assert.equal(admit(windows, [{ costs: { budget: 11 } }]).n, 0);

@@ -136,7 +136,8 @@ function earliestReset(windows = []) {
   return full.length ? Math.min(...full) : null;
 }
 
-const windowModels = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
+/** `models` regex, or `fable` when that field is absent and the label names Fable. */
+export const windowModels = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
 const modelScoped = (w) => !!windowModels(w);
 const globalWindowBlocks = (w) => !modelScoped(w) && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
 

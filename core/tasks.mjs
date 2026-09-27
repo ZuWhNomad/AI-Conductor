@@ -147,6 +147,9 @@ export function getTask(id) {
 
 export function openTasks() { return [...tasks.values()].filter((t) => !TERMINAL.has(t.status)); }
 
+/** Queued, running and parked tasks. `bench --run`, `smoke` and `review` refuse to start when this is non-zero. */
+export function openTaskCount() { return openTasks().length; }
+
 export function listTasks({ sessionId = null, limit = 200 } = {}) {
   return [...tasks.values()].filter((t) => !sessionId || t.sessionId === sessionId)
     .sort(newestFirst).slice(0, limit).map(taskSummary);
@@ -434,9 +437,9 @@ async function run(t) {
     const rel = (p) => { try { return slash(isAbsolute(p) ? relative(t.cwd, p) || p : p); } catch { return p; } };
     const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
     const observed = diffStatus(before, after);
-    t.changedFiles = [...new Set([...observed, ...(r.items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean))].map(rel))];
-    t.diffStat = await gitDiffStat(t.cwd, after, observed);
     const claimed = claimedWrites(r.items);
+    t.changedFiles = [...new Set([...observed, ...claimed].map(rel))];
+    t.diffStat = await gitDiffStat(t.cwd, after, observed);
     // G5: a claimed file that is gitignored or outside the repo won't appear in git status; confirm via disk mtime.
     // Only files that exist AND were modified at or after the task started are enough to disprove a phantom verdict.
     const taskStartMs = Date.parse(t.startedAt) || 0;

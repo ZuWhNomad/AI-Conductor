@@ -98,6 +98,9 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priceFor('qwen-code', 'qwen3-coder-flash', {}), null);
   assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 3 } } } }), { in: 1, out: 2, cached: 0.1, write: 3 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 'nope' } } } }), { in: 1, out: 2, cached: 0.1 });
+  assert.deepEqual(pr.priceFor('deepseek', 'deepseek-flash', { scorecard: { prices: { 'deepseek:deepseek-flash': { in: 2, out: 4, cached: 0.2, write: 8 } } } }, new Date('2026-09-09T12:00:00Z')), { in: 1, out: 2, cached: 0.1, write: 4 });
   // 50k uncached @0.2 + 50k cached @0.02 + 10k out @1.2 = 0.01 + 0.001 + 0.012
   assert.ok(Math.abs(pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, { in: 0.2, out: 1.2, cached: 0.02 }) - 0.023) < 1e-9);
   assert.equal(pr.usdFor({ in: 1 }, null), null);
@@ -219,6 +222,16 @@ test('a usage-limit reroute skips the cut-off run in the quality chain', () => {
   assert.equal(sc.runRows().find((r) => r.taskId === `${source}-c`)?.reroutedFrom, `${source}-b`);
   sc.voidTask(`${source}-a`, 'test fixture');
   sc.voidTask(`${source}-c`, 'test fixture');
+});
+
+test('voidTask publishes the same score event as rateTask', async () => {
+  const { bus } = await import('../core/bus.mjs');
+  const seen = [];
+  const on = (e) => { if (e.type === 'score' && e.taskId === 'void-pub') seen.push({ type: e.type, taskId: e.taskId, verdict: e.verdict }); };
+  bus.on('event', on);
+  try { sc.voidTask('void-pub', 'sandbox denied the workspace'); }
+  finally { bus.off('event', on); }
+  assert.deepEqual(seen, [{ type: 'score', taskId: 'void-pub', verdict: 'void' }]);
 });
 
 test('summarize: single-step rows count every attempt, path rows count observed ladders', () => {
@@ -1095,9 +1108,9 @@ test('R2B6: voids invalidate cached admission costs and are filtered on stat fal
   for (const [taskId, delta] of [['R2B6-valid', 3], ['R2B6-void', 90]]) {
     appendNdjson(statePath('scorecard.ndjson'), { op: 'run', taskId, provider, pct: { weekly: delta } });
   }
-  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 50 }];
+  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 60 }]; // headroom 40: average 46.5 does not fit; the remaining 3 does
   const cost = () => measuredCostByWindow(sc.runRows(), provider);
-  assert.deepEqual(cost(), { weekly: 90 });
+  assert.deepEqual(cost(), { weekly: 46.5 });
   const cached = sc.runRows();
   assert.equal(sc.runRows(), cached, 'unchanged ledger uses the cache');
   assert.equal(admit(windows, [{ costs: cost() }]).n, 0);

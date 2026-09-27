@@ -122,14 +122,19 @@ export function priorFor(provider, model, category = null) {
   return { tier, kind, tb21: p.tb21 ?? null, tb20: p.tb20 ?? null, swev: p.swev ?? null, gdpval: p.gdpval ?? null, mrcr: p.mrcr ?? null, price: p.price || null, note: p.note || null };
 }
 
-/** $ per million tokens {in, out, cached}; config `scorecard.prices` overrides the table. null when unknown. */
+/** $ per million tokens {in, out, cached, write?}; config `scorecard.prices` overrides the table. null when unknown. */
 export function priceFor(provider, model, cfg = loadConfig(), now = new Date()) {
   const over = cfg.scorecard?.prices || {};
   const o = over[`${provider}:${model}`] || over[key(provider, model)];
-  const p = o && Number.isFinite(o.in) && Number.isFinite(o.out) ? { in: o.in, out: o.out, cached: Number.isFinite(o.cached) ? o.cached : o.in / 10 } : priorFor(provider, model)?.price || null;
+  const p = o && Number.isFinite(o.in) && Number.isFinite(o.out)
+    ? { in: o.in, out: o.out, cached: Number.isFinite(o.cached) ? o.cached : o.in / 10, ...(Number.isFinite(o.write) ? { write: o.write } : {}) }
+    : priorFor(provider, model)?.price || null;
   if (!p) return null;
   const k = offPeakFactor(provider, now);
-  return k === 1 ? p : { in: p.in * k, out: p.out * k, cached: p.cached * k };
+  if (k === 1) return p;
+  const scaled = { in: p.in * k, out: p.out * k, cached: p.cached * k };
+  if (Number.isFinite(p.write)) scaled.write = p.write * k;
+  return scaled;
 }
 
 /** DeepSeek bills half price outside peak hours (Mon-Fri 01:00-04:00 and 06:00-10:00 UTC). Everyone else: 1. */
