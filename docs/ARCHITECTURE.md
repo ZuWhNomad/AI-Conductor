@@ -50,7 +50,7 @@ and a friction entry is logged when a minute's p99 exceeds `server.lagWarnMs`.
 ## Directory map
 
 ```
-bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, bench, review, feedback, share, update, stop
+bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, bench, review, feedback, share, update, stop, experiment
 core/
   paths.mjs              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
@@ -74,6 +74,7 @@ core/
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
   scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
+  experiment.mjs         A/B experiment records + compare of tagged scorecard run rows
   priors.mjs             API list prices + shipped/configured hand-picked tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
@@ -190,6 +191,14 @@ priors): only a selection with a recorded PASS at the effort that passed (pass /
 verdicts in `core/priors.mjs` `MODELING` / `DRAFTING`) is routable, and with none available
 `recommend` returns null; explicit pins are not gated. `smoke_test` / `conductor smoke` run
 `core/smoke/` to seed a model; `conductor smoke --all-models` orders by prior price.
+
+## A/B with experiment records
+
+Keep a harness change only after a measured A/B. Arm A is one checkout, arm B another; they run sequentially, each with its own state dir, at least as many repeats as the record says. Start each arm's server with `CONDUCTOR_EXPERIMENT=<id>:<arm>` (`id` and `arm` each `[A-Za-z0-9_-]{1,40}`). Every run row that process writes then carries `experiment: { id, arm }`. Invalid values are ignored with one warning. Unset, the ledger is unchanged.
+
+1. `conductor experiment new <id> --hypothesis "..." --mechanism "..." [--branch B] [--tasks t1,t2] [--heldout t3,t4] [--repeats 3]` writes `<state>/experiments/<id>.json`.
+2. Run the tasks on A, then on B.
+3. `conductor experiment report <id> --state-dir <A-state> --state-dir <B-state>` reads those scorecards (default: the current state dir) and prints, per arm and per category: runs, accepted count (pass + fixable), median and total uncached input / cached input / output tokens, median $/task, median duration. **B kept** only if accepted count is not lower in any category **and** median $/task is lower overall; otherwise **A kept**. Wall time is reported, never gated. `--json` prints the structure. `--verdict keep-a|keep-b|void --note "..."` stores the human verdict on the record (the rule is advice). A held-out task list on the record gets a second table; the report names model families per arm and warns when B's win rests on a single family or has no held-out rows.
 
 ## MCP (conductor-wide)
 

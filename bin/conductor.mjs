@@ -23,6 +23,7 @@ const { values: flags, positionals } = parseArgs({
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     cwd: { type: 'string' },
     models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
+    hypothesis: { type: 'string' }, mechanism: { type: 'string' }, branch: { type: 'string' }, repeats: { type: 'string' }, heldout: { type: 'string' }, 'state-dir': { type: 'string', multiple: true }, verdict: { type: 'string' }, note: { type: 'string' },
   },
 });
 const cmd = positionals[0] || 'start';
@@ -50,6 +51,10 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)
   conductor job start [--cwd DIR] -- CMD…    run a long command detached (it survives the caller's exit); prints its id
   conductor job status ID | job cancel ID    its exit code and output tail, or stop it (needs the running server)
+  conductor experiment new <id> --hypothesis "..." --mechanism "..." [--branch B] [--tasks t1,t2] [--heldout t3,t4] [--repeats 3]
+  conductor experiment list
+  conductor experiment report <id> [--state-dir DIR]... [--json] [--verdict keep-a|keep-b|void --note "..."]
+                                             record and compare A/B scorecard arms (CONDUCTOR_EXPERIMENT=<id>:<arm>)
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
   conductor help`;
@@ -285,6 +290,26 @@ if (cmd === 'start') {
   const url = issuesUrl();
   console.log(`Wrote ${f}\n(no keys, paths or e-mail addresses in it — open it and check if you like)`);
   if (url) { console.log(`Attach it to a new issue: ${url}/new?title=Feedback`); if (!flags['no-open']) openBrowser(`${url}/new?title=Feedback&body=${encodeURIComponent('What happened / what would help:\n\n\n(attach the Conductor-feedback-*.json from your Desktop)')}`); }
+  process.exit(0);
+} else if (cmd === 'experiment') {
+  const exp = await import('../core/experiment.mjs');
+  const sub = positionals[1], id = positionals[2];
+  try {
+    if (sub === 'new' && id) {
+      const rec = exp.createExperiment({ id, hypothesis: flags.hypothesis, mechanism: flags.mechanism, branch: flags.branch, tasks: flags.tasks, heldout: flags.heldout, repeats: flags.repeats });
+      console.log(flags.json ? JSON.stringify(rec, null, 2) : exp.formatRecord(rec));
+    } else if (sub === 'list') {
+      const list = exp.listExperiments();
+      console.log(flags.json ? JSON.stringify(list, null, 2) : exp.formatList(list));
+    } else if (sub === 'report' && id) {
+      const r = exp.reportExperiment(id, { stateDirs: flags['state-dir'] });
+      if (flags.verdict) r.verdict = exp.setVerdict(id, flags.verdict, flags.note).verdict;
+      console.log(flags.json ? JSON.stringify(r, null, 2) : exp.formatReport(r));
+    } else {
+      console.error('usage: conductor experiment new <id> --hypothesis "..." --mechanism "..." [--branch B] [--tasks t1,t2] [--heldout t3,t4] [--repeats 3]\n       conductor experiment list\n       conductor experiment report <id> [--state-dir DIR]... [--json] [--verdict keep-a|keep-b|void --note "..."]');
+      process.exit(2);
+    }
+  } catch (e) { console.error(e.message); process.exit(2); }
   process.exit(0);
 } else if (cmd === 'share') {
   const out = join(desktopDir(), 'Conductor-2.0-share.zip');

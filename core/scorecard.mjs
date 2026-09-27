@@ -165,6 +165,32 @@ export function normalizeUsage(u) {
 // Rows written before v2 stored inclusive input for non-Claude providers.
 export const tokensOf = (r) => (!r.tokens ? null : r.tokens.v ? r.tokens : { ...r.tokens, in: r.provider === 'claude' ? r.tokens.in : Math.max(0, (r.tokens.in || 0) - (r.tokens.cached || 0)) });
 
+/** Shadow $ for one run row: Claude list cost when present, else tokens × API list price. */
+export function runCostUsd(r) {
+  if (LIST_COST_PROVIDERS.has(r.provider) && r.costUsd > 0) return r.costUsd;
+  return usdFor(tokensOf(r), priceFor(r.provider, scorecardModelId(r.model)));
+}
+
+const EXPERIMENT_TAG = /^([A-Za-z0-9_-]{1,40}):([A-Za-z0-9_-]{1,40})$/;
+let experimentWarned = false;
+/** `CONDUCTOR_EXPERIMENT=<id>:<arm>`. Invalid values are ignored after one warning. Unset → null. */
+export function experimentFromEnv(raw = process.env.CONDUCTOR_EXPERIMENT) {
+  if (raw == null || raw === '') return null;
+  const m = EXPERIMENT_TAG.exec(String(raw));
+  if (m) return { id: m[1], arm: m[2] };
+  if (!experimentWarned) {
+    experimentWarned = true;
+    console.warn(`CONDUCTOR_EXPERIMENT ignored: expected <id>:<arm> ([A-Za-z0-9_-]{1,40} each), got ${JSON.stringify(String(raw))}`);
+  }
+  return null;
+}
+
+/** Parse one scorecard file with the same void/amend fold as `runRows()`. */
+export function ledgerOf(file) {
+  const all = readNdjson(file);
+  return { all, ...foldRunRows(all) };
+}
+
 /** Record one terminal worker run. tasks.mjs calls this after refreshing the provider's limits. */
 export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
   if (t.imageOptions) return null;
@@ -179,6 +205,8 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
     cliVersion: cliVersionOf(t.provider), servedModel, // cached --version (SDK for claude); the model the CLI says it ran
   };
+  const experiment = experimentFromEnv();
+  if (experiment) row.experiment = experiment;
   appendNdjson(FILE(), row);
   bus.publish('score', { taskId: t.id, provider: t.provider, model: row.model, pct: row.pct });
   return row;
