@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 
-const { noteHttp, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
+const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
 
 test('P11: refresh metadata distinguishes joined polls without changing promise identity or result', async () => {
@@ -478,6 +478,65 @@ test('only usable unscoped request windows can clear an active HTTP block', () =
     assert.equal(result.blockedReason, '429');
     assert.deepEqual(result.windows, windows);
   }
+});
+
+test('a confirmed limit survives an estimated refresh until real availability is reported', async (ctx) => {
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const { PROVIDERS } = await import('../core/providers/index.mjs');
+  const id = 'confirmed-estimate', reset = Date.now() + 60_000;
+  let estimated = true;
+  PROVIDERS[id] = { id, pollLimits: async () => ({ provider: id, blocked: false, windows: [{ id: `${id}:estimated`, label: 'estimated usage', usedPercent: 20, resetsAt: reset, estimated }] }) };
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+    noteLimitHit(id, { model: 'grok-4.6', resetsAt: reset });
+    await refreshLimits({ only: [id] });
+    assert.equal(blockedUntil(id), reset);
+    assert.equal(getLimits().providers[id].blockedReason, 'limit_hit');
+    assert.equal(getLimits().providers[id].windows[0].usedPercent, 100);
+    assert.equal(noteLimitAvailable(id, 'grok-4.5'), true, 'a successful run on a globally blocked provider establishes recovery');
+    assert.equal(blockedUntil(id), null);
+    noteLimitHit(id, { model: 'grok-4.6', resetsAt: reset });
+    estimated = false;
+    await refreshLimits({ only: [id] });
+    assert.equal(blockedUntil(id), null, 'a later real below-limit window establishes recovery');
+    assert.equal(getLimits().providers[id].confirmedLimit, undefined);
+  } finally { delete PROVIDERS[id]; delete getLimits().providers[id]; }
+});
+
+test('a confirmed limit expires at blockedUntil', (ctx) => {
+  const id = 'confirmed-expiry', now = Date.now(), reset = now + 60_000;
+  let clock = now;
+  ctx.mock.method(Date, 'now', () => clock);
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [] };
+    noteLimitHit(id, { model: 'grok-4.6', resetsAt: reset });
+    assert.equal(blockedUntil(id), reset);
+    clock = reset;
+    assert.equal(blockedUntil(id), null);
+    assert.equal(getLimits().providers[id].confirmedLimit, undefined);
+    assert.deepEqual(getLimits().providers[id].windows, []);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('a confirmed hit on a model-scoped window blocks only that model', () => {
+  const id = 'confirmed-model', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [
+      { id: 'session', label: '5-hour', usedPercent: 30, resetsAt: reset },
+      { id: 'weekly-opus', label: 'weekly Opus', models: 'opus', usedPercent: 40, resetsAt: reset },
+    ] };
+    noteLimitHit(id, { model: 'claude-opus-5' });
+    const p = getLimits().providers[id];
+    assert.equal(p.blocked, false);
+    assert.equal(p.windows.find((w) => w.id === 'weekly-opus').usedPercent, 100);
+    assert.equal(p.windows.find((w) => w.id === 'session').usedPercent, 30);
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5'), reset);
+    assert.equal(modelBlockedUntil(id, 'claude-sonnet-5'), null);
+    assert.equal(noteLimitAvailable(id, 'claude-sonnet-5'), false);
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5'), reset);
+    assert.equal(noteLimitAvailable(id, 'claude-opus-5'), true);
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null);
+  } finally { delete getLimits().providers[id]; }
 });
 
 test('funded balance refresh preserves a 429 deadline until expiration', async (t) => {

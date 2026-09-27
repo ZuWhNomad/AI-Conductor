@@ -965,6 +965,60 @@ for (const [id, provider] of [['L1', 'codex'], ['L4', 'claude']]) {
   });
 }
 
+test('a confirmed Grok limit hit blocks through its configured weekly reset and persists', async (ctx) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { statePath } = await import('../core/paths.mjs');
+  const previous = loadConfig().scorecard, reset = Date.now() + 7 * 24 * 60 * 60_000;
+  saveConfig({ scorecard: { usageResets: { ...previous.usageResets, grok: { periodHours: 168, anchorAt: new Date(reset).toISOString() } } } });
+  delete getLimits().providers.grok;
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, limitHit: true, error: 'HTTP 402: usage balance exhausted' }));
+  const t = tk.createTask({ cwd: tmpDir('grok-confirmed'), provider: 'grok', model: 'grok-4.6', spec: 'x', noFailover: true });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await tk.awaitTask(t.id);
+    const p = getLimits().providers.grok;
+    assert.equal(done.status, 'parked');
+    assert.equal(done.resumeAt, reset);
+    assert.deepEqual([p.blocked, p.blockedReason, p.blockedUntil], [true, 'limit_hit', reset]);
+    assert.equal(p.windows.find((w) => w.id === 'grok:estimated').usedPercent, 100);
+    assert.deepEqual(JSON.parse(readFileSync(statePath('limits.json'), 'utf8')).providers.grok, p, 'the confirmed block is persisted');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1'; tk.cancelTask(t.id);
+    delete getLimits().providers.grok; saveConfig({ scorecard: previous });
+  }
+});
+
+test('auto-pick skips a provider with a confirmed limit hit', async (ctx) => {
+  const { getLimits, noteLimitHit } = await import('../core/limits.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  const previous = loadConfig().scorecard;
+  registryModels(ctx, [
+    { provider: 'grok', id: 'grok-4.6', kind: 'agent' },
+    { provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent' },
+  ]);
+  saveConfig({ scorecard: { minSamples: 1, usePriors: false, classOrder: ['included'], classes: { ...previous.classes, grok: 'included', antigravity: 'included' } } });
+  for (const [id, provider, model] of [['confirmed-pick-g', 'grok', 'grok-4.6'], ['confirmed-pick-a', 'antigravity', 'gemini-3.8-flash']]) {
+    recordRun({ id, title: 't', status: 'done', provider, model, category: 'other', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const opts = { category: 'other', difficulty: 2, providers: ['grok', 'antigravity'] };
+  try {
+    const first = recommend(opts);
+    assert.ok(first, 'both providers are initially eligible');
+    getLimits().providers[first.provider] = { provider: first.provider, blocked: false, windows: [] };
+    noteLimitHit(first.provider, { model: first.model, resetsAt: Date.now() + 60_000 });
+    const next = recommend(opts);
+    assert.ok(next);
+    assert.notEqual(next.provider, first.provider);
+  } finally {
+    delete getLimits().providers.grok; delete getLimits().providers.antigravity;
+    saveConfig({ scorecard: previous });
+  }
+});
+
 test('an auth failure is never scored, and the echoed key never reaches the journal or the improvement log', async (ctx) => {
   const { runRows } = await import('../core/scorecard.mjs');
   const { statePath } = await import('../core/paths.mjs');

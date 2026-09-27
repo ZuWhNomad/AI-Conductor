@@ -131,6 +131,59 @@ function earliestReset(windows = []) {
 
 const globalWindowBlocks = (w) => !w.models && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
 
+function windowApplies(w, model) {
+  if (!w.models || !model) return true;
+  try { return new RegExp(w.models, 'i').test(model); }
+  catch { return String(model).toLowerCase().includes(String(w.models).toLowerCase()); }
+}
+
+const windowAvailable = (w) => w.status !== 'rejected' && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100;
+
+function clearConfirmedLimit(p) {
+  const hit = p.confirmedLimit;
+  if (!hit) return false;
+  for (const prior of hit.windows || []) {
+    const i = (p.windows || []).findIndex((w) => w.id === prior.id);
+    if (i < 0) continue;
+    if (prior.synthetic) p.windows.splice(i, 1);
+    else {
+      const w = { ...p.windows[i] };
+      if (prior.hadUsedPercent) w.usedPercent = prior.usedPercent;
+      else delete w.usedPercent;
+      p.windows[i] = w;
+    }
+  }
+  delete p.confirmedLimit;
+  if (p.blockedReason === 'limit_hit') {
+    const full = (p.windows || []).filter(globalWindowBlocks);
+    p.blocked = !!full.length; p.blockedUntil = earliestReset(full); p.blockedReason = null;
+  }
+  return true;
+}
+
+function preserveConfirmedLimit(prev, merged, r, before) {
+  const hit = prev.confirmedLimit;
+  if (!hit || hit.blockedUntil <= Date.now()) return merged;
+  const real = (r.windows || []).filter((w) => !w.estimated && windowApplies(w, hit.model));
+  const recovered = before.confirmedLimit?.hitAt === hit.hitAt && real.length && real.every(windowAvailable);
+  if (recovered) return merged;
+  const windows = [...(merged.windows || [])];
+  const retained = [];
+  for (const prior of hit.windows || []) {
+    const w = (prev.windows || []).find((x) => x.id === prior.id);
+    if (!w) continue;
+    const i = windows.findIndex((x) => x.id === w.id);
+    const reportedFull = i >= 0 && !windows[i].estimated && (windows[i].status === 'rejected' || windows[i].usedPercent >= 100);
+    if (reportedFull) continue;
+    if (i < 0) windows.push(w); else windows[i] = w;
+    retained.push(prior);
+  }
+  merged.windows = windows;
+  merged.confirmedLimit = { ...hit, windows: retained };
+  if (hit.global && merged.blockedReason !== '429') Object.assign(merged, { blocked: true, blockedUntil: hit.blockedUntil, blockedReason: 'limit_hit' });
+  return merged;
+}
+
 export function mergePoll(prev, r, before = prev, observed = new Set()) {
   const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !w.models)) : null };
   if (observed.has(HTTP)) {
@@ -168,7 +221,53 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
       merged.httpRetryUntil = httpUntil; // Keep the HTTP deadline even while a stronger poll block takes precedence.
     }
   }
-  return merged;
+  return preserveConfirmedLimit(prev, merged, r, before);
+}
+
+/** Persist a worker-confirmed usage-limit hit. Existing HTTP/SDK blocks remain authoritative. */
+export function noteLimitHit(providerId, { model = null, retryAfterMs = null, resetsAt = null } = {}) {
+  const existing = modelBlockedUntil(providerId, model);
+  if (existing) return existing;
+  getLimits();
+  const now = Date.now();
+  const p = cache.providers[providerId] || { provider: providerId, windows: [] };
+  const applicable = (p.windows || []).filter((w) => windowApplies(w, model));
+  const scoped = model ? applicable.filter((w) => w.models) : [];
+  let targets = scoped.length ? scoped : applicable.filter((w) => !w.models);
+  const known = applicable.map((w) => w.resetsAt).filter((at) => at > now);
+  const until = known.length ? Math.min(...known)
+    : resetsAt > now ? resetsAt
+      : Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? now + retryAfterMs : now + blockedMs();
+  if (!targets.length) {
+    const synthetic = { id: `${providerId}:estimated`, label: 'estimated usage', usedPercent: 0, resetsAt: until, estimated: true };
+    p.windows = [...(p.windows || []), synthetic]; targets = [synthetic];
+  }
+  const previous = p.confirmedLimit?.windows || [];
+  const marked = targets.map((w) => {
+    const prior = previous.find((x) => x.id === w.id);
+    return prior || { id: w.id, synthetic: !!w.estimated && w.id === `${providerId}:estimated`, hadUsedPercent: Object.hasOwn(w, 'usedPercent'), usedPercent: w.usedPercent };
+  });
+  const ids = new Set(marked.map((w) => w.id));
+  p.windows = (p.windows || []).map((w) => ids.has(w.id) ? { ...w, usedPercent: 100 } : w);
+  const global = !scoped.length;
+  p.confirmedLimit = { hitAt: now, model, global, blockedUntil: until, windows: marked };
+  if (global) { p.blocked = true; p.blockedUntil = until; p.blockedReason = 'limit_hit'; observe(providerId, BLOCK); }
+  for (const w of targets) observe(providerId, w.id);
+  p.source = 'worker'; p.updatedAt = nowIso();
+  cache.providers[providerId] = p;
+  save();
+  return until;
+}
+
+/** A later successful worker run is positive availability evidence for its provider/model. */
+export function noteLimitAvailable(providerId, model = null) {
+  getLimits();
+  const p = cache.providers[providerId], hit = p?.confirmedLimit;
+  if (!hit || (!hit.global && ((hit.model && model && hit.model !== model) || (hit.model && !model)))) return false;
+  clearConfirmedLimit(p);
+  p.source = 'worker'; p.updatedAt = nowIso();
+  save();
+  return true;
 }
 
 /** Live update from an SDK rate_limit_event (claude) — cheaper and fresher than polling. */
@@ -278,6 +377,7 @@ export function noteHttp(providerId, status, headers = {}) {
 export function blockedUntil(providerId) {
   getLimits();
   const p = cache.providers[providerId];
+  if (p?.confirmedLimit?.blockedUntil <= Date.now() && clearConfirmedLimit(p)) save(false);
   if (!p?.blocked) return null;
   if (p.blockedUntil && p.blockedUntil <= Date.now()) { p.blocked = false; p.blockedUntil = null; p.blockedReason = null; save(false); return null; }
   return p.blockedUntil || Date.now() + blockedMs();
@@ -285,13 +385,7 @@ export function blockedUntil(providerId) {
 
 /** Windows metered by this model; no model means all groups. */
 export function providerWindows(provider, model = null) {
-  const scope = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
-  return (getLimits().providers[provider]?.windows || []).filter((w) => {
-    const s = scope(w);
-    if (!s || !model) return true;
-    try { return new RegExp(s, 'i').test(model); }
-    catch { return String(model).toLowerCase().includes(String(s).toLowerCase()); }
-  });
+  return (getLimits().providers[provider]?.windows || []).filter((w) => windowApplies({ ...w, models: w.models || (/fable/i.test(w.label || '') ? 'fable' : null) }, model));
 }
 
 /** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
@@ -299,6 +393,8 @@ export function modelBlockedUntil(provider, model = null) {
   const global = blockedUntil(provider);
   if (global) return global;
   const now = Date.now();
+  const hit = getLimits().providers[provider]?.confirmedLimit;
+  if (hit && (!hit.model || !model || hit.model === model) && hit.blockedUntil > now) return hit.blockedUntil;
   const full = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > now) && (w.status === 'rejected' || w.usedPercent >= 100));
   return full.length ? Math.min(...full.map((w) => w.resetsAt || now + blockedMs())) : null;
 }

@@ -11,10 +11,10 @@ import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlockedUntil, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
+import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset } from './scorecard.mjs';
 import { findModel, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -442,9 +442,13 @@ async function run(t) {
     const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
     if (r.limitHit && !r.ok && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
-      t.limitHit = true; // never scored against the model
       await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
+      if (t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
+        t.limitHit = true; // never scored against the model
+        noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
+      }
     }
+    if (r.ok) noteLimitAvailable(t.provider, t.model);
     if (t.status === 'canceled') { /* keep */ }
     else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit && !r.ok) {
