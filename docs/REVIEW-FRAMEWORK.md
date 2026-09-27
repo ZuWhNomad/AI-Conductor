@@ -44,7 +44,8 @@ improvement-log self-review, not this.
    families, and tag every review task `category: "review"` with a `difficulty` (failover and the review timeout
    need it). On "still running", poll `plan_status` with the `plan_id`. A lens with a `! task <id> <status>` line,
    or with no fenced findings block (it becomes one pseudo-finding), did not run: re-run it. An `Incomplete` stage
-   keeps no findings at all: read each finished finder with `task_status` and re-run only the unfinished ones.
+   (when all tasks or votes fail) keeps no findings at all: read each finished finder with `task_status` and re-run
+   only the unfinished ones. When some tasks or votes succeed, partial findings and finished votes are kept.
 2. **Dedupe** by hand from the plan's full record (the path after `Full record:`, or `plans/<plan_id>.json` in the
    Conductor state dir) and the delegated tasks' reports, not from `{{results:<stage>}}` (some fields only, cut at
    4000 characters); for reviews this replaces the dedupe stage of `orchestration.md` §2. `run_plan` merges findings
@@ -133,7 +134,8 @@ Finder labels are input: the verifier sets severity after reproducing, recorded 
   reports those it cannot reproduce, which are dropped. Nits never go to workers.
 - **Batches, not votes.** Verifiers reproduce, so they run as `delegate` tasks with `workspace-write`; a target
   with nothing to run can use one read-only `run_plan` `tasks[]` stage. Do not use `for_each` votes here: the tally
-  keeps a 200-character reason, reads `partial` as refuted, and one failed voter ends the plan with no verdicts.
+  keeps a 200-character reason and reads `partial` as refuted (a voting stage tallies on finished votes, moving
+  items with zero finished votes to unverified, ending incomplete only if every vote fails).
 - **Verifier spec.** Default to refuted. Reproduce when feasible (a script under the
   isolated state dir; the installed CLI or SDK for any claim about an external tool). Check intent with
   `git log -S` or blame and the decisions list: a fix that would undo a deliberate change goes to the user. Say

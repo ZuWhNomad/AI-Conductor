@@ -131,9 +131,19 @@ const findingFields = (f) => {
   return o;
 };
 function resultsText(r) {
-  if (r.findings?.length) {
-    const json = JSON.stringify(r.findings.map(findingFields), null, 1);
-    return json.length > RESULTS_CHARS ? json.slice(0, RESULTS_CHARS) + '…' : json;
+  const parts = [];
+  if (r.findings?.length) parts.push(JSON.stringify(r.findings.map(findingFields), null, 1));
+  if (r.unverified?.length) {
+    const unv = r.unverified.map((f) => ({
+      ...findingFields(f),
+      unverified: true,
+      ...(f.failedTasks?.length ? { failedTasks: f.failedTasks } : {}),
+    }));
+    parts.push('Unverified:\n' + JSON.stringify(unv, null, 1));
+  }
+  if (parts.length) {
+    const text = parts.join('\n\n');
+    return text.length > RESULTS_CHARS ? text.slice(0, RESULTS_CHARS) + '…' : text;
   }
   return r.summary || '';
 }
@@ -177,7 +187,7 @@ export function expandStage(stage, ctx) {
   if (!stage.for_each) return (stage.tasks || []).map((t, i) => ({ ...base, ...t, title: t.title || `${stage.id} #${i + 1}`, spec: fill(t.spec, vars) }));
   const [srcId, field] = String(stage.for_each).split('.');
   const src = ctx.results?.[srcId];
-  const items = field === 'confirmed' ? src?.confirmed || [] : field === 'rejected' ? src?.rejected || [] : src?.findings || [];
+  const items = field === 'confirmed' ? src?.confirmed || [] : field === 'rejected' ? src?.rejected || [] : field === 'unverified' ? src?.unverified || [] : src?.findings || [];
   const out = [];
   for (const item of items) for (let v = 0; v < stage.votes; v++) {
     const lens = Array.isArray(stage.lenses) && stage.lenses.length ? stage.lenses[v % stage.lenses.length] : '';
@@ -247,7 +257,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
 
 /**
  * Execute a plan. Stages run in order; tasks within a stage run in parallel on the scheduler.
- * Returns { id, status, stages: {id: {tasks, findings, confirmed, rejected, summary}}, report }.
+ * Returns { id, status, stages: {id: {tasks, findings, confirmed, rejected, unverified, summary}}, report }.
  * An incomplete stage stops the plan; its active tasks remain on the scheduler.
  * taskRuntime is injectable so stage ordering can be tested without launching workers.
  */
@@ -292,36 +302,66 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
   publish('started', { goal: plan.goal, stages: plan.stages.map((s) => s.id) });
 
   const runStage = async (stage, outputKeys, round = 0) => {
-    if (aborted()) return { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
+    if (aborted()) return { tasks: [], findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
     const inputs = expandStage(stage, ctx);
-    if (!inputs.length) return { tasks: [], findings: [], confirmed: [], rejected: [], summary: '(no inputs)' };
-    if (total + inputs.length > MAX_TASKS) return { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: `Incomplete: plan exceeds ${MAX_TASKS} tasks` };
+    if (!inputs.length) return { tasks: [], findings: [], confirmed: [], rejected: [], unverified: [], summary: '(no inputs)' };
+    if (total + inputs.length > MAX_TASKS) return { tasks: [], findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: `Incomplete: plan exceeds ${MAX_TASKS} tasks` };
     total += inputs.length;
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
     const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live });
     if (aborted()) {
       for (const d of done) if (d.id) cancelChain(d.id);
-      return { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status || 'canceled' })), findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
+      return { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status || 'canceled' })), findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
     }
-    const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [] };
+    const result = { tasks: done.map((d) => ({ id: d.id, ...(d.taskIds.length > 1 ? { taskId: d.taskIds.at(-1), taskIds: d.taskIds } : {}), ...(d.task?.timedOut ? { timedOut: true } : {}), ...(d.noWorker ? { error: d.noWorker } : {}), title: d.input.title, status: d.task?.status, model: d.noWorker ? 'none' : `${d.task?.provider}:${d.task?.model || 'default'}:${d.task?.effort || 'default'}`, changedFiles: d.task?.changedFiles || [] })), findings: [], confirmed: [], rejected: [], unverified: [] };
     if (done.some((d) => !d.complete)) {
       result.incomplete = true;
       result.summary = done.some((d) => d.noWorker) ? 'Incomplete: no worker available for one or more inputs.' : 'Incomplete: tasks have not reached a terminal status.';
       if (done.some((d) => d.task?.timedOut)) result.summary = `${done.some((d) => d.noWorker) ? result.summary + '\n' : ''}Incomplete: stage deadline reached; tasks may still be active.`;
       return result;
     }
-    if (stage.for_each && done.some((d) => !d.ok)) {
+    if (stage.for_each && done.every((d) => !d.ok)) {
       result.incomplete = true;
-      result.summary = 'Incomplete: one or more voters failed or were canceled; no verdict was reached.';
+      result.summary = 'Incomplete: all voters failed or were canceled; no verdict was reached.\n' + done.map((d) => `! task ${d.id} ${d.task?.status}: ${d.task?.error || ''}`).join('\n');
       return result;
     }
     if (stage.for_each) {
       const groups = new Map();
       // L2: group by the item object reference expandStage passed, never by a worker-supplied id.
-      for (const d of done) { const k = d.input.item; if (!groups.has(k)) groups.set(k, { item: d.input.item, votes: [] }); groups.get(k).votes.push({ ...parseVerdict(d.report), taskId: d.id, ok: d.ok }); }
-      for (const g of groups.values()) { const t = tally(g.votes, stage.pass || 'majority'); const entry = { ...g.item, votes: g.votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)), tally: `${t.real}/${t.total}` }; (t.confirmed ? result.confirmed : result.rejected).push(entry); }
+      for (const d of done) {
+        const k = d.input.item;
+        if (!groups.has(k)) groups.set(k, { item: d.input.item, done: [] });
+        groups.get(k).done.push(d);
+      }
+      for (const g of groups.values()) {
+        const finished = g.done.filter((d) => d.ok);
+        const failed = g.done.filter((d) => !d.ok);
+        if (!finished.length) {
+          const failedTasks = failed.map((d) => d.id);
+          result.unverified.push({ ...g.item, votes: [], failedTasks, failedTaskIds: failedTasks });
+          continue;
+        }
+        const votes = finished.map((d) => ({ ...parseVerdict(d.report), taskId: d.id, ok: true }));
+        const t = tally(votes, stage.pass || 'majority');
+        const failedCount = failed.length;
+        const tallyStr = failedCount > 0
+          ? `${t.real}/${t.total} (${failedCount} vote${failedCount === 1 ? '' : 's'} failed)`
+          : `${t.real}/${t.total}`;
+        const entry = {
+          ...g.item,
+          votes: votes.map((v) => `${v.real ? 'real' : 'refuted'}: ${v.reason}`.slice(0, 200)),
+          tally: tallyStr,
+          ...(failedCount > 0 ? { failedTasks: failed.map((d) => d.id) } : {}),
+        };
+        (t.confirmed ? result.confirmed : result.rejected).push(entry);
+      }
       result.findings = result.confirmed;
-      result.summary = `${result.confirmed.length} confirmed, ${result.rejected.length} rejected\n` + result.confirmed.map((f) => findingLine(f, ` (${f.tally})`)).join('\n');
+      const counts = [`${result.confirmed.length} confirmed`, `${result.rejected.length} rejected`];
+      if (result.unverified.length) counts.push(`${result.unverified.length} unverified`);
+      const lines = [counts.join(', ')];
+      for (const f of result.confirmed) lines.push(findingLine(f, ` (${f.tally})`));
+      for (const f of result.unverified) lines.push(findingLine(f, ` (unverified: failed task${f.failedTasks?.length === 1 ? '' : 's'} ${(f.failedTasks || []).join(', ')})`));
+      result.summary = lines.join('\n');
     } else {
       if (done.every((d) => !d.ok)) {
         result.incomplete = true;
@@ -345,7 +385,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
 
   for (const stage of plan.stages) {
     if (aborted()) {
-      ctx.results[stage.id] = { tasks: [], findings: [], confirmed: [], rejected: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
+      ctx.results[stage.id] = { tasks: [], findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: 'Incomplete: plan aborted.' };
       publish('stage_incomplete', { stage: stage.id, tasks: 0 });
       break;
     }

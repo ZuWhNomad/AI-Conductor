@@ -137,9 +137,9 @@ test('tally modes', () => {
   assert.equal(tally([]).confirmed, false);
 });
 
-test('unsuccessful voters leave the requested electorate incomplete and prevent dependent fixes', async (t) => {
+test('all votes failed in voting stage marks stage incomplete and prevents dependent fixes', async (t) => {
   for (const pass of ['all', 'majority', 'any']) {
-    for (const statuses of [['done', 'failed', 'canceled'], ['failed', 'failed', 'failed'], ['canceled', 'canceled', 'canceled']]) {
+    for (const statuses of [['failed', 'failed', 'failed'], ['canceled', 'canceled', 'canceled']]) {
       await t.test(`${pass}: ${statuses.join('/')}`, async () => {
         const created = [];
         const out = await runPlan({ stages: [
@@ -160,13 +160,127 @@ test('unsuccessful voters leave the requested electorate incomplete and prevent 
         assert.equal(out.status, 'incomplete');
         assert.equal(out.stages.vote.incomplete, true);
         assert.deepEqual(out.stages.vote.tasks.map((task) => task.status), statuses);
-        for (const field of ['findings', 'confirmed', 'rejected']) assert.deepEqual(out.stages.vote[field], []);
+        for (const field of ['findings', 'confirmed', 'rejected', 'unverified']) assert.deepEqual(out.stages.vote[field], []);
         assert.equal(out.stages.fix, undefined);
         assert.equal(out.stages.rejected, undefined);
-        assert.match(out.report, /Incomplete: one or more voters failed or were canceled/);
+        assert.match(out.report, /Incomplete: all voters failed or were canceled; no verdict was reached/);
         assert.equal(readJson(statePath('plans', `${out.id}.json`)).status, 'incomplete');
       });
     }
+  }
+});
+
+test('mixed ok and failed votes tally on finished votes, and following stage runs', async (t) => {
+  for (const pass of ['all', 'majority', 'any']) {
+    await t.test(pass, async () => {
+      const created = [];
+      const out = await runPlan({ stages: [
+        { id: 'find', tasks: [{ spec: 'find' }] },
+        { id: 'vote', for_each: 'find', votes: 3, pass, task: { spec: 'vote {{item}}' } },
+        { id: 'fix', for_each: 'vote.confirmed', task: { spec: 'fix {{item}}' } },
+      ] }, { taskRuntime: {
+        createTask(input) { created.push(input); return { id: String(created.length) }; },
+        async awaitTask(id) {
+          const statuses = ['done', 'failed', 'canceled'];
+          return { id, status: id === '1' ? 'done' : id === '5' ? 'done' : statuses[Number(id) - 2], result: {
+            finalMessage: id === '1' ? '{"findings":[{"id":"bug","title":"Bug"}]}' : id === '5' ? 'fixed' : '{"real":true}',
+          } };
+        },
+        getTask() { assert.fail('use terminal snapshots'); },
+      } });
+      assert.equal(created.length, 5); // find + 3 votes + 1 fix
+      assert.equal(out.status, 'done');
+      assert.equal(out.stages.vote.incomplete, undefined);
+      assert.equal(out.stages.vote.confirmed.length, 1);
+      assert.equal(out.stages.vote.confirmed[0].tally, '1/1 (2 votes failed)');
+      assert.equal(out.stages.vote.rejected.length, 0);
+      assert.equal(out.stages.vote.unverified.length, 0);
+      assert.equal(out.stages.fix.tasks.length, 1);
+      assert.match(out.stages.vote.summary, /1 confirmed, 0 rejected/);
+      assert.match(out.stages.vote.summary, /1\/1 \(2 votes failed\)/);
+      assert.match(out.report, /1\/1 \(2 votes failed\)/);
+    });
+  }
+});
+
+test('item with all votes failed goes to unverified with failed task ids, and results/report show unverified', async () => {
+  const created = [];
+  const out = await runPlan({ stages: [
+    { id: 'find', tasks: [{ spec: 'find' }] },
+    { id: 'vote', for_each: 'find', votes: 2, task: { spec: 'vote {{item}}' } },
+    { id: 'critic', tasks: [{ spec: 'Critique:\n{{results:vote}}' }] },
+    { id: 'recheck', for_each: 'vote.unverified', task: { spec: 'recheck {{item}}' } },
+  ] }, { taskRuntime: {
+    createTask(input) { created.push(input); return { id: `t${created.length}` }; },
+    async awaitTask(id) {
+      if (id === 't1') {
+        return { id, status: 'done', result: { finalMessage: JSON.stringify({ findings: [
+          { id: 'b1', title: 'Bug One', file: 'src/one.js', severity: 'high' },
+          { id: 'b2', title: 'Bug Two', file: 'src/two.js', severity: 'medium' },
+        ] }) } };
+      }
+      if (id === 't2') return { id, status: 'done', result: { finalMessage: '{"real":true,"reason":"confirmed"}' } };
+      if (id === 't3') return { id, status: 'failed', error: 'crash', result: {} };
+      if (id === 't4') return { id, status: 'failed', error: 'timeout', result: {} };
+      if (id === 't5') return { id, status: 'canceled', error: 'abort', result: {} };
+      return { id, status: 'done', result: { finalMessage: 'ok' } };
+    },
+    getTask() { assert.fail('use terminal snapshots'); },
+  } });
+  assert.equal(out.status, 'done');
+  assert.equal(out.stages.vote.incomplete, undefined);
+  assert.equal(out.stages.vote.confirmed.length, 1);
+  assert.equal(out.stages.vote.confirmed[0].id, 'b1');
+  assert.equal(out.stages.vote.confirmed[0].tally, '1/1 (1 vote failed)');
+  assert.equal(out.stages.vote.rejected.length, 0);
+  assert.equal(out.stages.vote.unverified.length, 1);
+  assert.equal(out.stages.vote.unverified[0].id, 'b2');
+  assert.deepEqual(out.stages.vote.unverified[0].failedTasks, ['t4', 't5']);
+  assert.match(out.stages.vote.summary, /1 confirmed, 0 rejected, 1 unverified/);
+  assert.match(out.stages.vote.summary, /- \[high\] src\/one\.js: Bug One \(1\/1 \(1 vote failed\)\)/);
+  assert.match(out.stages.vote.summary, /- \[medium\] src\/two\.js: Bug Two \(unverified: failed tasks t4, t5\)/);
+  assert.match(out.report, /Bug Two \(unverified: failed tasks t4, t5\)/);
+  const criticTask = created.find((c) => c.spec.startsWith('Critique:'));
+  assert.ok(criticTask, 'critic task was created');
+  assert.match(criticTask.spec, /Bug One/);
+  assert.match(criticTask.spec, /Unverified:/);
+  assert.match(criticTask.spec, /Bug Two/);
+  assert.match(criticTask.spec, /"failedTasks": \[\s*"t4",\s*"t5"\s*\]/);
+  const recheckTask = created.find((c) => c.spec.startsWith('recheck'));
+  assert.ok(recheckTask, 'recheck task ran on unverified item');
+  assert.match(recheckTask.spec, /Bug Two/);
+});
+
+test('tally and pass rule over finished votes with different outcomes and modes', async (t) => {
+  for (const { pass, expectedConfirmed } of [
+    { pass: 'any', expectedConfirmed: true },
+    { pass: 'majority', expectedConfirmed: false },
+    { pass: 'all', expectedConfirmed: false },
+  ]) {
+    await t.test(pass, async () => {
+      let n = 0;
+      const out = await runPlan({ stages: [
+        { id: 'find', tasks: [{ spec: 'find' }] },
+        { id: 'vote', for_each: 'find', votes: 3, pass, task: { spec: 'vote {{item}}' } },
+      ] }, { taskRuntime: {
+        createTask() { return { id: String(++n) }; },
+        async awaitTask(id) {
+          if (id === '1') return { id, status: 'done', result: { finalMessage: '{"findings":[{"title":"Bug"}]}' } };
+          if (id === '2') return { id, status: 'done', result: { finalMessage: '{"real":true}' } };
+          if (id === '3') return { id, status: 'done', result: { finalMessage: '{"real":false}' } };
+          return { id, status: 'failed', error: 'boom', result: {} };
+        },
+        getTask() { assert.fail('use terminal snapshots'); },
+      } });
+      assert.equal(out.status, 'done');
+      if (expectedConfirmed) {
+        assert.equal(out.stages.vote.confirmed.length, 1);
+        assert.equal(out.stages.vote.confirmed[0].tally, '1/2 (1 vote failed)');
+      } else {
+        assert.equal(out.stages.vote.rejected.length, 1);
+        assert.equal(out.stages.vote.rejected[0].tally, '1/2 (1 vote failed)');
+      }
+    });
   }
 });
 
