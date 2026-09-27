@@ -8,6 +8,7 @@ import { accessProviders } from './capabilities.mjs';
 import { normFamilies, selsInFamilies } from './models.mjs';
 import { existsSync } from 'node:fs';
 import { loadConfig } from './config.mjs';
+import { ROUTED_MAX_DIFFICULTY, summarize } from './scorecard.mjs';
 
 /** Shared enum for sandbox values (used in run_plan and delegate schemas). */
 export const SANDBOX_VALUES = /** @type {const} */ (['read-only', 'workspace-write', 'danger-full-access']);
@@ -199,6 +200,15 @@ function waitForFirstWorkerEvent(taskId, timeoutMs) {
   });
 }
 
+function noWorkerReason(input, gate, overflowApi) {
+  const { category } = input, difficulty = input.difficulty || 2;
+  if (gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty} and available now.`;
+  const bar = loadConfig().scorecard?.quality ?? 0.75;
+  const proven = summarize().some((g) => g.category === category && g.difficulty >= difficulty && g.difficulty <= ROUTED_MAX_DIFFICULTY && g.rated > 0 && (g.quality ?? 0) >= bar);
+  if (!proven) return `No worker is available for ${category}@${difficulty}: nothing is proven at this level yet. Pin a provider/model explicitly (which always runs and seeds the scorecard) or run smoke_test.`;
+  return `No worker is available for ${category}@${difficulty} under the current budget rules (subscription classes capped at this level; API overflow is ${overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
+}
+
 async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live, warmupSeconds = 20 }) {
   // P10: resolve every selection before creating any task.
   const resolved = [];
@@ -206,28 +216,26 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
     let { provider, model, effort } = inp;
     let difficulty = inp.difficulty, variant = inp.variant;
     if (!provider && !model && inp.category && recommend) {
-      let pick, noWorker = 'No worker available for this input.';
+      let pick, gate;
       try {
-        const gate = accessProviders(`${inp.title || ''}\n${inp.spec || ''}`); // OG4: honour the capability access gate
-        const providers = gate?.providers || null;
-        pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: [...(inp.exclude || []), ...selsInFamilies(normFamilies(inp.avoid_families))], overflowApi, ...(providers ? { providers } : {}) });
+        gate = accessProviders(`${inp.title || ''}\n${inp.spec || ''}`); // OG4: honour the capability access gate
+        pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: [...(inp.exclude || []), ...selsInFamilies(normFamilies(inp.avoid_families))], escalate: false, overflowApi, providers: gate?.providers || null });
       }
-      catch { noWorker = 'Worker recommendation failed.'; }
-      if (!pick) { resolved.push({ input: inp, noWorker }); continue; }
+      catch { resolved.push({ input: inp, noWorker: 'Worker recommendation failed.' }); continue; }
+      if (!pick) { resolved.push({ input: inp, noWorker: noWorkerReason(inp, gate, overflowApi) }); continue; }
       // Preserve the proven visual effort even when plan/stage defaults supply an effort-only override.
       provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
       difficulty = inp.difficulty || 2; // L19: persist the routed level when auto-picked
     }
     resolved.push({ input: inp, provider, model, effort, difficulty, variant, pinned: !!(inp.provider && inp.model) });
   }
-  if (resolved.some((r) => r.noWorker)) {
-    return resolved.map((c) => ({ ...c, id: null, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false }));
-  }
   const created = [];
   let createError = null;
-  for (const [i, r] of resolved.entries()) {
-    if (i === 1 && resolved.length >= 3 && warmupSeconds > 0 && created[0]?.id) {
-      await (taskRuntime.waitForFirstEvent?.(created[0].id, warmupSeconds * 1000) || waitForFirstWorkerEvent(created[0].id, warmupSeconds * 1000));
+  let createdCount = 0, firstCreatedId = null;
+  for (const r of resolved) {
+    if (r.noWorker) { created.push({ ...r, id: null }); continue; }
+    if (createdCount === 1 && resolved.length >= 3 && warmupSeconds > 0 && firstCreatedId) {
+      await (taskRuntime.waitForFirstEvent?.(firstCreatedId, warmupSeconds * 1000) || waitForFirstWorkerEvent(firstCreatedId, warmupSeconds * 1000));
     }
     let t;
     try {
@@ -239,10 +247,14 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
       break;
     }
     created.push({ ...r, id: t.id });
+    createdCount++;
+    firstCreatedId ||= t.id;
     if (live && t.id) live.taskIds.push(t.id);
   }
   if (createError) {
-    return created.map((c) => ({ ...c, taskIds: c.id ? [c.id] : [], task: { status: 'canceled' }, complete: true, report: '', ok: false, noWorker: c.noWorker }))
+    return created.map((c) => c.noWorker
+      ? { ...c, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false }
+      : { ...c, taskIds: c.id ? [c.id] : [], task: { status: 'canceled' }, complete: true, report: '', ok: false })
       .concat([{ input: inputs[created.length] || {}, id: null, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false, noWorker: `createTask failed: ${createError}` }]);
   }
   // One stage deadline: a failover continues the wait; it does not get a fresh timeout.
@@ -407,7 +419,7 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     publish('stage_done', { stage: stage.id, tasks: res.tasks.length, findings: res.findings.length });
   }
 
-  const report = plan.stages.filter((s) => ctx.results[s.id]).map((s) => `## ${s.title || s.id}\ntasks: ${ctx.results[s.id].tasks.map((t) => `${t.taskIds?.join(' -> ') || t.id}[${t.status}]${t.timedOut ? ' (timed out)' : ''} ${t.model}`).join(', ')}\n${ctx.results[s.id].summary}`).join('\n\n');
+  const report = plan.stages.filter((s) => ctx.results[s.id]).map((s) => `## ${s.title || s.id}\ntasks: ${ctx.results[s.id].tasks.map((t) => `${t.taskIds?.join(' -> ') || t.id}[${t.status}]${t.timedOut ? ' (timed out)' : ''} ${t.model}${t.error ? ` — ${t.error}` : ''}`).join(', ')}\n${ctx.results[s.id].summary}`).join('\n\n');
   const status = Object.values(ctx.results).some((r) => r.incomplete) ? 'incomplete' : 'done';
   const finishedAt = nowIso();
   const out = { id, status, goal: plan.goal, startedAt, finishedAt, stages: ctx.results, report };

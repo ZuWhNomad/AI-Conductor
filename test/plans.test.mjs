@@ -552,8 +552,8 @@ test('a mixed stage awaits eligible inputs and preserves explicit and recommende
     ]);
     assert.deepEqual(waited, ['task-1', 'task-2', 'task-3']);
     assert.deepEqual(recommendations, [
-      { category: 'auto', difficulty: 4, exclude: ['excluded'], overflowApi: false },
-      { category: 'auto', difficulty: 2, exclude: [], overflowApi: false },
+      { category: 'auto', difficulty: 4, exclude: ['excluded'], escalate: false, overflowApi: false, providers: null },
+      { category: 'auto', difficulty: 2, exclude: [], escalate: false, overflowApi: false, providers: null },
     ]);
   } finally { terminal.resolve(); }
   const out = await pending;
@@ -855,6 +855,37 @@ test('run_plan forwards current session flags to recommendations and every task,
   });
 });
 
+test('run_plan routes per-task categories without defaults like delegate', async () => {
+  const session = 'plan-pick-parity';
+  setSessionFlags(session, { overflowApi: true, parallelOverride: false });
+  const matchingInput = { title: 'debug task', spec: 'same prompt', category: 'debug', difficulty: 3, isolate: true };
+  calls.length = 0;
+  const delegateReport = await handler('delegate', session)({ ...matchingInput, background: true });
+  const delegatedId = /^Task (\S+)/.exec(delegateReport)?.[1];
+  assert.ok(delegatedId, delegateReport);
+  const delegateOptions = calls.at(-1);
+
+  calls.length = 0;
+  const planReport = await handler('run_plan', session)({ goal: 'Route each task', stages: [{ id: 'work', tasks: [
+    matchingInput,
+    { title: 'test task', spec: 'test prompt', category: 'test', difficulty: 2, isolate: true },
+  ] }] });
+  const planId = /^Plan (\S+)/.exec(planReport)?.[1];
+  assert.ok(planId, planReport);
+  const record = readJson(statePath('plans', `${planId}.json`));
+  assert.equal(record.status, 'done', planReport);
+  assert.deepEqual(calls[0], delegateOptions, 'same task input reaches recommend with the same options as delegate');
+  assert.deepEqual(calls.map(({ category, difficulty }) => [category, difficulty]), [['debug', 3], ['test', 2]]);
+  assert.deepEqual(record.stages.work.tasks.map(({ status }) => status), ['done', 'done']);
+  assert.deepEqual(record.stages.work.tasks.map(({ id }) => {
+    const task = getTask(id);
+    return { category: task.category, difficulty: task.difficulty, provider: task.provider, model: task.model };
+  }), [
+    { category: 'debug', difficulty: 3, provider: pick.provider, model: pick.model },
+    { category: 'test', difficulty: 2, provider: pick.provider, model: pick.model },
+  ]);
+});
+
 test('delegate resolves retry ancestry through follow-ups and excludes every prior selection', async () => {
   const original = attempt();
   const retry = attempt({ model: 'fallback', retryOf: original.id });
@@ -1134,7 +1165,7 @@ test('L48: startedAt is captured first; for_each cannot target itself; until_dry
   assert.ok(out.startedAt <= out.finishedAt);
 });
 
-test('P10: an unroutable input does not dispatch siblings', async () => {
+test('P10: an unroutable input does not prevent eligible siblings from running', async () => {
   const created = [];
   const out = await runPlan({ stages: [
     { id: 'find', tasks: [
@@ -1147,15 +1178,17 @@ test('P10: an unroutable input does not dispatch siblings', async () => {
     recommend(input) { return input.category === 'refused' ? null : { provider: 'recommended', model: 'qualified', effort: 'medium' }; },
     taskRuntime: {
       createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
-      awaitTask() { assert.fail('no task was created'); },
+      async awaitTask(id) { return { id, status: 'done', result: { finalMessage: 'Finished' } }; },
       getTask() { assert.fail('no task was created'); },
     },
   });
-  assert.equal(created.length, 0);
+  assert.deepEqual(created.map((task) => task.spec), ['explicit', 'automatic']);
   assert.equal(out.status, 'incomplete');
-  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['no_worker', 'no_worker', 'no_worker']);
+  assert.deepEqual(out.stages.find.tasks.map((t) => t.status), ['done', 'no_worker', 'done']);
+  assert.match(out.stages.find.tasks[1].error, /No worker is available for refused@2: nothing is proven at this level yet/);
   assert.equal(out.stages.later, undefined);
   assert.match(out.report, /Incomplete: no worker/);
+  assert.match(out.report, /nothing is proven at this level yet/);
 });
 
 test('L22: the first quality failure after a failover is still the value fallback, not an escalation', async () => {
