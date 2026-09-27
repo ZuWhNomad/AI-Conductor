@@ -44,6 +44,12 @@ function agyModelArg(model, effort) {
   return model; // unknown model: dispatch the id as-is rather than a bogus one
 }
 
+/** Threshold above which a vendor CLI prompt goes to stdin or --prompt-file instead of argv (Windows argv cap 32767). */
+export function promptFileThreshold(id, cfg = loadConfig()) {
+  const v = cfg?.providers?.[id]?.promptFileThreshold;
+  return Number.isInteger(v) && v > 0 ? Math.min(30000, v) : 8000;
+}
+
 const WIN = process.platform === 'win32';
 const home = homedir();
 const first = (paths) => paths.find((p) => p && existsSync(p)) || null;
@@ -178,9 +184,9 @@ export const VENDORS = {
     collapseEfforts: true, // Method C: listModels folds …-low/-medium/-high into one family model exposing efforts:[low,medium,high]
     // Long prompts: omit `-p`. agy 1.2.8's `-p` (alias of --print) takes the prompt as its value, so
     // `-p --output-format` swallows `--output-format`. `--input-format text` reads stdin. No --prompt-file.
-    // Threshold is grok's 8000 (same file) — Windows CreateProcess argv cap is 32767.
+    // Threshold is promptFileThreshold (default 8000) — Windows CreateProcess argv cap is 32767.
     headlessArgs: (t) => {
-      const long = !!(t.prompt && t.prompt.length > 8000);
+      const long = !!(t.prompt && t.prompt.length > promptFileThreshold('antigravity'));
       const args = [];
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
@@ -241,7 +247,7 @@ export const VENDORS = {
       if (t.sandbox === 'read-only') args.push('--permission-mode', 'plan');
       else args.push('--always-approve');
       let cleanup = null;
-      if (t.prompt && t.prompt.length > 8000) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt, { mode: 0o600 }); args.push('--prompt-file', pf); cleanup = () => { try { unlinkSync(pf); } catch {} }; } // removed after the run so the full prompt doesn't linger in %TEMP%
+      if (t.prompt && t.prompt.length > promptFileThreshold('grok')) { const pf = join(tmpdir(), `grok-prompt-${randomUUID()}.txt`); writeFileSync(pf, t.prompt, { mode: 0o600 }); args.push('--prompt-file', pf); cleanup = () => { try { unlinkSync(pf); } catch {} }; } // removed after the run so the full prompt doesn't linger in %TEMP%
       else args.push('-p', t.prompt);
       let threadId = null;
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
@@ -277,9 +283,9 @@ export const VENDORS = {
     efforts: [],
     // Qwen Code 0.23.3 supports --resume <id>; --continue resumes only the most recent project session.
     // Long prompts: omit the positional query; `--input-format text` (default) consumes stdin (qwen 0.23.3 --help:
-    // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: grok's 8000.
+    // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: promptFileThreshold (default 8000).
     headlessArgs: (t) => {
-      const long = !!(t.prompt && t.prompt.length > 8000);
+      const long = !!(t.prompt && t.prompt.length > promptFileThreshold('qwen-code'));
       const args = long ? ['-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd]
         : [t.prompt, '-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd];
       if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
@@ -308,9 +314,9 @@ export const VENDORS = {
     // kimi 1.50: `--print` = non-interactive with auto-approval. `--output-format stream-json` is on
     // `kimi --help` (1.50). Session resume via --session <id> (ids come from `kimi export`).
     // Long prompts: drop `-p` (valued flag) and pipe stdin; `--input-format` "must be piped in via stdin"
-    // (kimi 1.50 --help; Print.run reads stdin when `-p` is omitted). No --prompt-file. Threshold: grok's 8000.
+    // (kimi 1.50 --help; Print.run reads stdin when `-p` is omitted). No --prompt-file. Threshold: promptFileThreshold (default 8000).
     headlessArgs: (t) => {
-      const long = !!(t.prompt && t.prompt.length > 8000);
+      const long = !!(t.prompt && t.prompt.length > promptFileThreshold('kimi'));
       const args = ['--print', '-w', t.cwd, '--output-format', 'stream-json'];
       if (t.sandbox === 'read-only') args.push('--plan');
       else args.push('--yolo');
