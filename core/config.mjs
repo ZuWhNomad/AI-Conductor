@@ -84,10 +84,10 @@ export const DEFAULTS = {
     // installs it once the provider is idle (verified, rolled back on failure). Claude is the Agent SDK in package.json:
     // only `conductor cli-update claude` in a dev checkout bumps it, so its 'auto' acts as 'notify'.
     codex: { cliUpdate: 'notify' },
-    antigravity: { cliUpdate: 'notify' },
-    grok: { cliUpdate: 'notify' },
-    'qwen-code': { cliUpdate: 'notify' },
-    kimi: { cliUpdate: 'notify' },
+    antigravity: { cliUpdate: 'notify', promptFileThreshold: 8000 },
+    grok: { cliUpdate: 'notify', promptFileThreshold: 8000 },
+    'qwen-code': { cliUpdate: 'notify', promptFileThreshold: 8000 },
+    kimi: { cliUpdate: 'notify', promptFileThreshold: 8000 },
     claude: { cliUpdate: 'notify' },
   },
   review: { everyDays: 0 },           // 0 = manual only
@@ -225,6 +225,12 @@ function normalize(cfg, raw = {}) {
   }
   for (const [name, def] of Object.entries(DEFAULTS.providers)) {
     if ('cliUpdate' in def && !CLI_UPDATE_MODES.includes(cfg.providers[name]?.cliUpdate)) cfg.providers[name].cliUpdate = def.cliUpdate;
+  }
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    if (plain(p) && ('promptFileThreshold' in p || DEFAULTS.providers[name]?.promptFileThreshold)) {
+      const def = DEFAULTS.providers[name]?.promptFileThreshold ?? 8000;
+      p.promptFileThreshold = (!Number.isInteger(p.promptFileThreshold) || p.promptFileThreshold <= 0) ? def : Math.min(30000, p.promptFileThreshold);
+    }
   }
   for (const [name, s] of Object.entries(cfg.mcpServers)) {
     if (s === false) { cfg.mcpServers[name] = null; continue; } // legacy removal spelling

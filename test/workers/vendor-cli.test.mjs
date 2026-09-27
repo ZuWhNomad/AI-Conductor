@@ -264,6 +264,31 @@ test('antigravity: a 40k prompt uses --input-format text and does not pass -p; s
   assert.ok(!short.stdinPrompt);
 });
 
+test('configured promptFileThreshold changes the long-prompt decision for vendor CLI', async () => {
+  const { saveConfig, loadConfig } = await import('../../core/config.mjs');
+  const { promptFileThreshold } = await import('../../core/providers/vendors.mjs');
+  const prev = loadConfig().providers?.grok?.promptFileThreshold ?? 8000;
+  const prompt = 'x'.repeat(5000);
+  try {
+    const def = VENDORS.grok.headlessArgs({ prompt, cwd: 'F:/ws' });
+    assert.ok(def.args.includes('-p') && !def.args.includes('--prompt-file'));
+    def.cleanup?.();
+
+    saveConfig({ providers: { grok: { promptFileThreshold: 3000 } } });
+    assert.equal(promptFileThreshold('grok'), 3000);
+    const configured = VENDORS.grok.headlessArgs({ prompt, cwd: 'F:/ws' });
+    assert.ok(!configured.args.includes('-p') && configured.args.includes('--prompt-file'));
+    configured.cleanup?.();
+
+    saveConfig({ providers: { grok: { promptFileThreshold: 45000 } } });
+    assert.equal(loadConfig().providers.grok.promptFileThreshold, 30000);
+    saveConfig({ providers: { grok: { promptFileThreshold: -10 } } });
+    assert.equal(loadConfig().providers.grok.promptFileThreshold, 8000);
+  } finally {
+    saveConfig({ providers: { grok: { promptFileThreshold: prev } } });
+  }
+});
+
 test('vendor runner sends the prompt on stdin when headlessArgs sets stdinPrompt', async () => {
   const script = `let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:s}}));});`;
   const spec = { id: 'fake', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script], stdinPrompt: true }), parse: VENDORS.antigravity.parse };
