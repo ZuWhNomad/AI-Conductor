@@ -37,6 +37,11 @@ test('new-chat toggles wrap inside the sidebar', () => {
   assert.match(html, /<div class="row between wrap"><span id="new-selection"/);
 });
 
+test('running progress uses clipped transform animation', () => {
+  assert.match(css, /\.task \.prog \{[^}]*overflow: hidden/);
+  assert.match(css, /@keyframes slide \{ 0% \{ transform: translateX\(-100%\); \} 100% \{ transform: translateX\(250%\); \} \}/);
+});
+
 test('bare slash lists commands; model suggestions need a query', () => {
   const start = app.indexOf('function cmdItemsFor(query)');
   const code = app.slice(start, app.indexOf('/** Open only', start));
@@ -49,7 +54,7 @@ test('bare slash lists commands; model suggestions need a query', () => {
 });
 
 test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable' }, async (t) => {
-  const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run',
+  const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run', '--no-sandbox',
     '--remote-debugging-port=0', `--user-data-dir=${join(HOME, 'browser')}`, 'about:blank'],
   { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   const exited = once(browser, 'exit');
@@ -291,6 +296,22 @@ test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWS
       })()
     `);
     assert.equal(evicted, true);
+  });
+  await t.test('fleet keeps task counts without a local spend reading', async () => {
+    const result = await evaluate(`
+      (() => {
+        S.current = null;
+        S.tasks = [
+          { id: 'run', status: 'running', provider: 'codex', title: 'Running' },
+          { id: 'queue', status: 'queued', provider: 'codex', title: 'Queued' },
+          { id: 'done', status: 'done', provider: 'codex', title: 'Done', finishedAt: new Date().toISOString(), pctWindow: 9 },
+        ];
+        renderTasks();
+        return { counts: $('#fleet-counts').textContent, spend: $('#fleet-budget')?.textContent ?? null };
+      })()
+    `);
+    assert.match(result.counts, /1 running.*1 queued.*1 done today/);
+    assert.equal(result.spend, null);
   });
   // Keep reviewable renders outside the product tree; show the phone's off-canvas sidebar too.
   await evaluate(`document.body.classList.remove('fleet-collapsed');`);

@@ -560,41 +560,6 @@ function renderFleetHead() {
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
   }
-  const todays = mine.filter((t) => (t.status === 'done' || t.status === 'failed') && isToday(t.finishedAt || t.updatedAt));
-  const box = $('#fleet-budget'); box.innerHTML = '';
-  if (!todays.length) {
-    const bl = el('div', 'bl'); bl.append(el('span', null, 'spent today'), el('span', null, '$0.00'));
-    box.append(bl);
-    return;
-  }
-  const byProv = new Map();
-  for (const t of todays) {
-    const p = t.provider || 'other';
-    if (!byProv.has(p)) byProv.set(p, []);
-    byProv.get(p).push(t);
-  }
-  for (const [prov, provTasks] of byProv.entries()) {
-    const usd = provTasks.reduce((a, t) => a + (t.result?.costUsd || 0), 0);
-    const wk = provTasks.reduce((a, t) => {
-      if (!t.pctWindow) return a;
-      const tStart = Date.parse(t.startedAt || t.updatedAt || 0);
-      const tEnd = Date.parse(t.finishedAt || t.updatedAt || 0);
-      let conc = 1;
-      if (tStart && tEnd && tEnd > tStart) {
-        const overlaps = provTasks.filter((o) => {
-          const oStart = Date.parse(o.startedAt || o.updatedAt || 0);
-          const oEnd = Date.parse(o.finishedAt || o.updatedAt || 0);
-          return oStart && oEnd && Math.max(tStart, oStart) < Math.min(tEnd, oEnd);
-        }).length;
-        if (overlaps > 0) conc = overlaps;
-      }
-      return a + (t.pctWindow / conc);
-    }, 0);
-    const bl = el('div', 'bl');
-    bl.append(el('span', null, `${prov} today`), el('span', null, `${wk > 0 ? wk.toFixed(1) + '% · ' : ''}$${usd.toFixed(2)}`));
-    const m = el('div', 'meter'); const i = el('i'); i.style.width = Math.min(100, wk) + '%'; m.append(i);
-    box.append(bl, m);
-  }
 }
 function lastAction(t) {
   const log = S.workerLog.get(t.id);
@@ -666,7 +631,7 @@ async function openSession(id) {
   const buffered = S.bufferedEvents || [];
   S.bufferedEvents = null;
   S.current = s; localStorage.setItem('lastSession', id);
-  $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = `${s.cwd} · ${s.selection || ''}`;
+  $('#chat-title').textContent = s.title || 'New chat'; $('#chat-cwd').textContent = s.cwd;
   refreshHeaderPicker(); renderChip(); renderBudget(); $('#bypass').checked = s.permissionMode === 'bypassPermissions'; if ($('#overflow')) $('#overflow').checked = !!s.overflowApi; if ($('#parallel')) $('#parallel').checked = !!s.parallelOverride;
   setStatus(s.status);
   renderHistory(s.messages || []);
@@ -917,7 +882,7 @@ function onSessionEvent(ev) {
       renderChip();
       renderBudget();
       $('#chat-title').textContent = S.current.title || 'New chat';
-      $('#chat-cwd').textContent = `${S.current.cwd} · ${S.current.selection || ''}`;
+      $('#chat-cwd').textContent = S.current.cwd;
       if ($('#bypass')) $('#bypass').checked = S.current.permissionMode === 'bypassPermissions';
       if ($('#overflow')) $('#overflow').checked = !!S.current.overflowApi;
       if ($('#parallel')) $('#parallel').checked = !!S.current.parallelOverride;
@@ -1040,9 +1005,8 @@ function openSettings() {
   for (const id of ['codex', 'antigravity', 'grok', 'qwen-code', 'kimi', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
   field('Local SD URL', 'providers.sd.baseUrl', c.providers.sd.baseUrl);
   body.append(grid);
-  body.append(el('div', 'tiny muted', 'Login for subscriptions happens in a terminal:  claude auth login   ·   codex login'));
   const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
-  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; if (st.behind) { $('#btn-update').hidden = false; $('#btn-update').textContent = `⬇ Update (${st.behind})`; } } catch (e) { updOut.textContent = e.message; } };
+  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } };
   body.append(upd, updOut);
   const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
   doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
@@ -1159,8 +1123,6 @@ async function openScores() {
   const eligibility = el('div', 'row');
   const sel = el('input'); sel.placeholder = 'provider:model:effort'; sel.setAttribute('aria-label', 'Eligibility selection');
   const category = el('select'); category.setAttribute('aria-label', 'Eligibility category');
-  for (const name of ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other']) { const o = el('option', null, name); o.value = name; category.append(o); }
-  category.value = 'read';
   const reason = el('input'); reason.placeholder = 'reason'; reason.setAttribute('aria-label', 'Eligibility reason');
   const block = el('button', 'sm danger', 'Block'); const allow = el('button', 'sm', 'Allow'); const eligibilityStatus = el('span', 'tiny muted');
   eligibility.append(sel, category, reason, block, allow, eligibilityStatus);
@@ -1195,6 +1157,11 @@ async function openScores() {
     try {
       const [sc, bn] = await Promise.all([api.get(archived.checked ? '/api/scores?archived=1' : '/api/scores'), benchData === undefined ? api.get('/api/bench').catch(() => null) : benchData]);
       benchData = bn; title.textContent = archived.checked ? 'Archived scores' : 'Scores (measured worker selection)'; scores.textContent = sc.text || '(no rated runs yet)'; renderGrid(sc.grid);
+      if (sc.grid?.length) {
+        const selected = category.value;
+        category.replaceChildren(...sc.grid.map((row) => { const o = el('option', null, row.category); o.value = row.category; return o; }));
+        if (sc.grid.some((row) => row.category === selected)) category.value = selected;
+      }
       benchedTitle.hidden = benched.hidden = !(sc.benched || []).length;
       benched.textContent = (sc.benched || []).map((c) => `${c.selection} ${c.category}@${c.level}: q${c.quality.toFixed(2)}, n=${c.n}, ${c.last ? String(c.last).slice(0, 10) : '-'}`).join('\n');
       eligibility.hidden = archived.checked;

@@ -11,8 +11,9 @@ const openScores = source.slice(start, source.indexOf('\n// ---------- boot', st
 test('scores modal archived toggle requests and displays the archived score view', async () => {
   const nodes = [], gets = [];
   const el = (tag, cls, text) => {
-    const node = { tag, className: cls || '', textContent: text ?? '', children: [], hidden: false, checked: false, type: '',
+    const node = { tag, className: cls || '', textContent: text ?? '', children: [], hidden: false, checked: false, type: '', value: '',
       append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
       setAttribute(name, value) { this[name] = value; },
     };
     nodes.push(node); return node;
@@ -26,7 +27,7 @@ test('scores modal archived toggle requests and displays the archived score view
         { level: 1, status: 'pick', selection: 'codex:luna:low', quality: 1, evidenceSource: 'bench', shipped: true, n: 3, last: '2026-09-27' },
         { level: 2, status: 'capped', selections: ['codex:terra:medium'], resetAt: Date.parse('2026-09-28T00:00:00Z') },
         { level: 3, status: 'no-data' }, { level: 4, status: 'no-data' }, { level: 5, status: 'no-data' },
-      ] }],
+      ] }, ...['research', 'writing', 'video-extraction'].map((category) => ({ category, levels: [] }))],
       benched: [{ selection: 'codex:bad:low', category: 'read', level: 1, quality: 0, n: 3, last: '2026-09-27' }],
     }; } },
   };
@@ -37,6 +38,8 @@ test('scores modal archived toggle requests and displays the archived score view
   assert.ok(nodes.some((n) => n.tag === 'table' && n.className === 'score-grid'));
   assert.ok(nodes.some((n) => /shipped bench · n=3/.test(n.textContent)));
   assert.ok(nodes.some((n) => /codex:bad:low read@1/.test(n.textContent)));
+  assert.deepEqual(nodes.find((n) => n['aria-label'] === 'Eligibility category').children.map((n) => n.value),
+    ['read', 'research', 'writing', 'video-extraction']);
   toggle.checked = true;
   await toggle.onchange();
   assert.deepEqual(gets, ['/api/scores', '/api/bench', '/api/scores?archived=1']);
