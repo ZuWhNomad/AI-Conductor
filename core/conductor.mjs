@@ -272,6 +272,8 @@ async function pump(s, q) {
   const abort = s.abort; // captured: stop() clears s.abort before the catch below runs
   try {
     for await (const m of q) {
+      // An SDK-initiated turn (subagent wake) has no user message: mark running on first non-result event.
+      if (m.type !== 'result' && s.status === 'idle') { s.status = 'running'; emit(s, 'status', { status: 'running' }); }
       if (m.type === 'system' && m.subtype === 'init') {
         s.sdkSessionId = m.session_id; s.updatedAt = nowIso(); persistAll();
         emit(s, 'init', { sdkSessionId: m.session_id, model: m.model, permissionMode: m.permissionMode, tools: m.tools?.length || 0, agents: m.agents || [] });
