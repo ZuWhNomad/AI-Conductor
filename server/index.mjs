@@ -19,7 +19,7 @@ import { listTasks, cancelChain, getTask, publicTask, schedule, createTask, abor
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { summarize, formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
+import { summarize, formatScores, migrateScorecard, EFFORTS, scorecardModelId } from '../core/scorecard.mjs';
 import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
@@ -394,7 +394,7 @@ export async function doctorReport() {
 }
 
 export function unpricedModels(reg = getModels()) {
-  return (reg.models || []).filter((m) => m.kind === 'agent' && m.provider !== 'ollama' && priceFor(m.provider, m.id) == null).map((m) => m.id);
+  return (reg.models || []).filter((m) => m.kind === 'agent' && m.provider !== 'ollama' && priceFor(m.provider, scorecardModelId(m.id)) == null).map((m) => m.id);
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */

@@ -254,6 +254,16 @@ test('doctor reports registry agent models without a price, except local ollama'
   } finally { reg.models = models; }
 });
 
+test('doctor price check normalizes the [1m] model suffix before config lookup', async () => {
+  const { loadConfig } = await import('../../core/config.mjs');
+  const prices = loadConfig().scorecard.prices;
+  saveConfig({ scorecard: { prices: { ...prices, 'fixture:priced-base': { in: 1, out: 2 } } } });
+  try {
+    const reg = { models: [{ provider: 'fixture', id: 'priced-base[1m]', kind: 'agent' }] };
+    assert.deepEqual((await import('../../server/index.mjs')).unpricedModels(reg), []);
+  } finally { saveConfig({ scorecard: { prices } }); }
+});
+
 test('auto-update idle gate: empty is not enough, it must also have been quiet', () => {
   const now = 1_000_000, quietMs = 15 * 60_000;
   assert.equal(isIdle({ runningSessions: 0, openTasks: 0, lastActivity: now - 60_000, now, quietMs }), false);   // a driver posted a minute ago

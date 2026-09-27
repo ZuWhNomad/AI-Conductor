@@ -139,10 +139,9 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           // Count attempts once, keeping the latest review rounds while resolving each attempt's retry link.
           const visited = new Set();
           for (let f = failed; f && !visited.has(f.id);) {
-            const failover = !!f.reroutedFrom || (!!f.retryOf && getTask(f.retryOf)?.failedOverTo === f.id); // rerouted tasks, plus legacy failover records
-            const quota = !!f.limitHit || f.status === 'canceled'; // a limit hit or a (quota) cancel says nothing about the model
-            // A provider-limit handoff, cutoff, cancel, or never-started task is not a quality escalation.
-            if (!failover && !quota && (f.attempts || 0) > 0) { depth++; root = f; }
+            // A provider-limit cutoff or never-started task is not a quality escalation. A replacement that ran and
+            // failed on quality still counts, even though reroutedFrom records that it arrived via a limit handoff.
+            if (!f.limitHit && (f.attempts || 0) > 0) { depth++; root = f; }
             while (f && !visited.has(f.id)) {
               visited.add(f.id);
               if ((f.attempts || 0) > 0 && !f.limitHit) exclude.push(selOf(f));

@@ -36,6 +36,28 @@ test('value-fallback path: the first retry is a value rung and is NOT counted as
   assert.equal(S({ hasFailed: true, depth: 4, rootRounds: 0 }).blocked, true);
 });
 
+test('a quality failure after a limit handoff counts toward retry escalation depth', async () => {
+  const { createTask, cancelTask } = await import('../core/tasks.mjs');
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const dir = tmpDir('limit-handoff-depth');
+  const previous = loadConfig().worker.escalationRounds;
+  const original = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'codex', model: 'gpt-5.6-luna' }, { dispatch: false });
+  const replacement = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'ollama', model: 'qwen', reroutedFrom: original.id }, { dispatch: false });
+  const retry = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'codex', model: 'gpt-5.6-terra', retryOf: replacement.id }, { dispatch: false });
+  Object.assign(original, { status: 'failed', attempts: 1, limitHit: true, failedOverTo: replacement.id });
+  Object.assign(replacement, { status: 'failed', attempts: 1 });
+  Object.assign(retry, { status: 'failed', attempts: 1 });
+  saveConfig({ worker: { escalationRounds: 0 } });
+  try {
+    const delegate = conductorToolDefs({ sessionId: 'limit-handoff-depth', cwd: dir }).find((d) => d.name === 'delegate').handler;
+    const reply = await delegate({ title: 'retry', spec: 'x', category: 'edit', retry_of: retry.id, background: true });
+    assert.match(reply, /Escalation budget spent/, 'the replacement quality failure must make the next retry an escalation');
+  } finally {
+    saveConfig({ worker: { escalationRounds: previous } });
+    for (const task of [original, replacement, retry]) cancelTask(task.id);
+  }
+});
+
 test('escalationRounds 0 disables escalation: the reviewed worker hands straight to the conductor', () => {
   const s = escalationState({ hasFailed: true, depth: 1, rootRounds: 3, failedRounds: 3, maxRounds: 3, escRounds: 0 });
   assert.equal(s.escalate, true); assert.equal(s.blocked, true); // escalate would apply, but the budget is 0 -> blocked now

@@ -61,6 +61,17 @@ test('envFailure identifies provider and CLI environment failures without scanni
   ]) assert.ok(sc.envFailure({ error }), error);
 });
 
+test('HTTP 502 and 504 gateway responses are provider environment failures', () => {
+  for (const error of ['502 Bad Gateway', 'HTTP 504 Gateway Timeout']) assert.ok(sc.envFailure({ error }), error);
+});
+
+test('CLI flag rejection is environmental only for the worker CLI error, not workspace command output', () => {
+  for (const output of ["error: unknown option '--flag'", "error: unexpected argument 'bar'"]) {
+    assert.ok(sc.envFailure({ error: output }), `worker CLI error: ${output}`);
+    assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output }] } }), null, `workspace output: ${output}`);
+  }
+});
+
 test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna').tier, 'B');
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier, 'B');   // code: Terminal-Bench 84.7
@@ -1090,6 +1101,17 @@ test('A2: Claude uses reported list cost, cells expose priced share, and chains 
   assert.match(sc.formatScores({ source }), /\(3\/4 priced\)/);
 });
 
+test('chain cost estimates an untagged step using the chain category and difficulty', () => {
+  const source = 'chain-cost-inherited-tags';
+  run({ id: `${source}-history`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'test', difficulty: 2 });
+  run({ id: `${source}-head`, source, category: 'test', difficulty: 2 });
+  run({ id: `${source}-tail`, source, model: 'gpt-5.6-terra', effort: 'medium', category: null, difficulty: null, retryOf: `${source}-head`, result: { durationMs: 1 } });
+  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-head`);
+  assert.equal(chain.attempts[1].usd, null);
+  assert.equal(chain.partialCost, false);
+  assert.ok(chain.usd > chain.attempts[0].usd);
+});
+
 test('a ladder with an unpriced step ranks as cost unknown after priced plans', () => {
   const cfg = loadConfig().scorecard;
   try {
@@ -1565,6 +1587,16 @@ test('D8: short view memo key includes a future provider reset but not a past on
   const base = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now - 1 }] } } };
   const future = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now + 60_000 }] } } };
   assert.notEqual(sc.shortMemoKey({ source: 'D8', limits: base, now }), sc.shortMemoKey({ source: 'D8', limits: future, now }));
+});
+
+test('short view memo key changes when a model-scoped confirmed limit expires', () => {
+  const now = Date.parse('2026-09-23T10:30:00Z');
+  const blockedUntil = now + 60_000;
+  const limits = { updatedAt: 'confirmed-limit', providers: { codex: { windows: [], confirmedLimit: { blockedUntil } } } };
+  assert.notEqual(
+    sc.shortMemoKey({ source: 'confirmed-limit', limits, now }),
+    sc.shortMemoKey({ source: 'confirmed-limit', limits, now: blockedUntil + 1 }),
+  );
 });
 
 test('L2: the latest rating across a root and follow-up decides the attempt verdict', () => {

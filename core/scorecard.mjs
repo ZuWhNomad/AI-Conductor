@@ -51,23 +51,27 @@ const LEGACY_ENV_FAILURES = [
   'Incorrect API key provided', 'refresh token was already used',
 ];
 const PROVIDER_ENV_FAILURES = [
-  '\\b(?:HTTP\\s*)?50[0234]\\b(?=.{0,48}\\b(?:status|error|unavailable)\\b)',
-  '\\b(?:status|error|unavailable)\\b.{0,48}\\b50[0234]\\b',
+  '\\b(?:HTTP\\s*)?50[0234]\\b(?=.{0,48}\\b(?:status|error|unavailable|bad gateway|gateway timeout)\\b)',
+  '\\b(?:status|error|unavailable|bad gateway|gateway timeout)\\b.{0,48}\\b50[0234]\\b',
   'status["\'\\s:=]+UNAVAILABLE\\b', // gRPC-style status; a bare "unavailable" in tool output is not a provider error
-  '\\b(?:unknown option|unexpected argument)\\b', '\\brequires --\\w+', "\\binvalid value for '--",
   'WinError 32', '\\bEBUSY\\b',
   'CUDA out of memory', 'CUDA error', 'llama-server', 'cudaMalloc',
   'quota rejected', 'rejected task at startup',
 ];
-export const ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES].join('|'), 'i');
+const CLI_ENV_FAILURES = ['\\b(?:unknown option|unexpected argument)\\b', '\\brequires --\\w+', "\\binvalid value for '--"];
+export const ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES, ...CLI_ENV_FAILURES].join('|'), 'i');
+const RESULT_ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES].join('|'), 'i');
 const FINAL_MESSAGE_ENV_FAIL = new RegExp(LEGACY_ENV_FAILURES.join('|'), 'i');
 /** A worker or provider failure that belongs to the environment, not the model. */
 export function envFailure(t) {
   if (t.failKind === 'auth' || t.failKind === 'env') return `${t.failKind === 'auth' ? 'sign-in' : 'harness'}: ${String(t.error || '').slice(0, 160)}`;
-  const providerTexts = [t.error || '', ...(t.result?.items || []).map((i) => i.text || i.output || '')].map(String);
+  const error = String(t.error || '');
+  const errorHit = error.match(ENV_FAIL)?.[0];
+  if (errorHit) return errorHit;
+  const providerTexts = (t.result?.items || []).map((i) => String(i.text || i.output || ''));
   const finalMessage = String(t.result?.finalMessage || '');
-  const hit = providerTexts.find((text) => ENV_FAIL.test(text)) || (FINAL_MESSAGE_ENV_FAIL.test(finalMessage) ? finalMessage : null);
-  return hit ? hit.match(ENV_FAIL)?.[0] || hit.match(FINAL_MESSAGE_ENV_FAIL)?.[0] : null;
+  const hit = providerTexts.find((text) => RESULT_ENV_FAIL.test(text));
+  return hit?.match(RESULT_ENV_FAIL)?.[0] || finalMessage.match(FINAL_MESSAGE_ENV_FAIL)?.[0] || null;
 }
 
 /** Snapshot of a provider's limit windows, taken before a run for the after-run delta. */
@@ -297,7 +301,7 @@ function rootRunsUncached({ source = null } = {}) {
     if (!priced) c.usd = null;
     else {
       for (const a of c.attempts) if (a.usd == null) {
-        const estimate = attemptMeans.get([a.sel, a.category, a.difficulty].join('|'));
+        const estimate = attemptMeans.get([a.sel, a.category || c.category, a.difficulty || c.difficulty].join('|'));
         if (estimate == null) { c.partialCost = true; break; }
         usd += estimate;
       }
@@ -754,6 +758,7 @@ const nextBlockEnd = (limits, now) => {
   const ends = [];
   for (const p of Object.values(limits.providers || {})) {
     if (Number.isFinite(p?.blockedUntil) && p.blockedUntil > now) ends.push(p.blockedUntil);
+    if (Number.isFinite(p?.confirmedLimit?.blockedUntil) && p.confirmedLimit.blockedUntil > now) ends.push(p.confirmedLimit.blockedUntil);
     for (const w of p?.windows || []) if (Number.isFinite(w.resetsAt) && w.resetsAt > now) ends.push(w.resetsAt);
   }
   return ends.length ? Math.min(...ends) : null;
