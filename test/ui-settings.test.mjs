@@ -9,8 +9,10 @@ import { DEFAULTS } from '../core/config.mjs';
 const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('function openSettings()');
 const settings = source.slice(start, source.indexOf('\nfunction ', start + 1));
-function render(config = structuredClone(DEFAULTS)) {
+function render(config = structuredClone(DEFAULTS), updateResponse = null) {
   const nodes = [], posts = [];
+  const state = { config, providers: [], update: null };
+  const updates = [];
   const el = (tag, cls, text) => {
     let value = '';
     const node = { tag, className: cls, textContent: text, children: [], id: '', type: '', style: {},
@@ -23,15 +25,25 @@ function render(config = structuredClone(DEFAULTS)) {
     nodes.push(node); return node;
   };
   runInNewContext(settings + '\nopenSettings();', {
-    S: { config, providers: [] }, el, $: (selector) => nodes.find((n) => '#' + n.id === selector),
+    S: state, el, $: (selector) => nodes.find((n) => '#' + n.id === selector),
     Option: function (text, value) { const n = el('option', null, text); n.value = value; return n; },
     setTimeout() {}, openModal() {}, closeModal() {}, renderProviders() {}, applyAutoRefresh() {}, refreshNewPicker() {},
+    renderUpdate: () => updates.push(state.update),
     act: (fn) => fn(),
     pickerValue: (prefix) => prefix === 'wk-' ? config.worker : config.conductor,
-    api: { post: async (path, patch) => { posts.push({ path, patch: structuredClone(patch) }); return config; } },
+    api: { get: async () => updateResponse, post: async (path, patch) => { posts.push({ path, patch: structuredClone(patch) }); return config; } },
   });
-  return { field: (id) => nodes.find((n) => n.id === 'cfg-' + id), save: () => nodes.find((n) => n.textContent === 'Save').onclick(), posts, nodes };
+  return { field: (id) => nodes.find((n) => n.id === 'cfg-' + id), save: () => nodes.find((n) => n.textContent === 'Save').onclick(), posts, nodes, state, updates };
 }
+
+test('Settings update check refreshes header state', async () => {
+  const response = { git: true, branch: 'main', head: 'abc', behind: 2 };
+  const view = render(structuredClone(DEFAULTS), response);
+  assert.equal(view.nodes.some((n) => String(n.textContent).includes('Login for subscriptions happens in a terminal')), false);
+  await view.nodes.find((n) => n.textContent === 'Check for updates (GitHub)').onclick();
+  assert.equal(view.state.update, response);
+  assert.deepEqual(view.updates, [response]);
+});
 
 test('Settings shows the configured update policy and no guessed Grok hour', async () => {
   const view = render();
