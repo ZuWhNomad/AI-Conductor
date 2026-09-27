@@ -767,7 +767,7 @@ function unlinkIsolateLinks(sourceRoot, worktreeDir, taskCwd) {
 async function prepareIsolation(t) {
   const root = findGitRoot(t.cwd);
   if (!root) throw new Error('isolate: cwd is not inside a git repo');
-  if (t.isolation?.dir && existsSync(t.isolation.dir)) { linkWorktreeDeps(root, t.isolation.dir, t); return isolatedCwd(t); }
+  if (t.isolation?.dir && existsSync(t.isolation.dir)) { await linkIsolateDirs(t, root, t.isolation.dir); return isolatedCwd(t); }
   const dir = t.isolation?.dir || statePath('worktrees', chainRootId(t));
   mkdirSync(statePath('worktrees'), { recursive: true });
   let base = t.isolation?.base;
@@ -789,7 +789,7 @@ async function finishIsolation(t, runCwd) {
     catch { await gitExec(dir, ['switch', branch]); }
     t.isolation.branch = branch;
   }
-  await gitExec(dir, ['add', '-A', '--', '.', ':(exclude)node_modules', ':(exclude).venv']);
+  await gitExec(dir, ['add', '-A']);
   let committed = false;
   try {
     await gitExec(dir, ['commit', '-m', `${t.title} (conductor task ${t.id})`], 120_000);
