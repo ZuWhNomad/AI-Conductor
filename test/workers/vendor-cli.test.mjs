@@ -506,12 +506,18 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
   let seenCwd = null;
   let seenSandbox = 'initial';
   let seenPrompt = null;
+  let seenWritableRoots = 'unset';
+  const extraRoot = tmpDir('vendor-snap-extra');
+  const leakPath = join(cwd, 'leaked.txt');
   const script = `
     const fs = require('node:fs');
+    const path = require('node:path');
     const tracked = fs.readFileSync('tracked.txt', 'utf8').trim();
     const hasUntracked = fs.existsSync('untracked.txt');
-    fs.writeFileSync('stray.txt', 'stray file content');
+    fs.mkdirSync(path.join('nested', 'deep'), { recursive: true });
+    fs.writeFileSync(path.join('nested', 'deep', 'stray.txt'), 'nested stray');
     fs.writeFileSync('tracked.txt', 'mutated in snapshot');
+    fs.writeFileSync(${JSON.stringify(leakPath)}, 'leaked to original');
     console.log(JSON.stringify({
       event: 'result',
       result: {
@@ -529,31 +535,40 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
       seenCwd = t.cwd;
       seenSandbox = t.sandbox;
       seenPrompt = t.prompt;
+      seenWritableRoots = t.writableRoots;
       return { args: ['-e', script], threadId: null };
     },
     parse: VENDORS.antigravity.parse,
   };
 
-  const r = await runVendorCli(spec, { id: 'snap-1', cwd, sandbox: 'read-only', prompt: 'audit code' });
+  const r = await runVendorCli(spec, { id: 'snap-1', cwd, sandbox: 'read-only', prompt: 'audit code', writableRoots: [extraRoot] });
   assert.equal(r.ok, true, r.error);
   // Ran in snapshot directory, not original repo
   assert.notEqual(seenCwd, cwd);
   assert.equal(seenSandbox, undefined, 'runs in normal (non-plan) mode in snapshot');
-  assert.match(seenPrompt, /You are working in a disposable snapshot/);
-  assert.match(seenPrompt, /report paths relative to the project root/);
-  assert.match(seenPrompt, /Do not read or write the original directory/);
+  assert.deepEqual(seenWritableRoots, [], 'snapshot runs clear writableRoots so agy gets no --add-dir for original dirs');
+  assert.match(seenPrompt, /This is a disposable snapshot of the project/);
+  assert.match(seenPrompt, /Use project-relative paths/);
+  assert.match(seenPrompt, /Nothing may be written outside the snapshot/);
+  assert.equal(seenPrompt.includes(cwd), false, 'preamble must not name the original cwd');
   assert.match(seenPrompt, /audit code/);
 
   // Observed tracked changes inside snapshot, but untracked files are not in snapshot
   assert.match(r.finalMessage, /tracked=v2-dirty/);
   assert.match(r.finalMessage, /untracked=false/);
 
-  // Stray files (both newly created and modified tracked) are listed in the final report
-  assert.match(r.finalMessage, /Stray files in snapshot:.*stray\.txt/);
+  // Nested untracked files are listed individually (--untracked-files=all); modified tracked too
+  assert.match(r.finalMessage, /Stray files in snapshot:.*nested[/\\]deep[/\\]stray\.txt/);
   assert.match(r.finalMessage, /Stray files in snapshot:.*tracked\.txt/);
 
-  // Project itself is untouched: stray.txt does NOT exist in original cwd, and dirty tracked file is preserved
+  // Writes into the original repo are reported and left in place
+  assert.match(r.finalMessage, /Stray writes to the project during a read-only run:.*leaked\.txt/);
+  assert.doesNotMatch(r.finalMessage, /Stray writes to the project during a read-only run:.*untracked\.txt/);
+  assert.equal(readFileSync(leakPath, 'utf8'), 'leaked to original');
+
+  // Snapshot-only writes did not land in the original cwd; dirty tracked file is preserved
   assert.equal(existsSync(join(cwd, 'stray.txt')), false);
+  assert.equal(existsSync(join(cwd, 'nested')), false);
   assert.equal(readFileSync(join(cwd, 'tracked.txt'), 'utf8'), 'v2-dirty\n');
   assert.equal(readFileSync(join(cwd, 'untracked.txt'), 'utf8'), 'untracked\n');
 
