@@ -53,7 +53,7 @@ function scheduleResetPoll() {
 }
 
 /** Session/5-hour windows (the conductor's classCap applies to these; weekly/budget windows do not). */
-export const isSession = (w) => /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
+export const isSession = (w) => w.scope ? w.scope === 'session' : /hour|session/i.test(w.label || '') || !!(w.windowMinutes && w.windowMinutes <= 600);
 
 let restatHold = 0;
 /** The registry, re-read when another process (a smoke run, `conductor limits`, a helper script) wrote limits.json since we last did. */
@@ -141,6 +141,14 @@ export const windowModels = (w) => w?.models || (w?.id?.startsWith('model:') ? (
 const modelScoped = (w) => !!windowModels(w);
 const globalWindowBlocks = (w) => !modelScoped(w) && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
 
+function scopeWindow(w) {
+  if (w.scope) return w;
+  if (windowModels(w)) return { ...w, scope: 'model' };
+  if (/hour|session/i.test(w.label || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes <= 600)) return { ...w, scope: 'session' };
+  if (/week/i.test(w.label || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes >= 10080)) return { ...w, scope: 'weekly' };
+  return { ...w, scope: 'other' };
+}
+
 function anchorPattern(s) {
   const p = String(s || '');
   if (p.startsWith('^') || p.endsWith('$')) return p;
@@ -216,7 +224,8 @@ function preserveConfirmedLimit(prev, merged, r, before) {
 }
 
 export function mergePoll(prev, r, before = prev, observed = new Set()) {
-  const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !modelScoped(w))) : null };
+  const normalized = { ...r, ...(Array.isArray(r.windows) ? { windows: r.windows.map(scopeWindow) } : {}) };
+  const merged = { ...normalized, blockedUntil: normalized.blocked ? earliestReset(normalized.windows?.filter((w) => !modelScoped(w))) : null };
   if (observed.has(HTTP)) {
     delete merged.httpRetryUntil;
     if (prev.last429At != null) merged.last429At = prev.last429At;
@@ -225,10 +234,10 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
   }
   // Preserve only windows observed since this poll began, including allowed transitions.
   const live = (prev.windows || []).filter((w) => observed.has(w.id));
-  if (live.length) merged.windows = [...(r.windows || []).filter((w) => !observed.has(w.id)), ...live];
+  if (live.length) merged.windows = [...(normalized.windows || []).filter((w) => !observed.has(w.id)), ...live.map(scopeWindow)];
   if (observed.has(BLOCK) || live.some((w) => !modelScoped(w))) {
     const full = (merged.windows || []).filter(globalWindowBlocks);
-    const independentBlock = merged.blocked && !(r.windows || []).some(globalWindowBlocks) && !observed.has(BLOCK);
+    const independentBlock = merged.blocked && !(normalized.windows || []).some(globalWindowBlocks) && !observed.has(BLOCK);
     // Window-derived aggregate blocks have no reason; window-backed rejections are already in full.
     const liveBlock = observed.has(BLOCK) && prev.blocked && prev.blockedReason && prev.blockedReason !== '429'
       && !full.some((w) => w.id === prev.blockedReason);
@@ -241,7 +250,7 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
   // A poll started before a newer 429 cannot establish recovery from that rejection either.
   const recovered = !observed.has(HTTP) && before.last429At === prev.last429At && before.blockedUntil === prev.blockedUntil
     && before.httpRetryUntil === prev.httpRetryUntil
-    && r.windows?.some((w) => w.id === 'requests' && !modelScoped(w) && w.status !== 'rejected'
+    && normalized.windows?.some((w) => w.id === 'requests' && !modelScoped(w) && w.status !== 'rejected'
       && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100
       && (!w.resetsAt || w.resetsAt > Date.now()));
   if (prev.blocked && httpUntil > Date.now() && !recovered) {
@@ -252,7 +261,9 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
       merged.httpRetryUntil = httpUntil; // Keep the HTTP deadline even while a stronger poll block takes precedence.
     }
   }
-  return preserveConfirmedLimit(prev, merged, r, before);
+  const result = preserveConfirmedLimit(prev, merged, normalized, before);
+  if (Array.isArray(result.windows)) result.windows = result.windows.map(scopeWindow);
+  return result;
 }
 
 /** Persist a worker-confirmed usage-limit hit. Existing HTTP/SDK blocks remain authoritative. */
@@ -272,7 +283,7 @@ export function noteLimitHit(providerId, { model = null, retryAfterMs = null, re
   let until = retryUntil && retryUntil < windowUntil ? retryUntil : windowUntil;
   until = Math.max(until, existing || 0, p.confirmedLimit?.blockedUntil || 0);
   if (!targets.length) {
-    const synthetic = { id: `${providerId}:estimated`, label: 'estimated usage', usedPercent: 0, resetsAt: until, estimated: true };
+    const synthetic = scopeWindow({ id: `${providerId}:estimated`, label: 'estimated usage', usedPercent: 0, resetsAt: until, estimated: true });
     p.windows = [...(p.windows || []), synthetic]; targets = [synthetic];
   }
   const previous = p.confirmedLimit?.windows || [];
@@ -318,7 +329,8 @@ export function noteLimitAvailable(providerId, model = null, startedAt = null) {
 /** Live update from an SDK rate_limit_event (claude) — cheaper and fresher than polling. */
 export function noteRateLimitEvent(providerId, info) {
   getLimits();
-  const w = windowFromEvent(info);
+  const rawWindow = windowFromEvent(info);
+  const w = rawWindow && scopeWindow(rawWindow);
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
   if (w) {
     if (info.status === 'rejected' && !w.resetsAt) w.resetsAt = Date.now() + blockedMs();
@@ -403,7 +415,7 @@ export function noteHttp(providerId, status, headers = {}) {
       if (status === 429) resetsAt = p.blockedUntil; // Retry-After deadline, so the window does not become a 30-min park
       else if (Number(rem) === 0) resetsAt = now + 60_000; // same brief backoff as a header-less 429
     }
-    const reqWindow = { id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt, rate: true };
+    const reqWindow = scopeWindow({ id: 'requests', label: 'requests', usedPercent: Math.round(100 * (1 - Number(rem) / Number(lim))), resetsAt, rate: true });
     const wasRequestBlock = p.blocked && !p.blockedReason && (p.windows || []).some((w) => w.id === 'requests' && globalWindowBlocks(w));
     // Merge by id — other windows (e.g. DeepSeek budget) must not be discarded.
     p.windows = [...(p.windows || []).filter((w) => w.id !== 'requests'), reqWindow];

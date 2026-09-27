@@ -8,6 +8,12 @@ const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedU
 const { normalizeUsage, windowFromEvent, familyRe } = await import('../core/providers/anthropic.mjs');
 const { PROVIDERS } = await import('../core/providers/index.mjs');
 
+function assertStoredEvent(actual, info, scope) {
+  const { scope: actualScope, ...window } = actual;
+  assert.deepEqual(window, windowFromEvent(info));
+  assert.equal(actualScope, scope);
+}
+
 test('quota groups are derived from the windows that meter each model', () => {
   const id = 'quota-groups';
   getLimits().providers[id] = { provider: id, windows: [
@@ -70,7 +76,7 @@ for (const scenario of [
       getLimits().providers = originalState;
     });
     const id = 'fake-freshness', reset = Date.now() + 60_000;
-    const usage = (usedPercent) => ({ provider: id, blocked: false, windows: [{ id: 'weekly', usedPercent, resetsAt: reset }] });
+    const usage = (usedPercent) => ({ provider: id, blocked: false, windows: [{ id: 'weekly', usedPercent, resetsAt: reset, scope: 'other' }] });
     const initial = usage(10);
     getLimits().providers = { [id]: initial };
     const old = Promise.withResolvers(), newer = Promise.withResolvers(), slow = Promise.withResolvers();
@@ -142,7 +148,7 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         ctx.mock.method(Date, 'now', () => now);
         const info = { rateLimitType, status, utilization: status === 'rejected' ? 1 : 0, resetsAt: reset };
         const initial = { ...info, status: status === 'rejected' ? 'allowed' : 'rejected', utilization: status === 'rejected' ? 0.2 : 1 };
-        const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset };
+        const unrelated = { id: 'seven_day_haiku', models: 'haiku', usedPercent: 10, resetsAt: reset, scope: 'model' };
         const poll = Promise.withResolvers(), entered = Promise.withResolvers(), slow = Promise.withResolvers();
         PROVIDERS[id] = { id, pollLimits: () => { entered.resolve(); return poll.promise; } };
         PROVIDERS[slowId] = { id: slowId, pollLimits: () => slow.promise };
@@ -150,12 +156,12 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         noteRateLimitEvent(id, initial);
         const stale = {
           provider: id, blocked: rateLimitType === 'five_hour' && status === 'allowed',
-          windows: [windowFromEvent(initial), { ...unrelated, usedPercent: 40 }],
+          windows: [{ ...windowFromEvent(initial), scope: rateLimitType === 'five_hour' ? 'session' : 'model' }, { ...unrelated, usedPercent: 40 }],
         };
         const refresh = refreshLimits({ only: [id, slowId] });
         const assertEvent = () => {
           const p = getLimits().providers[id];
-          assert.deepEqual(p.windows.find((w) => w.id === rateLimitType), windowFromEvent(info));
+          assertStoredEvent(p.windows.find((w) => w.id === rateLimitType), info, rateLimitType === 'five_hour' ? 'session' : 'model');
           assert.equal(modelBlockedUntil(id, 'claude-sonnet'), status === 'rejected' ? reset : null);
           assert.equal(modelBlockedUntil(id, 'claude-haiku'), status === 'rejected' && rateLimitType === 'five_hour' ? reset : null);
           assert.equal(p.blocked, status === 'rejected' && rateLimitType === 'five_hour');
@@ -216,7 +222,7 @@ for (const rateLimitType of ['seven_day_sonnet', 'five_hour']) {
         poll.resolve({ provider: id, blocked: rateLimitType === 'five_hour', windows: [windowFromEvent({ rateLimitType, status: 'rejected', utilization: 1, resetsAt })] });
         await refresh;
         assert.equal(modelBlockedUntil(id, 'sonnet'), null, 'stale rejection cannot resurrect after recovery to zero');
-        assert.deepEqual(getLimits().providers[id].windows, [windowFromEvent(allowed)]);
+        assertStoredEvent(getLimits().providers[id].windows[0], allowed, rateLimitType === 'five_hour' ? 'session' : 'model');
       } finally {
         poll.resolve({ provider: id, blocked: false, windows: [] }); await refresh;
         delete PROVIDERS[id]; delete getLimits().providers[id];
@@ -296,7 +302,7 @@ for (const scenario of [
     const warning = { rateLimitType: scenario.rateLimitType, status: 'allowed_warning', utilization: 0.9, resetsAt: reset };
     const assertState = () => {
       const p = getLimits().providers[id];
-      assert.deepEqual(p.windows.find((w) => w.id === warning.rateLimitType), windowFromEvent(warning));
+      assertStoredEvent(p.windows.find((w) => w.id === warning.rateLimitType), warning, warning.rateLimitType === 'five_hour' ? 'session' : 'model');
       assert.equal(modelBlockedUntil(id, 'claude-sonnet'), scenario.blocked ? reset : null);
       assert.equal(p.blocked, scenario.blocked);
       assert.equal(p.blockedUntil, scenario.blocked ? reset : null);
@@ -370,7 +376,7 @@ test('newer HTTP requests exhaustion and recovery survive pending polls, then fr
     noteHttp(id, 200, headers(10));
     assert.equal(modelBlockedUntil(id, 'model'), null, 'recovery clears the request-derived provider block immediately');
     const recovered = { ...getLimits().providers[id].windows[0] };
-    const stale = { provider: id, blocked: true, windows: [exhausted, { id: 'budget', usedPercent: 40 }] };
+    const stale = { provider: id, blocked: true, windows: [exhausted, { id: 'budget', usedPercent: 40, scope: 'other' }] };
     poll.resolve(stale);
     await refresh;
     assert.equal(modelBlockedUntil(id, 'model'), null, 'older request exhaustion cannot resurrect');
@@ -498,7 +504,8 @@ test('only usable unscoped request windows can clear an active HTTP block', () =
     const result = mergePoll(prev, { ...empty, windows });
     assert.equal(result.blockedUntil, prev.blockedUntil);
     assert.equal(result.blockedReason, '429');
-    assert.deepEqual(result.windows, windows);
+    assert.deepEqual(result.windows.map(({ scope, ...w }) => w), windows);
+    assert.deepEqual(result.windows.map((w) => w.scope), windows.map((w) => w.models ? 'model' : 'other'));
   }
 });
 
@@ -792,7 +799,7 @@ test('poll merging keeps the stronger global block without globalizing model quo
   for (const reset of [until - 1, until + 1]) {
     const result = mergePoll(prev, { blocked: true, windows: [{ id: 'requests', usedPercent: 100, resetsAt: reset }, scoped] });
     assert.equal(result.blockedUntil, Math.max(until, reset));
-    assert.deepEqual(result.windows[1], scoped);
+    assert.deepEqual(result.windows[1], { ...scoped, scope: 'model' });
     assert.equal(mergePoll(result, { blocked: false, windows: [{ id: 'deepseek:budget', usedPercent: 0 }] }).blockedUntil, until);
   }
   const indefinite = mergePoll(prev, { blocked: true, blockedReason: 'balance exhausted', windows: [] });
@@ -1408,6 +1415,41 @@ test('I13: isSession is the session-window predicate', async () => {
   assert.equal(isSession({ windowMinutes: 300 }), true);
   assert.equal(isSession({ label: 'weekly', windowMinutes: 10080 }), false);
   assert.equal(isSession({ label: 'requests' }), false);
+  assert.equal(isSession({ scope: 'session', label: 'weekly' }), true);
+  assert.equal(isSession({ scope: 'weekly', label: '5-hour' }), false);
+  assert.equal(isSession({ scope: 'model', windowMinutes: 300 }), false);
+});
+
+test('polled and event windows are tagged with their usage scope', async () => {
+  const { refreshLimits } = await import('../core/limits.mjs');
+  const id = 'scope-source-test', priorProvider = PROVIDERS[id], priorLimits = getLimits().providers[id];
+  PROVIDERS[id] = { id, pollLimits: async () => ({ provider: id, blocked: false, windows: [
+    { id: 'five_hour', label: '5-hour', windowMinutes: 300, usedPercent: 20 },
+    { id: 'seven_day', label: 'weekly', windowMinutes: 10080, usedPercent: 30 },
+    { id: 'seven_day_opus', label: 'weekly Opus', models: 'opus', windowMinutes: 10080, usedPercent: 40 },
+    { id: 'deepseek:budget', label: 'budget USD 5.00', usedPercent: 50 },
+    { id: 'provider-scope', label: '5-hour', scope: 'weekly', usedPercent: 60 },
+  ] }) };
+  try {
+    await refreshLimits({ only: [id] });
+    const p = getLimits().providers[id];
+    assert.deepEqual(p.windows.map(({ id: windowId, scope }) => [windowId, scope]), [
+      ['five_hour', 'session'],
+      ['seven_day', 'weekly'],
+      ['seven_day_opus', 'model'],
+      ['deepseek:budget', 'other'],
+      ['provider-scope', 'weekly'],
+    ]);
+
+    for (const [rateLimitType, scope] of [['five_hour', 'session'], ['seven_day', 'weekly'], ['seven_day_opus', 'model']]) {
+      const event = { rateLimitType, status: 'allowed', utilization: 0.25 };
+      noteRateLimitEvent(id, event);
+      assertStoredEvent(getLimits().providers[id].windows.find((w) => w.id === rateLimitType), event, scope);
+    }
+  } finally {
+    if (priorProvider) PROVIDERS[id] = priorProvider; else delete PROVIDERS[id];
+    if (priorLimits) getLimits().providers[id] = priorLimits; else delete getLimits().providers[id];
+  }
 });
 
 test('P7: withLimitsSnapshot skips restat until the callback returns', async () => {

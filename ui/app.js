@@ -178,10 +178,10 @@ function renderProviders() {
 }
 
 // ---------- budget headline ----------
-/** A window's scope: prefer an explicit `scope`, then windowMinutes (<=300 session / >=10080 weekly), then labels. */
+/** A window's scope: use the server tag, then infer for older persisted windows. */
 function windowScope(w) {
-  if (w.scope === 'session' || w.scope === 'weekly') return w.scope;
-  if (typeof w.windowMinutes === 'number') return w.windowMinutes <= 300 ? 'session' : w.windowMinutes >= 10080 ? 'weekly' : null;
+  if (w.scope) return w.scope;
+  if (typeof w.windowMinutes === 'number') return w.windowMinutes <= 600 ? 'session' : w.windowMinutes >= 10080 ? 'weekly' : null;
   const s = `${w.label || ''} ${w.id || ''}`;
   if (/weekly|seven[_ -]?day|7[_ -]?day/i.test(s)) return 'weekly';
   if (/5[_ -]?hour|\b5h\b|session|\bhour\b/i.test(s)) return 'session';
