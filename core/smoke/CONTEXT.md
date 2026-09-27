@@ -9,13 +9,14 @@ deterministic check.
 
 **Entry points.** `runSmoke({ models, tasks })` in `index.mjs` (used by the `smoke_test` conductor
 tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the task definitions); `private/` (reference solutions, hidden tests,
-mutants: see its `CONTEXT.md`); `formatSmoke(results)`.
+mutants: see its `CONTEXT.md`); `formatSmoke(results)`. `research-4` and `research-5` are difficulty-4 filing packs:
+`setup` writes long synthetic documents, and the answer is graded in the worker's reply.
 
 **Invariants.**
 - One task at a time per run, so the before/after limit delta belongs to that task.
 - Every entry has `setup`, `check` and a reference `solve`; `test/smoke/smoke.test.mjs` proves each check
   fails on the untouched fixture and passes on the reference solution. Keep that true when adding tasks.
-- Ids are `category-level`; difficulty 1–5 follows the rubric in `core/policy/prompts/conductor.md`. Levels
+- Ids are `category-level` (the id suffix is the difficulty), except `research-5`, a second difficulty-4 research task whose suffix is the benchmark number. Difficulty 1–5 follows the rubric in `core/policy/prompts/conductor.md`. Levels
   1–3 are sanity checks almost every model passes; 4–5 (`implement-4` evaluator, `test-4` mutant-killing
   suite, `debug-5` async pool) are where ceilings show. Levels 6–7 (`refactor-6` speed under an equivalence
   contract, `implement-6` unified-diff applier, `implement-7` streaming multipart parser, `debug-7` async-cache
