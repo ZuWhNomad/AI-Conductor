@@ -55,6 +55,7 @@ export const DEFAULTS = {
     escalationRounds: 2,              // after maxRounds fail: attempts on the best AVAILABLE model (scorecard top-quality, filtered by limits) before the conductor does the task itself. 0 = skip escalation (straight to the conductor)
     msw: true,                        // append the MSW kernel (core/policy/prompts/msw.md) to every worker preamble
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
+    toolResultLowWater: 0.5,          // after tool-result trimming, leave this fraction of the char budget full
     maxTurns: 500,                    // tool turns per Claude-harness worker task
     maxTurnsLocal: 60,                // tool turns for a local (Ollama-via-Claude-harness) worker task — smaller models loop more, so cap lower
     timeoutMinutes: 0,                // per worker run; 0 = off
@@ -250,6 +251,7 @@ function normalize(cfg, raw = {}) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
+  if (!Number.isFinite(cfg.worker.toolResultLowWater) || cfg.worker.toolResultLowWater < 0 || cfg.worker.toolResultLowWater >= 1) cfg.worker.toolResultLowWater = DEFAULTS.worker.toolResultLowWater;
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch
   delete cfg.worker.resumeMaxAgeHours; // interrupted work is durable; age no longer cancels it at startup

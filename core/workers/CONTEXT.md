@@ -6,6 +6,10 @@ working notes belong in the user's notes location, **never in this repo** — a 
 **Purpose.** A worker runs one task (a spec in a cwd) on a given provider and returns a common result. One runner
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
 
+**Prompt caching.** The OpenAI-compatible loop keeps request prefixes stable: old tool results are stubbed only when the
+full ones exceed the budget, down to `worker.toolResultLowWater` of it (so requests are append-only between trims), and
+it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_cache_key` on api.openai.com).
+
 **Entry points.**
 - `index.mjs` — `runWorker(task)` picks the runner by the provider's `kind` (codex, claude, ollama,
   openai-compat, image, vendor-cli). Local Ollama-via-Claude-harness gets `worker.maxTurnsLocal`.

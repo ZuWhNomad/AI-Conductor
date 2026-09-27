@@ -10,6 +10,54 @@ import { loadConfig, saveConfig } from '../../core/config.mjs';
 const { runOpenAICompat, fetchUrlText } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
 
+function oldStub(messages, budget = 120_000) {
+  const idxs = [];
+  const out = messages.map((m, i) => { if (m.role === 'tool') idxs.push(i); return m; });
+  let used = 0;
+  for (let k = idxs.length - 1; k >= 0; k--) {
+    const i = idxs[k], content = String(out[i].content ?? '');
+    if (used + content.length <= budget) { used += content.length; continue; }
+    out[i] = { ...out[i], content: content.startsWith('[output trimmed:') ? content : `[output trimmed: ${content.length} chars]` };
+    used += out[i].content.length;
+  }
+  return out;
+}
+
+function prefixChars(a, b) {
+  let i = 0;
+  while (i < a.length && i < b.length && JSON.stringify(a[i]) === JSON.stringify(b[i])) i++;
+  return { count: i, chars: JSON.stringify(a.slice(0, i)).length };
+}
+
+// Cacheable chars are the predecessor request's chars; watermark-advance pairs are the stated exception.
+function prefixRatio(bodies, { ignoreAdvances = false } = {}) {
+  let preserved = 0, total = 0;
+  for (let i = 0; i + 1 < bodies.length; i++) {
+    const prefix = prefixChars(bodies[i].messages, bodies[i + 1].messages);
+    if (ignoreAdvances && prefix.count < bodies[i].messages.length) continue;
+    preserved += prefix.chars;
+    total += JSON.stringify(bodies[i].messages).length;
+  }
+  return preserved / total;
+}
+
+function oldFixtureBodies(calls = 12, resultChars = 40_000) {
+  const messages = [{ role: 'system', content: 'system' }, { role: 'user', content: 'x' }];
+  const bodies = [];
+  for (let i = 0; i <= calls; i++) {
+    bodies.push({ messages: oldStub(messages) });
+    if (i < calls) {
+      messages.push({ role: 'assistant', tool_calls: [{ id: `c${i + 1}`, function: { name: 'blob', arguments: JSON.stringify({ n: i + 1 }) } }] });
+      messages.push({ role: 'tool', tool_call_id: `c${i + 1}`, content: 'Z'.repeat(resultChars) });
+    } else messages.push({ role: 'assistant', content: 'done' });
+  }
+  return bodies;
+}
+
+function printPrefixRatios(before, after) {
+  process.stdout.write(`P8a prefix ratio before=${before.toFixed(4)} after=${after.toFixed(4)}\n`);
+}
+
 test('cancellation between tool calls prevents the next tool from running', async (ctx) => {
   const ac = new AbortController(); const ran = [];
   ctx.mock.method(globalThis, 'fetch', async () => Response.json({ choices: [{ message: { role: 'assistant', tool_calls: ['first', 'second'].map((name) => ({ id: name, function: { name, arguments: '{}' } })) } }] }));
@@ -197,6 +245,79 @@ test('runWorker persists and replays conversation history for API worker follow-
     { role: 'user', content: 'Follow up second' },
     { role: 'assistant', content: 'response to Follow up second' }
   ]);
+});
+
+test('P8a: tool-result watermark preserves prefixes and persists the last request plus final batch', async (ctx) => {
+  const bodies = [];
+  let n = 0;
+  const big = 'Z'.repeat(40_000);
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    n++;
+    return n <= 12 ? reply(toolCall('blob', JSON.stringify({ n }), `c${n}`)) : reply({ content: 'done' });
+  });
+  const r = await runOpenAICompat({ ...base, extraTools: [{ def: { name: 'blob', parameters: { type: 'object' } }, impl: () => big }] });
+  assert.equal(r.ok, true);
+  assert.equal(bodies.length, 13);
+
+  let advances = 0;
+  for (let i = 0; i + 1 < bodies.length; i++) {
+    const prev = bodies[i].messages, next = bodies[i + 1].messages;
+    const prefix = prefixChars(prev, next);
+    if (prefix.count < prev.length) {
+      advances++;
+      assert.equal(next[prefix.count].role, 'tool');
+      assert.match(next[prefix.count].content, /^\[output trimmed: 40000 chars\]$/);
+    }
+  }
+  assert.ok(advances <= Math.ceil((12 * big.length) / ((1 - 0.5) * 120_000)));
+  const before = prefixRatio(oldFixtureBodies());
+  const after = prefixRatio(bodies, { ignoreAdvances: true });
+  printPrefixRatios(before, after);
+  assert.ok(after >= 0.9);
+  assert.ok(after > before);
+  assert.deepEqual(r.messages.slice(0, bodies.at(-1).messages.length), bodies.at(-1).messages);
+});
+
+test('P8a: cache routing is provider-specific and the worker thread key survives follow-ups', async (ctx) => {
+  const seen = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    seen.push({ headers: { ...opts.headers }, body: JSON.parse(opts.body) });
+    return reply({ content: 'done' });
+  });
+  await runOpenAICompat({ ...base, provider: 'xai', baseUrl: 'https://api.x.ai/v1', cacheKey: 'conv-direct' });
+  await runOpenAICompat({ ...base, provider: 'openai', baseUrl: 'https://api.openai.com/v1', cacheKey: 'conv-openai' });
+  await runOpenAICompat({ ...base, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', cacheKey: 'conv-deepseek' });
+  assert.equal(seen[0].headers['x-grok-conv-id'], 'conv-direct');
+  assert.equal(seen[0].body.prompt_cache_key, undefined);
+  assert.equal(seen[1].body.prompt_cache_key, 'conv-openai');
+  assert.equal(seen[1].headers['x-grok-conv-id'], undefined);
+  assert.equal(seen[2].body.prompt_cache_key, undefined);
+  assert.equal(seen[2].headers['x-grok-conv-id'], undefined);
+
+  const oldKey = loadConfig().providers.xai.apiKey;
+  saveConfig({ providers: { xai: { apiKey: 'test-only' } } });
+  const workerSeen = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    workerSeen.push({ ...opts.headers });
+    return reply({ content: 'done' });
+  });
+  try {
+    const { runWorker } = await import('../../core/workers/index.mjs');
+    const first = await runWorker({ id: 'cache-task-1', cwd: tmpDir('cache1'), prompt: 'first', provider: 'xai' });
+    await runWorker({ id: 'cache-task-2', threadId: first.threadId, cwd: tmpDir('cache2'), prompt: 'second', provider: 'xai' });
+  } finally { saveConfig({ providers: { xai: { apiKey: oldKey || null } } }); }
+  assert.deepEqual(workerSeen.map((h) => h['x-grok-conv-id']), ['cache-task-1', 'cache-task-1']);
+});
+
+test('P8a: tool-result low-water config accepts a fraction below one and resets invalid values', () => {
+  const old = loadConfig().worker.toolResultLowWater;
+  try {
+    saveConfig({ worker: { toolResultLowWater: 1 } });
+    assert.equal(loadConfig().worker.toolResultLowWater, 0.5);
+    saveConfig({ worker: { toolResultLowWater: 0.25 } });
+    assert.equal(loadConfig().worker.toolResultLowWater, 0.25);
+  } finally { saveConfig({ worker: { toolResultLowWater: old } }); }
 });
 
 const reply = (message) => Response.json({ choices: [{ message: { role: 'assistant', ...message } }] });

@@ -35,12 +35,12 @@ export async function runWorker(t, { signal } = {}) {
         r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurnsLocal });
         r.threadId = r.sessionId;
       } else {
-        r = await withLoopHistory(t, (history) => runOpenAICompat({ ...base, baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama', system: t.system, history }));
+        r = await withLoopHistory(t, (history, cacheKey) => runOpenAICompat({ ...base, baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama', system: t.system, history, cacheKey }));
       }
       break;
     }
     case 'openai-compat':
-      r = await withLoopHistory(t, (history) => runOpenAICompat({ ...base, ...p.workerConfig(), system: t.system, history }));
+      r = await withLoopHistory(t, (history, cacheKey) => runOpenAICompat({ ...base, ...p.workerConfig(), system: t.system, history, cacheKey }));
       break;
     case 'image':
       r = await runImage({ ...base, ...p.workerConfig(), ...(t.imageOptions || {}) });
@@ -66,7 +66,7 @@ export async function runWorker(t, { signal } = {}) {
 async function withLoopHistory(t, run) {
   const threadId = t.threadId || t.id;
   const history = t.threadId ? readJson(statePath('history', `${threadId}.worker.json`), null) : null;
-  const r = await run(history?.length ? history : undefined);
+  const r = await run(history?.length ? history : undefined, threadId);
   if (r.messages?.length) { try { writeJson(statePath('history', `${threadId}.worker.json`), r.messages); } catch {} }
   r.threadId = threadId;
   return r;

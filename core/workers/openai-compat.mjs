@@ -227,19 +227,49 @@ function isAbortOrTimeout(e) {
   return name === 'AbortError' || name === 'TimeoutError' || name === 'ToolAborted' || /^(aborted|timeout)$/i.test(msg) || /aborted due to timeout/i.test(msg);
 }
 
-function stubOldToolResults(messages, budget = TOOL_RESULT_CHARS) {
-  const idxs = [];
-  const out = messages.map((m, i) => { if (m.role === 'tool') idxs.push(i); return m; });
+const isStub = (m) => m?.role === 'tool' && String(m.content ?? '').startsWith('[output trimmed:');
+
+function stubWatermark(messages) {
+  const first = messages.findIndex(isStub);
+  return first < 0 ? 0 : first + 1;
+}
+
+function fullToolChars(messages, watermark) {
   let used = 0;
-  for (let k = idxs.length - 1; k >= 0; k--) {
-    const i = idxs[k];
-    const content = String(out[i].content ?? '');
-    if (used + content.length <= budget) { used += content.length; continue; }
-    const stub = content.startsWith('[output trimmed:') ? content : `[output trimmed: ${content.length} chars]`;
-    out[i] = { ...out[i], content: stub };
-    used += stub.length;
+  for (let i = watermark; i < messages.length; i++) {
+    if (messages[i].role === 'tool' && !isStub(messages[i])) used += String(messages[i].content ?? '').length;
   }
-  return out;
+  return used;
+}
+
+function advanceStubWatermark(messages, watermark, budget, lowWater) {
+  let used = fullToolChars(messages, watermark);
+  if (used <= budget) return { watermark, advanced: false };
+  const target = lowWater * budget;
+  for (let i = watermark; i < messages.length && used > target; i++) {
+    const m = messages[i];
+    if (m.role !== 'tool' || isStub(m)) continue;
+    used -= String(m.content ?? '').length;
+    watermark = i + 1;
+  }
+  return { watermark, advanced: true };
+}
+
+function stubOldToolResults(messages, watermark) {
+  return messages.map((m, i) => {
+    if (i >= watermark || m.role !== 'tool') return m;
+    const content = String(m.content ?? '');
+    return isStub(m) ? m : { ...m, content: `[output trimmed: ${content.length} chars]` };
+  });
+}
+
+function cacheRouting(baseUrl, cacheKey) {
+  if (!cacheKey) return {};
+  let host;
+  try { host = new URL(baseUrl).hostname.toLowerCase(); } catch { return {}; }
+  if (host === 'api.x.ai') return { headers: { 'x-grok-conv-id': cacheKey } };
+  if (host === 'api.openai.com') return { body: { prompt_cache_key: cacheKey } };
+  return {};
 }
 
 function waitForRetry(ms, signal, deadline) {
@@ -367,17 +397,27 @@ export async function runOpenAICompat(t) {
   const messages = t.history?.length ? [...t.history] : [{ role: 'system', content: t.system || 'You are a careful software engineer working in the project directory. Use the tools to inspect and change files, run the verification commands, then finish with a short report.' }];
   if (t.prompt) messages.push({ role: 'user', content: t.prompt });
   res.messages = messages;
+  const lowWater = loadConfig().worker.toolResultLowWater;
+  let watermark = stubWatermark(messages);
+  let sentMessages = null;
+  let sentSourceLength = 0;
   try {
     for (let i = 0; i < (t.maxIterations || 150); i++) {
       if (t.signal?.aborted) throw new Error('aborted');
       if (Date.now() > deadline) throw new Error('timeout');
-      const body = { model: t.model, messages: stubOldToolResults(messages), tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false };
+      const advanced = advanceStubWatermark(messages, watermark, TOOL_RESULT_CHARS, lowWater);
+      watermark = advanced.watermark;
+      if (!sentMessages || advanced.advanced) sentMessages = stubOldToolResults(messages, watermark);
+      else sentMessages = [...sentMessages, ...messages.slice(sentSourceLength)];
+      sentSourceLength = messages.length;
+      const routing = cacheRouting(t.baseUrl, t.cacheKey);
+      const body = { model: t.model, messages: sentMessages, tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false, ...routing.body };
       if (t.provider === 'deepseek' && t.effort) {
         body.thinking = { type: t.effort === 'none' ? 'disabled' : 'enabled' };
         if (t.effort !== 'none') body.reasoning_effort = t.effort;
       } else if (t.effort) body.reasoning_effort = t.effort;
       const url = `${t.baseUrl.replace(/\/$/, '')}/chat/completions`;
-      const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}) };
+      const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}), ...routing.headers };
       let r;
       for (let attempt = 1; ; attempt++) {
         if (t.signal?.aborted) throw new Error('aborted');
@@ -448,7 +488,7 @@ export async function runOpenAICompat(t) {
   }
   // Persist stubs for older turns so follow-ups replay a bounded history. Keep this run's last
   // tool batch intact so the caller can read what the tools actually returned.
-  const stubbed = stubOldToolResults(messages);
+  const stubbed = stubOldToolResults(messages, watermark);
   let lastCall = -1;
   for (let i = 0; i < messages.length; i++) if (messages[i].role === 'assistant' && messages[i].tool_calls?.length) lastCall = i;
   const keepFrom = lastCall < 0 ? messages.length : lastCall + 1;
