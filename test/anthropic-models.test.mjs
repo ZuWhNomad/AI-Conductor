@@ -2,7 +2,7 @@ import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { exactModels } = await import('../core/providers/anthropic.mjs');
+const { exactModels, familyRe } = await import('../core/providers/anthropic.mjs');
 
 test('the Claude model list holds exact ids only: aliases become the model they resolve to', () => {
   const sdk = [
@@ -22,4 +22,15 @@ test('the Claude model list holds exact ids only: aliases become the model they 
   assert.deepEqual(by['claude-sonnet-5'].efforts, ['low', 'medium', 'high'], 'the alias entry keeps the efforts the CLI reports');
   assert.equal(by['claude-fable-5-1[1m]'].label, 'Claude Fable 5.1 (1M context)');
   assert.ok(list.every((m) => m.provider === 'claude' && m.kind === 'agent' && !('resolved' in m)));
+});
+
+test('familyRe anchors to word boundaries: claude-opus-5-5 and Opus match, magnum-opusx and octopus do not', () => {
+  assert.equal(familyRe('claude-opus-5-5'), 'opus');
+  assert.equal(familyRe('Opus'), 'opus');
+  assert.equal(familyRe('magnum-opusx'), null);
+  assert.equal(familyRe('octopus'), null);
+  assert.equal(familyRe('claude-sonnet-5'), 'sonnet');
+  assert.equal(familyRe('haiku'), 'haiku');
+  assert.equal(familyRe('claude-fable-5-1'), 'fable');
+  assert.equal(familyRe('fabulous'), null);
 });
