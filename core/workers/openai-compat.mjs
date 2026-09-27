@@ -373,7 +373,10 @@ export async function runOpenAICompat(t) {
       if (t.signal?.aborted) throw new Error('aborted');
       if (Date.now() > deadline) throw new Error('timeout');
       const body = { model: t.model, messages: stubOldToolResults(messages), tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false };
-      if (t.effort) body.reasoning_effort = t.effort;
+      if (t.provider === 'deepseek' && t.effort) {
+        body.thinking = { type: t.effort === 'none' ? 'disabled' : 'enabled' };
+        if (t.effort !== 'none') body.reasoning_effort = t.effort;
+      } else if (t.effort) body.reasoning_effort = t.effort;
       const url = `${t.baseUrl.replace(/\/$/, '')}/chat/completions`;
       const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}) };
       let r;
@@ -407,7 +410,7 @@ export async function runOpenAICompat(t) {
       if (r.status === 401) res.authFailed = true; // a bad or revoked key: the environment, not the model
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 500)}`);
       const j = await r.json();
-      if (j.usage) { res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); }
+      if (j.usage) { res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); res.usage.reasoning_output_tokens = (res.usage.reasoning_output_tokens || 0) + (j.usage.completion_tokens_details?.reasoning_tokens || 0); }
       const msg = j.choices?.[0]?.message;
       if (!msg) throw new Error('empty completion');
       messages.push(msg);

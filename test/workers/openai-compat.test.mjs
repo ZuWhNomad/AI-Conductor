@@ -43,6 +43,32 @@ test('an unlimited task can fetch without a caller signal or timeout', async (ct
   assert.equal((await runOpenAICompat(base)).ok, true);
 });
 
+test('DeepSeek maps each thinking effort while other compatible providers keep reasoning_effort', async (ctx) => {
+  const bodies = [];
+  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => { bodies.push(JSON.parse(opts.body)); return reply({ content: 'done' }); });
+  for (const effort of ['none', 'low', 'high', 'max', undefined]) await runOpenAICompat({ ...base, provider: 'deepseek', effort });
+  await runOpenAICompat({ ...base, provider: 'xai', effort: 'high' });
+
+  assert.deepEqual(bodies.map(({ thinking, reasoning_effort }) => ({ thinking, reasoning_effort })), [
+    { thinking: { type: 'disabled' }, reasoning_effort: undefined },
+    { thinking: { type: 'enabled' }, reasoning_effort: 'low' },
+    { thinking: { type: 'enabled' }, reasoning_effort: 'high' },
+    { thinking: { type: 'enabled' }, reasoning_effort: 'max' },
+    { thinking: undefined, reasoning_effort: undefined },
+    { thinking: undefined, reasoning_effort: 'high' },
+  ]);
+});
+
+test('OpenAI-compatible usage records reasoning tokens without changing completion tokens', async (ctx) => {
+  ctx.mock.method(globalThis, 'fetch', async () => Response.json({
+    choices: [{ message: { role: 'assistant', content: 'done' } }],
+    usage: { prompt_tokens: 11, completion_tokens: 17, completion_tokens_details: { reasoning_tokens: 7 } },
+  }));
+  const r = await runOpenAICompat({ ...base, provider: 'deepseek' });
+  assert.equal(r.usage.output_tokens, 17);
+  assert.equal(r.usage.reasoning_output_tokens, 7);
+});
+
 test('DeepSeek balance parses and providers expose a homepage', async () => {
   const { parseDeepseekBalance } = await import('../../core/providers/openai-compat.mjs');
   const { providerSummaries } = await import('../../core/providers/index.mjs');
@@ -52,6 +78,25 @@ test('DeepSeek balance parses and providers expose a homepage', async () => {
   const sums = providerSummaries();
   assert.equal(sums.find((p) => p.id === 'deepseek').url, 'https://platform.deepseek.com');
   assert.equal(sums.find((p) => p.id === 'codex').url, 'https://chatgpt.com/codex');
+});
+
+test('DeepSeek API-listed chat models expose thinking efforts only for the DeepSeek provider', async (ctx) => {
+  const oldDeepseek = process.env.DEEPSEEK_API_KEY; const oldXai = process.env.XAI_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-only'; process.env.XAI_API_KEY = 'test-only';
+  ctx.mock.method(globalThis, 'fetch', async () => Response.json({ data: [
+    { id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }, { id: 'deepseek-future-chat' }, { id: 'deepseek-embedding' },
+  ] }));
+  const { make } = await import('../../core/providers/openai-compat.mjs');
+  try {
+    const expected = ['none', 'low', 'high', 'max'];
+    const deepseek = await make('deepseek').listModels();
+    assert.deepEqual(deepseek.map((m) => m.id), ['deepseek-flash', 'deepseek-future-chat', 'deepseek-v4-pro']);
+    for (const model of deepseek) assert.deepEqual(model.efforts, expected);
+    assert.deepEqual((await make('xai').listModels()).map((m) => m.efforts), [[], [], []]);
+  } finally {
+    if (oldDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = oldDeepseek;
+    if (oldXai === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = oldXai;
+  }
 });
 
 test('a prepaid balance becomes a budget window (% consumed, $ left)', async () => {

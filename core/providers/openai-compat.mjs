@@ -51,7 +51,7 @@ export function make(pid) {
       if (!r.ok) throw new Error(`${pid}: ${r.status} ${(await r.text()).slice(0, 200)}`);
       const j = await r.json();
       return (j.data || []).map((m) => String(m.id).replace(/^models\//, '')).filter((mid) => !NOT_CHAT.test(mid)).sort()
-        .map((mid) => ({ provider: pid, id: mid, label: mid, description: '', efforts: [], kind: 'agent', cost: 'api' }));
+        .map((mid) => ({ provider: pid, id: mid, label: mid, description: '', efforts: pid === 'deepseek' && mid.startsWith('deepseek-') ? ['none', 'low', 'high', 'max'] : [], kind: 'agent', cost: 'api' }));
     },
     url: c.signup,
     pollLimits: async () => {
