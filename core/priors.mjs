@@ -3,7 +3,10 @@
 // tiers are an *expectation* to compare the scorecard against, and an opt-in routing fallback before
 // any measured data exists. Routing itself stays empirical. Override or add prices in config:
 //   scorecard.prices["provider:model"] = { in, out, cached, write }   ($ per million tokens; write defaults to in*1.25)
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig } from './config.mjs';
+import { REPO_ROOT } from './paths.mjs';
 
 export const AS_OF = '2026-09-09';
 // Tier -> highest difficulty the model is expected to clear (used only by the opt-in prior fallback).
@@ -15,6 +18,51 @@ export const TIER_CEILING = { A: 5, B: 3, C: 2, D: 1 };
 //   reason (review, design, other)                   <- GDPval-AA, HLE, aggregate indices
 // A rule's `tier` is the default; `tiers.{code,read,reason}` override it where the evidence differs.
 export const KIND = { edit: 'code', implement: 'code', test: 'code', refactor: 'code', debug: 'code', ui: 'code', read: 'read', search: 'read', summarize: 'read', docs: 'read', review: 'reason', design: 'reason', drafting: 'visual', modeling: 'visual', other: 'reason' };
+export const PRIORS_FILE = join(REPO_ROOT, 'core', 'policy', 'priors.json');
+
+const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const priorValue = (v) => {
+  if (typeof v === 'string') return /^[A-D]$/.test(v) ? { tier: v } : undefined;
+  if (!plain(v) || (!Object.hasOwn(v, 'tier') && !Object.hasOwn(v, 'effort'))) return undefined;
+  const tier = v.tier === null || /^[A-D]$/.test(v.tier) ? v.tier : null;
+  const effort = typeof v.effort === 'string' ? v.effort : null;
+  return { tier, ...(effort ? { effort } : {}) };
+};
+const lookupTier = (rule, category, kind) => {
+  if (category && Object.hasOwn(rule?.category || {}, category)) return priorValue(rule.category[category]);
+  if (kind === 'visual') return undefined; // visual priors are workload verdicts, never a generic model reputation
+  if (kind && Object.hasOwn(rule?.kind || {}, kind)) return priorValue(rule.kind[kind]);
+  return priorValue(rule?.default);
+};
+
+let shippedTierRules;
+function loadShippedTierRules() {
+  if (shippedTierRules !== undefined) return shippedTierRules;
+  try {
+    const doc = JSON.parse(readFileSync(PRIORS_FILE, 'utf8'));
+    shippedTierRules = Array.isArray(doc?.rules) ? doc.rules.flatMap((r) => {
+      if (!plain(r) || typeof r.match !== 'string') return [];
+      try { return [{ ...r, re: new RegExp(r.match, 'i') }]; } catch { return []; }
+    }) : [];
+  } catch { shippedTierRules = []; }
+  return shippedTierRules;
+}
+
+function configuredPrior(provider, model, category, kind, cfg) {
+  const configured = cfg?.scorecard?.priors || cfg?.priors || {};
+  const entry = configured[key(provider, model)] ?? configured[`${provider}:${model || ''}`];
+  return lookupTier(entry, category, kind);
+}
+
+function shippedPrior(provider, model, category, kind) {
+  const k = key(provider, model);
+  for (const rule of loadShippedTierRules()) {
+    if (!rule.re.test(k)) continue;
+    const value = lookupTier(rule, category, kind);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
 // 3D-modeling / visual-output tasks (STL, CAD, mesh, parametric geometry). No public benchmark covers these,
 // so the only evidence is our own — the cookie-cutter benchmark, judged pass / close / fail. Few models pass, so
@@ -108,18 +156,24 @@ export const PRIORS = [
 const key = (provider, model) => `${provider}:${model || ''}`.toLowerCase();
 
 /** Expectation for a model, for a task category when given: { tier, kind, tb21, swev, gdpval, mrcr, price, note } or null. */
-export function priorFor(provider, model, category = null) {
+export function priorFor(provider, model, category = null, cfg = loadConfig()) {
   const k = key(provider, model);
   const p = PRIORS.find((r) => r.re.test(k));
   const kind = category ? KIND[category] || 'reason' : null;
+  let code;
   if (kind === 'visual') { // no public prior exists; the cookie-cutter benchmark is the only evidence
     const table = VERDICT_TABLES[category]; // each judged workload has its own verdicts; none recorded = nothing routable
     const r = table?.results.find((x) => x.re.test(k));
-    return { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: null };
+    code = { tier: r ? VISUAL_TIER[r.verdict] : null, kind, effort: r?.verdict === 'pass' ? r.effort || null : null, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: p?.price || null, note: null };
+  } else if (p) {
+    const tier = (kind && p.tiers?.[kind]) || p.tier || null;
+    code = { tier, kind, tb21: p.tb21 ?? null, tb20: p.tb20 ?? null, swev: p.swev ?? null, gdpval: p.gdpval ?? null, mrcr: p.mrcr ?? null, price: p.price || null, note: p.note || null };
   }
-  if (!p) return null;
-  const tier = (kind && p.tiers?.[kind]) || p.tier || null;
-  return { tier, kind, tb21: p.tb21 ?? null, tb20: p.tb20 ?? null, swev: p.swev ?? null, gdpval: p.gdpval ?? null, mrcr: p.mrcr ?? null, price: p.price || null, note: p.note || null };
+  const configured = configuredPrior(provider, model, category, kind, cfg);
+  const shipped = shippedPrior(provider, model, category, kind);
+  const override = configured ?? shipped;
+  if (!code && override === undefined) return null;
+  return { ...(code || { kind, tb21: null, tb20: null, swev: null, gdpval: null, mrcr: null, price: null, note: null }), ...(override || {}) };
 }
 
 /** $ per million tokens {in, out, cached}; config `scorecard.prices` overrides the table. null when unknown. */

@@ -511,12 +511,22 @@ test('POST /api/tasks defaults parallelOverride and overflowApi from the session
   await post(`/api/tasks/${explicit.id}/cancel`);
 });
 
-test('GET /api/scores returns only the text the UI reads', async () => {
+test('GET /api/scores returns formatted text and manual eligibility, never the raw summary', async () => {
   const sc = await get('/api/scores');
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
+  assert.ok(Array.isArray(sc.eligibility));
   const archived = await get('/api/scores?archived=1');
   assert.equal(typeof archived.text, 'string');
+});
+
+test('B10: score eligibility HTTP route appends the override and exposes its reason', async () => {
+  const saved = await post('/api/scores/eligibility', { sel: 'fixture:http-model:low', category: 'design', action: 'block', reason: 'owner HTTP decision' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.eligibility.sel, 'fixture:http-model:low');
+  const scores = await get('/api/scores?category=design');
+  assert.ok(scores.eligibility.some((r) => r.sel === 'fixture:http-model:low' && r.reason === 'owner HTTP decision'));
+  assert.match(scores.text, /BLOCK fixture:http-model:low for design: owner HTTP decision/);
 });
 
 test('POST /api/ollama/pull is gone', async () => {

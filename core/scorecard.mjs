@@ -267,6 +267,38 @@ export function runRows() { return loadLedger().rows; }
 // P3: reuse the same cached parse (rate/void rows live in `all`, not in runRows). Callers do not mutate.
 function allRows() { return loadLedger().all; }
 
+const normalizedEligibilitySel = (value) => {
+  const parsed = parseSel(String(value || '').trim());
+  if (!parsed.provider || (!parsed.model && !String(value || '').includes(':default'))) return null;
+  return selOf({ provider: parsed.provider, model: scorecardModelId(parsed.model), effort: parsed.effort });
+};
+const eligibilityKey = (sel, category) => `${String(sel).toLowerCase()}|${category}`;
+
+/** Latest append-only manual routing decision per selection + category. */
+export function eligibilityOverrides({ category = null } = {}) {
+  const latest = new Map();
+  for (const r of allRows()) {
+    if (r.op !== 'eligibility' || !['block', 'allow'].includes(r.action) || !CATEGORIES.includes(r.category)) continue;
+    const sel = normalizedEligibilitySel(r.sel); if (!sel) continue;
+    latest.set(eligibilityKey(sel, r.category), { op: 'eligibility', sel, category: r.category, action: r.action, reason: String(r.reason || ''), ts: r.ts });
+  }
+  return [...latest.values()].filter((r) => !category || r.category === category).sort((a, b) => a.category.localeCompare(b.category) || a.sel.localeCompare(b.sel));
+}
+
+/** Append a manual routing decision. Explicit pins and probe work bypass this; only automatic recommendation reads it. */
+export function setEligibility(sel, category, action, reason) {
+  const normalized = normalizedEligibilitySel(sel);
+  if (!normalized) throw Object.assign(new Error('sel must be provider:model[:effort]'), { status: 400 });
+  if (!CATEGORIES.includes(category)) throw Object.assign(new Error(`category must be one of ${CATEGORIES.join('|')}`), { status: 400 });
+  if (!['block', 'allow'].includes(action)) throw Object.assign(new Error('action must be block|allow'), { status: 400 });
+  const why = String(reason || '').trim();
+  if (!why) throw Object.assign(new Error('reason is required'), { status: 400 });
+  const row = { op: 'eligibility', sel: normalized, category, action, reason: why.slice(0, 400), ts: nowIso() };
+  appendNdjson(FILE(), row);
+  bus.publish('score', { eligibility: row });
+  return row;
+}
+
 let rootRunsMemo = null;
 let summarizeMemo = null;
 
@@ -504,14 +536,18 @@ export function errorRates({ source = null, archived = false } = {}) {
  */
 export function recommend(opts = {}) {
   const explanation = opts.explain ? {} : null;
-  const pick = withLimitsSnapshot(() => recommendPlan({ ...opts, _explain: explanation }));
+  const eligibility = new Map(eligibilityOverrides({ category: opts.category }).map((r) => [eligibilityKey(r.sel, r.category), r]));
+  const pick = withLimitsSnapshot(() => recommendPlan({ ...opts, _explain: explanation, _eligibility: eligibility }));
   if (!opts.explain) return pick;
-  if (pick) return { pick, explain: { status: 'picked', reason: pick.reason, capped: [] } };
-  if (explanation.status) return { pick: null, explain: explanation };
-  return { pick: null, explain: { status: 'no-match', reason: `no qualified selection for ${opts.category}@${opts.difficulty ?? 2}`, capped: [] } };
+  const manualEligibility = [...eligibility.values()];
+  if (pick) return { pick, explain: { status: 'picked', reason: pick.reason, capped: [], manualEligibility } };
+  if (explanation.status) return { pick: null, explain: { ...explanation, manualEligibility } };
+  const blocked = manualEligibility.filter((r) => r.action === 'block');
+  if (blocked.length) return { pick: null, explain: { status: 'eligibility', reason: blocked.map((r) => `${r.sel} manually blocked: ${r.reason}`).join('; '), capped: [], manualEligibility } };
+  return { pick: null, explain: { status: 'no-match', reason: `no qualified selection for ${opts.category}@${opts.difficulty ?? 2}`, capped: [], manualEligibility } };
 }
 
-function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null, _explain = null } = {}) {
+function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null, _explain = null, _eligibility = new Map() } = {}) {
   const cfg = loadConfig().scorecard;
   const archive = archivedSet(cfg);
   const taskDifficulty = _taskDifficulty ?? difficulty;
@@ -546,8 +582,10 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const cellLiveRated = (g) => g.liveRated ?? (g.smokeRated != null ? 0 : g.rated ?? cellLiveN(g));
   const cellSmokeRated = (g) => g.smokeRated ?? 0;
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
+  const decision = (sel) => _eligibility.get(eligibilityKey(sel, category));
+  const manuallyBlocked = (sel) => sel.split('>').some((s) => decision(s)?.action === 'block');
   const gate = passGate(category, reg);
-  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
+  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !manuallyBlocked(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
   // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
   const ceiling = new Map();
   for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
@@ -564,7 +602,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   // Keep the original request's disqualifications when extrapolating; priors cannot override them either.
-  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.benchMinSamples && g.quality < cfg.quality).map((g) => g.sel));
+  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.benchMinSamples && g.quality < cfg.quality && decision(g.sel)?.action !== 'allow').map((g) => g.sel));
   const bySel = new Map();
   for (const g of rows) {
     const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [] };
@@ -657,7 +695,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
     // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
-    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
+    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && !manuallyBlocked(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
     if (capped.length) {
       if (_explain) {
         const bySel = new Map(capped.map((g) => [g.sel, unavailable(g)]));
@@ -669,11 +707,11 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     }
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain });
+      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain, _eligibility });
       if (lower?.capped) return null;
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
-    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow, escalate });
+    return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow, escalate, eligibility: _eligibility });
   }
   const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
@@ -685,7 +723,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
     class: bestClass,
-    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}`,
+    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}${decision(best.steps[0])?.action === 'allow' ? ` [manual allow: ${decision(best.steps[0]).reason}]` : ''}`,
     alternatives: alt,
   };
 }
@@ -869,8 +907,8 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
  * Opt-in: before any measured data, route by public prior tier (cheapest priced model whose tier covers the level).
  * Visual work always takes this path, restricted by the pass gate: its benchmark verdicts are our own evidence, not a public prior.
  */
-function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow, escalate = false }) {
-  if (!cfg.usePriors && KIND[category] !== 'visual') return null;
+function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow, escalate = false, eligibility = new Map() }) {
+  if (cfg.coldStart !== 'priors' && KIND[category] !== 'visual') return null;
   const gate = passGate(category, reg);
   const cands = [], seen = new Set(), archive = archivedSet(cfg);
   for (const m of reg.models) {
@@ -885,7 +923,8 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!price) continue;
     const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
     const sel = selOf({ provider: m.provider, model, effort });
-    if (exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;
+    const manual = eligibility.get(eligibilityKey(sel, category));
+    if (manual?.action === 'block' || exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;
     const cls = (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg));
     // B8: skip candidates whose class is not in classOrder (consistent with B7: unlisted = not eligible).
     if (cls < 0) continue;
@@ -896,7 +935,8 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     : (a, b) => a.cls - b.cls || a.proxy - b.proxy || a.tier.localeCompare(b.tier)); // escalate: best tier first; else class walk, then price
   const best = cands[0];
   if (!best) return null;
-  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `prior only (no measured data for ${category}@${difficulty}): ${KIND[category] === 'visual' ? `cheapest model with a recorded ${category} PASS, at the effort that passed (${best.effort})` : `cheapest model whose public ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`}`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
+  const manual = eligibility.get(eligibilityKey(selOf(best), category));
+  return { provider: best.provider, model: best.model, effort: best.effort, fallback: null, plan: null, reason: `hand-picked prior only (no measured data for ${category}@${difficulty}): ${KIND[category] === 'visual' ? `cheapest model with a recorded ${category} PASS, at the effort that passed (${best.effort})` : `cheapest model whose ${KIND[category] || 'reason'} tier ${best.tier} covers level ${difficulty}, at ${best.effort || 'default'} effort`}${manual?.action === 'allow' ? ` [manual allow: ${manual.reason}]` : ''}`, alternatives: cands.slice(1, 4).map((c) => `${c.provider}:${c.model} (tier ${c.tier})`) };
 }
 
 /**
@@ -930,12 +970,13 @@ export function formatScoresShort({ source = null } = {}) {
   const key = shortMemoKey({ source });
   if (shortMemo?.key === key) return shortMemo.text;
   const all = summarize({ source });
-  if (!all.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
+  const manual = eligibilityOverrides();
+  if (!all.length && cfg.coldStart !== 'priors' && !manual.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const money = (v) => (v == null ? 'unpriced' : '$' + v.toFixed(v < 0.1 ? 3 : 2));
   const sel = (r) => r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default');
   const cell = (r) => {
     if (!r) return '-';
-    if (!r.plan) return sel(r) + ' (prior only)';
+    if (!r.plan) return sel(r) + ' (hand-picked prior only)';
     const from = /extrapolated from level (\d)/.exec(r.reason || '');
     const flags = [r.plan.estimated ? 'est.' : null, from ? 'from L' + from[1] : null].filter(Boolean); // the ladder's fallback step is detail: it changes per level and the auto-pick applies it anyway
     return sel(r) + ' q' + r.plan.quality.toFixed(2) + ' ' + money(r.plan.usd) + (flags.length ? ' [' + flags.join(', ') + ']' : '');
@@ -954,10 +995,15 @@ export function formatScoresShort({ source = null } = {}) {
     for (const r of runs) lines.push('- ' + c + '@' + (r.from === r.to ? r.from : r.from + '-' + r.to) + ': ' + r.text);
   }
   if (lines.length === 1) lines.push('- no pick yet (not enough rated runs above the bar)');
-  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
+  const manualByCell = new Map(manual.map((r) => [eligibilityKey(r.sel, r.category), r]));
+  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality && manualByCell.get(eligibilityKey(g.sel, g.category))?.action !== 'allow');
   if (benched.length) {
     lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' rated; recommend() skips these cells; a better run lifts them):');
     for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+  }
+  if (manual.length) {
+    lines.push('', 'Manual eligibility (latest per selection + category):');
+    for (const r of manual) lines.push(`- ${r.action.toUpperCase()} ${r.sel} for ${r.category}: ${r.reason}`);
   }
   const text = lines.join('\n');
   shortMemo = { key, text };
@@ -975,19 +1021,24 @@ export function scoresCsv({ source = null, archived = false } = {}) {
 export function formatScores({ category = null, source = null, archived = false, summary = null } = {}) {
   summary ||= summarize({ source, archived });
   const rows = summary.filter((g) => !category || g.category === category);
-  if (!rows.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
-  const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
-  const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
-  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
+  const manual = archived ? [] : eligibilityOverrides({ category });
   const cfg = loadConfig().scorecard;
+  if (!rows.length && (archived || (cfg.coldStart !== 'priors' && !manual.length))) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
+  const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
+  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | hand-picked prior'] : ['No measured score rows.'];
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
   if (!archived) {
-    lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
+    lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.coldStart === 'priors' ? '; cold start: hand-picked priors' : ''}):`);
     let any = false;
     for (const c of category ? [category] : CATEGORIES) for (const d of LEVELS) {
       const r = recommend({ category: c, difficulty: d, source, summary });
       if (r) { any = true; lines.push(`- ${c}@${d}: ${r.reason}`); }
     }
     if (!any) lines.push('- none yet (not enough rated runs above the bar)');
+  }
+  if (manual.length) {
+    lines.push('', 'Manual eligibility (latest per selection + category):');
+    for (const r of manual) lines.push(`- ${r.action.toUpperCase()} ${r.sel} for ${r.category}: ${r.reason}`);
   }
   lines.push('', 'Error rates (φ = phantom / unverified completions):');
   const ers = errorRates({ source, archived }).byProvider;

@@ -271,3 +271,12 @@ test('model_scores archived returns the archived table without plans or bench hy
     assert.doesNotMatch(out, /Plans \(|Bench hygiene/);
   } finally { saveConfig({ scorecard }); }
 });
+
+test('B10: model_eligibility tool appends a reasoned override', async () => {
+  const tool = defs().find((d) => d.name === 'model_eligibility');
+  const args = tool.schema.parse({ sel: 'fixture:tool-model:low', category: 'review', action: 'block', reason: 'owner tool decision' });
+  assert.equal(await tool.handler(args), 'blocked fixture:tool-model:low for review: owner tool decision');
+  const { eligibilityOverrides } = await import('../core/scorecard.mjs');
+  const row = eligibilityOverrides({ category: 'review' }).find((r) => r.sel === 'fixture:tool-model:low');
+  assert.deepEqual({ ...row, ts: typeof row.ts }, { op: 'eligibility', sel: 'fixture:tool-model:low', category: 'review', action: 'block', reason: 'owner tool decision', ts: 'string' });
+});

@@ -1,5 +1,14 @@
 [
   {
+    "name": "ledger-ocr", "kind": "cli", "categories": ["read", "search", "summarize", "review"],
+    "purpose": "For a PDF or image that needs text extraction, run Ledger-OCR first, then give the extracted text/JSON to the model instead of asking it to read the source document directly",
+    "invoke": "run-ledger-ocr <file.pdf|image> --out <output-dir> --mode text --json",
+    "detect": { "command": "run-ledger-ocr", "args": ["--version"] },
+    "platforms": ["win"], "added": "curated", "keywords": ["ocr", "pdf", "image to text", "local"],
+    "match": [".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".heic", ".webp"], "requireMatch": true,
+    "note": "Set tools.ledgerOcrCommand to an executable or launcher path to override discovery; set it to an empty value to disable the capability"
+  },
+  {
     "name": "tesseract", "kind": "cli", "categories": ["read"],
     "purpose": "OCR: turns a scanned page or screenshot into text, deterministic and far cheaper than a model reading an image",
     "invoke": "tesseract <image> <out-basename>   (writes <out-basename>.txt; add -l <lang> for other languages)",

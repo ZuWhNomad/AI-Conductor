@@ -59,10 +59,11 @@ core/
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, park/resume on limits
   plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
-  policy/                the orchestration policy, text only (no code):
+  policy/                orchestration policy and shipped data:
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
     recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)
     capabilities.json    shared catalogue of programs / access rules per category (path-free; machine entries live in config)
+    priors.json           hand-picked cold-start tiers (category → kind → default; config overrides are exact selections)
   workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, vendor-cli.mjs, index.mjs
   providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
   models.mjs             model registry: merges provider lists, auto-poll + force refresh
@@ -71,7 +72,7 @@ core/
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
   scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
-  priors.mjs             public priors: API list prices (shadow dollars) + benchmark tiers, a cold-start expectation
+  priors.mjs             API list prices + shipped/configured hand-picked tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
   usage-estimate.mjs     advisory plan-% estimate for providers whose CLI reports no window (e.g. Grok)
   recipes.mjs            loads policy/recipes/ (category → recipe, variants)
@@ -174,9 +175,11 @@ after ≥ `benchMinSamples` rated runs; an observed
 ladder; or an estimated ladder (any measured first step, qualified fallback; expected quality
 q₁ + (1−p₁)q₂, cost c₁ + (1−p₁)c₂, assuming independent failures — flagged "est." until observed
 chains replace it). `delegate` without provider/model runs the first step and tells the conductor
-the fallback to use with `retry_of`. With `scorecard.usePriors`, the public tier routes before any
+the fallback to use with `retry_of`. With `scorecard.coldStart: "priors"`, the shipped/configured hand-picked tier routes before any
 data exists; otherwise a tagged delegate with no qualified plan is refused until a provider/model is
-named explicitly (which always runs and seeds the scorecard) or small work is done directly. `modeling` and `drafting` are gated on
+named explicitly (which always runs and seeds the scorecard) or small work is done directly. The legacy
+`scorecard.usePriors` key is migrated. Append-only manual eligibility rows can block an automatic category pick or
+allow a benched selection back into cold-start consideration; explicit probes remain available. `modeling` and `drafting` are gated on
 every automatic route (measured plans, both ladder steps, extrapolation, cold start with or without
 priors): only a selection with a recorded PASS at the effort that passed (pass / close / fail
 verdicts in `core/priors.mjs` `MODELING` / `DRAFTING`) is routable, and with none available

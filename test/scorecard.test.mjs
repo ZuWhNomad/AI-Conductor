@@ -393,7 +393,8 @@ test('scorecard config is normalized', () => {
   assert.equal(bad.scorecard.qualityValueUsd, 5);
   assert.equal(bad.scorecard.hourlyUsd, 0);
   assert.deepEqual(bad.scorecard.prices, {});
-  assert.equal(bad.scorecard.usePriors, true);
+  assert.equal(bad.scorecard.coldStart, 'priors');
+  assert.equal(bad.scorecard.usePriors, undefined);
   assert.equal(bad.smoke.timeoutMinutes, 20);
   saveConfig({ scorecard: { usePriors: false } });
 });
@@ -1897,5 +1898,58 @@ test('one pass qualifies, while benching and failed-below prior suppression requ
     }
     assert.equal(sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg }), null, 'three failures suppress the prior');
     assert.match(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched \(quality < 0\.75 over >= 3 rated/);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B10: shipped priors use category then kind then default, with exact config overrides', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { priors: { 'codex:gpt-5.6-luna': { category: { summarize: 'A' }, kind: { read: 'C' }, default: 'D' } } } });
+    assert.deepEqual([
+      pr.priorFor('codex', 'gpt-5.6-luna', 'summarize').tier,
+      pr.priorFor('codex', 'gpt-5.6-luna', 'docs').tier,
+      pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier,
+    ], ['A', 'C', 'D']);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B10: manual eligibility blocks measured and prior picks; latest allow lifts a bench and explains why', () => {
+  const cfg = loadConfig().scorecard;
+  const reg = { providers: { fixture: { status: 'ok' } }, models: [{ provider: 'fixture', id: 'manual', kind: 'agent', efforts: ['low'] }] };
+  const sel = 'fixture:manual:low';
+  try {
+    saveConfig({ scorecard: {
+      coldStart: 'priors', shippedBatteries: false, minSamples: 1, benchMinSamples: 3,
+      classOrder: ['free'], classes: { fixture: 'free' }, providerWeight: { fixture: 0 },
+      prices: { 'fixture:manual': { in: 1, out: 1 } }, priors: { 'fixture:manual': { default: 'B' } },
+    } });
+    assert.equal(sc.recommend({ category: 'other', difficulty: 2, summary: [], reg }).model, 'manual');
+    assert.match(sc.formatScores({ summary: [] }), /hand-picked prior/);
+
+    for (let i = 0; i < 3; i++) {
+      run({ id: `eligibility-fail-${i}`, source: 'eligibility-bench', provider: 'fixture', model: 'manual', effort: 'low', category: 'other', difficulty: 2 });
+      sc.rateTask(`eligibility-fail-${i}`, 'fail');
+    }
+    assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }), null, 'bench suppresses the prior');
+    sc.setEligibility(sel, 'other', 'allow', 'owner accepts this model here');
+    const allowed = sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg, explain: true });
+    assert.equal(allowed.pick.model, 'manual');
+    assert.match(allowed.explain.reason, /manual allow: owner accepts this model here/);
+
+    sc.setEligibility(sel, 'other', 'block', 'known bad fit');
+    const blocked = sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg, explain: true });
+    assert.equal(blocked.pick, null);
+    assert.equal(blocked.explain.status, 'eligibility');
+    assert.match(blocked.explain.reason, /known bad fit/);
+    assert.equal(sc.eligibilityOverrides({ category: 'other' }).find((r) => r.sel === sel).action, 'block', 'latest decision wins');
+
+    sc.setEligibility(sel, 'other', 'allow', 're-enabled after review');
+    assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }).model, 'manual');
+
+    run({ id: 'eligibility-measured-pass', source: 'eligibility-measured', provider: 'fixture', model: 'manual', effort: 'low', category: 'review', difficulty: 2 });
+    sc.rateTask('eligibility-measured-pass', 'pass');
+    sc.setEligibility(sel, 'review', 'block', 'manual measured block');
+    assert.equal(sc.recommend({ category: 'review', difficulty: 2, source: 'eligibility-measured', reg }), null);
+    assert.match(sc.formatScoresShort({ source: 'eligibility-bench' }), /ALLOW fixture:manual:low for other: re-enabled after review/);
   } finally { saveConfig({ scorecard: cfg }); }
 });

@@ -471,3 +471,13 @@ test('scorecard archive and split sample thresholds are normalized', () => {
   cfg = saveConfig({ scorecard: { archived: 'claude:model' } });
   assert.deepEqual(cfg.scorecard.archived, []);
 });
+
+test('B10: coldStart replaces usePriors while legacy patches remain compatible', () => {
+  saveConfig({ scorecard: { usePriors: true } });
+  assert.equal(loadConfig().scorecard.coldStart, 'priors');
+  assert.equal(loadConfig().scorecard.usePriors, undefined);
+  saveConfig({ scorecard: { coldStart: 'off' } });
+  assert.equal(loadConfig().scorecard.coldStart, 'off');
+  saveConfig({ scorecard: { coldStart: 'research' } });
+  assert.equal(loadConfig().scorecard.coldStart, DEFAULTS.scorecard.coldStart);
+});

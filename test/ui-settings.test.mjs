@@ -54,6 +54,16 @@ test('Settings toggles and saves global efficiency mode', async () => {
   assert.equal(view.posts[0].patch.worker.efficiencyMode, false);
 });
 
+test('B10: Settings exposes and saves the scorecard cold-start mode', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.scorecard.coldStart = 'priors';
+  const view = render(config);
+  assert.equal(view.field('scorecard.coldStart').value, 'priors');
+  view.field('scorecard.coldStart').value = 'off';
+  await view.save();
+  assert.equal(view.posts[0].patch.scorecard.coldStart, 'off');
+});
+
 test('a Grok reset needs an explicit valid hour, including midnight', async () => {
   const view = render();
   view.field('grok-reset-day').value = 3;
