@@ -360,6 +360,12 @@ test('config filters invalid usage and category values, validates waste settings
   assert.equal(loadConfig().scorecard.usageGapHours.valid, 1.5);
 });
 
+test('reservePct clamps above two while preserving valid values and rejecting negatives', () => {
+  assert.equal(saveConfig({ scorecard: { reservePct: 50 } }).scorecard.reservePct, 2);
+  assert.equal(saveConfig({ scorecard: { reservePct: -1 } }).scorecard.reservePct, DEFAULTS.scorecard.reservePct);
+  assert.equal(saveConfig({ scorecard: { reservePct: 0.5 } }).scorecard.reservePct, 0.5);
+});
+
 test('timer config bounds prevent Node timer overflow and preserve documented zero switches', () => {
   const cfg = saveConfig({ pollMinutes: Number.MAX_VALUE, ui: { detectMinutes: Number.MAX_VALUE },
     conductor: { turnTimeoutMinutes: Number.MAX_VALUE, updateCheckHours: Number.MAX_VALUE },

@@ -154,10 +154,9 @@ if (cmd === 'start') {
   }
   process.exit(0);
 } else if (cmd === 'scores') {
-  const { summarize, formatScores, scoresCsv, voidTask, rootRuns } = await import('../core/scorecard.mjs');
+  const { summarize, formatScores, scoresCsv, voidTask, rootRuns, envFailure } = await import('../core/scorecard.mjs');
   if (flags['void-env']) {
     // Exclude smoke runs the harness failed (sandbox denied the workspace) — the model never got to work.
-    const { envFailure } = await import('../core/smoke/index.mjs');
     const { readJson } = await import('../core/paths.mjs');
     let n = 0;
     for (const c of rootRuns({ source: 'smoke' })) for (const a of c.attempts) {

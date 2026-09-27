@@ -38,6 +38,7 @@ for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'exe
 syncBuiltinESMExports();
 
 const { startServer, lagVerdict, doctorReport, isIdle } = await import('../../server/index.mjs');
+const { getModels } = await import('../../core/models.mjs');
 const { server, url } = await startServer({ port: 0 });
 const realFetch = globalThis.fetch;
 mock.method(globalThis, 'fetch', (input, options) => {
@@ -243,6 +244,24 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
     ctx.mock.restoreAll();
     syncBuiltinESMExports();
   }
+});
+
+test('doctor reports registry agent models without a price, except local ollama', async () => {
+  const reg = getModels(), models = reg.models;
+  reg.models = [...models, { provider: 'fixture', id: 'unpriced-fixture', kind: 'agent' }, { provider: 'ollama', id: 'unpriced-local', kind: 'agent' }];
+  try {
+    assert.deepEqual((await import('../../server/index.mjs')).unpricedModels(reg).filter((id) => /unpriced/.test(id)), ['unpriced-fixture']);
+  } finally { reg.models = models; }
+});
+
+test('doctor price check normalizes the [1m] model suffix before config lookup', async () => {
+  const { loadConfig } = await import('../../core/config.mjs');
+  const prices = loadConfig().scorecard.prices;
+  saveConfig({ scorecard: { prices: { ...prices, 'fixture:priced-base': { in: 1, out: 2 } } } });
+  try {
+    const reg = { models: [{ provider: 'fixture', id: 'priced-base[1m]', kind: 'agent' }] };
+    assert.deepEqual((await import('../../server/index.mjs')).unpricedModels(reg), []);
+  } finally { saveConfig({ scorecard: { prices } }); }
 });
 
 test('auto-update idle gate: empty is not enough, it must also have been quiet', () => {

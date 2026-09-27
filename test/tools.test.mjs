@@ -58,6 +58,31 @@ test('L32: run_plan category is z.enum(CATEGORIES) and difficulty is int 1-5 in 
   }
 });
 
+test('delegate retry_of excludes only started, non-limit selections', async () => {
+  const dir = cwd();
+  const make = (props) => createTask({ cwd: dir, provider: 'ollama', model: 'qwen', ...props });
+  const cutoff = make({}); Object.assign(cutoff, { status: 'failed', attempts: 1, limitHit: true });
+  const neverStarted = make({ retryOf: cutoff.id }); Object.assign(neverStarted, { status: 'failed', attempts: 0 });
+  const judged = make({}); Object.assign(judged, { status: 'failed', attempts: 1 });
+  const canceled = make({}); Object.assign(canceled, { status: 'canceled', attempts: 1 });
+  const del = handler('delegate', { cwd: dir });
+  const made = [];
+  try {
+    for (const prior of [cutoff, neverStarted]) {
+      const reply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: prior.id, background: true });
+      const id = /^Task (\S+)/.exec(reply)?.[1];
+      assert.ok(id, `${prior.id} was not excluded: ${reply}`); made.push(id);
+    }
+    const reply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: judged.id, background: true });
+    assert.match(reply, /already in the chain/, 'a started, judged selection remains excluded');
+    const canceledReply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: canceled.id, background: true });
+    assert.match(canceledReply, /already in the chain/, 'a canceled task that started remains excluded');
+  } finally {
+    for (const id of made) cancelTask(id);
+    for (const task of [cutoff, neverStarted, judged, canceled]) cancelTask(task.id);
+  }
+});
+
 test('L25: delegate and run_plan accept a known variant and reject an unknown one', async () => {
   const dir = cwd();
   const delBad = await handler('delegate', { cwd: dir })({ title: 't', spec: 's', category: 'modeling', variant: 'not-a-variant', background: true });
