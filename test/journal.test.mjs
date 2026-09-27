@@ -30,28 +30,27 @@ test('journal reload queues interrupted and parked tasks and tolerates numeric s
   assert.equal(listTasks().find((t) => t.id === 'bad').specPreview, '42');
 });
 
-test('journal reload does not replay work interrupted more than resumeMaxAgeHours ago', async () => {
+test('journal reload resumes old interrupted work instead of canceling it by age', async () => {
   for (const id of ['old', 'nodate']) {
-    assert.equal(getTask(id).status, 'canceled');
-    assert.match(getTask(id).error, /not resumed: interrupted more than 6 h/);
-    assert.equal(getTask(id).resume, false);
+    assert.equal(getTask(id).status, 'queued');
   }
+  assert.equal(getTask('old').resume, true);
+  assert.equal(getTask('nodate').resume, false, 'a never-started parked task stays fresh even when it has no timestamp');
   const { readFileSync } = await import('node:fs');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'old.json'), 'utf8')).status, 'canceled'); // written back, so a second start does not re-evaluate
+  assert.equal(JSON.parse(readFileSync(join(dir, 'old.json'), 'utf8')).status, 'running', 'recovery leaves the journal available for a later restart until normal persistence runs');
   const { listImprovements } = await import('../core/improve.mjs');
-  assert.ok(listImprovements().some((i) => i.message.includes('2 interrupted task(s) older than 6 h')));
+  assert.ok(!listImprovements().some((i) => i.message.includes('interrupted task(s) older than')));
 });
 
-test('queued resume tasks older than resumeMaxAgeHours are not replayed; never-started queued tasks are', async () => {
+test('queued resume tasks survive regardless of age; never-started queued tasks remain fresh', async () => {
   const dayAgo = new Date(Date.now() - 25 * 3_600_000).toISOString();
   const now = new Date().toISOString();
   writeFileSync(join(dir, 'qold.json'), JSON.stringify({ id: 'qold', cwd, status: 'queued', resume: true, updatedAt: dayAgo }));
   writeFileSync(join(dir, 'qnew.json'), JSON.stringify({ id: 'qnew', cwd, status: 'queued', resume: true, updatedAt: now }));
   writeFileSync(join(dir, 'qfresh.json'), JSON.stringify({ id: 'qfresh', cwd, status: 'queued', updatedAt: dayAgo }));
   const { getTask } = await import(`../core/tasks.mjs?og3=${Date.now()}`);
-  assert.equal(getTask('qold').status, 'canceled');
-  assert.match(getTask('qold').error, /not resumed: interrupted more than 6 h/);
-  assert.equal(getTask('qold').resume, false);
+  assert.equal(getTask('qold').status, 'queued');
+  assert.equal(getTask('qold').resume, true);
   assert.equal(getTask('qnew').status, 'queued');
   assert.equal(getTask('qnew').resume, true);
   assert.equal(getTask('qfresh').status, 'queued');

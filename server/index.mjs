@@ -19,12 +19,13 @@ import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, sc
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { summarize, formatScores, migrateScorecard, EFFORTS, scorecardModelId } from '../core/scorecard.mjs';
+import { summarize, formatScores, scoresGrid, benchedCells, migrateScorecard, EFFORTS, scorecardModelId } from '../core/scorecard.mjs';
 import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
 import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
+import { startBenchQueue, stopBenchQueue, wakeBenchQueue } from '../core/bench.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -37,8 +38,14 @@ export function stopBackgroundWork() {
   try { stopModelPolling(); } catch {}
   try { stopLimitPolling(); } catch {}
   try { stopSignInWatches(); clearInterval(detectTimer); detectTimer = null; } catch {}
+  try { stopBenchQueue(); } catch {}
   try { killProbes(); } catch {}
 }
+
+// Registry changes may have queued a newly detected selection; terminal live work may have released a yielded lane.
+bus.on('event', (e) => {
+  if (e.type === 'models' || (e.type === 'task' && ['done', 'failed', 'canceled'].includes(e.task?.status))) wakeBenchQueue();
+});
 
 // --- noticing an auth change we did not cause ------------------------------------------------------------------
 // The provider registry is a cache, and with auto-refresh off nothing re-probes it: signing in outside the app — or
@@ -256,8 +263,16 @@ async function route(req, res, url) {
   if (p === '/api/scores' && m === 'GET') {
     const source = url.searchParams.get('source') || null;
     const archived = url.searchParams.get('archived') === '1';
+    const category = url.searchParams.get('category') || null;
     const summary = summarize({ source, archived });
-    return json(res, 200, { text: formatScores({ source, category: url.searchParams.get('category') || null, archived, summary }) });
+    return json(res, 200, {
+      text: formatScores({ source, category, archived, summary }),
+      grid: archived ? [] : scoresGrid({ source, summary, categories: category ? [category] : undefined }),
+      benched: benchedCells(summary.filter((g) => !category || g.category === category)).map((g) => ({
+        selection: g.sel, category: g.category, level: g.difficulty, quality: g.quality, n: g.rated,
+        weightedN: g.weightedRated ?? g.rated, last: g.last || null, shipped: !!g.shipped,
+      })),
+    });
   }
   if (p === '/api/limits/refresh' && m === 'POST') return json(res, 200, await refreshLimits());
 
@@ -619,6 +634,7 @@ export function startServer({ port = null } = {}) {
         startUpdateChecks();
       }
       schedule();
+      startBenchQueue();
       resolve({ server, url: addr, port: boundPort });
     };
     const onError = (e) => {

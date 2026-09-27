@@ -506,20 +506,19 @@ test('class walk: the first budget class proven at the level wins; capped classe
 });
 
 test('bench: lists models with no battery or a stale one', async () => {
-  const { writeJson } = await import('../core/paths.mjs');
-  const { join } = await import('node:path');
-  const { dueForBench, formatBench } = await import('../core/bench.mjs');
+  const { BENCH_TASK_IDS, dueForBench, formatBench } = await import('../core/bench.mjs');
   const reg = { updatedAt: 'x', providers: { codex: { status: 'ok' }, ollama: { status: 'ok' }, kimi: { status: 'unavailable' } }, models: [
     { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low', 'high'] },
     { provider: 'codex', id: 'brand-new', kind: 'agent', efforts: ['low'] },
-    { provider: 'ollama', id: 'qwen', kind: 'agent', efforts: [] },
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local', efforts: [] },
     { provider: 'kimi', id: 'kimi-k3', kind: 'agent', efforts: [] },
   ] };
-  run({ id: 'smk1', source: 'smoke', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'read', difficulty: 1 }); sc.rateTask('smk1', 'pass');
-  const due = dueForBench({ days: 21, reg });
-  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}`), ['codex:brand-new', 'ollama:qwen']);   // luna is fresh; kimi unavailable
+  const attempt = (effort, smokeId, i) => ({ provider: 'codex', model: 'gpt-5.6-luna', effort, smokeId, verdict: 'pass', ts: new Date(Date.now() - i).toISOString() });
+  const runs = [{ attempts: BENCH_TASK_IDS.slice(0, 8).map((id, i) => attempt('low', id, i)).concat(BENCH_TASK_IDS.slice(0, 7).map((id, i) => attempt('high', id, i))) }];
+  const due = dueForBench({ days: 21, reg, runs });
+  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}:${d.effort}`), ['codex:brand-new:low', 'codex:gpt-5.6-luna:high']);
   assert.match(formatBench(due), /2 selection\(s\) due/);
-  assert.equal(dueForBench({ days: -1, reg }).length, 3);                                              // cutoff in the future: everything stale
+  assert.equal(dueForBench({ days: -1, reg, runs }).length, 3); // covered low is stale; local and ignored providers remain excluded
 });
 
 test("the conductor's plan is capped on its session window only; weekly (Fable weekly included) may run to 100%", async () => {
@@ -855,22 +854,23 @@ test('ui is a first-class category and classifyCategory tags UI/frontend work', 
   for (const s of ['refactor the scheduler', 'add a retry to the API client', 'summarize the docs', '']) assert.equal(sc.classifyCategory(s), null, s);
 });
 
-test('short view: best pick + runner-up per category, levels collapsed, same top pick as recommend(); benched cells; csv', () => {
+test('short view: every category@level is a compact pick, capped cell, or no-data cell; benched cells; csv', () => {
   const short = sc.formatScoresShort();
   const full = sc.formatScores();
   assert.ok(short.length < full.length / 2, 'short ' + short.length + ' vs full ' + full.length);
   const cfg = loadConfig().scorecard;
   for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5]) {
     const r = sc.recommend({ category: c, difficulty: d });
-    if (!r) continue;
-    const line = short.split('\n').find((l) => new RegExp('^- ' + c + '@(\\d-)?' + d + ':|^- ' + c + '@' + d + '-').test(l) || new RegExp('^- ' + c + '@(\\d)-(\\d):').test(l) && (() => { const m = /@(\d)-(\d):/.exec(l); return Number(m[1]) <= d && d <= Number(m[2]); })());
+    const line = short.split('\n').find((l) => l.startsWith('- ' + c + '@1:'));
     assert.ok(line, 'no short line for ' + c + '@' + d);
-    assert.ok(line.includes(r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default')), line);
-    assert.match(line, /runner-up/);
+    assert.ok(line.includes(c + '@' + d + ':'), line);
+    if (r) assert.ok(line.includes(r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default')), line);
+    else assert.match(line, new RegExp(c + '@' + d + ': (?:capped:|no data)'));
   }
-  assert.match(short, /@\d-\d:/);                                     // identical levels collapsed into a range
-  const bad = sc.summarize().find((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
+  assert.doesNotMatch(short, /runner-up/);
+  const bad = sc.benchedCells(sc.summarize(), cfg)[0];
   if (bad) assert.ok(short.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'benched cell listed');
+  if (bad) assert.ok(full.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'full view lists benched cell');
   assert.equal(sc.formatScoresShort(), short);                           // memoised: same inputs, same text
   const csv = sc.scoresCsv();
   assert.match(csv.split('\n')[0], /^sel,category,difficulty,/);
@@ -1427,6 +1427,84 @@ test('B4 deterministic ledger replay changes H2 escalation and M4 estimated-ladd
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
+test('B5 deterministic replay: benchmarks stay at their level, live quality wins, and 45-day weights retire evidence', (t) => {
+  const cfg = loadConfig().scorecard;
+  const models = ['b5-bench', 'b5-override', 'b5-aging'];
+  registryModels(t, models.map((model) => ['codex', model]));
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  t.mock.method(Date, 'now', () => now);
+  const replay = ({ id, model, category, difficulty, verdict, source = 'live', ts }) => {
+    appendNdjson(statePath('scorecard.ndjson'), {
+      op: 'run', ts, taskId: id, followUpOf: null, retryOf: null, source, provider: 'codex', model, requestedModel: model,
+      effort: null, category, difficulty, status: 'done', tokens: { in: 1, out: 1, cached: 0, write: 0, v: 2 }, durationMs: 1,
+    });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts, taskId: id, verdict });
+  };
+  try {
+    saveConfig({ scorecard: {
+      shippedBatteries: true, usePriors: false, minSamples: 1, benchMinSamples: 3, quality: 0.75,
+      reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 },
+      classes: { codex: 'subscription' }, classOrder: ['subscription'],
+      prices: Object.fromEntries(models.map((model) => [`codex:${model}`, { in: 1, out: 1, cached: 0 }])),
+    } });
+
+    replay({ id: 'b5-own-level', model: 'b5-bench', category: 'read', difficulty: 2, verdict: 'pass', source: 'smoke', ts: new Date(now).toISOString() });
+    const ownLevel = sc.summarize({ source: 'smoke' }).filter((g) => g.model === 'b5-bench');
+    assert.equal(sc.recommend({ category: 'read', difficulty: 2, summary: ownLevel }).model, 'b5-bench');
+    assert.equal(sc.recommend({ category: 'read', difficulty: 1, summary: ownLevel }), null, 'benchmark evidence does not flow down a level');
+    assert.equal(sc.recommend({ category: 'read', difficulty: 3, summary: ownLevel }), null, 'benchmark evidence does not extrapolate up a level');
+
+    for (let i = 0; i < 3; i++) replay({ id: `b5-smoke-pass-${i}`, model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'pass', source: 'smoke', ts: new Date(now).toISOString() });
+    replay({ id: 'b5-live-fail', model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'fail', ts: new Date(now).toISOString() });
+    const override = sc.summarize().find((g) => g.model === 'b5-override' && g.category === 'debug');
+    assert.deepEqual({ quality: override.quality, liveQuality: override.liveQuality, smokeQuality: override.smokeQuality, rated: override.rated }, { quality: 0, liveQuality: 0, smokeQuality: 1, rated: 4 });
+    assert.equal(sc.recommend({ category: 'debug', difficulty: 2, summary: [override] }), null, 'one live rating owns quality over smoke in the same cell');
+    assert.equal(sc.benchedCells([override]).length, 1, 'benchMinSamples still uses the evidence count');
+
+    const fortyFiveDaysAgo = new Date(now - 45 * 24 * 3600e3).toISOString();
+    for (let i = 0; i < 2; i++) replay({ id: `b5-aging-${i}`, model: 'b5-aging', category: 'review', difficulty: 1, verdict: 'pass', ts: fortyFiveDaysAgo });
+    const atHalfLife = sc.summarize({ source: 'live' }).find((g) => g.model === 'b5-aging');
+    assert.equal(atHalfLife.weightedRated, 1);
+    assert.equal(sc.recommend({ category: 'review', difficulty: 1, summary: [atHalfLife] }).model, 'b5-aging');
+    t.mock.method(Date, 'now', () => now + 24 * 3600e3);
+    const retired = sc.summarize({ source: 'live' }).find((g) => g.model === 'b5-aging');
+    assert.ok(retired.weightedRated < 1);
+    assert.equal(sc.recommend({ category: 'review', difficulty: 1, summary: [retired] }), null);
+
+    const noShipped = process.env.CONDUCTOR_NO_SHIPPED;
+    delete process.env.CONDUCTOR_NO_SHIPPED;
+    try {
+      const shipped = sc.summarize({ source: 'smoke' }).find((g) => g.shipped);
+      assert.ok(shipped && shipped.smokeRated === shipped.rated && shipped.smokeWeightedRated > 0, 'shipped cells are benchmark evidence');
+    } finally { process.env.CONDUCTOR_NO_SHIPPED = noShipped; }
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B5 reservation ceiling uses live evidence only within the selected model window group', async (t) => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard;
+  const limits = getLimits(), previous = limits.providers.antigravity;
+  registryModels(t, [['antigravity', 'gemini-b5']]);
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 1, reservePct: 0.5, hourlyUsd: 0, wasteStrength: 0, providerWeight: { antigravity: 0.1 }, classOrder: ['included'] } });
+    limits.providers.antigravity = { windows: [
+      { id: 'flash-group', models: '^flash$', usedPercent: 0, resetsAt: Date.now() + 3600e3 },
+      { id: 'gemini-group', models: '^gemini', usedPercent: 0, resetsAt: Date.now() + 3600e3 },
+    ] };
+    const cell = (model, difficulty, source) => ({
+      sel: `antigravity:${model}:default`, steps: 1, provider: 'antigravity', model, effort: null, category: 'docs', difficulty,
+      n: 1, rated: 1, weightedRated: 1, liveN: source === 'live' ? 1 : 0, liveRated: source === 'live' ? 1 : 0,
+      liveWeightedRated: source === 'live' ? 1 : 0, smokeN: source === 'smoke' ? 1 : 0, smokeRated: source === 'smoke' ? 1 : 0,
+      smokeWeightedRated: source === 'smoke' ? 1 : 0, quality: 1, liveQuality: source === 'live' ? 1 : null,
+      accept: 1, avgUsd: 1, avgDurationMs: 0,
+    });
+    const summary = [cell('flash', 1, 'live'), cell('flash', 5, 'smoke'), cell('gemini-b5', 5, 'live')];
+    const r = sc.recommend({ category: 'docs', difficulty: 1, summary, exclude: ['antigravity:gemini-b5'] });
+    assert.equal(r.model, 'flash');
+    assert.doesNotMatch(r.reason, /reserve ×/, 'smoke capacity and another window group do not raise this model group ceiling');
+  } finally { limits.providers.antigravity = previous; saveConfig({ scorecard: cfg }); }
+});
+
 test('H2 escalation orders live class, class evidence count, prior tier, then utility', () => {
   const cfg = loadConfig().scorecard;
   const cell = (model, effort, priorTier, avgUsd) => ({
@@ -1689,7 +1767,7 @@ test('L40: escalation prior fallback sorts by tier, not cheapest price', () => {
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('L42: formatScoresShort memo key includes an hourly bucket', async (t) => {
+test('B7: formatScoresShort memo key includes a minute bucket', async (t) => {
   const { getLimits } = await import('../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
@@ -1709,11 +1787,12 @@ test('L42: formatScoresShort memo key includes an hourly bucket', async (t) => {
     const stamp = limits.updatedAt;
     limits.providers.codex.windows[0].usedPercent = 99;
     limits.updatedAt = stamp;
-    assert.equal(sc.formatScoresShort({ source }), a, 'same hour keeps the memo');
-    t.mock.method(Date, 'now', () => now + 3600e3);
+    t.mock.method(Date, 'now', () => now + 30_000);
+    assert.equal(sc.formatScoresShort({ source }), a, 'same minute keeps the memo');
+    t.mock.method(Date, 'now', () => now + 60_000);
     const b = sc.formatScoresShort({ source });
-    assert.ok(!b.includes('gpt-5.6-terra') || b !== a, 'new hour misses the memo so a capped window can drop the pick');
-    assert.equal(b.includes('gpt-5.6-terra'), false);
+    assert.notEqual(b, a, 'new minute misses the memo');
+    assert.match(b, /review@1: capped: codex:gpt-5\.6-terra:medium until/);
   } finally {
     limits.providers.codex = previous;
     saveConfig({ scorecard: cfg });
@@ -1889,15 +1968,17 @@ test('[1m] scorecard rows group, price, route and satisfy bench hygiene as the b
     assert.ok(row.avgUsd > 0, 'the suffixed run uses the base model price');
     assert.equal(sc.recommend({ category: 'docs', difficulty: 2, source }).model, 'claude-fable-5-1');
 
-    run({ id: `${source}-smoke`, source: 'smoke', provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
-    sc.rateTask(`${source}-smoke`, 'pass');
+    const { BENCH_TASK_IDS, dueForBench } = await import('../core/bench.mjs');
+    for (const [i, smokeId] of BENCH_TASK_IDS.slice(0, 8).entries()) {
+      run({ id: `${source}-smoke-${i}`, source: 'smoke', smokeId, provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
+      sc.rateTask(`${source}-smoke-${i}`, 'pass');
+    }
     saveConfig({ scorecard: { archived: ['claude:claude-opus-5-5[1m]'] } });
     const reg = { providers: { claude: { status: 'ok' } }, models: [
       { provider: 'claude', id: 'claude-fable-5-1', kind: 'agent', efforts: ['low'] },
       { provider: 'claude', id: 'claude-fable-5-1[1m]', kind: 'agent', efforts: ['low'] },
       { provider: 'claude', id: 'claude-opus-5-5[1m]', kind: 'agent', efforts: ['low'] },
     ] };
-    const { dueForBench } = await import('../core/bench.mjs');
     assert.deepEqual(dueForBench({ days: 21, reg }), [], 'suffix/base duplicates are satisfied once and archived aliases are skipped');
   } finally { saveConfig({ scorecard: cfg }); }
 });
@@ -1925,6 +2006,6 @@ test('one pass qualifies, while benching and failed-below prior suppression requ
       sc.rateTask(`bench-${i}-fail`, 'fail');
     }
     assert.equal(sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg }), null, 'three failures suppress the prior');
-    assert.match(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched \(quality < 0\.75 over >= 3 rated/);
+    assert.match(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched \(quality < 0\.75 over >= 3 recency-weighted rated/);
   } finally { saveConfig({ scorecard: cfg }); }
 });

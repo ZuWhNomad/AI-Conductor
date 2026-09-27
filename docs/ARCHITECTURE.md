@@ -77,7 +77,7 @@ core/
   recipes.mjs            loads policy/recipes/ (category → recipe, variants)
   capabilities.mjs       capability index: policy/capabilities.json + config tools.index; detect (async), spec lines per category, access gates, research on a miss
   feedback.mjs           redacted feedback bundle (versions, limits, improvement log, scorecard)
-  bench.mjs              re-benchmark scheduler + new-model detection
+  bench.mjs              durable new-model seen-set + per-provider benchmark lanes
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   cli-update.mjs         worker CLI updates (codex, agy, grok, qwen, kimi; the Agent SDK in dev): daily check, install when idle, verify, roll back
@@ -153,8 +153,11 @@ task itself or waits. Adding or dropping a subscription changes the walk by itse
 A key-based provider whose account holds *granted* (promotional) credit is in the `free` class until that
 credit is spent (DeepSeek draws granted balance before topped-up funds), then drops to `api`. DeepSeek's
 off-peak rule (half price outside Mon-Fri 01-04 / 06-10 UTC) is applied to its list price at decision time.
-`conductor bench [--run]` lists selections with no battery or one older than `rebenchDays` (21) and
-probes-then-batteries them; a registry refresh that lists new models logs an improvement entry.
+`conductor bench [--run]` lists every offered effort below the 8-of-11 rated smoke-task coverage bar (or older than
+`rebenchDays`), then sends explicit runs through restart-safe per-provider lanes. `bench.json` retains registry
+selections, decisions and remaining task ids across list flaps and restarts. Fresh clones default
+`bench.newModels` to `off`; local/Ollama, archived, Qwen Code and Kimi selections are never auto-benched.
+Pay-per-token API selections still require an explicit answer when the designated copy uses `auto`.
 
 Limit windows may be scoped to a model group: Antigravity's `agy -p /usage --output-format json` reports separate
 5-hour and weekly buckets for Gemini and for Claude/GPT, so each window carries a `models` regex and availability,

@@ -343,7 +343,7 @@ test('smoke timeouts are per invocation and bench probes never write config, eve
     await runSmoke({ models, tasks: ['read-1'], execute, timeoutMinutes: 3 });
     await runSmoke({ models, tasks: ['read-1'], execute });
     assert.deepEqual(waits, [3, 17]);
-    reg.models = [{ provider: 'ollama', id: 'timeout-probe', kind: 'agent' }]; reg.providers = { ollama: { status: 'ok' } };
+    reg.models = [{ provider: 'codex', id: 'timeout-probe', kind: 'agent', efforts: [] }]; reg.providers = { codex: { status: 'ok' } };
     ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => {
       probeWaits.push(ms); during.push(readFileSync(file, 'utf8'));
       queueMicrotask(fn); return {};

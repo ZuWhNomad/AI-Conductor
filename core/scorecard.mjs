@@ -31,6 +31,15 @@ export function classifyCategory(text) {
 }
 export const VERDICTS = ['pass', 'fixable', 'fail', 'phantom'];
 const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
+const EVIDENCE_HALF_LIFE_MS = 45 * 24 * 60 * 60 * 1000;
+const recencyWeight = (ts, now = Date.now()) => {
+  const at = Date.parse(ts);
+  if (!Number.isFinite(at)) return 1;
+  // Evidence is surfaced by date (and shipped aggregates only retain a date), so age consistently in whole days.
+  const age = Math.floor(Math.max(0, now - at) / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
+  return 0.5 ** (age / EVIDENCE_HALF_LIFE_MS);
+};
+const evidenceRated = (g) => g.weightedRated ?? g.rated ?? 0;
 // Routing covers levels 1-5. The smoke battery also records 6-7: those rows show in the tables, but recommend() ignores them.
 export const ROUTED_MAX_DIFFICULTY = 5;
 const LEVELS = [1, 2, 3, 4, 5];
@@ -383,7 +392,8 @@ function rootRunsUncached({ source = null } = {}) {
  * and path rows (ladders actually observed, e.g. "codex:luna:low>codex:terra:medium").
  */
 export function summarize({ source = null, archived = false, shipped = true } = {}) {
-  const key = `${scorecardMemoKey(source)}|archived:${archived ? 1 : 0}|shipped:${shipped ? 1 : 0}`;
+  // Recency-weighted evidence must age out without a ledger/config write. A minute bucket bounds memo staleness.
+  const key = `${scorecardMemoKey(source)}|minute:${Math.floor(Date.now() / 60_000)}|archived:${archived ? 1 : 0}|shipped:${shipped ? 1 : 0}`;
   if (summarizeMemo?.key === key) return summarizeMemo.rows;
   const out = summarizeUncached({ source, archived, shipped });
   summarizeMemo = { key, rows: out };
@@ -392,38 +402,46 @@ export function summarize({ source = null, archived = false, shipped = true } = 
 
 const summarySort = (a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1);
 
-function shippedSummary(c) {
+function shippedSummary(c, now) {
   const sel = selOf(c), quality = c.rated ? (c.pass * SCORE.pass + c.fixable * SCORE.fixable) / c.rated : null;
+  const weightedRated = c.rated * recencyWeight(c.lastRunDate, now);
   return {
     sel, steps: 1, provider: c.provider, model: c.model, effort: c.effort, category: c.category, difficulty: c.difficulty,
-    n: c.rated, rated: c.rated, pass: c.pass, fixable: c.fixable, fail: c.fail, phantom: c.phantom,
+    n: c.rated, rated: c.rated, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: c.rated, smokeRated: c.rated, smokeWeightedRated: weightedRated,
+    weightedRated, pass: c.pass, fixable: c.fixable, fail: c.fail, phantom: c.phantom,
     cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
-    quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
+    quality, liveQuality: null, smokeQuality: quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
     pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
     errorRate: c.rated ? (c.fail + c.phantom) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
     last: c.lastRunDate, shipped: true,
   };
 }
 
-function mergeShipped(local, archive) {
+function mergeShipped(local, archive, now) {
   const occupied = new Set(local.filter((g) => g.steps === 1).map((g) => [g.sel, g.category, g.difficulty].join('|')));
-  const fallback = shippedCells().filter((c) => !isArchived(c.provider, c.model, archive)).map(shippedSummary)
+  const fallback = shippedCells().filter((c) => !isArchived(c.provider, c.model, archive)).map((c) => shippedSummary(c, now))
     .filter((g) => !occupied.has([g.sel, g.category, g.difficulty].join('|')));
   return [...local, ...fallback].sort(summarySort);
 }
 
 function summarizeUncached({ source = null, archived = false, shipped = true } = {}) {
   const archive = archivedSet(loadConfig().scorecard);
+  const evidenceNow = Date.now();
   const groups = new Map();
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, liveN: 0, liveRated: 0, smokeN: 0, smokeRated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
     g.n++;
     const source = x.source === 'smoke' ? 'smoke' : 'live';
     g[source + 'N']++;
     if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
-    if (x.verdict) { g.rated++; g[source + 'Rated']++; g[x.verdict]++; }
+    if (x.verdict) {
+      const weight = recencyWeight(x.ts, evidenceNow);
+      g.rated++; g[source + 'Rated']++; g.weightedRated += weight; g[source + 'WeightedRated'] += weight; g[x.verdict]++;
+      g._quality[source] += SCORE[x.verdict] * weight;
+      g._accept[source] += (x.verdict === 'pass' || x.verdict === 'fixable' ? 1 : 0) * weight;
+    }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd);
     const xs = x.attempts || [x]; g._attempts += xs.length; g._priced += xs.filter((a) => a.usd != null).length;
@@ -449,12 +467,17 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  const local = [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
+  const local = [...groups.values()].map(({ _quality, _accept, _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
     const cost = g.steps === 1 ? modelInRegistry(getModels(), g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
-    const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
+    const liveQuality = g.liveRated && g.liveWeightedRated ? _quality.live / g.liveWeightedRated : null;
+    const smokeQuality = g.smokeWeightedRated ? _quality.smoke / g.smokeWeightedRated : null;
+    // Q3: once this exact cell has live rated work, its quality owns the cell; benchmark evidence remains a count.
+    const quality = liveQuality ?? smokeQuality;
+    const qualitySource = g.liveRated ? 'live' : 'smoke';
     return {
-      ...g, cost, priorTier: prior?.tier || null, quality, accept: g.rated ? (g.pass + g.fixable) / g.rated : null,
+      ...g, cost, priorTier: prior?.tier || null, quality, liveQuality, smokeQuality,
+      accept: g[qualitySource + 'WeightedRated'] ? _accept[qualitySource] / g[qualitySource + 'WeightedRated'] : null,
       ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: meanKnown(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
       avgTokens: mean(_tok), avgUsd: mean(_usd), pricedShare: _attempts ? _priced / _attempts : null, avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
@@ -462,7 +485,7 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
   }).sort(summarySort);
   const cfg = loadConfig().scorecard;
   const useShipped = shipped && !archived && (source == null || source === 'smoke') && cfg.shippedBatteries !== false && process.env.CONDUCTOR_NO_SHIPPED !== '1';
-  return useShipped ? mergeShipped(local, archive) : local;
+  return useShipped ? mergeShipped(local, archive, evidenceNow) : local;
 }
 
 /** Distill local smoke evidence into the aggregate-only shipped battery schema. */
@@ -546,13 +569,24 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const cellLiveN = (g) => g.liveN ?? (g.smokeN != null ? 0 : g.n ?? 0); // old and hand-built summaries without source counts are live
   const cellLiveRated = (g) => g.liveRated ?? (g.smokeRated != null ? 0 : g.rated ?? cellLiveN(g));
   const cellSmokeRated = (g) => g.smokeRated ?? 0;
+  const cellLiveWeightedRated = (g) => g.liveWeightedRated ?? cellLiveRated(g);
+  const cellSmokeWeightedRated = (g) => g.smokeWeightedRated ?? cellSmokeRated(g);
+  const benchmarkOnly = (g) => cellLiveRated(g) <= 0 && (cellSmokeRated(g) > 0 || g.shipped);
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const gate = passGate(category, reg);
-  const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
-  // Measured ceiling per provider (any category): the highest level it has cleared with enough samples.
+  const rows = all.filter((g) => g.category === category && evidenceRated(g) > 0 && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
+  // Reservation capacity is live-only and shared only by models metered by the same quota/window group.
+  const quotaGroup = (provider, model) => {
+    const ids = providerWindows(provider, model).map((w) => w.id || `${w.label || ''}:${w.models || '*'}`).sort();
+    return `${provider}|${ids.length ? ids.join(',') : '*'}`;
+  };
   const ceiling = new Map();
-  for (const g of all) if (g.steps === 1 && g.rated >= cfg.minSamples && g.quality >= cfg.quality) ceiling.set(g.provider, Math.max(ceiling.get(g.provider) || 0, g.difficulty));
-  const reserve = (provider, model = null) => { const w = weight(provider, model); const gap = Math.max(0, (ceiling.get(provider) || 0) - taskDifficulty); return 1 + cfg.reservePct * w * gap; };
+  for (const g of all) if (g.steps === 1 && cellLiveWeightedRated(g) >= cfg.minSamples && (g.liveQuality ?? g.quality) >= cfg.quality) {
+    const key = quotaGroup(g.provider, g.model);
+    ceiling.set(key, Math.max(ceiling.get(key) || 0, g.difficulty));
+  }
+  const ceilingFor = (provider, model = null) => ceiling.get(quotaGroup(provider, model)) || 0;
+  const reserve = (provider, model = null) => { const w = weight(provider, model); const gap = Math.max(0, ceilingFor(provider, model) - taskDifficulty); return 1 + cfg.reservePct * w * gap; };
   const costOf = (g) => {
     const costs = g.stepCosts || [g];
     if (costs.some((c) => c.avgUsd == null)) return null;
@@ -565,18 +599,18 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   // Keep the original request's disqualifications when extrapolating; priors cannot override them either.
-  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.benchMinSamples && g.quality < cfg.quality).map((g) => g.sel));
+  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && evidenceRated(g) >= cfg.benchMinSamples && g.quality < cfg.quality).map((g) => g.sel));
   const bySel = new Map();
   for (const g of rows) {
     const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [] };
     if (g.difficulty >= difficulty) m.cells.push(g);
     bySel.set(g.sel, m);
   }
-  const evidence = [...bySel.values()].filter((m) => m.cells.length).map((m) => ({ ...m, ref: pool(m.cells.sort((a, b) => a.difficulty - b.difficulty), cfg.minSamples) })).filter((m) => m.ref.rated >= cfg.minSamples);
+  const evidence = [...bySel.values()].filter((m) => m.cells.length).map((m) => ({ ...m, ref: pool(m.cells.sort((a, b) => a.difficulty - b.difficulty), cfg.minSamples) })).filter((m) => evidenceRated(m.ref) >= cfg.minSamples);
   const finals = evidence.filter((m) => m.ref.quality >= cfg.quality && !failedBelow.has(m.sel) && !failedBelow.has(m.sel.split('>').at(-1)));
   // M4: extrapolation may build a plan from a lower-level pool. Once this selection has enough evidence at the
   // task's actual level, that cell owns the estimated ladder's probability of accepting the first step.
-  const taskLevelAccept = (m) => m.cells.find((c) => c.difficulty === taskDifficulty && c.rated >= cfg.minSamples)?.accept ?? m.ref.accept;
+  const taskLevelAccept = (m) => m.cells.find((c) => c.difficulty === taskDifficulty && evidenceRated(c) >= cfg.minSamples)?.accept ?? m.ref.accept;
   const plans = [];
   for (const m of finals) {
     if (m.steps === 1) {
@@ -628,8 +662,8 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // OB7: sort — priced eligible plans before unknown-cost ones; within each group, value ordering applies.
   const eligible = (p) => p.utility > -Infinity;
   const evidenceRank = (p) => {
-    const live = cellLiveRated(p.ref);
-    return live > 0 ? { live: 1, count: live } : { live: 0, count: cellSmokeRated(p.ref) };
+    const live = cellLiveWeightedRated(p.ref);
+    return live > 0 ? { live: 1, count: live } : { live: 0, count: cellSmokeWeightedRated(p.ref) };
   };
   const tier = (p) => TIER_CEILING[p.ref.priorTier] || 0;
   const sortCmp = escalate
@@ -658,7 +692,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
     // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
-    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
+    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && evidenceRated(g) >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
     if (capped.length) {
       if (_explain) {
         const bySel = new Map(capped.map((g) => [g.sel, unavailable(g)]));
@@ -678,13 +712,14 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   }
   const first = parseSel(best.steps[0]);
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
-  const describe = (p) => { const lastSel = p.steps[p.steps.length - 1]; const { provider: prov, model: provModel } = parseSel(lastSel); const rs = reserve(prov, provModel); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
+  const describe = (p) => { const lastSel = p.steps[p.steps.length - 1]; const { provider: prov, model: provModel } = parseSel(lastSel); const rs = reserve(prov, provModel); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} window group proven to level ${ceilingFor(prov, provModel)}]` : ''}`; };
   const single = plans.find((p) => p.steps.length === 1);
   const alt = plans.filter((p) => p !== best).slice(0, 3).map(describe);
   return {
     provider: first.provider, model: first.model, effort: first.effort,
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
+    evidence: { n: best.ref.rated, weightedN: evidenceRated(best.ref), last: best.ref.last || null, source: cellLiveRated(best.ref) > 0 ? 'live' : 'bench', shipped: !!best.ref.shipped },
     class: bestClass,
     reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}`,
     alternatives: alt,
@@ -822,9 +857,9 @@ const passGate = (category, reg) => (KIND[category] !== 'visual' ? () => true : 
 
 /** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
 function pool(cells, floor) {
-  const used = []; let rated = 0;
-  for (const c of cells) { used.push(c); rated += c.rated; if (rated >= floor) break; }
-  const w = (k, by, cells = used) => { let num = 0, den = 0; for (const c of cells) { if (c[k] == null) continue; num += c[k] * c[by]; den += c[by]; } return den ? num / den : null; };
+  const used = []; let weightedRated = 0;
+  for (const c of cells) { used.push(c); weightedRated += evidenceRated(c); if (weightedRated >= floor) break; }
+  const w = (k, by, cells = used) => { let num = 0, den = 0; for (const c of cells) { if (c[k] == null) continue; const weight = c[by] ?? (by === 'weightedRated' ? c.rated : 0); num += c[k] * weight; den += weight; } return den ? num / den : null; };
   const base = used[0];
   const stepCosts = base.stepCosts?.map((s, i) => {
     const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
@@ -833,8 +868,11 @@ function pool(cells, floor) {
   const total = (key, fallback = () => 0) => used.reduce((sum, c) => sum + (c[key] ?? fallback(c)), 0);
   return {
     ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty,
-    rated, n: total('n'), liveN: total('liveN', (c) => c.smokeN != null ? 0 : c.n), liveRated: total('liveRated', (c) => c.smokeRated != null ? 0 : c.rated),
-    smokeN: total('smokeN'), smokeRated: total('smokeRated'), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    rated: total('rated'), weightedRated, n: total('n'), liveN: total('liveN', (c) => c.smokeN != null ? 0 : c.n), liveRated: total('liveRated', (c) => c.smokeRated != null ? 0 : c.rated),
+    liveWeightedRated: total('liveWeightedRated', (c) => c.liveRated ?? (c.smokeRated != null ? 0 : c.rated)),
+    smokeN: total('smokeN'), smokeRated: total('smokeRated'), smokeWeightedRated: total('smokeWeightedRated', (c) => c.smokeRated ?? 0),
+    quality: w('quality', 'weightedRated'), accept: w('accept', 'weightedRated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    last: used.map((c) => c.last).filter(Boolean).sort().at(-1) || null,
   };
 }
 
@@ -901,11 +939,9 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
 }
 
 /**
- * Short view (what the conductor gets by default): one line per category and level, levels collapsed when the
- * picks are identical: the best pick and the runner-up (recommend() again with the best pick's model excluded),
- * each with expected quality, $/task and flags. Then the benched cells (enough samples, below the quality bar):
- * a computed view of the ledger, never a second record. Memoised on the ledger, limits, models and config, since
- * 140 recommend() calls take seconds on a large ledger.
+ * Short view (what the conductor gets by default): one compact line per category containing all five levels.
+ * Every cell is a pick with evidence, a capped selection/reset, or no data. Benched cells follow as a computed
+ * view of the ledger, never a second record. Memoised on the ledger, limits, models and config.
  */
 let shortMemo = null;
 const nextBlockEnd = (limits, now) => {
@@ -921,9 +957,34 @@ const nextBlockEnd = (limits, now) => {
 export function shortMemoKey({ source = null, limits = getLimits(), now = Date.now() } = {}) {
   const cfg = loadConfig().scorecard;
   const reset = nextBlockEnd(limits, now);
-  let key = source + '|' + JSON.stringify(cfg) + '|' + (limits.updatedAt || '') + '|' + (getModels().updatedAt || '') + '|' + Math.floor(now / 3600e3) + '|' + (reset ?? 'none');
+  let key = source + '|' + JSON.stringify(cfg) + '|' + (limits.updatedAt || '') + '|' + (getModels().updatedAt || '') + '|' + Math.floor(now / 60_000) + '|' + (reset ?? 'none');
   try { const st = statSync(FILE()); key += '|' + st.size + ':' + st.mtimeMs; } catch { key += '|none'; }
   return key;
+}
+
+export function benchedCells(summary, cfg = loadConfig().scorecard) {
+  return (summary || []).filter((g) => g.steps === 1 && evidenceRated(g) >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
+}
+
+/** Structured category × level view shared by the short text, HTTP API and scores modal. */
+export function scoresGrid({ source = null, summary = null, categories = CATEGORIES } = {}) {
+  summary ||= summarize({ source });
+  return categories.map((category) => ({
+    category,
+    levels: LEVELS.map((level) => {
+      const { pick, explain } = recommend({ category, difficulty: level, source, summary, explain: true });
+      if (pick) return {
+        level, status: 'pick', selection: pick.plan?.steps?.join('>') || selOf(pick), quality: pick.plan?.quality ?? null,
+        usd: pick.plan?.usd ?? null, n: pick.evidence?.n ?? 0, weightedN: pick.evidence?.weightedN ?? 0,
+        last: pick.evidence?.last || null, evidenceSource: pick.evidence?.source || 'prior', shipped: !!pick.evidence?.shipped,
+      };
+      if (explain?.status === 'capped') {
+        const resetAt = Math.min(...explain.capped.map((c) => c.resetAt).filter((v) => Number.isFinite(v)));
+        return { level, status: 'capped', selections: explain.capped.map((c) => c.sel), resetAt: Number.isFinite(resetAt) ? resetAt : null };
+      }
+      return { level, status: 'no-data' };
+    }),
+  }));
 }
 
 export function formatScoresShort({ source = null } = {}) {
@@ -931,34 +992,21 @@ export function formatScoresShort({ source = null } = {}) {
   const key = shortMemoKey({ source });
   if (shortMemo?.key === key) return shortMemo.text;
   const all = summarize({ source });
-  if (!all.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const money = (v) => (v == null ? 'unpriced' : '$' + v.toFixed(v < 0.1 ? 3 : 2));
-  const sel = (r) => r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default');
-  const cell = (r) => {
-    if (!r) return '-';
-    if (!r.plan) return sel(r) + ' (prior only)';
-    const from = /extrapolated from level (\d)/.exec(r.reason || '');
-    const flags = [r.plan.estimated ? 'est.' : null, from ? 'from L' + from[1] : null].filter(Boolean); // the ladder's fallback step is detail: it changes per level and the auto-pick applies it anyway
-    return sel(r) + ' q' + r.plan.quality.toFixed(2) + ' ' + money(r.plan.usd) + (flags.length ? ' [' + flags.join(', ') + ']' : '');
-  };
-  const lines = ['Best pick + runner-up per category@level (q = expected quality 0-1 over >= ' + cfg.minSamples + ' rated; $ per task at API list price x provider weight; est. = estimated ladder). Full table and reasons: model_scores with detail: true or a category.'];
-  for (const c of CATEGORIES) {
-    const runs = [];
-    for (const d of LEVELS) {
-      const best = recommend({ category: c, difficulty: d, source, summary: all });
-      if (!best) continue;
-      const second = recommend({ category: c, difficulty: d, source, summary: all, exclude: [best.provider + ':' + (best.model || 'default')] });
-      const text = cell(best) + ' | runner-up ' + cell(second);
-      const last = runs[runs.length - 1];
-      if (last && last.text === text && last.to === d - 1) last.to = d; else runs.push({ from: d, to: d, text });
-    }
-    for (const r of runs) lines.push('- ' + c + '@' + (r.from === r.to ? r.from : r.from + '-' + r.to) + ': ' + r.text);
-  }
-  if (lines.length === 1) lines.push('- no pick yet (not enough rated runs above the bar)');
-  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
+  const date = (v) => v ? String(v).slice(0, 10) : '-';
+  const reset = (v) => v ? new Date(v).toISOString().slice(0, 16) + 'Z' : 'reset unknown';
+  const lines = ['Category@level picks (q = quality; n/date = raw rated evidence and latest run; bench = smoke/shipped benchmark). Full table: model_scores with detail: true or a category.'];
+  for (const row of scoresGrid({ source, summary: all })) lines.push('- ' + row.levels.map((c) => {
+    const tag = `${row.category}@${c.level}`;
+    if (c.status === 'no-data') return `${tag}: no data`;
+    if (c.status === 'capped') return `${tag}: capped: ${c.selections.join(', ')} until ${reset(c.resetAt)}`;
+    const evidence = c.evidenceSource === 'prior' ? 'prior' : `${c.shipped ? 'shipped ' : ''}${c.evidenceSource} n=${c.n} ${date(c.last)}`;
+    return `${tag}: ${c.selection} ${c.quality == null ? '' : `q${c.quality.toFixed(2)} ${money(c.usd)} `}[${evidence}]`;
+  }).join(' · '));
+  const benched = benchedCells(all, cfg);
   if (benched.length) {
-    lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' rated; recommend() skips these cells; a better run lifts them):');
-    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+    lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' recency-weighted rated; recommend() skips these cells; a better run lifts them):');
+    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
   }
   const text = lines.join('\n');
   shortMemo = { key, text };
@@ -982,13 +1030,18 @@ export function formatScores({ category = null, source = null, archived = false,
   for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
   const cfg = loadConfig().scorecard;
   if (!archived) {
-    lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
+    lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} recency-weighted rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
     let any = false;
     for (const c of category ? [category] : CATEGORIES) for (const d of LEVELS) {
       const r = recommend({ category: c, difficulty: d, source, summary });
       if (r) { any = true; lines.push(`- ${c}@${d}: ${r.reason}`); }
     }
     if (!any) lines.push('- none yet (not enough rated runs above the bar)');
+  }
+  const benched = benchedCells(rows, cfg);
+  if (benched.length) {
+    lines.push('', `Benched (quality < ${cfg.quality} over ≥ ${cfg.benchMinSamples} recency-weighted rated):`);
+    for (const g of benched) lines.push(`- ${g.sel} ${g.category}@${g.difficulty}: q${g.quality.toFixed(2)} over ${g.rated} raw / ${evidenceRated(g).toFixed(2)} weighted rated${g.last ? `, last run ${String(g.last).slice(0, 10)}` : ''}`);
   }
   lines.push('', 'Error rates (φ = phantom / unverified completions):');
   const ers = errorRates({ source, archived }).byProvider;

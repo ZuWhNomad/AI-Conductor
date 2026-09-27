@@ -526,12 +526,17 @@ test('POST /api/tasks defaults parallelOverride and overflowApi from the session
   await post(`/api/tasks/${explicit.id}/cancel`);
 });
 
-test('GET /api/scores returns only the text the UI reads', async () => {
+test('GET /api/scores returns text, the category-level grid, and benched cells', async () => {
   const sc = await get('/api/scores');
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
+  assert.equal(sc.grid.length, 15);
+  assert.ok(sc.grid.every((row) => row.levels.length === 5));
+  assert.ok(Array.isArray(sc.benched));
   const archived = await get('/api/scores?archived=1');
   assert.equal(typeof archived.text, 'string');
+  assert.deepEqual(archived.grid, []);
+  assert.ok(Array.isArray(archived.benched));
 });
 
 test('POST /api/ollama/pull is gone', async () => {

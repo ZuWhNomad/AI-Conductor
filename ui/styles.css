@@ -198,6 +198,14 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 .modal-body .picker select { min-width: 0; flex: 1; }
 .modal-body .picker select:nth-child(2) { flex: 2.4; }
 .modal-body h4 { margin: 8px 0 2px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: .06em; }
+.score-grid-wrap { overflow-x: auto; }
+.score-grid { width: 100%; border-collapse: collapse; font-size: 11px; }
+.score-grid th, .score-grid td { border: 1px solid var(--line); padding: 6px; text-align: left; vertical-align: top; }
+.score-grid thead th { color: var(--muted); }
+.score-grid td { min-width: 115px; white-space: pre-line; overflow-wrap: anywhere; }
+.score-grid td.capped { color: var(--warn); }
+.score-grid td.no-data { color: var(--muted); }
+.score-details > summary { cursor: pointer; color: var(--muted); }
 .dirs .d { padding: 4px 8px; cursor: pointer; border-radius: 6px; }
 .dirs .d:hover { background: var(--bg3); }
 .imp { border-bottom: 1px dashed var(--line); padding: 6px 0; font-size: 12.5px; }

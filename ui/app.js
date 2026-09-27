@@ -1131,16 +1131,43 @@ async function openScores() {
   const title = el('h4', null, 'Scores (measured worker selection)');
   const toggle = el('label', 'chk'); const archived = el('input'); archived.type = 'checkbox'; archived.setAttribute('aria-label', 'Show archived scores');
   toggle.append(archived, el('span', null, 'archived')); head.append(title, toggle);
-  const scores = el('pre', null, 'Loading…');
+  const gridTitle = el('h4', null, 'Category × level'); const grid = el('div', 'score-grid-wrap', 'Loading…');
+  const benchedTitle = el('h4', null, 'Benched cells'); const benched = el('pre');
+  const details = el('details', 'score-details'); const detailsLabel = el('summary', null, 'Full table and routing details');
+  const scores = el('pre', null, 'Loading…'); details.append(detailsLabel, scores);
   const benchTitle = el('h4', null, 'Due for benchmark'); const bench = el('pre');
-  body.append(head, scores, benchTitle, bench);
+  body.append(head, gridTitle, grid, benchedTitle, benched, details, benchTitle, bench);
   openModal('Benchmarks & scores', body);
   let benchData;
+  const renderGrid = (rows) => {
+    grid.textContent = '';
+    if (!rows?.length) { grid.textContent = archived.checked ? 'Archived scores are listed in the full table.' : 'No score data.'; return; }
+    const table = el('table', 'score-grid');
+    const thead = el('thead'); const hr = el('tr'); hr.append(el('th', null, 'Category'), ...[1, 2, 3, 4, 5].map((n) => el('th', null, `L${n}`))); thead.append(hr);
+    const tbody = el('tbody');
+    for (const row of rows) {
+      const tr = el('tr'); tr.append(el('th', null, row.category));
+      for (const cell of row.levels || []) {
+        let text;
+        if (cell.status === 'no-data') text = 'no data';
+        else if (cell.status === 'capped') text = `capped\n${(cell.selections || []).join(', ')}\nuntil ${cell.resetAt ? new Date(cell.resetAt).toLocaleString() : 'reset unknown'}`;
+        else {
+          const source = cell.evidenceSource === 'prior' ? 'prior' : `${cell.shipped ? 'shipped ' : ''}${cell.evidenceSource || 'evidence'}`;
+          text = `${cell.selection}\n${cell.quality == null ? '' : `q${cell.quality.toFixed(2)} · `}${source} · n=${cell.n ?? 0} · ${cell.last ? String(cell.last).slice(0, 10) : '-'}`;
+        }
+        const td = el('td', `score-cell ${cell.status}`, text); td.title = text.replaceAll('\n', ' '); tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    table.append(thead, tbody); grid.append(table);
+  };
   const load = async () => {
     scores.className = ''; scores.textContent = 'Loading…';
     try {
       const [sc, bn] = await Promise.all([api.get(archived.checked ? '/api/scores?archived=1' : '/api/scores'), benchData === undefined ? api.get('/api/bench').catch(() => null) : benchData]);
-      benchData = bn; title.textContent = archived.checked ? 'Archived scores' : 'Scores (measured worker selection)'; scores.textContent = sc.text || '(no rated runs yet)';
+      benchData = bn; title.textContent = archived.checked ? 'Archived scores' : 'Scores (measured worker selection)'; scores.textContent = sc.text || '(no rated runs yet)'; renderGrid(sc.grid);
+      benchedTitle.hidden = benched.hidden = !(sc.benched || []).length;
+      benched.textContent = (sc.benched || []).map((c) => `${c.selection} ${c.category}@${c.level}: q${c.quality.toFixed(2)}, n=${c.n}, ${c.last ? String(c.last).slice(0, 10) : '-'}`).join('\n');
       benchTitle.hidden = bench.hidden = archived.checked || !bn?.text;
       bench.textContent = bn?.text || '';
     } catch (e) { scores.className = 'sysline err'; scores.textContent = e.message; }
