@@ -308,6 +308,31 @@ test('recommend: value not cheapness — a dearer model wins only when its extra
   assert.match(sc.formatScores({ category: 'review' }), /empty|none/);
 });
 
+test('recommend: review-round cost is off by default and added once per summary row when enabled', () => {
+  const cfg = loadConfig().scorecard;
+  const models = ['gpt-5.6-luna', 'gpt-5.6-terra'];
+  const reg = { models: models.map((id) => ({ provider: 'codex', id, kind: 'agent' })), providers: { codex: { status: 'ok' } } };
+  const cell = (model, avgRounds) => ({
+    sel: `codex:${model}:low`, steps: 1, provider: 'codex', model, effort: 'low', category: 'debug', difficulty: 2,
+    rated: 1, n: 1, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0, avgRounds,
+  });
+  const lowRounds = cell(models[0], 0), highRounds = cell(models[1], 2);
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 1, quality: 0.75, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0,
+      wasteStrength: 0, reviewUsdPerRound: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const off = sc.recommend({ category: 'debug', difficulty: 2, summary: [lowRounds, highRounds], reg });
+    assert.equal(off.model, models[0], 'zero setting preserves the existing tie order');
+    assert.equal(off.plan.usd, 0.01);
+
+    saveConfig({ scorecard: { reviewUsdPerRound: 1 } });
+    const on = sc.recommend({ category: 'debug', difficulty: 2, summary: [highRounds, lowRounds], reg });
+    assert.equal(on.model, models[0], 'the otherwise equal model with fewer review rounds wins');
+    assert.equal(on.plan.usd, 0.01);
+    const priced = sc.recommend({ category: 'debug', difficulty: 2, summary: [highRounds], reg });
+    assert.equal(priced.plan.usd, 2.01, 'plan cost adds avgRounds × reviewUsdPerRound once');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
 test('escalate picks the highest measured quality, not the next cheap rung', () => {
   // implement@2 after seeding: Terra (1.0, $0.23), Astra (1.0, $1.15), qwen (1.0, $0) -> value pick is qwen; escalation ties on quality, then utility -> still qwen;
   // exclude the free one and Terra: value pick would be a Luna-first ladder, escalation goes straight to Astra alone.
@@ -439,12 +464,14 @@ test('scorecard config is normalized', () => {
   assert.equal(cfg.scorecard.quality, 0.75);
   assert.equal(cfg.scorecard.qualityValueUsd, 5);
   assert.equal(cfg.scorecard.hourlyUsd, 0);
-  const bad = saveConfig({ scorecard: { quality: 5, minSamples: -1, qualityValueUsd: 'x', hourlyUsd: -3, prices: 'x', usePriors: 'yes' }, smoke: { timeoutMinutes: 0 } });
+  assert.equal(cfg.scorecard.reviewUsdPerRound, 0);
+  const bad = saveConfig({ scorecard: { quality: 5, minSamples: -1, qualityValueUsd: 'x', hourlyUsd: -3, reviewUsdPerRound: -1, prices: 'x', usePriors: 'yes' }, smoke: { timeoutMinutes: 0 } });
   assert.equal(bad.scorecard.quality, 0.75);
   assert.equal(bad.scorecard.minSamples, 1);
   assert.equal(bad.scorecard.benchMinSamples, 3);
   assert.equal(bad.scorecard.qualityValueUsd, 5);
   assert.equal(bad.scorecard.hourlyUsd, 0);
+  assert.equal(bad.scorecard.reviewUsdPerRound, 0);
   assert.deepEqual(bad.scorecard.prices, {});
   assert.equal(bad.scorecard.coldStart, 'priors');
   assert.equal(bad.scorecard.usePriors, undefined);
