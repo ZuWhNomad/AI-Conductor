@@ -24,6 +24,7 @@ import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
+import { startBenchQueue, stopBenchQueue, wakeBenchQueue } from '../core/bench.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -36,8 +37,14 @@ export function stopBackgroundWork() {
   try { stopModelPolling(); } catch {}
   try { stopLimitPolling(); } catch {}
   try { stopSignInWatches(); clearInterval(detectTimer); detectTimer = null; } catch {}
+  try { stopBenchQueue(); } catch {}
   try { killProbes(); } catch {}
 }
+
+// Registry changes may have queued a newly detected selection; terminal live work may have released a yielded lane.
+bus.on('event', (e) => {
+  if (e.type === 'models' || (e.type === 'task' && ['done', 'failed', 'canceled'].includes(e.task?.status))) wakeBenchQueue();
+});
 
 // --- noticing an auth change we did not cause ------------------------------------------------------------------
 // The provider registry is a cache, and with auto-refresh off nothing re-probes it: signing in outside the app — or
@@ -614,6 +621,7 @@ export function startServer({ port = null } = {}) {
         startUpdateChecks();
       }
       schedule();
+      startBenchQueue();
       resolve({ server, url: addr, port: boundPort });
     };
     const onError = (e) => {

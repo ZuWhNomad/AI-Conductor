@@ -129,11 +129,15 @@ export function exactModels(sdk = [], api = []) {
   const apiName = new Map(api.map((m) => [m.id, m.label]));
   const label = (exact) => { const base = exact.replace(/\[1m\]$/, ''); return (apiName.get(base) || prettyName(base) || base) + (exact.endsWith('[1m]') ? ' (1M context)' : ''); };
   const out = [];
-  const add = (m) => { if (!out.some((x) => x.id === m.id)) out.push(m); };
+  const add = (m) => {
+    const prior = out.find((x) => x.id === m.id);
+    if (!prior) out.push(m);
+    else if (m.aliasOf) prior.aliasOf = [...new Set([...(prior.aliasOf || []), ...m.aliasOf])];
+  };
   for (const m of sdk || []) {
     const exact = m.value.startsWith('claude-') ? m.value : m.resolvedModel; // fable-5-1[1m] resolves to an id without the marker
     if (!exact) continue; // an alias the CLI cannot resolve names no model
-    add({ provider: id, id: exact, label: label(exact), description: '', efforts: m.supportedEffortLevels || (m.supportsEffort ? ['low', 'medium', 'high'] : effortsFor(exact)), kind: 'agent', cost: 'subscription' });
+    add({ provider: id, id: exact, label: label(exact), description: '', efforts: m.supportedEffortLevels || (m.supportsEffort ? ['low', 'medium', 'high'] : effortsFor(exact)), kind: 'agent', cost: 'subscription', ...(m.value.startsWith('claude-') ? {} : { aliasOf: [m.value] }) });
   }
   for (const m of api) add({ provider: id, id: m.id, label: m.label, description: 'from the Models API', efforts: effortsFor(m.id), kind: 'agent', cost: 'subscription' });
   return out;
