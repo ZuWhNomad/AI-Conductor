@@ -274,7 +274,17 @@ class StatusForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         timer.Stop();
-        Launcher.KillTree(proc);
+        try
+        {
+            using (var wc = new WebClient())
+            {
+                wc.Headers[HttpRequestHeader.ContentType] = "application/json";
+                wc.UploadString(url + "/api/shutdown", "{}");
+            }
+        }
+        catch { }
+        try { if (proc != null && !proc.HasExited) proc.WaitForExit(5000); } catch { }
+        if (proc != null && !proc.HasExited) Launcher.KillTree(proc);
         base.OnFormClosed(e);
     }
 }
