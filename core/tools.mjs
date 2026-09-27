@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, isArchived, setEligibility, selOf } from './scorecard.mjs';
+import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, isArchived, setEligibility, selOf, summarize } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan, getPlan, noWorkerReason, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
@@ -55,6 +55,26 @@ export function escalationState({ hasFailed = false, depth = 0, rootRounds = 0, 
  */
 export function atCeiling(top, failed) {
   return !!(top && failed && selOf(top) === selOf(failed));
+}
+
+/** Try the failed model's next effort once when that exact selection has no evidence at this task level. */
+export function effortBump({ failed, chainSels = [], category, difficulty, reg, rows = [] } = {}) {
+  if (!failed || ['drafting', 'modeling'].includes(category)) return null;
+  const entry = reg?.models?.find((m) => m.provider === failed.provider && (m.id === failed.model || m.resolved === failed.model));
+  const efforts = entry?.efforts;
+  if (!Array.isArray(efforts) || !efforts.length) return null;
+  const index = efforts.indexOf(failed.effort);
+  if (index < 0 || index >= efforts.length - 1) return null;
+  const sameModelPrefix = `${failed.provider}:${failed.model}:`;
+  if (chainSels.some((s) => String(s).startsWith(sameModelPrefix) && String(s).slice(sameModelPrefix.length) !== failed.effort)) return null;
+  const pick = {
+    provider: failed.provider, model: failed.model, effort: efforts[index + 1],
+    reason: `unmeasured next effort of ${failed.provider}:${failed.model} (was ${failed.effort}), tried once before switching model`,
+  };
+  const sel = selOf(pick);
+  if (chainSels.includes(sel)) return null;
+  if (rows.some((r) => r.steps === 1 && r.sel === sel && r.category === category && r.difficulty === difficulty && r.n > 0)) return null;
+  return pick;
 }
 
 export function formatModels(reg = getModels()) {
@@ -167,18 +187,27 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         if (!provider && !model && category) {
           if (blocked) return `Escalation budget spent: the best-available model was already tried ${escalationsUsed} time(s) (worker.escalationRounds=${escRounds}) after the review rounds, and the task still failed. Per the ladder, the conductor is the final fallback — finish this one yourself now (or name a provider/model explicitly to override).`;
           const gate = accessProviders(`${a.title}\n${a.spec}`);
+          if (escalate && failed && cfg.worker.escalateEffortFirst !== false && !avoid.includes(familyOf(failed.provider, failed.model))) {
+            const bump = effortBump({ failed, chainSels: exclude, category, difficulty: difficulty || failed.difficulty || 2, reg: getModels(), rows: summarize() });
+            if (bump) {
+              pick = bump; provider = bump.provider; model = bump.model; effort = bump.effort;
+              difficulty = difficulty || 2;
+            }
+          }
           // Escalate only when there is something better to escalate TO. The chain's own selections are excluded
           // from the auto-pick, so a worker that is already the ceiling would be "escalated" to a weaker model.
-          if (escalate && failed) {
+          if (!pick && escalate && failed) {
             const top = recommend({ category, difficulty: difficulty || 2, exclude: [...(a.exclude || []), ...avoided], escalate: true, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
             // L44: compare top against every selection in the chain, not only the latest attempt.
             if (top && (exclude.includes(selOf(top)) || atCeiling(top, failed))) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(top)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
           }
-          pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
-          if (!pick) return noWorkerReason({ category, difficulty }, gate, !!sessionFlags(sessionId).overflowApi);
-          // Visual passes prove a model AND its effort; effort-only overrides cannot change an automatic pick.
-          provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort;
-          difficulty = difficulty || 2; // L19: persist the routed level when auto-picked
+          if (!pick) {
+            pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
+            if (!pick) return noWorkerReason({ category, difficulty }, gate, !!sessionFlags(sessionId).overflowApi);
+            // Visual passes prove a model AND its effort; effort-only overrides cannot change an automatic pick.
+            provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort;
+            difficulty = difficulty || 2; // L19: persist the routed level when auto-picked
+          }
         }
         // A pin runs as pinned (a reviewer lists its own family too, so failover leaves it); the configured default
         // worker, like the auto-pick, must stay outside avoid_families.
