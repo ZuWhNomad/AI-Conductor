@@ -8,7 +8,8 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
+import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { CANARY, bare } from './private/common.mjs';
 import { CLAMP, SLUG, STACK_TEST, MONEY, INVOICE_REF, RECEIPT_REF, QUEUE_FIXED, QUEUE_BUGGY, LRU_FIXED, LRU_BUGGY, CALC, RANGE, RANGE_MUTANTS, RANGE_TEST, POOL_FIXED, POOL_BUGGY, PIPELINE_FIXED, PIPELINE_BUGGY } from './private/l1-5.mjs';
@@ -16,6 +17,7 @@ import { OVERLAP_SLOW, OVERLAP_FAST, OVERLAP_TEST, OVERLAP_HIDDEN, OVERLAP_BENCH
 import { PATCH, PATCH_TEST, PATCH_HIDDEN, patchHidden } from './private/implement-6.mjs';
 import { MULTIPART, MULTIPART_TEST, MULTIPART_HIDDEN } from './private/implement-7.mjs';
 import { CLOCK, CACHE_BUGGY, CACHE_FIXED, CACHE_TEST, CACHE_HIDDEN } from './private/debug-7.mjs';
+import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD } from './private/deterministic.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,6 +61,14 @@ async function withHidden(dir, files, fn) {
   try { return await fn(); } finally { for (const rel of Object.keys(files)) rmSync(join(dir, rel), { force: true }); }
 }
 const countTests = (src) => (src.match(/^test\(/gm) || []).length;
+const privateJson = (body) => JSON.parse(bare(body));
+const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel)); } catch { return null; } };
+
+function buildSqlDb(file) {
+  rmSync(file, { force: true });
+  const db = new DatabaseSync(file);
+  try { db.exec(bare(SQL_SCHEMA)); } finally { db.close(); }
+}
 
 /** Does any file in the scratch dir, other than the grader's own hidden files, carry the canary (copied from ./private/)? */
 export function copiedFromGrader(dir, skip = []) {
@@ -258,6 +268,34 @@ const TASKS = [
     solve() { return { finalMessage: 'area, distance, midpoint' }; },
   },
   {
+    id: 'read-2', category: 'read', difficulty: 2, title: 'classify support requests',
+    spec: 'Read tickets.json and write labels.json as a JSON array with exactly one object per ticket: {"id":"T01","label":"billing"}. Use only the labels billing, bug, feature and account. Keep every input id and do not add ids. At least 10 of the 12 labels must match the answer key. Do not modify tickets.json.',
+    setup(dir) { write(dir, { 'tickets.json': bare(CLASSIFY_CASES) }); },
+    check(dir) {
+      const got = readJson(dir, 'labels.json'), gold = privateJson(CLASSIFY_GOLD);
+      if (!Array.isArray(got)) return { pass: false, notes: 'labels.json is missing or is not a JSON array' };
+      const ids = got.map((x) => x?.id), expectedIds = gold.map((x) => x.id);
+      if (got.length !== gold.length || new Set(ids).size !== gold.length || !expectedIds.every((id) => ids.includes(id))) return { pass: false, notes: 'labels.json must contain every ticket id exactly once' };
+      if (got.some((x) => !['billing', 'bug', 'feature', 'account'].includes(x?.label))) return { pass: false, notes: 'labels.json contains an unknown label' };
+      const want = new Map(gold.map((x) => [x.id, x.label]));
+      const correct = got.filter((x) => want.get(x.id) === x.label).length;
+      return { pass: correct >= 10, notes: correct >= 10 ? '' : `${correct}/12 labels correct (need 10)` };
+    },
+    solve(dir) { write(dir, { 'labels.json': bare(CLASSIFY_GOLD) }); },
+  },
+  {
+    id: 'read-3', category: 'read', difficulty: 3, title: 'extract structured dispatch data',
+    spec: 'Read dispatch.txt and write result.json containing exactly this shape: {report, unit, readings, totals}. Each readings item must have {crate, time, temperature, disposition, tags}; preserve source order, use a JSON number for a temperature, null when it is missing, and an array for tags. totals has accepted, pending and rejected counts. The result is checked by deep equality, so do not add fields or prose. Do not modify dispatch.txt.',
+    setup(dir) { write(dir, { 'dispatch.txt': bare(EXTRACT_NOTES) }); },
+    check(dir) {
+      const got = readJson(dir, 'result.json');
+      if (got == null) return { pass: false, notes: 'result.json is missing or invalid JSON' };
+      const pass = isDeepStrictEqual(got, privateJson(EXTRACT_GOLD));
+      return { pass, notes: pass ? '' : 'result.json does not deep-equal the extracted records' };
+    },
+    solve(dir) { write(dir, { 'result.json': bare(EXTRACT_GOLD) }); },
+  },
+  {
     id: 'search-1', category: 'search', difficulty: 1, title: 'locate a definition',
     spec: 'Find where the function `parseHeader` (singular; not parseHeaders or parseHeaderline) is defined in this project. Reply with exactly one line of the form `path:line`, relative to the project root with forward slashes, and nothing else. Do not modify any file.',
     setup(dir) { write(dir, { 'src/http/parse.mjs': PARSE, 'src/http/client.mjs': CLIENT, 'src/util/strings.mjs': STRINGS, 'README.md': '# demo\n' }); },
@@ -300,6 +338,27 @@ const TASKS = [
     solve(dir) { write(dir, bare({ 'src/stack.test.mjs': STACK_TEST })); },
   },
   {
+    id: 'ui-2', category: 'ui', difficulty: 2, title: 'build a responsive metric grid',
+    spec: 'Create one self-contained index.html for a service overview. It must contain exactly four <article class="card"> blocks. Every card has exactly one <span class="label">, one <strong class="value"> and one <small class="detail">. Include a CSS @media (max-width: 640px) rule that changes the card grid to one column. Use no http:// or https:// assets and no inline event handlers such as onclick. Use these cards: Availability / 99.98% / Last 30 days; Latency / 84 ms / P95 response; Deployments / 12 / This week; Incidents / 0 / Open now.',
+    setup() {},
+    check(dir) {
+      const src = read(dir, 'index.html');
+      if (!src) return { pass: false, notes: 'no index.html' };
+      const cards = [...src.matchAll(/<article\b[^>]*class=["'][^"']*\bcard\b[^"']*["'][^>]*>([\s\S]*?)<\/article\s*>/gi)].map((m) => m[1]);
+      if (cards.length !== 4) return { pass: false, notes: `${cards.length} card blocks (want 4)` };
+      const count = (body, name) => (body.match(new RegExp(`<(?:span|strong|small)\\b[^>]*class=["'][^"']*\\b${name}\\b[^"']*["'][^>]*>`, 'gi')) || []).length;
+      if (cards.some((body) => count(body, 'label') !== 1 || count(body, 'value') !== 1 || count(body, 'detail') !== 1)) return { pass: false, notes: 'each card needs exactly one label, value and detail field' };
+      const field = (body, tag, name) => new RegExp(`<${tag}\\b[^>]*class=["'][^"']*\\b${name}\\b[^"']*["'][^>]*>([^<]*)<\\/${tag}\\s*>`, 'i').exec(body)?.[1].replace(/\s+/g, ' ').trim();
+      const values = cards.map((body) => [field(body, 'span', 'label'), field(body, 'strong', 'value'), field(body, 'small', 'detail')]);
+      if (!isDeepStrictEqual(values, privateJson(UI_GOLD))) return { pass: false, notes: 'card fields do not match the requested content and order' };
+      if (!/@media\s*\(\s*max-width\s*:\s*640px\s*\)[^{]*\{[\s\S]*?grid-template-columns\s*:\s*1fr\b/i.test(src)) return { pass: false, notes: 'missing the 640px one-column media rule' };
+      if (/https?:\/\//i.test(src)) return { pass: false, notes: 'remote asset URL found' };
+      if (/\son[a-z]+\s*=/i.test(src)) return { pass: false, notes: 'inline event handler found' };
+      return { pass: true, notes: '' };
+    },
+    solve(dir) { write(dir, { 'index.html': bare(UI_REFERENCE) }); },
+  },
+  {
     id: 'refactor-3', category: 'refactor', difficulty: 3, title: 'extract a duplicated helper',
     spec: `src/invoice.mjs and src/receipt.mjs each contain their own copy of formatMoney. Extract it into a new module src/money.mjs (export function formatMoney) and import it from both modules, leaving exactly one definition. Behaviour must not change and src/format.test.mjs must not be modified. ${VERIFY}`,
     setup(dir) { write(dir, { 'src/invoice.mjs': INVOICE, 'src/receipt.mjs': RECEIPT, 'src/format.test.mjs': FORMAT_TEST }); },
@@ -314,6 +373,27 @@ const TASKS = [
       return testsPass(dir);
     },
     solve(dir) { write(dir, bare({ 'src/money.mjs': MONEY, 'src/invoice.mjs': INVOICE_REF, 'src/receipt.mjs': RECEIPT_REF })); },
+  },
+  {
+    id: 'implement-3', category: 'implement', difficulty: 3, title: 'query the order ledger',
+    spec: `Write query.sql for records.sqlite using this schema: customers(id, name, active), orders(id, customer_id, placed_at, status, amount_cents), refunds(id, order_id, amount_cents). Return one row per active customer with at least two completed orders in 2026 Q1 (placed_at from 2026-01-01 inclusive to 2026-04-01 exclusive). Columns, in order: customer, order_count, gross_cents, refund_cents, net_cents. Sum every refund for each qualifying order without multiplying order amounts when an order has multiple refunds; zero refunds count as 0. Sort by customer ascending. Write only the query and do not modify the database. You may inspect it with node:sqlite; add no dependency.`,
+    hidden: ['judge.sqlite'],
+    setup(dir) { write(dir, { 'schema.sql': bare(SQL_SCHEMA) }); buildSqlDb(join(dir, 'records.sqlite')); },
+    check(dir) {
+      const query = read(dir, 'query.sql');
+      if (!query?.trim()) return { pass: false, notes: 'no query.sql' };
+      const judge = join(dir, 'judge.sqlite');
+      let rows;
+      try {
+        buildSqlDb(judge);
+        const db = new DatabaseSync(judge, { readOnly: true });
+        try { rows = db.prepare(query).all().map((row) => ({ ...row })); } finally { db.close(); }
+      } catch (e) { return { pass: false, notes: `query failed: ${String(e?.message || e).slice(0, 180)}` }; }
+      finally { rmSync(judge, { force: true }); }
+      const pass = isDeepStrictEqual(rows, privateJson(SQL_GOLD));
+      return { pass, notes: pass ? '' : `rows do not deep-equal the expected result: ${JSON.stringify(rows).slice(0, 240)}` };
+    },
+    solve(dir) { write(dir, { 'query.sql': bare(SQL_QUERY) }); },
   },
   {
     id: 'debug-3', category: 'debug', difficulty: 3, title: 'fix a failing test',
@@ -358,6 +438,20 @@ const TASKS = [
       return survivors.length ? { pass: false, notes: `suite does not catch: ${survivors.join('; ')}` } : { pass: true, notes: '' };
     },
     solve(dir) { write(dir, bare({ 'src/range.test.mjs': RANGE_TEST })); },
+  },
+  {
+    id: 'review-4', category: 'review', difficulty: 4, title: 'review seeded defects',
+    spec: 'Review src/helpers.mjs for correctness defects. Write review.json as {"findings":[line, ...]}, where each integer is the source line containing a defect (the executable line, not a comment or brace). Use each line at most once and report only concrete bugs. The grader measures the planted-defect recall and precision; both must be at least 75%. Do not modify src/helpers.mjs.',
+    setup(dir) { write(dir, { 'src/helpers.mjs': bare(REVIEW_BUGGY) }); },
+    check(dir) {
+      const out = readJson(dir, 'review.json'), got = out?.findings, gold = privateJson(REVIEW_GOLD);
+      if (!Array.isArray(got) || got.some((n) => !Number.isInteger(n)) || new Set(got).size !== got.length) return { pass: false, notes: 'review.json needs a unique integer findings array' };
+      const planted = new Set(gold), correct = got.filter((n) => planted.has(n)).length;
+      const recall = correct / gold.length, precision = got.length ? correct / got.length : 0;
+      const pass = recall >= 0.75 && precision >= 0.75;
+      return { pass, notes: pass ? '' : `recall ${(recall * 100).toFixed(0)}%, precision ${(precision * 100).toFixed(0)}% (need 75% each)` };
+    },
+    solve(dir) { write(dir, { 'review.json': JSON.stringify({ findings: privateJson(REVIEW_GOLD) }, null, 2) + '\n' }); },
   },
   {
     id: 'debug-5', category: 'debug', difficulty: 5, title: 'fix an async pool and pipeline',

@@ -12,7 +12,7 @@ const { saveConfig } = await import('../core/config.mjs');
 
 test('the index merges the shared catalogue with config (add, tag, remove) and filters by platform', () => {
   const names = cap.loadIndex({ tools: { index: {} } }).map((e) => e.name);
-  assert.ok(names.includes('tesseract') && names.includes('yt-dlp') && names.includes('youtube'));
+  assert.ok(names.includes('tesseract') && names.includes('yt-dlp') && names.includes('youtube') && names.includes('x'));
   const cfg = { tools: { index: { tesseract: null, ledger: { kind: 'cli', categories: ['read'], purpose: 'private OCR pipeline', invoke: 'ledger-ocr <pdf>', detect: { command: 'ledger-ocr' } }, pdftotext: { categories: ['read', 'summarize', 'search'] }, elsewhere: { kind: 'app', categories: ['read'], purpose: 'x', platforms: ['mac'] } } } };
   const idx = cap.loadIndex(cfg);
   assert.ok(!idx.find((e) => e.name === 'tesseract'));                                   // removed
@@ -41,9 +41,11 @@ test('spec lines list only installed entries, respect the budget, and never a pr
 
 test('access rules restrict the providers for a matching task text; an empty providers list applies no gate', () => {
   assert.equal(cap.accessProviders('summarize https://www.youtube.com/watch?v=abc', { tools: { index: {} } }), null); // youtube entry has no proven providers yet
+  assert.deepEqual(cap.accessProviders('read https://x.com/example/status/1', { tools: { index: {} } }), { providers: ['grok'], names: ['x'] });
+  assert.deepEqual(cap.accessProviders('read https://twitter.com/example/status/1', { tools: { index: {} } }), { providers: ['grok'], names: ['x'] });
   const cfg = { tools: { index: { youtube: { providers: ['gemini'] }, xlinks: { kind: 'access', categories: ['search'], purpose: 'x.com links open only on Grok', match: ['x.com/', 'twitter.com/'], providers: ['grok'] } } } };
   assert.deepEqual(cap.accessProviders('read https://YouTu.be/abc please', cfg), { providers: ['gemini'], names: ['youtube'] });
-  assert.deepEqual(cap.accessProviders('what does https://x.com/foo/status/1 say', cfg), { providers: ['grok'], names: ['xlinks'] });
+  assert.deepEqual(cap.accessProviders('what does https://x.com/foo/status/1 say', cfg), { providers: ['grok'], names: ['x', 'xlinks'] });
   assert.equal(cap.accessProviders('refactor the scheduler', cfg), null);
 });
 

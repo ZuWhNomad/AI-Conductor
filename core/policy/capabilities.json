@@ -54,5 +54,12 @@
     "providers": [],
     "added": "curated", "keywords": ["youtube", "video"],
     "note": "Gemini (3.8 Flash + Extended thinking) is a proven route and does read on-screen detail, but it is driven by hand outside Conductor: ingestion is flaky and some videos stall on every attempt. providers stays empty - an empty list applies no gate"
+  },
+  {
+    "name": "x", "kind": "access", "categories": ["read", "search", "summarize"],
+    "purpose": "The task contains an X/Twitter link, which must be opened by Grok",
+    "match": ["x.com/", "twitter.com/"],
+    "providers": ["grok"],
+    "added": "curated", "keywords": ["x", "twitter", "post"]
   }
 ]

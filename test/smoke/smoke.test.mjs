@@ -29,6 +29,64 @@ for (const b of BATTERY) {
   });
 }
 
+test('read-3 extraction requires a deep-equal JSON answer', async () => {
+  const b = BATTERY.find((x) => x.id === 'read-3'), dir = tmpDir('extract-deep-equal');
+  b.setup(dir); b.solve(dir);
+  const answer = JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8'));
+  answer.extra = true;
+  write(dir, { 'result.json': JSON.stringify(answer) });
+  assert.equal((await b.check(dir)).pass, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('read-2 classification enforces the stated 10-of-12 accuracy bar', async () => {
+  const b = BATTERY.find((x) => x.id === 'read-2'), dir = tmpDir('classify-threshold');
+  b.setup(dir); b.solve(dir);
+  const labels = JSON.parse(readFileSync(join(dir, 'labels.json'), 'utf8'));
+  labels[0].label = 'feature'; labels[1].label = 'feature';
+  write(dir, { 'labels.json': JSON.stringify(labels) });
+  assert.equal((await b.check(dir)).pass, true, '10 correct labels should pass');
+  labels[2].label = 'billing';
+  write(dir, { 'labels.json': JSON.stringify(labels) });
+  assert.equal((await b.check(dir)).pass, false, '9 correct labels should fail');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('implement-3 SQL compares rows deeply on a fresh grader database', async () => {
+  const b = BATTERY.find((x) => x.id === 'implement-3'), dir = tmpDir('sql-rows');
+  b.setup(dir); b.solve(dir);
+  write(dir, { 'query.sql': 'SELECT name AS customer, 0 AS order_count, 0 AS gross_cents, 0 AS refund_cents, 0 AS net_cents FROM customers ORDER BY name;' });
+  const r = await b.check(dir);
+  assert.equal(r.pass, false);
+  assert.equal(existsSync(join(dir, 'judge.sqlite')), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('review-4 applies both recall and precision thresholds', async () => {
+  const b = BATTERY.find((x) => x.id === 'review-4'), dir = tmpDir('review-thresholds');
+  b.setup(dir);
+  write(dir, { 'review.json': JSON.stringify({ findings: [3, 7, 11, 99] }) });
+  assert.equal((await b.check(dir)).pass, true, '75% recall and precision should pass');
+  write(dir, { 'review.json': JSON.stringify({ findings: [3, 7, 11, 98, 99] }) });
+  assert.equal((await b.check(dir)).pass, false, 'precision below 75% should fail');
+  write(dir, { 'review.json': JSON.stringify({ findings: [3, 7] }) });
+  assert.equal((await b.check(dir)).pass, false, 'recall below 75% should fail');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('ui-2 uses string checks for the media rule and inline handlers', async () => {
+  const b = BATTERY.find((x) => x.id === 'ui-2'), dir = tmpDir('ui-string-checks');
+  b.setup(dir); b.solve(dir);
+  const good = readFileSync(join(dir, 'index.html'), 'utf8');
+  write(dir, { 'index.html': good.replace('99.98%', '98%') });
+  assert.equal((await b.check(dir)).pass, false);
+  write(dir, { 'index.html': good.replace('@media (max-width: 640px)', '@media (max-width: 641px)') });
+  assert.equal((await b.check(dir)).pass, false);
+  write(dir, { 'index.html': good.replace('<body>', '<body onclick="go()">') });
+  assert.equal((await b.check(dir)).pass, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // Level 6-7 graders: every plausible wrong solution fails, every different-but-correct one passes. Mutants that fail only
 // by timing out (refactor-6's benchmark kill, implement-7's 60 s test timeout) run with CONDUCTOR_SMOKE_SLOW=1.
 const SLOW = process.env.CONDUCTOR_SMOKE_SLOW === '1';
