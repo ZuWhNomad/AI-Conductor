@@ -158,6 +158,7 @@ function parseMessagesStream(obj, st, emit, tag) {
 export const VENDORS = {
   antigravity: {
     id: 'antigravity', label: 'Google Antigravity (Google AI Pro/Ultra)', budgetLabel: 'Google subscription',
+    readOnlyViaSnapshot: true,
     usageInputExclusive: true, // Claude-Code-shaped stream: input_tokens excludes cache reads (Codex-style streams include them)
     bin: () => findCli('agy') || first([join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'), join(home, '.local', 'bin', 'agy')]),
     install: { win: 'powershell -NoProfile -Command "irm https://antigravity.google/cli/install.ps1 | iex"', posix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
@@ -221,6 +222,7 @@ export const VENDORS = {
 
   grok: {
     id: 'grok', label: 'xAI Grok (SuperGrok / X Premium+)', budgetLabel: 'xAI subscription',
+    readOnlyViaSnapshot: true,
     usageInputExclusive: true, // Anthropic-style usage: input_tokens excludes cache reads
     bin: () => findCli('grok') || first([join(home, '.grok', 'bin', 'grok.exe'), join(home, '.grok', 'bin', 'grok'), join(process.env.LOCALAPPDATA || '', 'grok', 'bin', 'grok.exe')]),
     install: { win: 'powershell -NoProfile -Command "irm https://x.ai/cli/install.ps1 | iex"', posix: 'curl -fsSL https://x.ai/cli/install.sh | bash' },
@@ -265,6 +267,7 @@ export const VENDORS = {
 
   'qwen-code': {
     id: 'qwen-code', label: 'Qwen Code (Qwen OAuth free tier)', budgetLabel: 'Qwen account',
+    readOnlyViaSnapshot: true,
     bin: () => findCli('qwen'),
     install: { npm: '@qwen-code/qwen-code', win: 'npm i -g @qwen-code/qwen-code', posix: 'npm i -g @qwen-code/qwen-code' },
     login: { interactive: true, args: [], note: 'Run `qwen`, pick "Qwen OAuth", finish in the browser, then type /quit.' },
@@ -293,6 +296,7 @@ export const VENDORS = {
 
   kimi: {
     id: 'kimi', label: 'Kimi CLI (Moonshot account)', budgetLabel: 'Kimi account',
+    readOnlyViaSnapshot: true,
     bin: () => findCli('kimi') || first(pyScripts.map((d) => join(d, WIN ? 'kimi.exe' : 'kimi'))),
     install: { pip: 'kimi-cli', win: 'pip install --user kimi-cli', posix: 'pip install --user kimi-cli' },
     login: { args: ['login'], fallbackInteractive: true, note: 'Run `kimi login` (or `kimi` and /login) and finish in the browser.' },

@@ -1,10 +1,12 @@
 import { tmpDir } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
+import { writeFileSync, readFileSync, chmodSync, unlinkSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+import { findCli } from '../../core/proc.mjs';
 
 const { runVendorCli } = await import('../../core/workers/vendor-cli.mjs');
 const { VENDORS, providerFor } = await import('../../core/providers/vendors.mjs');
@@ -390,6 +392,10 @@ console.log('  * grok-4.6 (default)');
 });
 
 test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help', () => {
+  assert.equal(VENDORS.antigravity.readOnlyViaSnapshot, true);
+  assert.equal(VENDORS.grok.readOnlyViaSnapshot, true);
+  assert.equal(VENDORS['qwen-code'].readOnlyViaSnapshot, true);
+  assert.equal(VENDORS.kimi.readOnlyViaSnapshot, true);
   const t = { prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000, sandbox: 'read-only' };
   const agy = VENDORS.antigravity.headlessArgs(t);
   assert.equal(agy.args[agy.args.indexOf('--mode') + 1], 'plan');
@@ -483,3 +489,140 @@ test('grok: the decision comes from http_status, not the text; text is only a lo
   assert.equal(fb.limitHit, true);
   assert.match(readFileSync(statePath('improvements.ndjson'), 'utf8'), /"source":"worker:fallback-probe","message":"limit failure recognised from text: fallback-probe gave no structured status/);
 });
+
+test('vendor read-only snapshot lifecycle: creates detached worktree, runs in snapshot, removes worktree, and lists stray files', async (ctx) => {
+  const gitBin = findCli('git');
+  if (!gitBin) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('vendor-snap-ok');
+  execFileSync(gitBin, ['init', '--quiet'], { cwd, windowsHide: true });
+  writeFileSync(join(cwd, 'tracked.txt'), 'v1\n');
+  execFileSync(gitBin, ['add', 'tracked.txt'], { cwd, windowsHide: true });
+  execFileSync(gitBin, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'initial'], { cwd, windowsHide: true });
+
+  // Add dirty tracked edit and untracked file to verify stash create behavior
+  writeFileSync(join(cwd, 'tracked.txt'), 'v2-dirty\n');
+  writeFileSync(join(cwd, 'untracked.txt'), 'untracked\n');
+
+  let seenCwd = null;
+  let seenSandbox = 'initial';
+  let seenPrompt = null;
+  const script = `
+    const fs = require('node:fs');
+    const tracked = fs.readFileSync('tracked.txt', 'utf8').trim();
+    const hasUntracked = fs.existsSync('untracked.txt');
+    fs.writeFileSync('stray.txt', 'stray file content');
+    console.log(JSON.stringify({
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        response: 'tracked=' + tracked + '; untracked=' + hasUntracked
+      }
+    }));
+  `;
+  const spec = {
+    id: 'fake-snap',
+    label: 'Fake Snap',
+    readOnlyViaSnapshot: true,
+    bin: () => process.execPath,
+    headlessArgs: (t) => {
+      seenCwd = t.cwd;
+      seenSandbox = t.sandbox;
+      seenPrompt = t.prompt;
+      return { args: ['-e', script], threadId: null };
+    },
+    parse: VENDORS.antigravity.parse,
+  };
+
+  const r = await runVendorCli(spec, { id: 'snap-1', cwd, sandbox: 'read-only', prompt: 'audit code' });
+  assert.equal(r.ok, true, r.error);
+  // Ran in snapshot directory, not original repo
+  assert.notEqual(seenCwd, cwd);
+  assert.equal(seenSandbox, undefined, 'runs in normal (non-plan) mode in snapshot');
+  assert.match(seenPrompt, /Note: This task is running in a disposable snapshot/);
+  assert.match(seenPrompt, /audit code/);
+
+  // Observed tracked changes inside snapshot, but untracked files are not in snapshot
+  assert.match(r.finalMessage, /tracked=v2-dirty/);
+  assert.match(r.finalMessage, /untracked=false/);
+
+  // Stray files are listed in the final report
+  assert.match(r.finalMessage, /Stray files in snapshot: stray\.txt/);
+
+  // Project itself is untouched: stray.txt does NOT exist in original cwd, and dirty tracked file is preserved
+  assert.equal(existsSync(join(cwd, 'stray.txt')), false);
+  assert.equal(readFileSync(join(cwd, 'tracked.txt'), 'utf8'), 'v2-dirty\n');
+  assert.equal(readFileSync(join(cwd, 'untracked.txt'), 'utf8'), 'untracked\n');
+
+  // Snapshot directory was cleaned up and removed
+  assert.equal(existsSync(seenCwd), false);
+});
+
+test('vendor read-only snapshot: cleans up worktree on run failure and on cancellation', async (ctx) => {
+  const gitBin = findCli('git');
+  if (!gitBin) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('vendor-snap-fail');
+  execFileSync(gitBin, ['init', '--quiet'], { cwd, windowsHide: true });
+  writeFileSync(join(cwd, 'tracked.txt'), 'v1\n');
+  execFileSync(gitBin, ['add', 'tracked.txt'], { cwd, windowsHide: true });
+  execFileSync(gitBin, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'initial'], { cwd, windowsHide: true });
+
+  let seenCwd = null;
+  const failScript = `
+    const fs = require('node:fs');
+    fs.writeFileSync('stray-fail.txt', 'fail');
+    console.error('cli failed');
+    process.exit(1);
+  `;
+  const failSpec = {
+    id: 'fake-fail',
+    readOnlyViaSnapshot: true,
+    bin: () => process.execPath,
+    headlessArgs: (t) => { seenCwd = t.cwd; return { args: ['-e', failScript], threadId: null }; },
+    parse: VENDORS.antigravity.parse,
+  };
+
+  const rFail = await runVendorCli(failSpec, { id: 'snap-fail', cwd, sandbox: 'read-only', prompt: 'test fail' });
+  assert.equal(rFail.ok, false);
+  assert.notEqual(seenCwd, cwd);
+  assert.equal(existsSync(seenCwd), false, 'worktree removed on failure');
+  assert.equal(existsSync(join(cwd, 'stray-fail.txt')), false);
+
+  // Test abort/cancellation
+  let abortCwd = null;
+  const hangScript = `setInterval(() => {}, 1000);`;
+  const hangSpec = {
+    id: 'fake-hang',
+    readOnlyViaSnapshot: true,
+    bin: () => process.execPath,
+    headlessArgs: (t) => { abortCwd = t.cwd; return { args: ['-e', hangScript], threadId: null }; },
+    parse: VENDORS.antigravity.parse,
+  };
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 100);
+  const rAbort = await runVendorCli(hangSpec, { id: 'snap-abort', cwd, sandbox: 'read-only', prompt: 'hang', signal: ac.signal });
+  assert.equal(rAbort.ok, false);
+  assert.notEqual(abortCwd, cwd);
+  assert.equal(existsSync(abortCwd), false, 'worktree removed on abort');
+});
+
+test('vendor read-only snapshot: non-git cwd keeps plan-mode behaviour without snapshot', async () => {
+  const plainDir = tmpDir('vendor-non-git');
+  let seenCwd = null;
+  let seenSandbox = null;
+  const spec = {
+    id: 'fake-nongit',
+    readOnlyViaSnapshot: true,
+    bin: () => process.execPath,
+    headlessArgs: (t) => {
+      seenCwd = t.cwd;
+      seenSandbox = t.sandbox;
+      return { args: ['-e', `console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'plan-ok'}}))`], threadId: null };
+    },
+    parse: VENDORS.antigravity.parse,
+  };
+  const r = await runVendorCli(spec, { id: 'nongit', cwd: plainDir, sandbox: 'read-only', prompt: 'test' });
+  assert.equal(r.ok, true);
+  assert.equal(seenCwd, plainDir);
+  assert.equal(seenSandbox, 'read-only', 'non-git cwd keeps plan mode sandbox');
+});
+

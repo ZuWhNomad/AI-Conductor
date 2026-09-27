@@ -1,9 +1,14 @@
 // Generic runner for vendor agent CLIs that run on a consumer subscription (Antigravity `agy`,
 // xAI `grok`, Qwen Code, Kimi CLI, ...). Each vendor is a spec in core/providers/vendors.mjs that
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
-import { killTree, onLines, spawnCli } from '../proc.mjs';
+import { killTree, onLines, spawnCli, findCli } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 import { logImprovement } from '../improve.mjs';
+import { execFile } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
+import { resolve, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)|balance exhausted|payment required/i; // grok: 402 "Grok Build usage balance exhausted"
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|\bunauthorized\b|authentication (?:required|failed)/i; // \b: UnauthorizedAccessException is a sandbox denial, not a sign-in
@@ -11,13 +16,95 @@ const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) i
 const KIMI_QUOTA_STDOUT = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
 
 /**
- * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env? }
- * @param {object} t     { id, cwd, prompt, model, effort, resumeThreadId, signal, timeoutMs }
+ * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env?, readOnlyViaSnapshot? }
+ * @param {object} t     { id, cwd, prompt, model, effort, resumeThreadId, signal, timeoutMs, sandbox? }
  */
 const TRANSIENT_RE = /stream was interrupted|please continue the task|connection reset|temporarily unavailable|\b5\d\d\b.*(?:gateway|unavailable)/i;
 
+function findGitRoot(cwd) {
+  let dir = cwd;
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = resolve(dir, '..');
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function execGit(gitBin, args, cwd) {
+  return new Promise((resolve, reject) => {
+    execFile(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: 64 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      if (err) return reject(Object.assign(err, { stdout, stderr }));
+      resolve(stdout);
+    });
+  });
+}
+
+async function runVendorCliSnapshot(spec, t) {
+  const cwd = resolve(t.cwd || '.');
+  const gitRoot = findGitRoot(cwd);
+  const gitBin = findCli('git');
+  if (!gitRoot || !gitBin) return runVendorCliCore(spec, t);
+
+  let sha;
+  try {
+    const stashOut = (await execGit(gitBin, ['stash', 'create'], gitRoot)).trim();
+    sha = stashOut || 'HEAD';
+  } catch {
+    return runVendorCliCore(spec, t);
+  }
+
+  const snapshotDir = join(tmpdir(), `conductor-snapshot-${t.id || randomUUID()}-${Date.now()}`);
+  try {
+    await execGit(gitBin, ['worktree', 'add', '--detach', snapshotDir, sha], gitRoot);
+  } catch {
+    return runVendorCliCore(spec, t);
+  }
+
+  const rel = relative(gitRoot, cwd);
+  const workerCwd = rel ? join(snapshotDir, rel) : snapshotDir;
+  const preamble = `Note: This task is running in a disposable snapshot of ${t.cwd}. All reported paths should correspond to ${t.cwd}.\n\n`;
+  const prompt = `${preamble}${t.prompt || ''}`;
+  const snapshotTask = { ...t, cwd: workerCwd, sandbox: undefined, prompt };
+
+  let res;
+  try {
+    res = await runVendorCliCore(spec, snapshotTask);
+  } finally {
+    try {
+      if (existsSync(snapshotDir)) {
+        const status = await execGit(gitBin, ['status', '--porcelain'], snapshotDir);
+        const strayFiles = [...new Set(status.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+          const file = l.slice(2).trim();
+          return file.includes(' -> ') ? file.split(' -> ')[1] : file;
+        }))];
+        if (strayFiles.length) {
+          const strayLine = `Stray files in snapshot: ${strayFiles.join(', ')}`;
+          if (res) {
+            res.finalMessage = res.finalMessage ? `${res.finalMessage.trim()}\n${strayLine}` : strayLine;
+          }
+        }
+      }
+    } catch {}
+    try {
+      await execGit(gitBin, ['worktree', 'remove', '--force', snapshotDir], gitRoot);
+    } catch {
+      try { rmSync(snapshotDir, { recursive: true, force: true }); } catch {}
+      try { await execGit(gitBin, ['worktree', 'prune'], gitRoot); } catch {}
+    }
+  }
+  if (res?.items) res.items = res.items.filter((i) => i.type !== 'file_change');
+  return res;
+}
+
 /** Runs the CLI once; a transient stream break on a resumable thread is continued once automatically. */
-export async function runVendorCli(spec, t) {
+async function runVendorCliCore(spec, t) {
   const first = await runVendorCliOnce(spec, t);
   if (first.ok || !first.threadId || t.resumeThreadId || !TRANSIENT_RE.test(first.error || '')) return first;
   const again = await runVendorCliOnce(spec, { ...t, resumeThreadId: first.threadId, prompt: 'Continue the task you were working on; the stream was interrupted. Finish it and report as instructed.' });
@@ -25,6 +112,13 @@ export async function runVendorCli(spec, t) {
   again.durationMs = (first.durationMs || 0) + (again.durationMs || 0);
   again.usage = sumUsage(first.usage, again.usage);
   return again;
+}
+
+export async function runVendorCli(spec, t) {
+  if (spec.readOnlyViaSnapshot && t.sandbox === 'read-only') {
+    return runVendorCliSnapshot(spec, t);
+  }
+  return runVendorCliCore(spec, t);
 }
 
 function sumUsage(a, b) {

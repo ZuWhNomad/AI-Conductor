@@ -17,7 +17,8 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - `openai-compat-files.mjs` — async canonical-path checks and bounded file reads; the disposable search worker
   runs the entire traversal and regex off the server thread. Search terminates at the task deadline (or the configured
   worker-run timeout when none was supplied), and on cancellation. The tool waits for termination before settling.
-- `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs.
+- `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs
+  (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
 - `image.mjs` — image generation.
 
 **Invariants.**
