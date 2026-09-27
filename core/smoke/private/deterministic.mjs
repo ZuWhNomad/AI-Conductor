@@ -181,3 +181,134 @@ export const UI_GOLD = `// kq7Vx2Lm9Rt4
   ["Incidents", "0", "Open now"]
 ]
 `;
+
+export const RESEARCH_EXCERPTS = `// kq7Vx2Lm9Rt4
+# Synthetic equity-research excerpts
+
+Excerpt A — operating performance
+Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%. Management attributed most of the margin gain to a richer mix of subscription contracts rather than lower staffing costs.
+
+Excerpt B — investment and liquidity
+Brindle Components ended the quarter with $72 million of cash and no long-term debt. The company expects capital spending of $18 million in FY2027, primarily for a second assembly line scheduled to enter service in October.
+
+Excerpt C — market conditions
+Industry shipments are forecast to grow 9% next year as regional grid upgrades accelerate. Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.
+`;
+
+export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
+[
+  {
+    "id": "Q1",
+    "citation": "Excerpt A",
+    "quote": "Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%.",
+    "claims": [
+      ["revenue", "14\\\\s*%", "228\\\\s+million"],
+      ["gross margin", "41\\\\s*%", "46\\\\s*%"]
+    ]
+  },
+  {
+    "id": "Q2",
+    "citation": "Excerpt B",
+    "quote": "Brindle Components ended the quarter with $72 million of cash and no long-term debt.",
+    "claims": [
+      ["72\\\\s+million", "cash", "no long-term debt"],
+      ["capital spending", "18\\\\s+million", "second assembly line", "October"]
+    ]
+  },
+  {
+    "id": "Q3",
+    "citation": "Excerpt C",
+    "quote": "Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.",
+    "claims": [
+      ["shipments", "9\\\\s*%", "grid upgrades"],
+      ["lead times", "11\\\\s+weeks", "7\\\\s+weeks", "pricing power"]
+    ]
+  }
+]
+`;
+
+export const RESEARCH_REFERENCE = `// kq7Vx2Lm9Rt4
+## Q1 — Operating performance
+### Claims
+- Revenue increased 14% to $228 million in FY2026.
+- Gross margin expanded from 41% to 46%.
+### Citation
+[Excerpt A]
+### Quote
+"Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%."
+
+## Q2 — Balance sheet and planned investment
+### Claims
+- Brindle finished the quarter with $72 million in cash and no long-term debt.
+- Planned capital spending is $18 million for a second assembly line due in October.
+### Citation
+[Excerpt B]
+### Quote
+"Brindle Components ended the quarter with $72 million of cash and no long-term debt."
+
+## Q3 — Market opportunity and risk
+### Claims
+- Industry shipments are forecast to grow 9% as regional grid upgrades accelerate.
+- Lead times fell from 11 weeks to 7 weeks, which may weaken supplier pricing power.
+### Citation
+[Excerpt C]
+### Quote
+"Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers."
+`;
+
+export const WRITING_CREATIVE_REFERENCE = `// kq7Vx2Lm9Rt4
+TITLE: The Last Light
+BODY:
+Rain stitched silver lines across the harbor when Mara found the brass lantern beneath the pier. Its glass was warm, though the wick was dark. She raised it, and every moored boat answered with a single knock against the quay. Across the water, an unlit buoy began to blink in time with her pulse. Mara wanted to run, but the tide had already covered the steps behind her. She turned the lantern's tiny wheel. A gold beam swept the fog, revealing a narrow channel where no chart showed one. The boats loosened their own ropes and followed. At dawn, the harbor answered.
+`;
+
+export const WRITING_COPY_REFERENCE = `// kq7Vx2Lm9Rt4
+HEADLINE: Keep every thought within reach
+SUBHEAD: QuietDesk keeps focused notes ready wherever work happens.
+- Write offline during a commute, then sync across desktop and mobile when you reconnect.
+- Find projects quickly with a calm, distraction-free workspace.
+- Pay $8/month after a 14-day free trial with no credit card required.
+CTA: Start your 14-day free trial.
+`;
+
+export const VIDEO_TRANSCRIPT = `// kq7Vx2Lm9Rt4
+WEBVTT
+
+00:00:04.000 --> 00:00:10.000
+The pilot enrolled 120 households across three neighborhoods.
+
+00:00:15.000 --> 00:00:22.000
+During the six-week trial, peak electricity demand fell by 8 percent.
+
+00:00:28.000 --> 00:00:35.000
+No battery faults were reported, although two homes lost Wi-Fi briefly.
+`;
+
+export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
+[
+  {
+    "timestamp": "00:07",
+    "start": 4,
+    "end": 10,
+    "claim": "The pilot enrolled 120 households in three neighborhoods.",
+    "quote": "The pilot enrolled 120 households across three neighborhoods.",
+    "patterns": ["120\\\\s+households", "three\\\\s+neighborhoods"]
+  },
+  {
+    "timestamp": "00:18",
+    "start": 15,
+    "end": 22,
+    "claim": "Peak electricity demand fell 8 percent during the six-week trial.",
+    "quote": "During the six-week trial, peak electricity demand fell by 8 percent.",
+    "patterns": ["peak electricity demand", "8\\\\s+percent", "six-week trial"]
+  },
+  {
+    "timestamp": "00:31",
+    "start": 28,
+    "end": 35,
+    "claim": "No battery faults were reported, but two homes briefly lost Wi-Fi.",
+    "quote": "No battery faults were reported, although two homes lost Wi-Fi briefly.",
+    "patterns": ["no battery faults", "two homes", "Wi-Fi"]
+  }
+]
+`;

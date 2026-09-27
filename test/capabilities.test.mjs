@@ -39,8 +39,9 @@ test('spec lines list only installed entries, respect the budget, and never a pr
   assert.match(cap.capabilityReport(cfg).find((r) => r.name === 'pdftotext').status, /^missing → https:/);
 });
 
-test('access rules restrict the providers for a matching task text; an empty providers list applies no gate', () => {
-  assert.equal(cap.accessProviders('summarize https://www.youtube.com/watch?v=abc', { tools: { index: {} } }), null); // youtube entry has no proven providers yet
+test('access rules restrict matching YouTube tasks to Antigravity and X tasks to Grok', () => {
+  assert.deepEqual(cap.accessProviders('extract a transcript from https://www.youtube.com/watch?v=abc', { tools: { index: {} } }), { providers: ['antigravity'], names: ['youtube'] });
+  assert.deepEqual(cap.accessProviders('summarize https://youtu.be/abc', { tools: { index: {} } }), { providers: ['antigravity'], names: ['youtube'] });
   assert.deepEqual(cap.accessProviders('read https://x.com/example/status/1', { tools: { index: {} } }), { providers: ['grok'], names: ['x'] });
   assert.deepEqual(cap.accessProviders('read https://twitter.com/example/status/1', { tools: { index: {} } }), { providers: ['grok'], names: ['x'] });
   const cfg = { tools: { index: { youtube: { providers: ['gemini'] }, xlinks: { kind: 'access', categories: ['search'], purpose: 'x.com links open only on Grok', match: ['x.com/', 'twitter.com/'], providers: ['grok'] } } } };

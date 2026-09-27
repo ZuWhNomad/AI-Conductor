@@ -17,7 +17,7 @@ import { OVERLAP_SLOW, OVERLAP_FAST, OVERLAP_TEST, OVERLAP_HIDDEN, OVERLAP_BENCH
 import { PATCH, PATCH_TEST, PATCH_HIDDEN, patchHidden } from './private/implement-6.mjs';
 import { MULTIPART, MULTIPART_TEST, MULTIPART_HIDDEN } from './private/implement-7.mjs';
 import { CLOCK, CACHE_BUGGY, CACHE_FIXED, CACHE_TEST, CACHE_HIDDEN } from './private/debug-7.mjs';
-import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD } from './private/deterministic.mjs';
+import { EXTRACT_NOTES, EXTRACT_GOLD, CLASSIFY_CASES, CLASSIFY_GOLD, SQL_SCHEMA, SQL_GOLD, SQL_QUERY, REVIEW_BUGGY, REVIEW_GOLD, UI_REFERENCE, UI_GOLD, RESEARCH_EXCERPTS, RESEARCH_GOLD, RESEARCH_REFERENCE, WRITING_CREATIVE_REFERENCE, WRITING_COPY_REFERENCE, VIDEO_TRANSCRIPT, VIDEO_GOLD } from './private/deterministic.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,6 +63,13 @@ async function withHidden(dir, files, fn) {
 const countTests = (src) => (src.match(/^test\(/gm) || []).length;
 const privateJson = (body) => JSON.parse(bare(body));
 const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel)); } catch { return null; } };
+const wordCount = (s) => (String(s || '').match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) || []).length;
+const SLOP = /\b(?:delve|game[- ]changer|unlock|elevate|tapestry|testament)\b|in today'?s fast-paced world|it is important to note/iu;
+const timestampSeconds = (s) => {
+  const p = String(s || '').split(':').map(Number);
+  if ((p.length !== 2 && p.length !== 3) || p.some((n) => !Number.isFinite(n))) return null;
+  return p.length === 2 ? p[0] * 60 + p[1] : p[0] * 3600 + p[1] * 60 + p[2];
+};
 
 function buildSqlDb(file) {
   rmSync(file, { force: true });
@@ -294,6 +301,87 @@ const TASKS = [
       return { pass, notes: pass ? '' : 'result.json does not deep-equal the extracted records' };
     },
     solve(dir) { write(dir, { 'result.json': bare(EXTRACT_GOLD) }); },
+  },
+  {
+    id: 'research-3', category: 'research', difficulty: 3, title: 'answer three excerpt-based research questions',
+    spec: 'Read excerpts.md and answer three questions using only those excerpts: Q1, what changed in Alder Systems operating performance? Q2, what are Brindle Components liquidity and planned-investment facts? Q3, what market opportunity and supplier risk are described? Use exactly one `## Qn` section per question, each with `### Claims`, `### Citation`, and `### Quote` subsections. Put concise bullet claims under Claims, a bracketed excerpt label such as `[Excerpt A]` under Citation, and one exact sentence from that excerpt in double quotes under Quote. Do not modify excerpts.md.',
+    setup(dir) { write(dir, { 'excerpts.md': bare(RESEARCH_EXCERPTS) }); },
+    check(dir, t) {
+      const out = answer(t), excerpts = read(dir, 'excerpts.md') || '', gold = privateJson(RESEARCH_GOLD);
+      if ((out.match(/^##\s+Q\d+\b/gmi) || []).length !== gold.length) return { pass: false, notes: `expected exactly ${gold.length} Q sections` };
+      const sections = new Map(out.split(/(?=^##\s+Q\d+\b)/gmi).map((s) => [/^##\s+(Q\d+)\b/i.exec(s)?.[1]?.toUpperCase(), s]).filter(([id]) => id));
+      if (sections.size !== gold.length) return { pass: false, notes: `expected exactly ${gold.length} Q sections` };
+      for (const q of gold) {
+        const section = sections.get(q.id);
+        if (!section) return { pass: false, notes: `missing ${q.id}` };
+        for (const heading of ['Claims', 'Citation', 'Quote']) if (!new RegExp(`^###\\s+${heading}\\s*$`, 'mi').test(section)) return { pass: false, notes: `${q.id} missing ${heading} section` };
+        const claims = /^###\s+Claims\s*$([\s\S]*?)(?=^###\s+)/mi.exec(section)?.[1] || '';
+        for (const claim of q.claims) if (!claim.every((pattern) => new RegExp(pattern, 'iu').test(claims))) return { pass: false, notes: `${q.id} missing a required gold claim` };
+        if (!section.includes(`[${q.citation}]`)) return { pass: false, notes: `${q.id} missing citation [${q.citation}]` };
+        if (!excerpts.includes(q.quote) || !section.includes(`"${q.quote}"`)) return { pass: false, notes: `${q.id} quote is not verbatim from the cited excerpt` };
+      }
+      return { pass: true, notes: '' };
+    },
+    judge(dir, t) {
+      return `The source excerpts are below, followed by a response that already passed deterministic claim, section, citation and verbatim-quote checks. Does every material factual claim in the response stay supported by the excerpts, without a misleading inference?\n\nEXCERPTS\n${read(dir, 'excerpts.md')}\n\nRESPONSE\n${answer(t)}\n\nReply with exactly YES or NO.`;
+    },
+    solve() { return { finalMessage: bare(RESEARCH_REFERENCE) }; },
+  },
+  {
+    id: 'writing-2', category: 'writing', difficulty: 2, variant: 'creative', title: 'write a compact harbor scene',
+    spec: 'Write a self-contained microfiction in this exact format: one `TITLE: ...` line, then a `BODY:` line, then one prose paragraph of 80-120 words. The paragraph must name Mara, feature rain and a brass lantern, and end exactly with `At dawn, the harbor answered.` Do not use bullets. Avoid filler phrases such as delve, tapestry, testament, game-changer, unlock, elevate, "in today\'s fast-paced world", or "it is important to note". Reply with the story only.',
+    setup() {},
+    check(dir, t) {
+      const out = answer(t).trim(), m = /^TITLE:\s*([^\r\n]+)\r?\nBODY:\s*\r?\n([\s\S]+)$/i.exec(out);
+      if (!m || !m[1].trim() || /^(?:\s*[-*]\s+)/m.test(m[2])) return { pass: false, notes: 'expected TITLE and one non-bulleted BODY paragraph' };
+      const n = wordCount(m[2]);
+      if (n < 80 || n > 120) return { pass: false, notes: `${n} body words (need 80-120)` };
+      if (!/\bMara\b/i.test(m[2]) || !/\brain\w*\b/i.test(m[2]) || !/\bbrass lantern\b/i.test(m[2])) return { pass: false, notes: 'body must include Mara, rain and a brass lantern' };
+      if (!m[2].trim().endsWith('At dawn, the harbor answered.')) return { pass: false, notes: 'wrong final sentence' };
+      if (SLOP.test(out)) return { pass: false, notes: 'banned filler/slop phrase found' };
+      return { pass: true, notes: '' };
+    },
+    judge(dir, t) { return `The microfiction below already passed its format, length, required-element and banned-phrase checks. Is it coherent, vivid and free of conspicuously awkward prose?\n\n${answer(t)}\n\nReply with exactly YES or NO.`; },
+    solve() { return { finalMessage: bare(WRITING_CREATIVE_REFERENCE) }; },
+  },
+  {
+    id: 'writing-3', category: 'writing', difficulty: 3, variant: 'copy', title: 'write concise product copy',
+    spec: 'Write product copy for QuietDesk in 45-80 words, not counting the field labels. Use exactly this six-line format: `HEADLINE: ...`, `SUBHEAD: ...`, three `- ...` bullets, and `CTA: ...`. Include all facts: works offline; syncs across desktop and mobile; costs $8/month after a 14-day free trial; no credit card is required. The CTA must be exactly `Start your 14-day free trial.` Avoid filler phrases such as delve, tapestry, testament, game-changer, unlock, elevate, "in today\'s fast-paced world", or "it is important to note". Reply with the copy only.',
+    setup() {},
+    check(dir, t) {
+      const out = answer(t).trim(), lines = out.split(/\r?\n/).filter((l) => l.trim());
+      if (lines.length !== 6 || !/^HEADLINE:\s*\S/i.test(lines[0]) || !/^SUBHEAD:\s*\S/i.test(lines[1]) || !lines.slice(2, 5).every((l) => /^-\s+\S/.test(l)) || lines[5] !== 'CTA: Start your 14-day free trial.') return { pass: false, notes: 'expected headline, subhead, exactly three bullets and the required CTA' };
+      const copy = lines.map((l) => l.replace(/^(?:HEADLINE|SUBHEAD|CTA):\s*|^-\s*/i, '')).join(' '), n = wordCount(copy);
+      if (n < 45 || n > 80) return { pass: false, notes: `${n} copy words (need 45-80)` };
+      const required = [/\boffline\b/i, /desktop/i, /mobile/i, /\$8\s*\/\s*month/i, /14-day free trial/i, /no credit card/i];
+      if (!required.every((r) => r.test(out))) return { pass: false, notes: 'missing a required product fact' };
+      if (SLOP.test(out)) return { pass: false, notes: 'banned filler/slop phrase found' };
+      return { pass: true, notes: '' };
+    },
+    judge(dir, t) { return `The product copy below already passed its format, length, fact and banned-phrase checks. Is it clear, persuasive and natural without making an unsupported product claim?\n\n${answer(t)}\n\nReply with exactly YES or NO.`; },
+    solve() { return { finalMessage: bare(WRITING_COPY_REFERENCE) }; },
+  },
+  {
+    id: 'video-extraction-2', category: 'video-extraction', difficulty: 2, title: 'extract timestamped transcript claims',
+    spec: 'Read transcript.vtt and write claims.json as a JSON array of exactly three objects in source order, each with exactly {timestamp, claim, quote}. Use an MM:SS timestamp that falls inside the cue supporting the claim, a concise factual claim, and an exact full-sentence quote copied verbatim from that cue. Cover the enrollment, demand and reliability results. Do not modify transcript.vtt and add no prose.',
+    setup(dir) { write(dir, { 'transcript.vtt': bare(VIDEO_TRANSCRIPT) }); },
+    check(dir) {
+      const got = readJson(dir, 'claims.json'), gold = privateJson(VIDEO_GOLD), transcript = read(dir, 'transcript.vtt') || '';
+      if (!Array.isArray(got) || got.length !== gold.length) return { pass: false, notes: `claims.json must contain exactly ${gold.length} claims` };
+      for (let i = 0; i < gold.length; i++) {
+        const row = got[i], want = gold[i];
+        if (!row || Object.keys(row).sort().join('|') !== 'claim|quote|timestamp' || !['claim', 'quote', 'timestamp'].every((k) => typeof row[k] === 'string')) return { pass: false, notes: `claim ${i + 1} has the wrong shape` };
+        if (row.quote !== want.quote || !transcript.includes(row.quote)) return { pass: false, notes: `claim ${i + 1} quote is not verbatim` };
+        if (!want.patterns.every((pattern) => new RegExp(pattern, 'iu').test(row.claim))) return { pass: false, notes: `claim ${i + 1} misses required facts` };
+        const at = timestampSeconds(row.timestamp);
+        if (at == null || at < want.start || at > want.end) return { pass: false, notes: `claim ${i + 1} timestamp is outside its transcript cue` };
+      }
+      return { pass: true, notes: '' };
+    },
+    solve(dir) {
+      const rows = privateJson(VIDEO_GOLD).map(({ timestamp, claim, quote }) => ({ timestamp, claim, quote }));
+      write(dir, { 'claims.json': JSON.stringify(rows, null, 2) + '\n' });
+    },
   },
   {
     id: 'search-1', category: 'search', difficulty: 1, title: 'locate a definition',
@@ -535,5 +623,14 @@ const TASKS = [
 // Every check first fails a scratch dir holding a file copied from ./private/ (the grader's own hidden files excepted).
 export const BATTERY = TASKS.map((task) => ({
   ...task,
-  async check(dir, t) { return copiedFromGrader(dir, task.hidden) ? { pass: false, notes: 'copied from the grader' } : task.check(dir, t); },
+  async check(dir, t, { judge = null } = {}) {
+    if (copiedFromGrader(dir, task.hidden)) return { pass: false, notes: 'copied from the grader' };
+    const deterministic = await task.check(dir, t);
+    if (!deterministic.pass || !task.judge || typeof judge !== 'function') return deterministic;
+    let verdict;
+    try { verdict = await judge({ taskId: task.id, category: task.category, workerProvider: t?.provider || null, question: task.judge(dir, t) }); }
+    catch { return deterministic; } // A judge outage is an environment gap, not a worker failure.
+    if (!verdict || typeof verdict.yes !== 'boolean' || !verdict.provider || verdict.provider === t?.provider) return deterministic;
+    return verdict.yes ? deterministic : { pass: false, notes: `cross-provider judge (${verdict.provider}): NO${verdict.notes ? ` — ${String(verdict.notes).slice(0, 180)}` : ''}` };
+  },
 }));

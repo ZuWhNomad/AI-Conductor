@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 
 const { BATTERY, copiedFromGrader } = await import('../../core/smoke/battery.mjs');
-const { runSmoke, formatSmoke, SMOKE_TASKS } = await import('../../core/smoke/index.mjs');
+const { runSmoke, formatSmoke, SMOKE_TASKS, crossProviderJudge } = await import('../../core/smoke/index.mjs');
 const { recordRun, rootRuns, recommend } = await import('../../core/scorecard.mjs');
 const { CANARY, bare } = await import('../../core/smoke/private/common.mjs');
 const PRIVATE = new URL('../../core/smoke/private/', import.meta.url);
@@ -84,6 +84,57 @@ test('ui-2 uses string checks for the media rule and inline handlers', async () 
   assert.equal((await b.check(dir)).pass, false);
   write(dir, { 'index.html': good.replace('<body>', '<body onclick="go()">') });
   assert.equal((await b.check(dir)).pass, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('research-3 requires gold claims, sections, citations and verbatim excerpt quotes', async () => {
+  const b = BATTERY.find((x) => x.id === 'research-3'), dir = tmpDir('research-checks');
+  b.setup(dir); const solved = b.solve(dir);
+  assert.equal((await b.check(dir, { result: solved })).pass, true);
+  const noQuote = solved.finalMessage.replace('"Alder Systems reported', '"Alder reported');
+  assert.match((await b.check(dir, { result: { finalMessage: noQuote } })).notes, /quote is not verbatim/);
+  const noClaim = solved.finalMessage.replace('Revenue increased 14% to $228 million in FY2026.', 'Revenue increased in FY2026.');
+  assert.match((await b.check(dir, { result: { finalMessage: noClaim } })).notes, /required gold claim/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('writing variants enforce adherence and use only an optional different-provider judge', async () => {
+  for (const id of ['writing-2', 'writing-3']) {
+    const b = BATTERY.find((x) => x.id === id), dir = tmpDir(id);
+    b.setup(dir); const solved = b.solve(dir), worker = { provider: 'ollama', result: solved };
+    assert.equal((await b.check(dir, worker)).pass, true, id);
+    let request;
+    const judged = await b.check(dir, worker, { judge: async (r) => { request = r; return { provider: 'claude', yes: false, notes: 'taste' }; } });
+    assert.equal(judged.pass, false, id); assert.match(judged.notes, /cross-provider judge \(claude\): NO/);
+    assert.equal(request.workerProvider, 'ollama'); assert.match(request.question, /Reply with exactly YES or NO\.$/);
+    assert.equal((await b.check(dir, worker, { judge: async () => ({ provider: 'ollama', yes: false }) })).pass, true, 'same-provider verdict is ignored');
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const b = BATTERY.find((x) => x.id === 'writing-2'), dir = tmpDir('writing-slop');
+  b.setup(dir); const solved = b.solve(dir);
+  const slop = solved.finalMessage.replace('Rain stitched', "In today's fast-paced world, rain stitched");
+  assert.match((await b.check(dir, { result: { finalMessage: slop } })).notes, /banned filler/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the default subjective judge is off when no different provider is available', async () => {
+  const { getModels } = await import('../../core/models.mjs');
+  const reg = getModels(), saved = { models: reg.models, providers: reg.providers };
+  try {
+    reg.models = [{ provider: 'ollama', id: 'qwen', kind: 'agent' }]; reg.providers = { ollama: { status: 'ok' } };
+    assert.equal(await crossProviderJudge({ workerProvider: 'ollama', question: 'Reply YES or NO.', cwd: process.cwd() }), null);
+  } finally { Object.assign(reg, saved); }
+});
+
+test('video-extraction-2 requires verbatim quotes and timestamps inside the supporting cue', async () => {
+  const b = BATTERY.find((x) => x.id === 'video-extraction-2'), dir = tmpDir('video-extraction');
+  b.setup(dir); b.solve(dir);
+  const good = JSON.parse(readFileSync(join(dir, 'claims.json'), 'utf8'));
+  assert.equal((await b.check(dir)).pass, true);
+  good[0].timestamp = '00:11'; write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.match((await b.check(dir)).notes, /outside its transcript cue/);
+  good[0].timestamp = '00:07'; good[0].quote = good[0].quote.replace('120', '121'); write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.match((await b.check(dir)).notes, /quote is not verbatim/);
   rmSync(dir, { recursive: true, force: true });
 });
 
