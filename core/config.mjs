@@ -85,12 +85,14 @@ export const DEFAULTS = {
   },
   review: { everyDays: 0 },           // 0 = manual only
   scorecard: {                        // empirical worker selection (core/scorecard.mjs)
-    minSamples: 3,                    // rated runs before a model/category/level counts
+    minSamples: 1,                    // rated runs before a model/category/level can be picked
+    benchMinSamples: 3,               // rated runs before a below-bar cell can bench a model
     quality: 0.75,                    // mean verdict (pass 1, fixable 0.5, fail 0) a final step must reach
     qualityValueUsd: 5,               // $ one full quality point is worth (≈ what a failed task costs you in review + redo)
     hourlyUsd: 0,                     // $ per hour of worker wall clock (0 = ignore speed)
     usePriors: false,                 // route by public benchmark tier before any measured data exists
     prices: {},                       // "provider:model": { in, out, cached } $/M tokens; overrides core/priors.mjs
+    archived: [],                     // hidden scorecard selections, exact "provider:model" matched case-insensitively
     effortSlackUsd: 0.01,             // a higher effort of the same model dominates a lower one when within max(this $/task, ...
     effortSlackPct: 10,               // ... this % of the lower effort's $/task) and at least as good
     // Shadow dollars are list price; what a token really costs you depends on the budget it comes from.
@@ -228,7 +230,7 @@ function normalize(cfg) {
     [cfg, DEFAULTS, 'pollMinutes'],
     ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
     ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
-    ...['minSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
+    ...['minSamples', 'benchMinSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
     [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.smoke, DEFAULTS.smoke, 'hardTimeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
   ]) {
@@ -241,6 +243,7 @@ function normalize(cfg) {
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
   cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;
   if (!plain(cfg.scorecard.prices)) cfg.scorecard.prices = {};
+  cfg.scorecard.archived = Array.isArray(cfg.scorecard.archived) ? cfg.scorecard.archived.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean) : [];
   if (!plain(cfg.scorecard.providerWeight)) cfg.scorecard.providerWeight = { ...DEFAULTS.scorecard.providerWeight };
   if (!Number.isFinite(cfg.scorecard.quotaPressurePct)) cfg.scorecard.quotaPressurePct = DEFAULTS.scorecard.quotaPressurePct;
   if (!Number.isFinite(cfg.scorecard.reservePct) || cfg.scorecard.reservePct < 0) cfg.scorecard.reservePct = DEFAULTS.scorecard.reservePct;
@@ -256,8 +259,13 @@ function normalize(cfg) {
   }
   const validWasteSteps = (v) => Array.isArray(v) && v.length > 0 && v.every((s) => Array.isArray(s) && s.length === 2 && Number.isFinite(s[0]) && s[0] > 0 && Number.isFinite(s[1]) && s[1] >= 0 && s[1] <= 1);
   if (!validWasteSteps(cfg.scorecard.wasteSteps)) cfg.scorecard.wasteSteps = structuredClone(DEFAULTS.scorecard.wasteSteps);
-  // Legacy configs had one linear horizon. Preserve its reach as the outer step unless explicit steps replaced it.
-  if (Number.isFinite(cfg.scorecard.wasteHorizonHours) && JSON.stringify(cfg.scorecard.wasteSteps) === JSON.stringify(DEFAULTS.scorecard.wasteSteps)) cfg.scorecard.wasteSteps[0][0] = Math.max(1, cfg.scorecard.wasteHorizonHours);
+  // Legacy configs had one linear horizon. Preserve its reach as the outer step unless explicit steps replaced it,
+  // and discard default inner steps that would otherwise apply a discount beyond the legacy horizon.
+  if (Number.isFinite(cfg.scorecard.wasteHorizonHours) && JSON.stringify(cfg.scorecard.wasteSteps) === JSON.stringify(DEFAULTS.scorecard.wasteSteps)) {
+    const horizon = Math.max(1, cfg.scorecard.wasteHorizonHours);
+    cfg.scorecard.wasteSteps[0][0] = horizon;
+    cfg.scorecard.wasteSteps = cfg.scorecard.wasteSteps.filter(([hours]) => hours <= horizon).sort((a, b) => b[0] - a[0]);
+  }
   delete cfg.scorecard.wasteHorizonHours;
   for (const key of ['wasteStrength']) if (!Number.isFinite(cfg.scorecard[key])) cfg.scorecard[key] = DEFAULTS.scorecard[key];
   cfg.scorecard.wasteStrength = Math.max(0, Math.min(1, cfg.scorecard.wasteStrength));

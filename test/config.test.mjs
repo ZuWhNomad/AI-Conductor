@@ -348,6 +348,9 @@ test('config filters invalid usage and category values, validates waste settings
   let cfg = saveConfig({ scorecard: { wasteHorizonHours: 96 } });
   assert.deepEqual(cfg.scorecard.wasteSteps, [[96, 0.5], [48, 0.8], [24, 1]], 'legacy horizon becomes the outer step');
   assert.equal('wasteHorizonHours' in cfg.scorecard, false);
+  cfg = saveConfig({ scorecard: { wasteSteps: DEFAULTS.scorecard.wasteSteps, wasteHorizonHours: 24 } });
+  assert.deepEqual(cfg.scorecard.wasteSteps, [[24, 0.5], [24, 1]], 'legacy horizon drops default steps beyond its reach and stays descending');
+  assert.ok(cfg.scorecard.wasteSteps.every(([hours]) => hours <= 24));
   cfg = saveConfig({ scorecard: { wasteSteps: [[36, 0.4], [12, 0.8]], wasteStrength: -1 } });
   assert.deepEqual(cfg.scorecard.wasteSteps, [[36, 0.4], [12, 0.8]]);
   assert.equal(cfg.scorecard.wasteStrength, 0);
@@ -455,4 +458,13 @@ test('Docker-style secret environment arguments redact and restore', () => {
   assert.doesNotMatch(masked.join(' '), /secret-one|secret-two|secret-three/);
   saveConfig({ mcpServers: { docker: { args: masked } } });
   assert.deepEqual(loadConfig().mcpServers.docker.args, args);
+});
+
+test('scorecard archive and split sample thresholds are normalized', () => {
+  let cfg = saveConfig({ scorecard: { archived: ['  Claude:MODEL  ', '', 7, null], minSamples: -1, benchMinSamples: 0 } });
+  assert.deepEqual(cfg.scorecard.archived, ['Claude:MODEL']);
+  assert.equal(cfg.scorecard.minSamples, 1);
+  assert.equal(cfg.scorecard.benchMinSamples, 3);
+  cfg = saveConfig({ scorecard: { archived: 'claude:model' } });
+  assert.deepEqual(cfg.scorecard.archived, []);
 });

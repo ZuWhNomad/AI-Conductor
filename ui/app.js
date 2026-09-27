@@ -1121,15 +1121,27 @@ function openSystem(open) {
 /** "details ▸" on the budget headline opens the SYSTEM drawer at Providers & limits. */
 function revealProviders() { openSystem(true); $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 async function openScores() {
-  const body = el('div'); body.append(el('div', 'muted tiny', 'Loading…'));
+  const body = el('div');
+  const head = el('div', 'row between');
+  const title = el('h4', null, 'Scores (measured worker selection)');
+  const toggle = el('label', 'chk'); const archived = el('input'); archived.type = 'checkbox'; archived.setAttribute('aria-label', 'Show archived scores');
+  toggle.append(archived, el('span', null, 'archived')); head.append(title, toggle);
+  const scores = el('pre', null, 'Loading…');
+  const benchTitle = el('h4', null, 'Due for benchmark'); const bench = el('pre');
+  body.append(head, scores, benchTitle, bench);
   openModal('Benchmarks & scores', body);
-  try {
-    const [sc, bn] = await Promise.all([api.get('/api/scores'), api.get('/api/bench').catch(() => null)]);
-    body.innerHTML = '';
-    body.append(el('h4', null, 'Scores (measured worker selection)'));
-    body.append(el('pre', null, sc.text || '(no rated runs yet)'));
-    if (bn?.text) { body.append(el('h4', null, 'Due for benchmark')); body.append(el('pre', null, bn.text)); }
-  } catch (e) { body.innerHTML = ''; body.append(el('div', 'sysline err', e.message)); }
+  let benchData;
+  const load = async () => {
+    scores.className = ''; scores.textContent = 'Loading…';
+    try {
+      const [sc, bn] = await Promise.all([api.get(archived.checked ? '/api/scores?archived=1' : '/api/scores'), benchData === undefined ? api.get('/api/bench').catch(() => null) : benchData]);
+      benchData = bn; title.textContent = archived.checked ? 'Archived scores' : 'Scores (measured worker selection)'; scores.textContent = sc.text || '(no rated runs yet)';
+      benchTitle.hidden = bench.hidden = archived.checked || !bn?.text;
+      bench.textContent = bn?.text || '';
+    } catch (e) { scores.className = 'sysline err'; scores.textContent = e.message; }
+  };
+  archived.onchange = load;
+  await load();
 }
 
 // ---------- boot ----------

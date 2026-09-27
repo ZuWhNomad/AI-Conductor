@@ -215,3 +215,18 @@ test('delegate no_failover makes a strict pin: the task carries noFailover', asy
   const id = /^Task (\S+)/.exec(msg)[1];
   try { assert.equal(getTask(id).noFailover, true); } finally { cancelTask(id); }
 });
+
+test('model_scores archived returns the archived table without plans or bench hygiene', async () => {
+  const scorecard = loadConfig().scorecard;
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  try {
+    recordRun({ id: 'tools-archived-score', title: 'archived', status: 'done', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'docs', difficulty: 1, source: 'live', result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask('tools-archived-score', 'pass');
+    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna'] } });
+    const tool = defs().find((d) => d.name === 'model_scores');
+    const out = await tool.handler(tool.schema.parse({ archived: true }));
+    assert.match(out, /codex:gpt-5\.6-luna:low/);
+    assert.match(out, /Error rates/);
+    assert.doesNotMatch(out, /Plans \(|Bench hygiene/);
+  } finally { saveConfig({ scorecard }); }
+});

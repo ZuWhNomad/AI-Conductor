@@ -6,7 +6,7 @@ import { statSync } from 'node:fs';
 import { appendNdjson, readNdjson, statePath, nowIso } from './paths.mjs';
 import { getLimits, modelBlockedUntil, providerWindows, isSession, withLimitsSnapshot } from './limits.mjs';
 export { providerWindows } from './limits.mjs';
-import { findModel, getModels } from './models.mjs';
+import { getModels } from './models.mjs';
 import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
 import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
@@ -29,7 +29,17 @@ const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
 // Routing covers levels 1-5. The smoke battery also records 6-7: those rows show in the tables, but recommend() ignores them.
 export const ROUTED_MAX_DIFFICULTY = 5;
 const LEVELS = [1, 2, 3, 4, 5];
+export const scorecardModelId = (model) => typeof model === 'string' ? model.replace(/\[1m\]$/i, '') : model;
 export const selOf = (r) => `${r.provider}:${r.model || 'default'}:${r.effort || 'default'}`;
+const archiveKey = (value) => {
+  const s = String(value).trim(), colon = s.indexOf(':');
+  return (colon < 0 ? s : `${s.slice(0, colon)}:${scorecardModelId(s.slice(colon + 1))}`).toLowerCase();
+};
+const archivedSet = (cfg) => new Set((cfg?.scorecard?.archived || cfg?.archived || []).map(archiveKey).filter(Boolean));
+export function isArchived(provider, model, cfg = loadConfig().scorecard) {
+  const set = cfg instanceof Set ? cfg : archivedSet(cfg);
+  return set.has(`${provider}:${scorecardModelId(model) || 'default'}`.toLowerCase());
+}
 export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
 export function isPhantomCompletion({ ok, claimed = [], canVerify, observedCount }) { return !!ok && !!canVerify && claimed.length > 0 && observedCount === 0; }
 
@@ -178,8 +188,9 @@ export function rootRuns({ source = null } = {}) {
     const root = follow(r, 'followUpOf');
     let a = attempts.get(root.taskId);
     if (!a) {
-      a = { ...root, sel: selOf(root), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
-      a.price = priceFor(root.provider, root.model, cfg);
+      const model = scorecardModelId(root.model);
+      a = { ...root, model, sel: selOf({ ...root, model }), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
+      a.price = priceFor(root.provider, model, cfg);
       attempts.set(root.taskId, a);
     }
     a.rounds += 1; a.members.push(r.taskId);
@@ -235,7 +246,8 @@ export function rootRuns({ source = null } = {}) {
  * Aggregate. Single-step rows (one per model/effort × category/difficulty, counting every attempt)
  * and path rows (ladders actually observed, e.g. "codex:luna:low>codex:terra:medium").
  */
-export function summarize({ source = null } = {}) {
+export function summarize({ source = null, archived = false } = {}) {
+  const archive = archivedSet(loadConfig().scorecard);
   const groups = new Map();
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
@@ -251,7 +263,9 @@ export function summarize({ source = null } = {}) {
     return g;
   };
   for (const c of rootRuns({ source })) {
+    const chainArchived = c.attempts.some((a) => isArchived(a.provider, a.model, archive));
     for (const a of c.attempts) {
+      if (isArchived(a.provider, a.model, archive) !== archived) continue;
       // B3: score each attempt under its own category/difficulty; skip attempts without tags (an untagged
       // head must not silence a tagged replacement). Fall back to chain tags only when the attempt lacks them.
       const cat = a.category || c.category;
@@ -260,14 +274,14 @@ export function summarize({ source = null } = {}) {
       const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort;
     }
     // The multi-step observed ladder row is chain-level: it must have chain-level tags.
-    if (c.attempts.length > 1 && c.category && c.difficulty) {
+    if (c.attempts.length > 1 && c.category && c.difficulty && chainArchived === archived) {
       const g = add(c.path.join('>'), c.attempts.length, c.category, c.difficulty, c);
       g._stepCosts ||= c.attempts.map(() => []);
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
   return [...groups.values()].map(({ _tok, _usd, _pct, _dur, _rounds, _stepCosts, ...g }) => {
-    const cost = g.steps === 1 ? findModel(g.provider, g.model)?.cost || null : null;
+    const cost = g.steps === 1 ? modelInRegistry(getModels(), g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const quality = g.rated ? (g.pass * SCORE.pass + g.fixable * SCORE.fixable) / g.rated : null;
     return {
@@ -279,9 +293,10 @@ export function summarize({ source = null } = {}) {
   }).sort((a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1));
 }
 
-export function errorRates({ source = null } = {}) {
+export function errorRates({ source = null, archived = false } = {}) {
+  const archive = archivedSet(loadConfig().scorecard);
   const models = new Map(), providers = new Map();
-  for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict) {
+  for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict && isArchived(a.provider, a.model, archive) === archived) {
     for (const [map, key] of [[models, a.sel], [providers, a.provider]]) {
       let g = map.get(key); if (!g) { g = { key, rated: 0, fail: 0, phantom: 0 }; map.set(key, g); }
       g.rated++; if (a.verdict === 'fail') g.fail++; if (a.verdict === 'phantom') g.phantom++;
@@ -301,6 +316,7 @@ export function recommend(opts = {}) { return withLimitsSnapshot(() => recommend
 
 function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null } = {}) {
   const cfg = loadConfig().scorecard;
+  const archive = archivedSet(cfg);
   const taskDifficulty = _taskDifficulty ?? difficulty;
   // Per-call memos: availability and weight read the limits registry (a stat each); the summary has hundreds of rows per sel.
   const memo = (fn) => { const m = new Map(); return (...a) => { const k = a.join('|'); if (!m.has(k)) m.set(k, fn(...a)); return m.get(k); }; };
@@ -314,7 +330,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // A transient registry error retains cached models; explicit unavailability or removal does not.
     return reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
-  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY);
+  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive); }));
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const gate = passGate(category, reg);
   const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
@@ -334,7 +350,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   // Keep the original request's disqualifications when extrapolating; priors cannot override them either.
-  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.minSamples && g.quality < cfg.quality).map((g) => g.sel));
+  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && g.rated >= cfg.benchMinSamples && g.quality < cfg.quality).map((g) => g.sel));
   const bySel = new Map();
   for (const g of rows) {
     const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [] };
@@ -490,8 +506,12 @@ export function wasteDiscount(provider, cfg = loadConfig().scorecard, model = nu
   const cls = providerClass(provider, cfg);
   if (cls !== 'subscription' && cls !== 'included') return 1;
   const strength = Math.min(1, Math.max(0, cfg.wasteStrength ?? DEFAULTS.scorecard.wasteStrength));
-  const steps = (Array.isArray(cfg.wasteSteps) ? cfg.wasteSteps : DEFAULTS.scorecard.wasteSteps).map((s) => [...s]);
-  if (!Array.isArray(cfg.wasteSteps) && Number.isFinite(cfg.wasteHorizonHours)) steps[0][0] = Math.max(1, cfg.wasteHorizonHours); // legacy partial configs
+  let steps = (Array.isArray(cfg.wasteSteps) ? cfg.wasteSteps : DEFAULTS.scorecard.wasteSteps).map((s) => [...s]);
+  if (!Array.isArray(cfg.wasteSteps) && Number.isFinite(cfg.wasteHorizonHours)) {
+    const horizon = Math.max(1, cfg.wasteHorizonHours);
+    steps[0][0] = horizon;
+    steps = steps.filter(([hours]) => hours <= horizon).sort((a, b) => b[0] - a[0]);
+  }
   const discount = (ms) => {
     const step = Math.max(0, ...steps.filter((s) => ms > 0 && ms <= s[0] * 3600e3).map((s) => s[1]));
     return 1 - step * strength;
@@ -561,7 +581,10 @@ const parseSel = (s) => {
 // Visual work (modeling, drafting): the auto-pick may route only a selection with a recorded cookie-cutter PASS, at
 // the effort that passed AND is still supported (priors.mjs MODELING / DRAFTING; 'close' and 'fail' are not routable), on every path and
 // every ladder step. An explicit provider/model pin is the caller's call and is not gated (benchmark runs need that).
-const modelInRegistry = (reg, provider, model) => reg.models.find((m) => m.provider === provider && (m.id === model || m.resolved === model));
+const modelInRegistry = (reg, provider, model) => {
+  const id = scorecardModelId(model);
+  return reg.models.find((m) => m.provider === provider && (scorecardModelId(m.id) === id || scorecardModelId(m.resolved) === id));
+};
 const passGate = (category, reg) => (KIND[category] !== 'visual' ? () => true : (sel) => sel.split('>').every((s) => {
   const { provider, model, effort } = parseSel(s);
   const p = priorFor(provider, model, category);
@@ -599,7 +622,7 @@ export function priorEffort(efforts, difficulty) {
 
 /** Effort for a task the conductor routed by hand without an effort: the higher of the configured default and the difficulty target, clamped to what the model offers. */
 export function effortForTask({ provider, model, difficulty, defaultEffort = null, reg = getModels() } = {}) {
-  const m = reg.models.find((x) => x.provider === provider && x.id === model);
+  const m = modelInRegistry(reg, provider, model);
   const efforts = m?.efforts || [];
   if (!efforts.length) return null; // a model with no effort dimension must never carry an effort (e.g. agy bakes it into the id)
   const want = difficulty ? priorEffort(efforts, difficulty) : null;
@@ -616,21 +639,24 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
 function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow, escalate = false }) {
   if (!cfg.usePriors && KIND[category] !== 'visual') return null;
   const gate = passGate(category, reg);
-  const cands = [];
+  const cands = [], seen = new Set(), archive = archivedSet(cfg);
   for (const m of reg.models) {
-    if (m.kind !== 'agent' || reg.providers[m.provider]?.status !== 'ok' || !providerAvailable(m.provider, { overflowApi, cfg, model: m.id })) continue;
-    if (exclude.includes(`${m.provider}:${m.id}`) || (providers && !providers.includes(m.provider))) continue;
-    const p = priorFor(m.provider, m.id, category);
+    const model = scorecardModelId(m.id), key = `${m.provider}:${model}`;
+    if (seen.has(key) || isArchived(m.provider, model, archive)) continue;
+    seen.add(key);
+    if (m.kind !== 'agent' || reg.providers[m.provider]?.status !== 'ok' || !providerAvailable(m.provider, { overflowApi, cfg, model })) continue;
+    if (exclude.includes(key) || (providers && !providers.includes(m.provider))) continue;
+    const p = priorFor(m.provider, model, category);
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
-    const price = priceFor(m.provider, m.id, { scorecard: cfg });
+    const price = priceFor(m.provider, model, { scorecard: cfg });
     if (!price) continue;
     const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
-    const sel = selOf({ provider: m.provider, model: m.id, effort });
+    const sel = selOf({ provider: m.provider, model, effort });
     if (exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;
     const cls = (cfg.classOrder || []).indexOf(providerClass(m.provider, cfg));
     // B8: skip candidates whose class is not in classOrder (consistent with B7: unlisted = not eligible).
     if (cls < 0) continue;
-    cands.push({ provider: m.provider, model: m.id, effort, tier: p.tier, proxy: price.in + price.out, cls });
+    cands.push({ provider: m.provider, model, effort, tier: p.tier, proxy: price.in + price.out, cls });
   }
   cands.sort(escalate
     ? (a, b) => a.tier.localeCompare(b.tier) || a.cls - b.cls || a.proxy - b.proxy
@@ -678,9 +704,9 @@ export function formatScoresShort({ source = null } = {}) {
     for (const r of runs) lines.push('- ' + c + '@' + (r.from === r.to ? r.from : r.from + '-' + r.to) + ': ' + r.text);
   }
   if (lines.length === 1) lines.push('- no pick yet (not enough rated runs above the bar)');
-  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.minSamples && g.quality != null && g.quality < cfg.quality);
+  const benched = all.filter((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
   if (benched.length) {
-    lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.minSamples + ' rated; recommend() skips these cells; a better run lifts them):');
+    lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' rated; recommend() skips these cells; a better run lifts them):');
     for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
   }
   const text = lines.join('\n');
@@ -689,30 +715,32 @@ export function formatScoresShort({ source = null } = {}) {
 }
 
 /** `conductor scores --csv`: the summary table as CSV (opens in Excel). */
-export function scoresCsv({ source = null } = {}) {
+export function scoresCsv({ source = null, archived = false } = {}) {
   const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'phantomRate', 'priorTier', 'cost', 'last'];
   const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  return [cols.join(','), ...summarize({ source }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
+  return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
 }
 
 /** Conductor/CLI view: the table plus the current plan per category and level. */
-export function formatScores({ category = null, source = null } = {}) {
-  const summary = summarize({ source });
+export function formatScores({ category = null, source = null, archived = false } = {}) {
+  const summary = summarize({ source, archived });
   const rows = summary.filter((g) => !category || g.category === category);
   if (!rows.length) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
   const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
   for (const g of rows) lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${g.avgUsd == null ? '-' : f(g.avgUsd, 3)} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`);
   const cfg = loadConfig().scorecard;
-  lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
-  let any = false;
-  for (const c of category ? [category] : CATEGORIES) for (const d of LEVELS) {
-    const r = recommend({ category: c, difficulty: d, source, summary });
-    if (r) { any = true; lines.push(`- ${c}@${d}: ${r.reason}`); }
+  if (!archived) {
+    lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
+    let any = false;
+    for (const c of category ? [category] : CATEGORIES) for (const d of LEVELS) {
+      const r = recommend({ category: c, difficulty: d, source, summary });
+      if (r) { any = true; lines.push(`- ${c}@${d}: ${r.reason}`); }
+    }
+    if (!any) lines.push('- none yet (not enough rated runs above the bar)');
   }
-  if (!any) lines.push('- none yet (not enough rated runs above the bar)');
   lines.push('', 'Error rates (φ = phantom / unverified completions):');
-  const ers = errorRates({ source }).byProvider;
+  const ers = errorRates({ source, archived }).byProvider;
   if (!ers.length) lines.push('- none rated yet');
   else for (const e of ers) lines.push(`- ${e.key}: ${(e.errorRate * 100).toFixed(0)}% error, ${(e.phantomRate * 100).toFixed(0)}% φ (n=${e.rated})`);
   return lines.join('\n');

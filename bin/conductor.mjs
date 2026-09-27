@@ -17,7 +17,7 @@ const { values: flags, positionals } = parseArgs({
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     cwd: { type: 'string' },
-    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, 'void-env': { type: 'boolean' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
   },
 });
 const cmd = positionals[0] || 'start';
@@ -28,9 +28,9 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor doctor                           check Node, Claude login, Codex login, Ollama
   conductor models [--refresh] [--json]      list models across providers
   conductor limits [--refresh] [--json]      show usage limits per provider
-  conductor scores [--category C] [--source live|smoke] [--json|--csv] [--void-env]
+  conductor scores [--category C] [--source live|smoke] [--archived] [--json|--csv] [--void-env]
                                              scorecard: quality, $ and % of window per model, category and level;
-                                             --void-env excludes smoke runs the sandbox blocked (not the model's fault)
+                                             --archived shows only archived history; --void-env excludes smoke runs the sandbox blocked
   conductor smoke --models p:m[:e],...  | --all-models  [--tasks id,id] [--keep] [--agents-md FILE --variant NAME]
                                              run the smoke battery against models to seed the scorecard (spends budget)
   conductor bench [--run] [--days N] [--refresh]
@@ -168,7 +168,7 @@ if (cmd === 'start') {
     }
     console.log(`${n} run(s) voided`);
   }
-  const o = { category: flags.category || null, source: flags.source || null };
+  const o = { category: flags.category || null, source: flags.source || null, archived: !!flags.archived };
   if (flags.csv) process.stdout.write(scoresCsv(o)); else console.log(flags.json ? JSON.stringify(summarize(o), null, 2) : formatScores(o));
   process.exit(0);
 } else if (cmd === 'smoke') {

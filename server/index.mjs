@@ -19,7 +19,7 @@ import { listTasks, cancelChain, getTask, publicTask, schedule, createTask, abor
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
-import { summarize, formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
+import { formatScores, migrateScorecard, EFFORTS } from '../core/scorecard.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
@@ -250,8 +250,7 @@ async function route(req, res, url) {
   if (p === '/api/bench' && m === 'GET') { const { dueForBench, formatBench } = await import('../core/bench.mjs'); const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
   if (p === '/api/scores' && m === 'GET') {
     const source = url.searchParams.get('source') || null;
-    const summary = summarize({ source });
-    return json(res, 200, { text: formatScores({ source, category: url.searchParams.get('category') || null, summary }) });
+    return json(res, 200, { text: formatScores({ source, category: url.searchParams.get('category') || null, archived: url.searchParams.get('archived') === '1' }) });
   }
   if (p === '/api/limits/refresh' && m === 'POST') return json(res, 200, await refreshLimits());
 
