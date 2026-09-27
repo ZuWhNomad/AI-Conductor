@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig } from './config.mjs';
 
+export const DEFAULT_TOOL_TIMEOUT_SEC = 3600;
+
 const stringToken = `"(?:[^"\\\\]|\\\\.)*"|'[^']*'`;
 const keyToken = `(?:${stringToken}|[A-Za-z0-9_-]+)`;
 const unq = (v) => {
@@ -178,7 +180,7 @@ export function codexMcpArgs(servers) {
         put(name, 'env_vars', `[${forward.map(q).join(',')}]`);
         put(name, 'env', table(literal)); // also clear an inherited env table that would override forwarded values
       }
-      put(name, 'tool_timeout_sec', s.toolTimeoutSec || 3600);
+      put(name, 'tool_timeout_sec', s.toolTimeoutSec || DEFAULT_TOOL_TIMEOUT_SEC);
       put(name, 'startup_timeout_sec', s.startupTimeoutSec || 30);
     }
     put(name, 'default_tools_approval_mode', '"approve"');

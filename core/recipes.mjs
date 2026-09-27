@@ -19,9 +19,15 @@ export const RECIPES = { drafting: 'image-to-3d-model.b.md', modeling: 'image-to
 export const RECIPE_VARIANTS = { modeling: { 'recipe-a': 'image-to-3d-model.md', 'recipe-b': 'image-to-3d-model.b.md', 'recipe-c': 'image-to-3d-model.c-build.md', 'recipe-c-trace': 'image-to-3d-model.c-trace.md' }, summarize: { 'video-general': 'video-briefing-general.md', 'video-finance': 'video-briefing-finance.md' } };
 
 const cache = new Map();
-// Config can add/override routing without a code edit: recipes.defaults[category] and recipes.variants[category][variant].
 const defaults = () => ({ ...RECIPES, ...(loadConfig().recipes?.defaults || {}) });
-const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
+export const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
+export const checkVariant = (category, variant) => {
+  if (!variant) return null;
+  const known = variantsOf(category);
+  if (Object.hasOwn(known, variant)) return null;
+  const names = Object.keys(known);
+  return `unknown variant "${variant}" for ${category || 'this category'}${names.length ? `; known: ${names.join(', ')}` : ''}`;
+};
 /** Recipe text for a category (null when none is registered). */
 export function recipeFor(category, variant = null) {
   const file = (variant && variantsOf(category)[variant]) || defaults()[category]; if (!file) return null;

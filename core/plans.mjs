@@ -103,13 +103,6 @@ function structuredOf(report) {
   return lastBalancedObject(String(report), (o) => Array.isArray(o.findings)) ?? undefined;
 }
 
-/** Last fenced ```json block (or a bare trailing object) in a worker report. */
-export function extractJson(text) {
-  if (!text) return null;
-  const fenced = lastFenced(text);
-  return fenced !== undefined ? fenced : lastBalancedObject(String(text));
-}
-
 /** Findings from a report: an explicit findings[] block, else the whole report as one item. */
 export function findingsOf(report, taskId) {
   const j = structuredOf(report);

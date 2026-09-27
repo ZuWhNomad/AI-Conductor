@@ -16,7 +16,7 @@ export const auth = { type: 'none', setup: 'Install Ollama from https://ollama.c
 export const installCommand = () => (process.platform === 'win32' ? 'start https://ollama.com/download' : 'curl -fsSL https://ollama.com/install.sh | sh');
 
 export const baseUrl = () => (loadConfig().providers.ollama?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
-/** Owner's on/off switch for local models: providers.ollama.enabled === false -> never start, list or use Ollama. */
+/** Owner's on/off switch for local models: opt-in, providers.ollama.enabled === true to start, list or use Ollama. */
 export const enabled = () => loadConfig().providers.ollama?.enabled === true;   // opt-in: OFF unless set true
 
 async function ping(ms = 1500) {
@@ -74,7 +74,12 @@ export async function pullModel(name) {
   for (;;) {
     const { done, value } = await reader.read(); if (done) break;
     buf += dec.decode(value, { stream: true });
-    let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue; try { const j = JSON.parse(line); bus.publish('model_pull', { provider: id, model: name, status: j.status, completed: j.completed, total: j.total, error: j.error }); if (j.error) throw new Error(j.error); } catch (e) { if (e.message !== 'Unexpected token') throw e; } }
+    let i; while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue;
+      let j; try { j = JSON.parse(line); } catch { continue; }
+      bus.publish('model_pull', { provider: id, model: name, status: j.status, completed: j.completed, total: j.total, error: j.error });
+      if (j.error) throw new Error(j.error);
+    }
   }
   bus.publish('model_pull', { provider: id, model: name, status: 'done' });
 }

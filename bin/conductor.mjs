@@ -5,12 +5,17 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { REPO_ROOT, stateDir, statePath, redact } from '../core/paths.mjs';
+import { REPO_ROOT, stateDir, statePath, redact, readJson } from '../core/paths.mjs';
 import { loadConfig } from '../core/config.mjs';
 
 const PID_FILE = () => statePath('server.pid');
 const writePidFile = (info) => { try { writeFileSync(PID_FILE(), JSON.stringify({ pid: process.pid, ...info }, null, 2)); } catch {} };
 const clearPidFile = () => { try { unlinkSync(PID_FILE()); } catch {} };
+function pidServer() {
+  const info = readJson(PID_FILE());
+  const port = info?.port || loadConfig().port;
+  return { info, port, base: info?.url || `http://127.0.0.1:${port}` };
+}
 
 const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
@@ -91,12 +96,8 @@ if (cmd === 'start') {
   process.on('SIGTERM', stop);
   process.on('SIGHUP', stop);
 } else if (cmd === 'stop') {
-  const cfgPort = loadConfig().port;
-  let info = null;
-  try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
-  if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port ${cfgPort}.`); process.exit(1); }
-  const port = info.port || cfgPort;
-  const base = info.url || `http://127.0.0.1:${port}`;
+  const { info, port, base } = pidServer();
+  if (!info?.pid) { console.error(`no running conductor found (${PID_FILE()} missing). If it's still up, close its window or find it by port ${port}.`); process.exit(1); }
   const stopped = () => { console.log(`Stopped conductor (pid ${info.pid}, port ${port}).`); process.exit(0); };
   try {
     const r = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
@@ -241,8 +242,7 @@ if (cmd === 'start') {
     process.exit(0);
   }
   // A running server owns the task journal and knows which chats are mid-turn: install through it when it is up.
-  let info = null; try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
-  const base = info?.url || `http://127.0.0.1:${info?.port || loadConfig().port}`;
+  const { base } = pidServer();
   let server = false; try { server = (await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(3000) })).ok; } catch {}
   let failed = false;
   if (server) {
@@ -262,8 +262,7 @@ if (cmd === 'start') {
   process.exit(failed ? 1 : 0);
 } else if (cmd === 'job') {
   // Through the running server, so it works from a sandboxed worker (the server spawns and journals the job).
-  let info = null; try { info = JSON.parse(readFileSync(PID_FILE(), 'utf8')); } catch {}
-  const base = info?.url || `http://127.0.0.1:${info?.port || loadConfig().port}`;
+  const { base } = pidServer();
   const [, sub, id] = positionals;
   const call = async (method, path, body) => {
     try { const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }

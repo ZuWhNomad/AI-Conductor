@@ -34,9 +34,13 @@ test('a modelling task still gets the whole recipe, drafting stage included', as
 });
 
 test('recipe variants still resolve, and an unknown category gets nothing', async () => {
-  const { recipeFor } = await import('../core/recipes.mjs');
+  const { recipeFor, variantsOf, checkVariant } = await import('../core/recipes.mjs');
   assert.ok(recipeFor('modeling', 'recipe-a'), 'recipe A is still selectable by variant');
   assert.equal(recipeFor('nonsense-category'), null);
+  assert.ok(variantsOf('modeling')['recipe-a']);
+  assert.equal(checkVariant('modeling', 'recipe-a'), null);
+  assert.equal(checkVariant('modeling', null), null);
+  assert.match(checkVariant('modeling', 'nope'), /unknown variant "nope"/);
 });
 
 test('L25: delegate and run_plan schemas expose variant', async () => {

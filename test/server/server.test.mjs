@@ -236,7 +236,12 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
       assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
       assert.equal(d.rows.find((r) => r.name === 'codex').value, 'test-version');
       assert.equal(d.rows.find((r) => r.name === 'codex').status, 'logged in');
+      const claude = d.rows.find((r) => r.name === 'claude (Agent SDK)');
+      assert.equal(typeof claude.value, 'string');
+      assert.ok(claude.value === 'unknown' || claude.value.length > 0);
     }
+    const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+    assert.match(src, /claudePkg\?\.version \|\| 'unknown'/);
   } finally {
     if (previousCodex === undefined) delete process.env.CONDUCTOR_CODEX;
     else process.env.CONDUCTOR_CODEX = previousCodex;
@@ -518,7 +523,7 @@ test('/mcp/<session> JSON-RPC initialize, tools/list, tools/call', async () => {
     body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
   }).then((r) => r.json());
   const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
-  assert.match(src, /maxBlockMs = \(\(loadConfig\(\)\.mcp\?\.toolTimeoutSec \?\? 3600\) - 60\) \* 1000/);
+  assert.match(src, /maxBlockMs = \(DEFAULT_TOOL_TIMEOUT_SEC - 60\) \* 1000/);
   const init = await rpc('initialize');
   assert.equal(init.result.serverInfo.name, 'conductor');
   const listed = await rpc('tools/list');

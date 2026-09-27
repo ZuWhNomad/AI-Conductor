@@ -45,7 +45,7 @@ url = "https://example.test/retained"
 [windows]
 sandbox = "elevated"
 `;
-const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, mcpServersFor, readClaudeJson } = await import('../core/mcp.mjs');
+const { parseCodexToml, codexMcpArgs, forClaudeSdk, mcpServers, mcpServersFor, readClaudeJson, DEFAULT_TOOL_TIMEOUT_SEC } = await import('../core/mcp.mjs');
 const { saveConfig } = await import('../core/config.mjs');
 
 test('Codex config.toml MCP tables parse (url, command/args/env, disabled dropped)', () => {
@@ -312,6 +312,12 @@ test('Codex dotted names share one table override, preserving exclusion, approva
   assert.ok(args.includes('mcp_servers.node_repl.default_tools_approval_mode="approve"'));
   assert.ok(!args.some((arg) => /mcp_servers\.(?:"|private\.|retained\.|new\.)/.test(arg)), 'never quote a dotted CLI keypath');
   assert.ok(!args.some((arg) => arg.includes('mcp_servers.off.')), 'already disabled server stays disabled');
+});
+
+test('Codex MCP args use the shared default tool timeout', () => {
+  assert.equal(DEFAULT_TOOL_TIMEOUT_SEC, 3600);
+  const { args } = codexMcpArgs({ fixture: { command: 'C:\\tools\\fixture.exe', args: [] } });
+  assert.ok(args.some((arg) => arg.includes(`tool_timeout_sec=${DEFAULT_TOOL_TIMEOUT_SEC}`) || arg.includes(`"tool_timeout_sec"=${DEFAULT_TOOL_TIMEOUT_SEC}`)), args.join('\n'));
 });
 
 test('MCP fixtures control Claude precedence and saved tombstones remove inherited servers', () => {

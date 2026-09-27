@@ -220,6 +220,22 @@ test('escalation returns the best AVAILABLE model by quality across classes — 
   assert.notEqual(esc.provider, value.provider);                                     // the two picks are genuinely distinct
 });
 
+test('recommend alternatives exclude the chosen plan', () => {
+  const prev = loadConfig().scorecard;
+  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, minSamples: 1, providerWeight: { ollama: 0, codex: 0.6 }, classes: { ollama: 'free', codex: 'subscription' }, classOrder: ['subscription', 'free'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
+  try {
+    seed('ollama', 'qwen', null, 'debug', 2, ['pass', 'pass', 'pass']);
+    seed('codex', 'gpt-6-astra', 'medium', 'debug', 2, ['pass', 'pass', 'pass']);
+    const r = sc.recommend({ category: 'debug', difficulty: 2 });
+    assert.equal(r.provider, 'codex');
+    assert.equal(r.class, 'subscription');
+    const chosen = r.plan.steps.join(' then on fail ') + ':';
+    assert.ok(r.alternatives.length);
+    for (const a of r.alternatives) assert.ok(!a.startsWith(chosen), a);
+    assert.ok(r.alternatives.some((a) => a.startsWith('ollama:qwen')), r.alternatives.join('\n'));
+  } finally { saveConfig({ scorecard: prev }); }
+});
+
 test('a higher effort within the cost slack dominates the lower effort of the same model', (t) => {
   registryModels(t, [['codex', 'gpt-5.6-sol']]);
   // docs@2: Luna low and Luna max both 3/3 pass at ~$0.023 -> max wins despite equal utility; with slack 0 the cheaper (low) wins again.

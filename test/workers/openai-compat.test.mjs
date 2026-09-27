@@ -78,6 +78,13 @@ test('DeepSeek balance parses and providers expose a homepage', async () => {
   const sums = providerSummaries();
   assert.equal(sums.find((p) => p.id === 'deepseek').url, 'https://platform.deepseek.com');
   assert.equal(sums.find((p) => p.id === 'codex').url, 'https://chatgpt.com/codex');
+  const { PROVIDERS } = await import('../../core/providers/index.mjs');
+  for (const s of sums) {
+    assert.equal(s.canLogin, !!PROVIDERS[s.id].loginCommand);
+    assert.equal(s.canRelogin, !!PROVIDERS[s.id].loginCommand);
+  }
+  assert.equal(sums.find((p) => p.id === 'grok').canLogin, true);
+  assert.equal(sums.find((p) => p.id === 'ollama').canLogin, false);
 });
 
 test('DeepSeek API-listed chat models expose thinking efforts only for the DeepSeek provider', async (ctx) => {

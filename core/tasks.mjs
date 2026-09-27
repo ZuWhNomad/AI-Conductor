@@ -11,7 +11,7 @@ import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
+import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset } from './scorecard.mjs';
@@ -322,66 +322,68 @@ export const heldProviders = new Set();
 export function schedule() {
   if (shuttingDown) return;
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
-  const cfg = loadConfig();
-  const max = cfg.conductor.maxWorkerConcurrency;
-  const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
-  const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-  if (!queued.length || running.size >= max) return;
-  const rows = budget ? runRows() : null;
-  const costCache = new Map();
-  const costByWindow = (t) => {
-    const key = JSON.stringify([t.provider, t.model ?? null]);
-    if (!costCache.has(key)) costCache.set(key, measuredCostByWindow(rows, t.provider, { model: t.model }));
-    return costCache.get(key);
-  };
-  // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
-  // overrun any one window (a Claude task's % is charged only to Claude's windows, not to a grouped provider's others).
-  const addCost = (acc, prov, costs) => { acc[prov] = acc[prov] || {}; for (const [id, c] of Object.entries(costs)) acc[prov][id] = (acc[prov][id] || 0) + c; };
-  // A task's cost is UNMEASURED (probe-gated) if the provider reports windows but the task lacks a measured cost
-  // for ANY of them — a newly-appeared window with no history counts as unknown, not free.
-  const isUnmeasured = (t) => providerWindows(t.provider, t.model).some((w) => isBudgetWindow(w) && !(w.id in costByWindow(t)));
-  const runningByWindow = {};
-  const probing = {}; // provider -> a probe (unmeasured task) is in flight / dispatched this pass; hold everything else on it
-  const reserved = new Set([...running.keys(), ...settling]);
-  if (budget) for (const id of reserved) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
-  const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
-  const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys(), ...settling].some((id) => tasks.get(id)?.provider === prov);
-  const failovers = [];
-  for (const t of queued) {
-    if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
-    if (heldProviders.has(t.provider) && t.sessionId !== 'cli-update') continue;
-    if (running.size >= max) break;
-    const until = modelBlockedUntil(t.provider, t.model);
-    if (until) {
-      const threshold = cfg.worker.failoverAfterBlockMinutes;
-      const next = threshold > 0 && until - Date.now() > threshold * 60_000 ? failover(t) : null;
-      if (next) {
-        t.limitHit = true; t.finishedAt = nowIso(); persist(t); wake(t);
-        failovers.push(next);
-      } else park(t, until, `provider ${t.provider} is at its usage limit`);
-      continue;
-    }
-    if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
-      if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
-      const windows = providerWindows(t.provider, t.model);
-      const costs = costByWindow(t);
-      const unmeasured = isUnmeasured(t); // windowed provider missing a cost for some window -> one probe at a time (windowless API/local providers have no window to protect)
-      const committed = { ...(runningByWindow[t.provider] || {}) };
-      for (const [id, c] of Object.entries(dispatchedByWindow[t.provider] || {})) committed[id] = (committed[id] || 0) + c;
-      const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1, windowTargets: cfg.scorecard.windowTargets });
-      if (!a.n || unmeasured) {
-        // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
-        // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
-        // (below), so another agent takes over instead of the queue stalling. Hold this task only while its
-        // provider already has one in flight or settling; it resumes after usage and score settle. Never a queued-forever park.
-        if (providerBusy(t.provider)) continue;
+  withLimitsSnapshot(() => {
+    const cfg = loadConfig();
+    const max = cfg.conductor.maxWorkerConcurrency;
+    const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
+    const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    if (!queued.length || running.size >= max) return;
+    const rows = budget ? runRows() : null;
+    const costCache = new Map();
+    const costByWindow = (t) => {
+      const key = JSON.stringify([t.provider, t.model ?? null]);
+      if (!costCache.has(key)) costCache.set(key, measuredCostByWindow(rows, t.provider, { model: t.model }));
+      return costCache.get(key);
+    };
+    // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
+    // overrun any one window (a Claude task's % is charged only to Claude's windows, not to a grouped provider's others).
+    const addCost = (acc, prov, costs) => { acc[prov] = acc[prov] || {}; for (const [id, c] of Object.entries(costs)) acc[prov][id] = (acc[prov][id] || 0) + c; };
+    // A task's cost is UNMEASURED (probe-gated) if the provider reports windows but the task lacks a measured cost
+    // for ANY of them — a newly-appeared window with no history counts as unknown, not free.
+    const isUnmeasured = (t) => providerWindows(t.provider, t.model).some((w) => isBudgetWindow(w) && !(w.id in costByWindow(t)));
+    const runningByWindow = {};
+    const probing = {}; // provider -> a probe (unmeasured task) is in flight / dispatched this pass; hold everything else on it
+    const reserved = new Set([...running.keys(), ...settling]);
+    if (budget) for (const id of reserved) { const rt = tasks.get(id); if (rt) { addCost(runningByWindow, rt.provider, costByWindow(rt)); if (isUnmeasured(rt)) probing[rt.provider] = true; } }
+    const dispatchedByWindow = {}; // provider -> { windowId: % committed this pass }
+    const providerBusy = (prov) => Object.keys(dispatchedByWindow[prov] || {}).length > 0 || [...running.keys(), ...settling].some((id) => tasks.get(id)?.provider === prov);
+    const failovers = [];
+    for (const t of queued) {
+      if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
+      if (heldProviders.has(t.provider) && t.sessionId !== 'cli-update') continue;
+      if (running.size >= max) break;
+      const until = modelBlockedUntil(t.provider, t.model);
+      if (until) {
+        const threshold = cfg.worker.failoverAfterBlockMinutes;
+        const next = threshold > 0 && until - Date.now() > threshold * 60_000 ? failover(t) : null;
+        if (next) {
+          t.limitHit = true; t.finishedAt = nowIso(); persist(t); wake(t);
+          failovers.push(next);
+        } else park(t, until, `provider ${t.provider} is at its usage limit`);
+        continue;
       }
-      if (unmeasured) probing[t.provider] = true; // this dispatch IS the probe; nothing else on this provider runs alongside it
-      addCost(dispatchedByWindow, t.provider, unmeasured ? { __probe: 100 } : costs);
+      if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
+        if (probing[t.provider]) continue; // a probe of unknown cost is measuring this provider; hold ALL its tasks until it returns
+        const windows = providerWindows(t.provider, t.model);
+        const costs = costByWindow(t);
+        const unmeasured = isUnmeasured(t); // windowed provider missing a cost for some window -> one probe at a time (windowless API/local providers have no window to protect)
+        const committed = { ...(runningByWindow[t.provider] || {}) };
+        for (const [id, c] of Object.entries(dispatchedByWindow[t.provider] || {})) committed[id] = (committed[id] || 0) + c;
+        const a = admit(windows, [{ costs }], { runningByWindow: committed, maxParallel: 1, windowTargets: cfg.scorecard.windowTargets });
+        if (!a.n || unmeasured) {
+          // Over the per-window target (or cost still unknown) we DON'T pause. Policy: degrade to SEQUENTIAL per
+          // provider and keep issuing — a task that runs into the real provider limit then hands off via failover
+          // (below), so another agent takes over instead of the queue stalling. Hold this task only while its
+          // provider already has one in flight or settling; it resumes after usage and score settle. Never a queued-forever park.
+          if (providerBusy(t.provider)) continue;
+        }
+        if (unmeasured) probing[t.provider] = true; // this dispatch IS the probe; nothing else on this provider runs alongside it
+        addCost(dispatchedByWindow, t.provider, unmeasured ? { __probe: 100 } : costs);
+      }
+      void run(t);
     }
-    void run(t);
-  }
-  if (failovers.length) schedule();
+    if (failovers.length) schedule();
+  });
 }
 
 function park(t, until, reason) {
