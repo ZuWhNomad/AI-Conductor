@@ -10,6 +10,7 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
+import { stateDir } from '../../core/paths.mjs';
 import { resolveNpmShim, spawnCli } from '../../core/proc.mjs';
 import { shellDenied, runDescription, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
@@ -130,6 +131,64 @@ test('D9: runEnv sets NoDefaultCurrentDirectoryInExePath so a cwd shim cannot sh
   assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');
   assert.equal(env.PATH, 'C:\\Windows');
   assert.equal(env.OTHER, 'keep');
+});
+
+test('3a: runEnv strips _API_KEY, _TOKEN, _SECRET and API_KEY case-insensitively, keeping safe vars and NoDefaultCurrentDirectoryInExePath', () => {
+  const env = runEnv({
+    PATH: 'C:\\Windows',
+    OTHER: 'keep',
+    OPENAI_API_KEY: 'sk-test',
+    anthropic_api_key: 'sk-ant',
+    _API_KEY: 'leading',
+    API_KEY: 'exact',
+    api_key: 'exact-lower',
+    GITHUB_TOKEN: 'gh-test',
+    my_token: 'tok',
+    _TOKEN: 'raw-tok',
+    CLIENT_SECRET: 'sec-test',
+    my_secret: 'shh',
+    _SECRET: 'raw-sec',
+    TOKEN: 'token-without-underscore',
+    SECRET: 'secret-without-underscore',
+    API_KEY_FOO: 'not-ending',
+  });
+  assert.equal(env.PATH, 'C:\\Windows');
+  assert.equal(env.OTHER, 'keep');
+  assert.equal(env.TOKEN, 'token-without-underscore');
+  assert.equal(env.SECRET, 'secret-without-underscore');
+  assert.equal(env.API_KEY_FOO, 'not-ending');
+  assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');
+  assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.anthropic_api_key, undefined);
+  assert.equal(env._API_KEY, undefined);
+  assert.equal(env.API_KEY, undefined);
+  assert.equal(env.api_key, undefined);
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.my_token, undefined);
+  assert.equal(env._TOKEN, undefined);
+  assert.equal(env.CLIENT_SECRET, undefined);
+  assert.equal(env.my_secret, undefined);
+  assert.equal(env._SECRET, undefined);
+});
+
+test('3c: shellDenied refuses commands naming the Conductor state directory case-insensitively in both slash styles', () => {
+  const sd = stateDir();
+  const forward = sd.replaceAll('\\', '/');
+  const back = sd.replaceAll('/', '\\');
+  const upper = forward.toUpperCase();
+
+  assert.match(shellDenied(true, `cat ${forward}/config.json`), /^run blocked: .*state directory/);
+  assert.match(shellDenied(true, `type ${back}\\config.json`), /^run blocked: .*state directory/);
+  assert.match(shellDenied(true, `ls "${upper}"`), /^run blocked: .*state directory/);
+
+  assert.match(shellDenied(['cat'], `cat ${forward}/config.json`), /^run blocked: .*state directory/);
+  assert.match(shellDenied(['type'], `type ${back}\\config.json`), /^run blocked: .*state directory/);
+
+  assert.match(shellDenied(false, `cat ${forward}/config.json`), /^run disabled:/);
+  assert.match(shellDenied('off', `cat ${back}\\config.json`), /^run disabled:/);
+
+  assert.equal(shellDenied(true, 'git status'), null);
+  assert.equal(shellDenied(['git'], 'git status'), null);
 });
 
 test('S4: run timeout is clamped to [1s, deadline-now, 2^31-1], default 120s', async (ctx) => {
