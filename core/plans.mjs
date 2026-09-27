@@ -200,8 +200,8 @@ function waitForFirstWorkerEvent(taskId, timeoutMs) {
   });
 }
 
-function noWorkerReason(input, gate, overflowApi) {
-  const { category } = input, difficulty = input.difficulty || 2;
+export function noWorkerReason({ category, difficulty }, gate, overflowApi) {
+  difficulty ||= 2;
   if (gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty} and available now.`;
   const bar = loadConfig().scorecard?.quality ?? 0.75;
   const proven = summarize().some((g) => g.category === category && g.difficulty >= difficulty && g.difficulty <= ROUTED_MAX_DIFFICULTY && g.rated > 0 && (g.quality ?? 0) >= bar);
@@ -222,7 +222,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
         pick = recommend({ category: inp.category, difficulty: inp.difficulty || 2, exclude: [...(inp.exclude || []), ...selsInFamilies(normFamilies(inp.avoid_families))], escalate: false, overflowApi, providers: gate?.providers || null });
       }
       catch { resolved.push({ input: inp, noWorker: 'Worker recommendation failed.' }); continue; }
-      if (!pick) { resolved.push({ input: inp, noWorker: noWorkerReason(inp, gate, overflowApi) }); continue; }
+      if (!pick) { resolved.push({ input: inp, noWorker: noWorkerReason({ category: inp.category, difficulty: inp.difficulty }, gate, overflowApi) }); continue; }
       // Preserve the proven visual effort even when plan/stage defaults supply an effort-only override.
       provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
       difficulty = inp.difficulty || 2; // L19: persist the routed level when auto-picked

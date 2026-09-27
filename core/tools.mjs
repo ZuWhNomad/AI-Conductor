@@ -11,9 +11,9 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived, setEligibility, selOf } from './scorecard.mjs';
+import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, isArchived, setEligibility, selOf } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
-import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
+import { runPlan, getPlan, noWorkerReason, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
@@ -175,15 +175,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
             if (top && (exclude.includes(selOf(top)) || atCeiling(top, failed))) return `Already at the ceiling for ${category}@${difficulty || 2}: ${selOf(top)} is the best available model, so a retry_of here could only route downward. Keep following up on ${failed.id} instead — worker.maxRounds=${cfg.worker.maxRounds} does not apply once the worker IS the ceiling — or finish it yourself if the rounds stop paying off. To switch anyway, name a provider/model explicitly.`;
           }
           pick = recommend({ category, difficulty: difficulty || 2, exclude, escalate, overflowApi: !!sessionFlags(sessionId).overflowApi, providers: gate?.providers || null });
-          if (!pick && gate) return `No worker is available: the task matches the access rule ${gate.names.join(', ')} (only ${gate.providers.join(', ')} can take it) and none of those is proven for ${category}@${difficulty || 2} and available now.`;
-          if (!pick) {
-            const d = difficulty || 2;
-            const bar = cfg.scorecard?.quality ?? 0.75;
-            const proven = summarize().some((g) => g.category === category && g.difficulty >= d && g.difficulty <= ROUTED_MAX_DIFFICULTY && g.rated > 0 && (g.quality ?? 0) >= bar);
-            // I2: split unproven from capped. I12: the old "configured default" branch is unreachable.
-            if (!proven) return `No worker is available for ${category}@${d}: nothing is proven at this level yet. Pin a provider/model explicitly (which always runs and seeds the scorecard) or run smoke_test.`;
-            return `No worker is available for ${category}@${d} under the current budget rules (subscription classes capped at this level; API overflow is ${sessionFlags(sessionId).overflowApi ? 'on' : 'off for this chat'}). Do the task yourself, wait for a window reset (see limits), or ask the user to enable API overflow.`;
-          }
+          if (!pick) return noWorkerReason({ category, difficulty }, gate, !!sessionFlags(sessionId).overflowApi);
           // Visual passes prove a model AND its effort; effort-only overrides cannot change an automatic pick.
           provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(category) ? pick.effort : effort || pick.effort;
           difficulty = difficulty || 2; // L19: persist the routed level when auto-picked
