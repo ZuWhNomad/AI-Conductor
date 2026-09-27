@@ -34,6 +34,20 @@ async function execGit(gitBin, args, cwd) {
   return stdout;
 }
 
+/** `git status --porcelain --untracked-files=all` (nested untracked listed individually). */
+async function gitStatusAll(gitBin, cwd) {
+  const status = await execGit(gitBin, ['status', '--porcelain', '--untracked-files=all'], cwd);
+  return status.split(/\r?\n/).filter((l) => l.length >= 3).map((l) => {
+    const file = l.slice(3).trim();
+    return { line: l, file: file.includes(' -> ') ? file.split(' -> ')[1].trim() : file };
+  });
+}
+
+function appendReportLine(res, line) {
+  if (!res) return;
+  res.finalMessage = res.finalMessage ? `${res.finalMessage.trim()}\n${line}` : line;
+}
+
 async function runVendorCliSnapshot(spec, t) {
   const cwd = resolve(t.cwd || '.');
   const gitBin = findCli('git');
@@ -66,9 +80,12 @@ async function runVendorCliSnapshot(spec, t) {
   }
 
   const workerCwd = prefix ? join(snapshotDir, prefix) : snapshotDir;
-  const preamble = `You are working in a disposable snapshot of ${t.cwd}; report paths relative to the project root. Do not read or write the original directory.\n\n`;
+  const preamble = `This is a disposable snapshot of the project. Use project-relative paths. Nothing may be written outside the snapshot.\n\n`;
   const prompt = `${preamble}${t.prompt || ''}`;
-  const snapshotTask = { ...t, cwd: workerCwd, sandbox: undefined, prompt };
+  const snapshotTask = { ...t, cwd: workerCwd, sandbox: undefined, prompt, writableRoots: [] };
+
+  let beforeOriginal;
+  try { beforeOriginal = new Set((await gitStatusAll(gitBin, gitRoot)).map((e) => e.line)); } catch {}
 
   let res;
   try {
@@ -76,17 +93,14 @@ async function runVendorCliSnapshot(spec, t) {
   } finally {
     try {
       if (existsSync(snapshotDir)) {
-        const status = await execGit(gitBin, ['status', '--porcelain'], snapshotDir);
-        const strayFiles = [...new Set(status.split('\n').filter((l) => l.length >= 3).map((l) => {
-          const file = l.slice(3).trim();
-          return file.includes(' -> ') ? file.split(' -> ')[1].trim() : file;
-        }))];
-        if (strayFiles.length) {
-          const strayLine = `Stray files in snapshot: ${strayFiles.join(', ')}`;
-          if (res) {
-            res.finalMessage = res.finalMessage ? `${res.finalMessage.trim()}\n${strayLine}` : strayLine;
-          }
-        }
+        const strayFiles = [...new Set((await gitStatusAll(gitBin, snapshotDir)).map((e) => e.file))];
+        if (strayFiles.length) appendReportLine(res, `Stray files in snapshot: ${strayFiles.join(', ')}`);
+      }
+    } catch {}
+    try {
+      if (beforeOriginal) {
+        const leaked = [...new Set((await gitStatusAll(gitBin, gitRoot)).filter((e) => !beforeOriginal.has(e.line)).map((e) => e.file))];
+        if (leaked.length) appendReportLine(res, `Stray writes to the project during a read-only run: ${leaked.join(', ')}`);
       }
     } catch {}
     try {
