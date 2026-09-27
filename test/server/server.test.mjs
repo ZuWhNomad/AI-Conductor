@@ -253,12 +253,12 @@ test('auto-update idle gate: empty is not enough, it must also have been quiet',
   assert.equal(isIdle({ runningSessions: 0, openTasks: 2, lastActivity: now - quietMs * 2, now, quietMs }), false);
 });
 
-test('POST /api/models/refresh: no body, {} and {only:[…]} all work', async () => {
+test('POST /api/models/refresh: no body, {} and {only:[…]} all work; junk JSON is 400', async () => {
   // The route started reading a body when `only` was added; the UI posts it both with and without one, so a bodyless
   // POST must not hang or 400. (A scoped refresh also skips the capability detection a full one triggers.)
   const send = (body) => fetch(url + '/api/models/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body }) });
   const { detectionStatus } = await import('../../core/capabilities.mjs');
-  for (const body of [undefined, '{}', JSON.stringify({ only: ['grok'] }), JSON.stringify({ only: [] }), 'not json']) {
+  for (const body of [undefined, '{}', JSON.stringify({ only: ['grok'] }), JSON.stringify({ only: [] })]) {
     const before = Object.fromEntries(Object.entries(PROVIDERS).map(([id, p]) => [id, [p.detect.mock.callCount(), p.listModels.mock.callCount()]]));
     const capabilitiesBefore = detectionStatus();
     const r = await send(body);
@@ -278,6 +278,16 @@ test('POST /api/models/refresh: no body, {} and {only:[…]} all work', async ()
       assert.deepEqual(Object.keys(detectionStatus()), ['test-capability']);
       assert.equal(detectionStatus()['test-capability'].available, true);
     }
+  }
+  const beforeJunk = Object.fromEntries(Object.entries(PROVIDERS).map(([id, p]) => [id, p.detect.mock.callCount()]));
+  const junk = await send('not json');
+  assert.equal(junk.status, 400);
+  assert.equal((await junk.json()).error, 'invalid JSON body');
+  for (const [id, p] of Object.entries(PROVIDERS)) assert.equal(p.detect.mock.callCount(), beforeJunk[id], `${id} detect skipped on junk`);
+  for (const path of ['/api/update', '/api/cli-update']) {
+    const r = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' });
+    assert.equal(r.status, 400, path);
+    assert.equal((await r.json()).error, 'invalid JSON body');
   }
 });
 

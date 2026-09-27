@@ -272,4 +272,4 @@ model all obey the same budget. Two rules matter:
   cost is measured, so a batch can't flood an unmetered window.
 
 Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
-`admit` also returns `until` (the earliest reset among full windows, `nextResetWindows`); the scheduler does not use it today.
+`admit` returns `{ n }`, how many of the pending tasks fit.

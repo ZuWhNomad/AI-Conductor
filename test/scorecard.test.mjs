@@ -64,6 +64,9 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.deepEqual(pr.priceFor('grok', 'grok-4.5', {}), { in: 2, out: 6, cached: 0.3 });
   assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 3 } } } }), { in: 1, out: 2, cached: 0.1, write: 3 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 'nope' } } } }), { in: 1, out: 2, cached: 0.1 });
+  assert.deepEqual(pr.priceFor('deepseek', 'deepseek-flash', { scorecard: { prices: { 'deepseek:deepseek-flash': { in: 2, out: 4, cached: 0.2, write: 8 } } } }, new Date('2026-09-09T12:00:00Z')), { in: 1, out: 2, cached: 0.1, write: 4 });
   // 50k uncached @0.2 + 50k cached @0.02 + 10k out @1.2 = 0.01 + 0.001 + 0.012
   assert.ok(Math.abs(pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, { in: 0.2, out: 1.2, cached: 0.02 }) - 0.023) < 1e-9);
   assert.equal(pr.usdFor({ in: 1 }, null), null);
@@ -124,6 +127,16 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   assert.equal(sc.rootRuns().find((r) => r.taskId === 'signin'), undefined);
   assert.equal(sc.recordRun({ id: 'img', imageOptions: {} }), null);
   assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
+});
+
+test('voidTask publishes the same score event as rateTask', async () => {
+  const { bus } = await import('../core/bus.mjs');
+  const seen = [];
+  const on = (e) => { if (e.type === 'score' && e.taskId === 'void-pub') seen.push({ type: e.type, taskId: e.taskId, verdict: e.verdict }); };
+  bus.on('event', on);
+  try { sc.voidTask('void-pub', 'sandbox denied the workspace'); }
+  finally { bus.off('event', on); }
+  assert.deepEqual(seen, [{ type: 'score', taskId: 'void-pub', verdict: 'void' }]);
 });
 
 test('summarize: single-step rows count every attempt, path rows count observed ladders', () => {

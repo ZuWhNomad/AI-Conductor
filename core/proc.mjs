@@ -1,5 +1,5 @@
 // Process helpers: locate CLIs on PATH, spawn the Codex CLI without a shell, kill process trees.
-import { spawn, execFile, execFileSync, execSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 
@@ -164,13 +164,4 @@ export function onLines(stream, cb, { maxLine = 4 * 1024 * 1024 } = {}) {
     if (buf.length > maxLine) { cb(buf); buf = ''; } // a stream with no newline must not grow the buffer without bound
   });
   stream.on('end', () => { if (buf.trim()) cb(buf); buf = ''; });
-}
-
-export function cliVersion(name) {
-  const found = findCli(name);
-  if (!found) return null;
-  try {
-    if (/\.(cmd|bat)$/i.test(found)) return execSync(`"${found}" --version`, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return execFileSync(found, ['--version'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch { return null; }
 }

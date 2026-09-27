@@ -116,6 +116,7 @@ export function rateTask(taskId, verdict, notes = '') {
 export function voidTask(taskId, reason = '') {
   const row = { op: 'void', ts: nowIso(), taskId: String(taskId), reason: String(reason || '').slice(0, 400) };
   appendNdjson(FILE(), row);
+  bus.publish('score', { taskId: row.taskId, verdict: 'void' }); // same event rateTask publishes, so the UI updates
   return row;
 }
 
