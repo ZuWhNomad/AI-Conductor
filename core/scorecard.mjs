@@ -19,7 +19,7 @@ export const BATTERIES_FILE = join(REPO_ROOT, 'core', 'policy', 'batteries.json'
 export const BATTERIES_SCHEMA_VERSION = 1;
 // Only Claude's SDK cost is a meaningful provider-reported list price today.
 const LIST_COST_PROVIDERS = new Set(['claude']);
-export const CATEGORIES = ['read', 'search', 'summarize', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
+export const CATEGORIES = ['read', 'search', 'summarize', 'research', 'writing', 'video-extraction', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
 
 // Minimal prompt→category classifier. Today it recognizes only UI/frontend work, so a UI task the user diverts by
 // hand (the `/worker …` shortcut and direct-to-worker tasks set no category) is still recorded under `ui` and the

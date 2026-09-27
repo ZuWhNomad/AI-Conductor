@@ -39,6 +39,7 @@ syncBuiltinESMExports();
 
 const { startServer, lagVerdict, doctorReport, isIdle } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
+const { CATEGORIES } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
 const realFetch = globalThis.fetch;
 mock.method(globalThis, 'fetch', (input, options) => {
@@ -530,7 +531,7 @@ test('GET /api/scores returns text, the category-level grid, benched cells, and 
   const sc = await get('/api/scores');
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
-  assert.equal(sc.grid.length, 15);
+  assert.equal(sc.grid.length, CATEGORIES.length);
   assert.ok(sc.grid.every((row) => row.levels.length === 5));
   assert.ok(Array.isArray(sc.benched));
   assert.ok(Array.isArray(sc.eligibility));

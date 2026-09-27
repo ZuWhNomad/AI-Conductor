@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BATTERY } from './battery.mjs';
 import { createTask, awaitTask, cancelTask, getTask, flushRecords } from '../tasks.mjs';
-import { rateTask, voidTask, envFailure } from '../scorecard.mjs';
-import { providerAvailable } from '../scorecard.mjs';
+import { rateTask, voidTask, envFailure, providerAvailable, recommend } from '../scorecard.mjs';
+import { getModels } from '../models.mjs';
 import { loadConfig } from '../config.mjs';
 import { bus } from '../bus.mjs';
 
@@ -23,10 +23,12 @@ const inFlight = new Set();
  * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 6+
  * gets `hardTimeoutMinutes` (smoke.hardTimeoutMinutes), every other task `timeoutMinutes` (smoke.timeoutMinutes).
  */
-export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null } = {}) {
+export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null, judge = undefined } = {}) {
   if (!Array.isArray(models) || !models.length) throw Object.assign(new Error('models must be a non-empty array of {provider, model, effort}'), { status: 400 });
   const battery = BATTERY.filter((b) => !tasks || tasks.includes(b.id));
   if (!battery.length) throw Object.assign(new Error(`no matching smoke tasks (have: ${BATTERY.map((b) => b.id).join(', ')})`), { status: 400 });
+  // Injected executors are tests/harnesses: do not dispatch a real judge unless the caller also injects one.
+  const judgeHook = judge === undefined ? (execute === executeTask ? (request) => crossProviderJudge({ ...request, timeoutMinutes }) : null) : judge;
   const results = [];
   for (const sel of models) {
     for (const b of battery) {
@@ -42,11 +44,11 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
       try {
         b.setup(dir);
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
-        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
+        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant: variant || b.variant || null }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
         if ((t.attempts || 0) === 0 && t.status !== 'done') {
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
         } else {
-        const check = t.status === 'done' ? await b.check(dir, t) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
+        const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
         if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
           // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with Kimi and
@@ -81,6 +83,24 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
   return results;
 
   function push(r) { results.push(r); bus.publish('smoke', r); onResult?.(r); }
+}
+
+/** Optional subjective grader. It is off unless a qualified reviewer from a different provider is available. */
+export async function crossProviderJudge({ workerProvider, question, cwd, timeoutMinutes = loadConfig().smoke.timeoutMinutes } = {}) {
+  const reg = getModels();
+  const providers = [...new Set(reg.models.filter((m) => m.kind === 'agent' && m.provider !== workerProvider && reg.providers[m.provider]?.status === 'ok').map((m) => m.provider))];
+  if (!providers.length) return null;
+  const pick = recommend({ category: 'review', difficulty: 2, providers, reg, escalate: true });
+  if (!pick || pick.provider === workerProvider) return null;
+  let task;
+  try {
+    task = await executeTask({ cwd, title: 'assess a response', spec: question, provider: pick.provider, model: pick.model, effort: pick.effort, category: 'review', difficulty: 2, sessionId: 'smoke-judge', source: 'smoke', sandbox: 'read-only', noFailover: true }, timeoutMinutes);
+    const response = String(task?.result?.finalMessage || '').trim().toUpperCase();
+    if (task?.status !== 'done' || !['YES', 'NO'].includes(response)) return null;
+    return { provider: pick.provider, yes: response === 'YES' };
+  } finally {
+    if (task?.id) try { voidTask(task.id, 'benchmark judge is not a measured battery task'); } catch {}
+  }
 }
 
 function dispatched(id) {

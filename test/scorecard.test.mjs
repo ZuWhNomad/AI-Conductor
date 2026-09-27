@@ -855,6 +855,13 @@ test('ui is a first-class category and classifyCategory tags UI/frontend work', 
   for (const s of ['refactor the scheduler', 'add a retry to the API client', 'summarize the docs', '']) assert.equal(sc.classifyCategory(s), null, s);
 });
 
+test('research, writing and video extraction are first-class categories with matching prior kinds', () => {
+  for (const category of ['research', 'writing', 'video-extraction']) assert.ok(sc.CATEGORIES.includes(category));
+  assert.equal(pr.KIND.research, 'read');
+  assert.equal(pr.KIND.writing, 'reason');
+  assert.equal(pr.KIND['video-extraction'], 'read');
+});
+
 test('short view: every category@level is a compact pick, capped cell, or no-data cell; benched cells; csv', () => {
   const short = sc.formatScoresShort();
   const full = sc.formatScores();
