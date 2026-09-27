@@ -34,7 +34,7 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
   return respond(url, options);
 });
 
-const { createTask, cancelTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
+const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
 const { getModels } = await import('../core/models.mjs');
 const registryModels = (ctx, models) => {
   const reg = getModels(), previous = { models: reg.models, providers: reg.providers };
@@ -72,6 +72,17 @@ test('tasks are journaled, default to the configured worker, and follow-ups need
   assert.equal(listTasks({ sessionId: 'other' }).length, 0);
   assert.match(describeTask(getTask(t.id)), /\[canceled\] add feature/);
   assert.equal(await awaitTask('missing'), null);
+});
+
+test('watchdog hang failure is terminal, labeled hung and journaled', () => {
+  const t = createTask({ cwd: tmpDir('hung-task'), title: 'hung', spec: 'wait' }, { dispatch: false });
+  t.status = 'running';
+  const failed = failHungTask(t.id, 'watchdog fixture');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.failKind, 'hung');
+  assert.equal(failed.error, 'watchdog fixture');
+  const disk = JSON.parse(readFileSync(join(HOME, 'tasks', `${t.id}.json`), 'utf8'));
+  assert.equal(disk.failKind, 'hung');
 });
 
 test('task ID collisions regenerate without overwriting existing journals', async (ctx) => {

@@ -24,9 +24,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
   that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID.
-- `watchdog.mjs` — the server-owned basic check-in loop. It journals task `aliveAt` without a `task` event, publishes
-  `watchdog` UI events, persists detached-job/output watches, and wakes an idle chat once after its whole background
-  batch is terminal. It never restarts the server or interrupts work in phase 1.
+- `watchdog.mjs` — the server-owned liveness loop. It combines bus activity, bounded file walks and one shared OS
+  process/CPU snapshot into deterministic verdicts; journals task `aliveAt` without a `task` event; applies graduated
+  stuck/runaway actions; persists detached-job/output watches; and wakes an idle chat once after its whole background
+  batch is terminal. It never restarts the server.
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
   category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
   `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.

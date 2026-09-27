@@ -59,7 +59,7 @@ core/
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, park/resume on limits
   jobs.mjs               detached commands that survive turns and server restarts
-  watchdog.mjs           non-destructive chat/task check-ins, persisted watches, batched idle-chat wake-ups
+  watchdog.mjs           liveness verdicts/actions, persisted watches, restart-safe idle-chat wake-ups
   plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
   policy/                orchestration policy and shipped data:
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
@@ -84,7 +84,7 @@ core/
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   cli-update.mjs         worker CLI updates (codex, agy, grok, qwen, kimi; the Agent SDK in dev): daily check, install when idle, verify, roll back
-  proc.mjs               spawn CLIs without a shell (Windows shim unwrap), kill trees
+  proc.mjs               spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
 scripts/                 build the share/ launcher (not the app itself)
@@ -217,6 +217,26 @@ into a refactor (`mcpServersFor` in `core/mcp.mjs`).
 - Ollama: local, unlimited; models from `/api/tags`.
 - API-key providers: models from `/models`; limits learned from 429 `retry-after`.
 - Registry refreshes on startup, on the UI's **Refresh** button, and every `pollMinutes` (default 15) when `ui.autoRefresh` is enabled (default false).
+
+## Liveness watchdog and restart recovery
+
+One server-owned watchdog samples every running chat and worker at `watchdog.intervalMinutes` (30 by default). A
+single portable process snapshot supplies parentage, CPU time and working set; each item's project directory gets a
+bounded recent-file walk, while the event bus supplies output, tool-repeat and usage signals. Verdicts distinguish
+progress, owner/task waits, CPU-active quiet work, repeated loops and silence. Every sample is shown through the
+`watchdog` event and saved on the item. Worker `aliveAt` writes are quiet, so they do not make auto-update activity
+look newer.
+
+Silence is graduated: stuck checks are logged and badged before `watchdog.killAfterStuckChecks` (3 by default) uses
+the normal PID-scoped Stop/cancel path and records a worker as an unscored `failKind: "hung"`; zero disables that last
+resort. Pending permissions, parked tasks, late ticks and unavailable OS samples are never treated as proven hangs.
+Repeated identical tools, tool-less progress turns or configured token burn raise a looping verdict. A chat gets one
+corrective nudge, then a still-repeating runaway turn is stopped; worker count caps remain their independent guard.
+
+A chat turn is persisted while it is active. After a server restart, a Claude/Codex thread resumes once with a note
+to continue from the files; a non-resumable runtime records the interruption and waits for the user. Worker tasks are
+durable and requeue on restart. Detached `job_start` / `watch_job` work survives the turn and wakes an idle chat once
+when its whole background batch is terminal. The watchdog never restarts the server.
 
 ## Context management
 

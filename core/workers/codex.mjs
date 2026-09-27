@@ -1,5 +1,5 @@
 // Astra / GPT worker: drives `codex exec --json` (ChatGPT subscription) and parses its JSONL events.
-import { spawnCodex, killTree, onLines } from '../proc.mjs';
+import { spawnCodex, killTree, onLines, registerProc } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 import { codexMcpArgs } from '../mcp.mjs';
 import { readdirSync, openSync, readSync, closeSync } from 'node:fs';
@@ -86,7 +86,30 @@ function readHead(file, bytes) {
  * @param {Record<string,{url:string}>} [t.mcp]   streamable-HTTP MCP servers to attach (conductor mode)
  * @param {(event:string, data:object)=>void} [t.onEvent]  extra listener besides the bus
  */
-export function runCodex(t) {
+const TRANSIENT_RE = /stream disconnected|idle timeout|connection reset|temporarily unavailable|unexpected status 5\d\d|\b5\d\d\b.*(?:gateway|unavailable)/i;
+// Match Conductor's 55-minute soft wait: installed Codex 0.157.1 otherwise stops empty background-terminal polling
+// after 5 minutes. `stream_idle_timeout_ms` remains Codex's transport failure detector; job_max_runtime_seconds is a no-op.
+const BACKGROUND_TERMINAL_MAX_MS = 55 * 60_000;
+const sumUsage = (a, b) => {
+  if (!a) return b; if (!b) return a;
+  const out = { ...a };
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) if (Number.isFinite(Number(a[key])) || Number.isFinite(Number(b[key]))) out[key] = (Number(a[key]) || 0) + (Number(b[key]) || 0);
+  return out;
+};
+
+/** Resume one transiently interrupted Codex stream on the same thread, once. */
+export async function runCodex(t) {
+  const first = await runCodexOnce(t);
+  if (first.ok || first.limitHit || first.authFailed || !first.threadId || t.signal?.aborted || !TRANSIENT_RE.test(first.turnError || first.error || '')) return first;
+  const again = await runCodexOnce({ ...t, resumeThreadId: first.threadId, prompt: 'Continue the task; the stream was interrupted. Continue from the current state and finish it.' });
+  again.usage = sumUsage(first.usage, again.usage);
+  again.durationMs = (first.durationMs || 0) + (again.durationMs || 0);
+  again.items = [...(first.items || []), ...(again.items || [])];
+  again.warnings = [...(first.warnings || []), ...(again.warnings || [])];
+  return again;
+}
+
+function runCodexOnce(t) {
   if (t.signal?.aborted) return Promise.resolve({ ok: false, error: 'aborted' });
   for (const [key, re] of [['model', /^[A-Za-z0-9._\-:\/\[\]]+$/], ['effort', /^[a-z]+$/]]) {
     if (t[key] != null && (typeof t[key] !== 'string' || !re.test(t[key]))) return Promise.resolve({ ok: false, error: `invalid model/effort: ${key}=${t[key]}` });
@@ -94,6 +117,7 @@ export function runCodex(t) {
   const sandbox = t.sandbox || 'workspace-write';
   const args = ['exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', t.cwd,
     '-c', 'approval_policy="never"',
+    '-c', `background_terminal_max_timeout=${BACKGROUND_TERMINAL_MAX_MS}`,
     '-c', `sandbox_workspace_write.network_access=${t.network === false ? 'false' : 'true'}`];
   if (t.effort) args.push('-c', `model_reasoning_effort="${t.effort}"`);
   if (t.model) args.push('-c', `model="${t.model}"`);
@@ -108,7 +132,7 @@ export function runCodex(t) {
     const started = Date.now();
     const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, lastError: null, warnings: [], limitHit: false, authFailed: false, exitCode: null, stderr: '' };
     let child;
-    try { child = spawnCodex(args, { cwd: t.cwd, env: { ...process.env, ...mcp.env } }); }
+    try { child = registerProc(t.id, spawnCodex(args, { cwd: t.cwd, env: { ...process.env, ...mcp.env } })); }
     catch (e) { res.error = e.message; return resolve(res); }
 
     const items = new Map();

@@ -15,10 +15,10 @@ import { killProbes } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, touchTaskAlive, markTaskWakeReported } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, touchTaskAlive, markTaskWakeReported, failHungTask } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
-import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
+import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
 import { summarize, formatScores, scoresGrid, benchedCells, migrateScorecard, EFFORTS, scorecardModelId, eligibilityOverrides, setEligibility } from '../core/scorecard.mjs';
 import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
@@ -36,6 +36,8 @@ const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding w
 const watchdog = createWatchdog({
   listSessions: conductor.listSessions, listTasks, touchTaskAlive, markTaskWakeReported,
   recordSessionCheckIn: conductor.recordWatchdogCheckIn, sendMessage: conductor.sendMessage, jobStatus,
+  waitingTasks, resurfacePermissions: conductor.resurfacePermissions, nudgeRunaway: conductor.nudgeRunaway,
+  interrupt: conductor.interrupt, failHungTask,
 });
 
 export function stopBackgroundWork() {
@@ -639,6 +641,7 @@ export function startServer({ port = null } = {}) {
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);
       watchdog.start();
+      void conductor.resumeInterruptedTurns().catch((e) => logImprovement('error', 'watchdog', `interrupted-turn resume failed: ${e.message}`));
       startLagMonitor();
       if (!process.env.CONDUCTOR_NO_POLL) {
         applyPolling(cfg); // start the periodic model/limit poll only when auto-refresh is on

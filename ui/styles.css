@@ -28,6 +28,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .chk { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .pill { background: var(--bg3); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 11px; }
 .pill.running { border-color: var(--accent); color: var(--accent); }
+.pill.progressing, .pill.quiet-alive { border-color: var(--accent); color: var(--accent); }
+.pill.waiting-owner, .pill.waiting-task, .pill.looping { border-color: var(--warn); color: var(--warn); }
+.pill.stuck { border-color: var(--bad); color: var(--bad); }
 .pill.error { border-color: var(--bad); color: var(--bad); }
 .pill.warn { border-color: var(--warn); color: var(--warn); }
 

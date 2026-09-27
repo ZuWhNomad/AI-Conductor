@@ -1,7 +1,7 @@
 // Generic runner for vendor agent CLIs that run on a consumer subscription (Antigravity `agy`,
 // xAI `grok`, Qwen Code, Kimi CLI, ...). Each vendor is a spec in core/providers/vendors.mjs that
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
-import { killTree, onLines, spawnCli, findCli } from '../proc.mjs';
+import { killTree, onLines, spawnCli, findCli, registerProc } from '../proc.mjs';
 import { bus } from '../bus.mjs';
 import { logImprovement } from '../improve.mjs';
 import { execFile } from 'node:child_process';
@@ -156,7 +156,7 @@ function runVendorCliOnce(spec, t) {
     const useStdin = !!(spec.stdinPrompt || ha.stdinPrompt);
     if (threadId) st.threadId = threadId; // some CLIs let us mint the session id up front
     let child;
-    try { child = spawnCli(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } }); }
+    try { child = registerProc(t.id, spawnCli(bin, args, { cwd: t.cwd, windowsHide: true, stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env, ...(spec.env?.() || {}) } })); }
     catch (e) { try { cleanup?.(); } catch {} res.error = e.message; return resolve(res); }
     emit('thread', { threadId: st.threadId });
     onLines(child.stdout, (line) => {

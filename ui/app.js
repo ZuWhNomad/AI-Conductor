@@ -63,7 +63,8 @@ function renderSessions() {
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
     const checked = s.status === 'running' && s.watchdog?.checkedAt;
-    const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (checked ? 'check-in' : s.status === 'running' ? '●' : ''));
+    const verdict = checked ? s.watchdog.verdict : null;
+    const st = el('span', 'pill' + (verdict ? ` ${verdict}` : running || s.status === 'running' ? ' running' : ''), running ? `● ${running}` : (verdict || (s.status === 'running' ? '●' : '')));
     if (checked) st.title = s.watchdog.summary;
     const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', `approve ${s.pendingCount}`) : null;
     if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
@@ -533,7 +534,7 @@ function refreshRunningCards() {
 function taskCard(t) {
   const c = el('div', 'task ' + t.status); c.dataset.id = t.id;
   const h = el('div', 'h');
-  const right = t.status === 'running' ? (t.watchdog?.checkedAt ? el('span', 'pill running', 'check-in') : el('span', 'dot')) : el('span', 'pill', t.status);
+  const right = t.status === 'running' ? (t.watchdog?.checkedAt ? el('span', `pill ${t.watchdog.verdict || 'running'}`, t.watchdog.verdict || 'running') : el('span', 'dot')) : el('span', 'pill', t.status);
   if (t.watchdog?.summary) right.title = t.watchdog.summary;
   h.append(el('span', 't', t.title), right);
   const sub = el('div', 'sub', `${t.provider}${t.model ? '/' + t.model : ''} · ${t.category || '?'}${t.difficulty ? '@' + t.difficulty : ''} · ${statusPhrase(t)}`);
@@ -1020,7 +1021,10 @@ function openSettings() {
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
   field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Worker timeout for modeling (min)', 'worker.timeoutByCategory.modeling', c.worker.timeoutByCategory?.modeling ?? '', 'number', '0 = no limit. Set only if this category needs a hard cap.');
-  field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. Check-ins never interrupt work.');
+  field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. One global liveness sample per interval.');
+  field('Kill after stuck checks', 'watchdog.killAfterStuckChecks', c.watchdog.killAfterStuckChecks, 'number', '0 = flag only; otherwise at least 2. Default 3.');
+  field('Loop repeat threshold', 'watchdog.loopRepeat', c.watchdog.loopRepeat, 'number', 'Repeated identical calls or tool-less progress turns before a runaway alert.');
+  field('Loop tokens per tick', 'watchdog.loopTokens', c.watchdog.loopTokens, 'number', 'Token burn without file progress before a runaway alert.');
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');

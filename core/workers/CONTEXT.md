@@ -9,7 +9,8 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 **Entry points.**
 - `index.mjs` — `runWorker(task)` picks the runner by the provider's `kind` (codex, claude, ollama,
   openai-compat, image, vendor-cli). Local Ollama-via-Claude-harness gets `worker.maxTurnsLocal`.
-- `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin).
+- `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin;
+  a transient stream failure resumes the same thread once).
 - `claude.mjs` — the Claude Agent SDK harness (also runs local models via `ollama.claudeHarnessEnv()`).
 - `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Host execution is not limited
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
@@ -34,6 +35,8 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 - `writableRoots` (delegate `writable_roots`): extra writable directories — Codex `--add-dir`, Claude
   `additionalDirectories`, Antigravity `--add-dir`. Grok runs unsandboxed; the rest ignore it.
 - No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
+- Long-lived CLI/SDK children register their PID owner in `core/proc.mjs`, which lets the watchdog attribute their
+  process trees and CPU without killing by image/name.
 - The openai-compat `run` tool is disabled by default (`worker.shell: false`). Explicit `true` or an allow-list
   trusts host execution: permitted programs can read/write outside the workspace. `shellDenied` filters commands,
   not their filesystem access. The allow-list deliberately rejects operators even inside quotes; it does not strip

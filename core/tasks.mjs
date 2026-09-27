@@ -268,6 +268,15 @@ export function cancelTask(id, reason) {
   return t;
 }
 
+/** Watchdog last resort: abort a proven hang, but do not score infrastructure silence against the model. */
+export function failHungTask(id, reason) {
+  const t = getTask(id); if (!t || TERMINAL.has(t.status)) return null;
+  t.status = 'failed'; t.failKind = 'hung'; t.error = reason; t.finishedAt = nowIso();
+  running.get(id)?.abort();
+  persist(t); wake(t);
+  return t;
+}
+
 /** Cancel the live replacement(s), including malformed cyclic chains, without claiming a terminal task was canceled. */
 export function cancelChain(id) {
   let t = getTask(id);
@@ -490,7 +499,7 @@ async function run(t) {
       }
     }
     if (r.ok) noteLimitAvailable(t.provider, t.model, t.startedAt);
-    if (t.status === 'canceled') { /* keep */ }
+    if (t.status === 'canceled' || (t.status === 'failed' && t.failKind === 'hung')) { /* watchdog/user already decided it */ }
     else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit && !r.ok) {
       const next = t.efficiencyMode ? null : failover(t);
@@ -522,7 +531,7 @@ async function run(t) {
     persist(t);
     // A plain cancel is not scored (its ~0 tokens would drag the model's cost means). A smoke timeout
     // still needs a run row so rateTask(id, 'fail', 'timeout') has something to attach to (OB6).
-    if (TERMINAL.has(t.status) && !t.limitHit && !t.authFailed && !t.envFailed && (t.status !== 'canceled' || t.error === 'timeout')) score(t, limitsBefore, concurrent, concurrentByWindow);
+    if (TERMINAL.has(t.status) && t.failKind !== 'hung' && !t.limitHit && !t.authFailed && !t.envFailed && (t.status !== 'canceled' || t.error === 'timeout')) score(t, limitsBefore, concurrent, concurrentByWindow);
     if (t.failKind === 'phantom') { try { rateTask(t.id, 'phantom', 'auto: reported file writes that never landed on disk'); } catch {} }
   } catch (e) {
     // G8: if the outcome was already decided (persist() threw after the status was set), keep the decided status.

@@ -22,6 +22,9 @@ import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 import { registerWatch } from './watchdog.mjs';
 
 const offered = new Map(); // sessionId -> Set of capability names already offered in that chat
+const taskWaits = new Map(); // sessionId -> task ids currently blocking a conductor tool call
+
+export function waitingTasks(sessionId) { return [...(taskWaits.get(sessionId) || [])]; }
 
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '?');
 
@@ -94,8 +97,13 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     return Math.min(want, maxBlockMs);
   };
   const stillRunning = '\n(still running — call await_task)';
+  const trackedWait = async (taskId, promise) => {
+    const ids = taskWaits.get(sessionId) || new Set(); ids.add(taskId); taskWaits.set(sessionId, ids);
+    try { return await promise; }
+    finally { ids.delete(taskId); if (!ids.size) taskWaits.delete(sessionId); }
+  };
   const finish = async (t, minutes) => {
-    const done = await awaitTask(t.id, capWait(minutes, t));
+    const done = await trackedWait(t.id, awaitTask(t.id, capWait(minutes, t)));
     return describeTask(getTask(t.id)) + (done?.timedOut ? stillRunning : '');
   };
   return [
@@ -228,7 +236,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       name: 'await_task',
       description: 'Wait for a background task to finish and return its report.',
       schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional() }),
-      handler: async (a) => { const t = getTask(a.task_id); const r = await awaitTask(a.task_id, capWait(a.timeout_minutes, t)); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
+      handler: async (a) => { const t = getTask(a.task_id); const r = await trackedWait(a.task_id, awaitTask(a.task_id, capWait(a.timeout_minutes, t))); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
     },
     {
       name: 'task_status',

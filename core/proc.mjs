@@ -1,10 +1,96 @@
-// Process helpers: locate CLIs on PATH, spawn the Codex CLI without a shell, kill process trees.
+// Process helpers: locate/spawn CLIs, track their owners, sample process trees, and kill by PID.
 import { spawn, execFile } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { promisify } from 'node:util';
 
 const WIN = process.platform === 'win32';
 const probeChildren = new Set();
+const ownerPids = new Map();
+const execFileP = promisify(execFile);
+
+/** Associate a spawned child with a task id (or `conductor:<sessionId>`) until it exits. */
+export function registerProc(owner, child) {
+  if (!owner || !child?.pid) return child;
+  const pid = Number(child.pid);
+  const pids = ownerPids.get(owner) || new Set();
+  pids.add(pid); ownerPids.set(owner, pids);
+  const done = () => {
+    const current = ownerPids.get(owner); if (!current) return;
+    current.delete(pid); if (!current.size) ownerPids.delete(owner);
+  };
+  child.once?.('close', done); child.once?.('error', done);
+  return child;
+}
+
+export function registeredPids(owner) { return [...(ownerPids.get(owner) || [])]; }
+
+/** Agent SDK spawn hook: ChildProcess satisfies SpawnedProcess and exposes its PID to the registry. */
+export function spawnTracked(owner, { command, args, cwd, env, signal }) {
+  return registerProc(owner, spawn(command, args, { cwd, env, signal, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }));
+}
+
+const cpuTime = (text) => {
+  const raw = String(text || '').trim();
+  const dash = raw.indexOf('-');
+  const days = dash >= 0 ? Number(raw.slice(0, dash)) : 0;
+  const parts = raw.slice(dash + 1).split(':').map(Number);
+  if (!parts.length || parts.some((n) => !Number.isFinite(n))) return 0;
+  const sec = parts.pop() || 0, min = parts.pop() || 0, hours = parts.pop() || 0;
+  return days * 86400 + hours * 3600 + min * 60 + sec;
+};
+
+/** Parse the compact JSON produced by the Win32_Process probe. */
+export function parseWindowsProcesses(text) {
+  const parsed = JSON.parse(String(text || '[]') || '[]');
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return new Map(rows.flatMap((r) => {
+    const pid = Number(r.ProcessId), ppid = Number(r.ParentProcessId);
+    if (!Number.isInteger(pid) || pid <= 0) return [];
+    return [[pid, { pid, ppid: Number.isInteger(ppid) ? ppid : 0, cpuSeconds: (Number(r.KernelModeTime) + Number(r.UserModeTime)) / 10_000_000 || 0, rssBytes: Number(r.WorkingSetSize) || 0, name: String(r.Name || '') }]];
+  }));
+}
+
+/** Parse `ps -A -o pid=,ppid=,time=,rss=,comm=` output. */
+export function parsePsProcesses(text) {
+  const out = new Map();
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s+((?:\d+-)?\d+:\d{2}(?::\d{2})?)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    out.set(pid, { pid, ppid: Number(m[2]), cpuSeconds: cpuTime(m[3]), rssBytes: Number(m[4]) * 1024, name: m[5] });
+  }
+  return out;
+}
+
+/** One bounded, shell-free OS process snapshot for all watchdog owners. */
+export async function snapshotProcesses({ platform = process.platform, exec = execFileP } = {}) {
+  try {
+    if (platform === 'win32') {
+      const ps = findCli('powershell') || join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,KernelModeTime,UserModeTime,WorkingSetSize,Name | ConvertTo-Json -Compress';
+      const { stdout } = await exec(ps, ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true, timeout: 20_000, maxBuffer: 32 * 1024 * 1024 });
+      return { ok: true, processes: parseWindowsProcesses(stdout) };
+    }
+    const { stdout } = await exec('ps', ['-A', '-o', 'pid=,ppid=,time=,rss=,comm='], { encoding: 'utf8', windowsHide: true, timeout: 20_000, maxBuffer: 32 * 1024 * 1024 });
+    return { ok: true, processes: parsePsProcesses(stdout) };
+  } catch (e) { return { ok: false, processes: new Map(), error: String(e?.message || e) }; }
+}
+
+/** Sum a registered owner's live roots and descendants from one shared snapshot. */
+export function ownerProcessSample(owner, snapshot) {
+  if (!snapshot?.ok) return { available: false, alive: false, cpuSeconds: null, rssBytes: null, names: [] };
+  const roots = new Set(registeredPids(owner));
+  const owned = new Set([...roots].filter((pid) => snapshot.processes.has(pid)));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const p of snapshot.processes.values()) if (!owned.has(p.pid) && owned.has(p.ppid)) { owned.add(p.pid); changed = true; }
+  }
+  let cpuSeconds = 0, rssBytes = 0; const names = new Set();
+  for (const pid of owned) { const p = snapshot.processes.get(pid); cpuSeconds += p.cpuSeconds || 0; rssBytes += p.rssBytes || 0; if (p.name) names.add(p.name); }
+  return { available: true, alive: owned.size > 0, cpuSeconds, rssBytes, names: [...names] };
+}
 
 export function findOnPath(name) {
   const exts = WIN ? ['.cmd', '.exe', '.bat', ''] : [''];

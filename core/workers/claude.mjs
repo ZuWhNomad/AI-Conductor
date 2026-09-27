@@ -2,6 +2,7 @@
 // Anthropic Messages API natively, so local models get the full Claude Code toolset for free.
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { bus } from '../bus.mjs';
+import { spawnTracked } from '../proc.mjs';
 
 const LIMIT_RE = /usage limit|rate limit|limit reached|too many requests|\b429\b/i;
 
@@ -56,6 +57,7 @@ export async function runClaude(t) {
         additionalDirectories: t.writableRoots?.length ? t.writableRoots : undefined, // writable_roots: a sibling worktree
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         abortController: abort,
+        spawnClaudeCodeProcess: (options) => spawnTracked(t.id, options),
         hooks: KILL_GUARD_HOOKS,
         // Agent SDK supports disallowedTools; read-only drops write/edit/Bash rather than relying on plan mode.
         ...(readOnly ? { disallowedTools: ['Bash', 'Edit', 'Write', 'NotebookEdit'] } : {}),
@@ -79,6 +81,7 @@ export async function runClaude(t) {
       else if (m.type === 'result') {
         res.finalMessage = m.subtype === 'success' ? m.result : (m.errors || []).join('; ');
         res.usage = m.modelUsage || m.usage || null; res.costUsd = m.total_cost_usd || 0;
+        if (res.usage) emit('usage', { usage: res.usage });
         if (m.is_error || m.subtype !== 'success') res.error = res.error || res.finalMessage || m.subtype;
         // Only an ERROR result can mean a limit; a successful report that merely mentions "rate limit" must not park the task.
         if ((m.is_error || m.subtype !== 'success') && LIMIT_RE.test(res.finalMessage || '')) res.limitHit = true;

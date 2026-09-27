@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
+import { PassThrough } from 'node:stream';
 
 const previous = process.env.CONDUCTOR_CODEX;
 process.env.CONDUCTOR_CODEX = process.platform === 'win32' ? 'C:\\definitely\\missing\\codex.exe' : '/definitely/missing/codex';
@@ -43,6 +45,7 @@ TOKEN = "fixture-secret"
         const result = await runCodex({ cwd, prompt: 'fixture', mcp: servers });
         assert.equal(result.error, 'fixture: captured spawn');
         const overrides = argv.filter((_, i) => argv[i - 1] === '-c');
+        assert.ok(overrides.includes('background_terminal_max_timeout=3300000'));
         assert.ok(overrides.includes('mcp_servers.removed.enabled=false'));
         assert.equal(overrides.includes('mcp_servers.warehouse.enabled=false'), category === 'implement');
         assert.equal(overrides.includes('mcp_servers.warehouse.default_tools_approval_mode="approve"'), category !== 'implement');
@@ -141,4 +144,41 @@ test('writable_roots reach Codex as --add-dir and Claude as additionalDirectorie
   const claudeArgv = calls.at(-1);
   assert.notEqual(claudeArgv, argv, 'the Agent SDK spawned the claude CLI');
   assert.equal(claudeArgv[claudeArgv.indexOf('--add-dir') + 1], extra);
+});
+
+test('a transient Codex stream failure resumes the same thread once and does not loop', async (ctx) => {
+  const thread = '01a07e0a-5969-7373-b10d-a9788db15d94';
+  const calls = [], prompts = [];
+  let forceFailure = false;
+  const frames = [
+    [{ type: 'thread.started', thread_id: thread }, { type: 'turn.failed', error: { message: 'stream disconnected before completion' } }],
+    [{ type: 'thread.started', thread_id: thread }, { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'finished' } }, { type: 'turn.completed', usage: { input_tokens: 2, output_tokens: 3 } }],
+  ];
+  ctx.mock.method(childProcess, 'spawn', (_command, args) => {
+    const index = calls.length; calls.push(args);
+    const fails = forceFailure || index === 0;
+    const child = Object.assign(new EventEmitter(), { pid: 43000 + index, exitCode: null, killed: false, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill() { this.killed = true; return true; } });
+    child.stdin.on('data', (d) => prompts[index] = (prompts[index] || '') + d);
+    child.stdin.on('finish', () => queueMicrotask(() => {
+      child.stdout.end(frames[fails ? 0 : 1].map((x) => JSON.stringify(x)).join('\n') + '\n');
+      child.stderr.end();
+      child.exitCode = fails ? 1 : 0;
+      child.emit('close', child.exitCode);
+    }));
+    return child;
+  });
+  syncBuiltinESMExports();
+  ctx.after(() => { ctx.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await runCodex({ id: 'transient-task', cwd, prompt: 'start', codexHome: tmpDir('codex-transient') });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.finalMessage, 'finished');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].slice(-3), ['resume', thread, '-']);
+  assert.equal(prompts[0], 'start');
+  assert.match(prompts[1], /stream was interrupted/);
+  forceFailure = true;
+  const failed = await runCodex({ id: 'transient-twice', cwd, prompt: 'start again', codexHome: tmpDir('codex-transient-twice') });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /stream disconnected/);
+  assert.equal(calls.length, 4, 'one retry only, even when the resumed stream also fails');
 });

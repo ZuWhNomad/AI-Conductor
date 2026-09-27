@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { conductorToolDefs } from '../core/tools.mjs';
+import { conductorToolDefs, waitingTasks } from '../core/tools.mjs';
 import { createTask, getTask, cancelTask, listTasks } from '../core/tasks.mjs';
 import { abortPlans } from '../core/plans.mjs';
 import { loadConfig, saveConfig } from '../core/config.mjs';
@@ -21,7 +21,10 @@ test('L9: maxBlockMs caps blocking waits and run_plan; plan_status reads the liv
   const tools = defs({ sessionId: 'l9', cwd: dir, maxBlockMs: 1234 });
   const task = createTask({ cwd: dir, spec: 'hang', provider: 'ollama', model: 'qwen' });
   try {
-    const awaitMsg = await tools.find((d) => d.name === 'await_task').handler({ task_id: task.id });
+    const waiting = tools.find((d) => d.name === 'await_task').handler({ task_id: task.id });
+    assert.deepEqual(waitingTasks('l9'), [task.id]);
+    const awaitMsg = await waiting;
+    assert.deepEqual(waitingTasks('l9'), []);
     assert.match(awaitMsg, /still running — call await_task/);
     assert.equal(waits.pop(), 1234);
     const del = await tools.find((d) => d.name === 'delegate').handler({ title: 'hang', spec: 'hang', provider: 'ollama', model: 'qwen' });

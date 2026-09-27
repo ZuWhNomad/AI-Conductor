@@ -17,6 +17,7 @@ import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { runCodex } from './workers/codex.mjs';
 import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
+import { spawnTracked } from './proc.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel } from './models.mjs';
 
@@ -55,7 +56,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -186,6 +187,40 @@ export function recordWatchdogCheckIn(sessionId, watchdog) {
   return true;
 }
 
+/** Repeat pending permission cards so a waiting-owner verdict is visible again. */
+export function resurfacePermissions(sessionId) {
+  const s = sessions.get(sessionId); if (!s?.pending?.size) return false;
+  for (const { request } of s.pending.values()) emit(s, 'permission', { request });
+  return true;
+}
+
+/** A single corrective message for a repeated Claude loop; other runtimes cannot accept mid-turn input. */
+export function nudgeRunaway(sessionId, text) {
+  const s = sessions.get(sessionId);
+  if (!s || s.status !== 'running' || s.runtime !== 'claude' || !s.inbox) return false;
+  const message = String(text || '[watchdog] Repeated progress without a tool call was detected. Call the necessary tool now or finish with a concrete result.');
+  pushMessage(s, { role: 'watchdog', text: message });
+  s.inbox.push({ type: 'user', message: { role: 'user', content: message }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
+  return true;
+}
+
+/** On boot, report every interrupted turn and resume a durable Claude/Codex thread once. */
+export async function resumeInterruptedTurns() {
+  const resumed = [];
+  for (const s of sessions.values()) {
+    if (!s.turn) continue;
+    await ensureHistory(s);
+    const turn = s.turn; s.turn = null;
+    const note = `Conductor restarted during your turn (started ${turn.startedAt}). Continue from the current state of the files; do not redo finished work.`;
+    pushMessage(s, { role: 'watchdog', text: note });
+    const resumable = s.runtime === 'claude' ? !!s.sdkSessionId : s.runtime === 'codex' ? !!s.threadId : false;
+    persistAll();
+    writeJson(HIST(s.id, 'messages'), s.messages);
+    if (resumable) { await sendMessage(s.id, note); resumed.push(s.id); }
+  }
+  return resumed;
+}
+
 // ---------------------------------------------------------------- claude runtime
 function start(s) {
   const abort = new AbortController();
@@ -210,6 +245,7 @@ function start(s) {
       settingSources: ['user', 'project', 'local'],
       resume: s.sdkSessionId || undefined,
       abortController: abort,
+      spawnClaudeCodeProcess: (options) => spawnTracked(`conductor:${s.id}`, options),
       hooks: KILL_GUARD_HOOKS,
       maxTurns: loadConfig().conductor.maxTurns,
       title: s.title !== 'New chat' ? s.title : undefined,
@@ -256,7 +292,7 @@ async function pump(s, q) {
         } else if (e.type === 'content_block_stop') { streaming = null; }
       } else if (m.type === 'assistant') {
         const blocks = (m.message.content || []).map((b) => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input } : b.type === 'thinking' ? { type: 'thinking', text: b.thinking || '' } : { type: b.type });
-        const msg = { role: 'assistant', blocks, parent: m.parent_tool_use_id, error: m.error || null, subagent: m.subagent_type || null };
+        const msg = { role: 'assistant', blocks, parent: m.parent_tool_use_id, error: m.error || null, subagent: m.subagent_type || null, usage: m.message?.usage || null };
         pushMessage(s, msg); emit(s, 'assistant', msg);
         if (m.error) logImprovement('error', 'conductor', `assistant error: ${m.error}`, { sessionId: s.id });
       } else if (m.type === 'user') {
@@ -272,10 +308,10 @@ async function pump(s, q) {
         }
       } else if (m.type === 'result') {
         const more = (m.queued_turn_count || 0) > 0;
-        if (!more) s.status = 'idle';
+        if (!more) { s.status = 'idle'; s.turn = null; }
         s.costUsd = m.total_cost_usd || s.costUsd; s.updatedAt = nowIso(); persistAll();
         const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' && !m.is_error ? '' : (m.errors?.length ? m.errors : [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
-        if (s.interrupted) { s.interrupted = false; msg.subtype = 'interrupted'; msg.text = 'interrupted by user'; }
+        if (s.interrupted) { msg.subtype = 'interrupted'; msg.text = s.interrupted; s.interrupted = false; }
         pushMessage(s, msg); emit(s, 'result', msg); emit(s, 'status', { status: s.status });
         if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text || m.subtype}`, { sessionId: s.id });
         if (s.restartPending && !more) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
@@ -335,7 +371,8 @@ function turnEventMapper(s) {
   const say = (blocks) => { const msg = { role: 'assistant', blocks }; pushMessage(s, msg); emit(s, 'assistant', msg); };
   const result = (toolUseId, isError, text) => { const msg = { role: 'tool_result', toolUseId, isError: !!isError, text: String(text ?? '').slice(0, 4000) }; pushMessage(s, msg); emit(s, 'tool_result', msg); };
   return (event, data) => {
-    if (event === 'item' && data.item) {
+    if (event === 'thread' && data.threadId) { s.threadId = data.threadId; s.updatedAt = nowIso(); persistAll(); }
+    else if (event === 'item' && data.item) {
       const it = data.item; const done = data.phase === 'completed';
       if (it.type === 'agent_message') { if (done && it.text) say([{ type: 'text', text: it.text }]); }
       else if (it.type === 'reasoning') { /* not shown */ }
@@ -387,18 +424,21 @@ async function runTurn(s, text) {
     }
     // Loop runtimes already record 429s via the http_rate event (with retry-after); only Codex needs an explicit note.
     if (r.limitHit && s.runtime === 'codex') bus.publish('rate_limit', { provider: s.provider, info: { status: 'rejected', rateLimitType: 'codex', resetsAt: r.retryAfterMs ? (Date.now() + r.retryAfterMs) / 1000 : undefined } });
-    const msg = { role: 'result', subtype: r.ok ? 'success' : 'error', isError: !r.ok, text: r.ok ? '' : (r.error || 'turn failed'), costUsd: 0, durationMs: Date.now() - t0, numTurns: 1, usage: r.usage ? { [s.model || s.provider]: { inputTokens: r.usage.input_tokens, outputTokens: r.usage.output_tokens, cacheReadInputTokens: r.usage.cached_input_tokens || 0 } } : null };
+    const interrupted = ac.signal.aborted && s.interrupted;
+    const msg = { role: 'result', subtype: interrupted ? 'interrupted' : r.ok ? 'success' : 'error', isError: !r.ok, text: interrupted || (r.ok ? '' : (r.error || 'turn failed')), costUsd: 0, durationMs: Date.now() - t0, numTurns: 1, usage: r.usage ? { [s.model || s.provider]: { inputTokens: r.usage.input_tokens, outputTokens: r.usage.output_tokens, cacheReadInputTokens: r.usage.cached_input_tokens || 0 } } : null };
+    if (interrupted) s.interrupted = false;
     if (sessions.has(s.id)) { pushMessage(s, msg); emit(s, 'result', msg); }
     if (!r.ok && !ac.signal.aborted) logImprovement('error', `conductor:${s.runtime}`, `turn failed: ${r.error}`, { sessionId: s.id, model: s.model });
   } catch (e) {
     const m = String(e?.message || e);
     if (!ac.signal.aborted && sessions.has(s.id)) { emit(s, 'error', { message: m }); logImprovement('error', `conductor:${s.runtime}`, m, { sessionId: s.id }); }
-    const msg = { role: 'result', subtype: 'error', isError: true, text: ac.signal.aborted ? 'interrupted' : m, durationMs: Date.now() - t0, numTurns: 1 };
+    const msg = { role: 'result', subtype: ac.signal.aborted ? 'interrupted' : 'error', isError: true, text: ac.signal.aborted ? (s.interrupted || 'interrupted') : m, durationMs: Date.now() - t0, numTurns: 1 };
+    if (ac.signal.aborted) s.interrupted = false;
     if (sessions.has(s.id)) { pushMessage(s, msg); emit(s, 'result', msg); }
   } finally {
     // E9: if the session was deleted mid-turn (mine() is false because stop() cleared turnAbort),
     // do not rewrite history files or emit events for the deleted id.
-    if (mine()) { s.turnAbort = null; s.status = 'idle'; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' }); }
+    if (mine()) { s.turnAbort = null; s.turn = null; s.status = 'idle'; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' }); }
     if (sessions.has(s.id)) writeJson(HIST(s.id, 'messages'), s.messages);
   }
 }
@@ -411,7 +451,7 @@ export async function sendMessage(sessionId, text) {
   if (s.runtime === 'claude' && !s.query) start(s);
   const autoTitle = s.title === 'New chat';
   if (autoTitle) s.title = text.trim().slice(0, 60) || 'New chat';
-  if (s.status !== 'running') s.interrupted = false;
+  if (s.status !== 'running') { s.interrupted = false; s.turn = { startedAt: nowIso(), text: String(text) }; }
   s.status = 'running'; s.updatedAt = nowIso(); persistAll();
   if (autoTitle) emit(s, 'updated', { session: publicSession(s) }); // U7: persist then emit, same as setTitle
   const msg = { role: 'user', text };
@@ -422,12 +462,12 @@ export async function sendMessage(sessionId, text) {
   return publicSession(s);
 }
 
-export async function interrupt(sessionId) {
+export async function interrupt(sessionId, reason = 'interrupted by user') {
   const s = sessions.get(sessionId); if (!s) return false;
   abortPlans(sessionId); // X3: Stop also stops the chat's run_plan stages
-  if (s.runtime !== 'claude') { s.turnAbort?.abort(); return !!s.turnAbort; }
+  if (s.runtime !== 'claude') { s.interrupted = reason; s.turnAbort?.abort(); return !!s.turnAbort; }
   if (!s.query || s.status !== 'running') return false;
-  s.interrupted = true; // the SDK reports an interrupt as an error result; label it instead of logging it
+  s.interrupted = reason; // the SDK reports an interrupt as an error result; label it instead of logging it
   try { await s.query.interrupt(); } catch (e) { s.interrupted = false; emit(s, 'error', { message: `interrupt failed: ${e.message}` }); }
   return true;
 }

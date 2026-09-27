@@ -14,6 +14,10 @@ writeJson(join(HOME, 'sessions.json'), [{
   id: 'restored-l5', cwd: HOME, title: 'l5', provider: 'codex', runtime: 'codex',
   model: 'gpt-6-astra', effort: 'low', permissionMode: 'acceptEdits',
   createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z',
+}, {
+  id: 'restored-resume', cwd: HOME, title: 'resume', provider: 'codex', runtime: 'codex', threadId: 'thread-before-restart',
+  model: 'gpt-6-astra', effort: 'low', permissionMode: 'acceptEdits', turn: { startedAt: '2026-09-27T12:00:00.000Z', text: 'unfinished request' },
+  createdAt: '2026-09-27T12:00:00.000Z', updatedAt: '2026-09-27T12:00:00.000Z',
 }]);
 writeJson(join(HOME, 'history', 'restored-l5.messages.json'), [
   { ts: 1, role: 'user', text: 'prior turn' },
@@ -77,7 +81,7 @@ registerHooks({
   },
 });
 
-const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, runOnce, shutdownSessions, reloadSessions, answerPermission, PROMPT } = await import('../core/conductor.mjs');
+const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels } = await import('../core/models.mjs');
 
@@ -94,7 +98,7 @@ function onceSession(id, kind) {
 }
 
 afterEach(() => {
-  for (const s of listSessions()) if (s.id !== 'restored-e12' && s.id !== 'restored-l5') deleteSession(s.id);
+  for (const s of listSessions()) if (!['restored-e12', 'restored-l5', 'restored-resume'].includes(s.id)) deleteSession(s.id);
   for (const g of globalThis.__claudeGates || []) try { g.resolve(); } catch {}
   globalThis.__claudeGates = [];
   globalThis.__claudeInbox = [];
@@ -117,6 +121,18 @@ test('a Codex conductor turn with timeout zero receives no timeoutMs', async () 
   assert.equal(Object.hasOwn(globalThis.__lastCodexInput, 'timeoutMs'), false);
 });
 
+test('an interrupted persisted Codex turn resumes its thread once and records the restart note', async () => {
+  const done = onceSession('restored-resume', 'result');
+  assert.deepEqual(await resumeInterruptedTurns(), ['restored-resume']);
+  await done;
+  assert.equal(globalThis.__lastCodexInput.resumeThreadId, 'thread-before-restart');
+  assert.match(globalThis.__lastCodexInput.prompt, /Conductor restarted during your turn/);
+  const live = await getSession('restored-resume');
+  assert.equal(live.turn, null);
+  assert.ok(live.messages.some((m) => m.role === 'watchdog' && /do not redo finished work/.test(m.text)));
+  assert.deepEqual(await resumeInterruptedTurns(), [], 'the persisted marker is cleared before resuming');
+});
+
 test('queued Claude message keeps the session running so setEffort does not drop it', async () => {
   const g1 = Promise.withResolvers(), g2 = Promise.withResolvers();
   globalThis.__claudeGates = [g1, g2];
@@ -133,6 +149,20 @@ test('queued Claude message keeps the session running so setEffort does not drop
   await result2;
   const live = await getSession(s.id);
   assert.equal(live.messages.filter((m) => m.role === 'user').length, 2);
+});
+
+test('a runaway nudge is queued once into a live Claude session', async () => {
+  const g1 = Promise.withResolvers(), g2 = Promise.withResolvers();
+  globalThis.__claudeGates = [g1, g2];
+  const s = createSession({ cwd: tmpDir('runaway-nudge') });
+  const first = onceSession(s.id, 'result');
+  await sendMessage(s.id, 'work');
+  assert.equal(nudgeRunaway(s.id, 'use a tool or finish'), true);
+  g1.resolve(); await first;
+  const second = onceSession(s.id, 'result');
+  g2.resolve(); await second;
+  assert.equal(globalThis.__claudeInbox.length, 2);
+  assert.equal(globalThis.__claudeInbox[1].message.content, 'use a tool or finish');
 });
 
 test('a Claude query that ends without a result does not leave the session running', async () => {

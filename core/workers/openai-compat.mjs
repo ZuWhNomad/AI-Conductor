@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
 import { bus } from '../bus.mjs';
-import { killTree } from '../proc.mjs';
+import { killTree, registerProc } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
 import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
 
@@ -297,7 +297,7 @@ function runTimeoutMs(timeout_s, deadline) {
   return ms;
 }
 
-async function makeTools(cwd, signal, deadline) {
+async function makeTools(cwd, signal, deadline, owner) {
   const root = await realpath(cwd);
   const safe = (p, opts) => safePath(cwd, root, p, opts);
   return {
@@ -327,7 +327,7 @@ async function makeTools(cwd, signal, deadline) {
       // false disables host execution; an array filters command names, without sandboxing the allowed programs.
       const deny = shellDenied(loadConfig().worker?.shell, command);
       if (deny) return res(deny);
-      const child = spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv() });
+      const child = registerProc(owner, spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv() }));
       let out = ''; let err = ''; let why = '';
       const cap = (s) => (s.length > 40000 ? s.slice(-40000) : s);
       child.stdout.on('data', (d) => { out = cap(out + d); });
@@ -355,7 +355,7 @@ export async function runOpenAICompat(t) {
   const started = Date.now();
   const deadline = t.timeoutMs ? started + t.timeoutMs : Infinity;
   const impl = {
-    ...await makeTools(t.cwd, t.signal, deadline),
+    ...await makeTools(t.cwd, t.signal, deadline, t.id),
     ...Object.fromEntries((t.extraTools || []).map((x) => [x.def.name, (args) => raceAbort(Promise.resolve().then(() => x.impl(args)), t.signal)])),
   };
   // read-only (a review): no write, edit or run tool at all, so a reviewer on these models cannot change the repo.
@@ -409,7 +409,10 @@ export async function runOpenAICompat(t) {
       if (r.status === 401) res.authFailed = true; // a bad or revoked key: the environment, not the model
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 500)}`);
       const j = await r.json();
-      if (j.usage) { res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); res.usage.reasoning_output_tokens = (res.usage.reasoning_output_tokens || 0) + (j.usage.completion_tokens_details?.reasoning_tokens || 0); }
+      if (j.usage) {
+        res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); res.usage.reasoning_output_tokens = (res.usage.reasoning_output_tokens || 0) + (j.usage.completion_tokens_details?.reasoning_tokens || 0);
+        emit('usage', { usage: { ...res.usage } });
+      }
       const msg = j.choices?.[0]?.message;
       if (!msg) throw new Error('empty completion');
       messages.push(msg);
