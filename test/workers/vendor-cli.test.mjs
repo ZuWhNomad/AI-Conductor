@@ -511,6 +511,7 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
     const tracked = fs.readFileSync('tracked.txt', 'utf8').trim();
     const hasUntracked = fs.existsSync('untracked.txt');
     fs.writeFileSync('stray.txt', 'stray file content');
+    fs.writeFileSync('tracked.txt', 'mutated in snapshot');
     console.log(JSON.stringify({
       event: 'result',
       result: {
@@ -538,15 +539,18 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
   // Ran in snapshot directory, not original repo
   assert.notEqual(seenCwd, cwd);
   assert.equal(seenSandbox, undefined, 'runs in normal (non-plan) mode in snapshot');
-  assert.match(seenPrompt, /Note: This task is running in a disposable snapshot/);
+  assert.match(seenPrompt, /You are working in a disposable snapshot/);
+  assert.match(seenPrompt, /report paths relative to the project root/);
+  assert.match(seenPrompt, /Do not read or write the original directory/);
   assert.match(seenPrompt, /audit code/);
 
   // Observed tracked changes inside snapshot, but untracked files are not in snapshot
   assert.match(r.finalMessage, /tracked=v2-dirty/);
   assert.match(r.finalMessage, /untracked=false/);
 
-  // Stray files are listed in the final report
-  assert.match(r.finalMessage, /Stray files in snapshot: stray\.txt/);
+  // Stray files (both newly created and modified tracked) are listed in the final report
+  assert.match(r.finalMessage, /Stray files in snapshot:.*stray\.txt/);
+  assert.match(r.finalMessage, /Stray files in snapshot:.*tracked\.txt/);
 
   // Project itself is untouched: stray.txt does NOT exist in original cwd, and dirty tracked file is preserved
   assert.equal(existsSync(join(cwd, 'stray.txt')), false);
