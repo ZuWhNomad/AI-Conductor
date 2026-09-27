@@ -15,7 +15,7 @@ import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, touchTaskAlive, markTaskWakeReported, failHungTask } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
@@ -138,6 +138,7 @@ let lastActivity = Date.now();
 bus.on('event', (ev) => { if (ev.type === 'task') lastActivity = Date.now(); });
 /** Pure: may the server restart itself now? */
 export const isIdle = ({ runningSessions, openTasks, lastActivity, now = Date.now(), quietMs }) => runningSessions === 0 && openTasks === 0 && now - lastActivity >= quietMs;
+export const taskBusyCount = (tasks) => tasks.filter((t) => t.status === 'running' || t.status === 'queued').length;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
@@ -197,9 +198,13 @@ async function route(req, res, url) {
 
   if (m === 'GET' && p === '/api/state') {
     const imps = listImprovements();
-    const active = openTasks().map(taskSummary);
+    const open = openTasks();
+    const active = open.map(taskSummary);
     const activeIds = new Set(active.map((t) => t.id));
-    const tasks = [...active, ...listTasks({ limit: 50 }).filter((t) => !activeIds.has(t.id))];
+    const visible = new Map(active.map((t) => [t.id, t]));
+    for (const t of listTasks({ limit: Infinity })) if (t.status === 'stale') visible.set(t.id, t);
+    for (const t of listTasks({ limit: 50 })) if (!activeIds.has(t.id)) visible.set(t.id, t);
+    const tasks = [...visible.values()];
     return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks, improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
   }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
@@ -300,6 +305,15 @@ async function route(req, res, url) {
       return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, isolate: b.isolate, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover, avoidFamilies: b.avoidFamilies, parallelOverride: b.parallelOverride == null ? !!flags.parallelOverride : !!b.parallelOverride, overflowApi: b.overflowApi == null ? !!flags.overflowApi : !!b.overflowApi })));
     }
     if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
+    if (m === 'POST' && seg[3] === 'rerun') {
+      const t = getTask(seg[2]);
+      if (!t) return json(res, 404, { error: 'unknown task' });
+      if (t.status !== 'stale') return json(res, 409, { error: 'task is not stale' });
+      const rerun = rerunTask(t.id);
+      if (!rerun) return json(res, 409, { error: 'task is not stale' });
+      schedule();
+      return json(res, 200, { ok: true, task: publicTask(rerun) });
+    }
     if (m === 'POST' && seg[3] === 'cancel') { const r = cancelChain(seg[2]); return r ? json(res, 200, { ok: r.canceled.length > 0, canceled: r.canceled, already: r.already }) : json(res, 404, { error: 'unknown task' }); }
   }
 
@@ -509,7 +523,7 @@ let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch
 function workInFlight() {
   try {
     if (conductor.listSessions().some((s) => s.status === 'running')) return true;
-    if (openTasks().length) return true;
+    if (taskBusyCount(openTasks())) return true;
     return false;
   } catch { return true; }
 }
@@ -537,7 +551,7 @@ function startUpdateChecks({ initial = true } = {}) {
     try {
       return isIdle({
         runningSessions: conductor.listSessions().filter((s) => s.status === 'running').length,
-        openTasks: openTasks().length,
+        openTasks: taskBusyCount(openTasks()),
         lastActivity, quietMs: loadConfig().conductor.updateQuietMinutes * 60_000,
       });
     } catch { return false; } // can't tell → defer rather than risk interrupting work
@@ -631,10 +645,12 @@ export function startServer({ port = null } = {}) {
       settled = true;
       boundPort = server.address().port;
       // The outgoing process could finish tasks after our import, before releasing the port.
-      if (process.env.CONDUCTOR_RELAUNCH_WAIT) {
-        recoverTasks();
-        try { conductor.reloadSessions?.(); } catch {}
+      const recovered = recoverTasks();
+      if (recovered.resumed || recovered.parkedKept || recovered.stale || recovered.smokeCanceled) {
+        const parked = `${recovered.parkedKept} parked kept${recovered.earliestParked ? ` (earliest ${recovered.earliestParked})` : ''}`;
+        logImprovement('friction', 'restart', `restart: ${recovered.resumed} resumed, ${parked}, ${recovered.stale} stale, ${recovered.smokeCanceled} smoke canceled`, recovered);
       }
+      if (process.env.CONDUCTOR_RELAUNCH_WAIT) { try { conductor.reloadSessions?.(); } catch {} }
       delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);

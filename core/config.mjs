@@ -35,6 +35,7 @@ export const DEFAULTS = {
     model: 'gpt-6-astra',
     effort: 'medium',
     efficiencyMode: false,             // on a confirmed usage limit, wait for this model's reset instead of failing over
+    resumeStaggerSeconds: 15,           // spacing between tasks resumed after a server restart; 0 disables staggering
     tasksInMemory: 500,               // newest terminal task records retained alongside all open tasks; older records stay on disk
     recipeChars: 10000,               // log recipes over this character budget (the full recipe is still appended). Headroom over the longest shipped recipe (image-to-3d-model.b.md, 9443 chars on 2026-09-25).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
@@ -264,6 +265,7 @@ function normalize(cfg, raw = {}) {
   }
   if (!Number.isInteger(cfg.worker.escalationRounds) || cfg.worker.escalationRounds < 0) cfg.worker.escalationRounds = DEFAULTS.worker.escalationRounds; // 0 allowed (disable escalation), negatives/non-integers reset
   if (typeof cfg.worker.escalateEffortFirst !== 'boolean') cfg.worker.escalateEffortFirst = DEFAULTS.worker.escalateEffortFirst;
+  if (!Number.isInteger(cfg.worker.resumeStaggerSeconds) || cfg.worker.resumeStaggerSeconds < 0 || cfg.worker.resumeStaggerSeconds > 600) cfg.worker.resumeStaggerSeconds = DEFAULTS.worker.resumeStaggerSeconds;
   if (!Number.isFinite(cfg.worker.toolResultLowWater) || cfg.worker.toolResultLowWater < 0 || cfg.worker.toolResultLowWater >= 1) cfg.worker.toolResultLowWater = DEFAULTS.worker.toolResultLowWater;
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch

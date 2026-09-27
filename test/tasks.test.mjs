@@ -259,18 +259,27 @@ test('follow-up errors carry client status codes', () => {
 });
 
 test('graceful shutdown requeues in-flight tasks instead of failing them', async (ctx) => {
-  mockCompletions(ctx, async (_url, { signal }) => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }));
+  let diskAtAbort; const entered = Promise.withResolvers();
+  mockCompletions(ctx, async (_url, { signal }) => { entered.resolve(); return new Promise((_resolve, reject) => { signal.addEventListener('abort', () => {
+    diskAtAbort = JSON.parse(readFileSync(join(HOME, 'tasks', `${t.id}.json`), 'utf8'));
+    reject(new Error('aborted'));
+  }, { once: true }); }); });
   const t = createTask({ cwd: tmpDir('requeue'), provider: 'deepseek' });
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   try {
     schedule();
-    await new Promise((r) => setTimeout(r, 30));
+    await entered.promise;
     assert.equal(getTask(t.id).status, 'running');
     abortRunning({ requeue: true });
+    assert.equal(diskAtAbort.status, 'queued', 'the journal transition is durable before abort is signaled');
+    assert.equal(diskAtAbort.resume, true);
+    assert.ok(diskAtAbort.interruptedAt);
     await new Promise((r) => setTimeout(r, 100));
     const after = getTask(t.id);
     assert.equal(after.status, 'queued');
     assert.equal(after.resume, true);
+    assert.ok(after.interruptedAt);
+    assert.equal(after.recoveries, undefined, 'graceful requeue does not count as a crash recovery');
     assert.match(after.error, /shutdown/);
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); cancelTask(t.id); }
 });
@@ -1036,6 +1045,19 @@ test('a worker run with timeout zero receives no timeoutMs', async (ctx) => {
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; saveConfig({ worker: previous }); }
 });
 
+test('recoveries reset when a worker run finishes', async (ctx) => {
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'done' }));
+  const t = tk.createTask({ cwd: tmpDir('recoveries-finish'), provider: 'codex' }, { dispatch: false });
+  t.recoveries = 2;
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    tk.schedule();
+    assert.equal((await tk.awaitTask(t.id, 5000)).status, 'done');
+    assert.equal(t.recoveries, 0);
+    await tk.flushRecords();
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; tk.cancelTask(t.id); }
+});
+
 test('a success that started before a confirmed hit cannot clear it', async (ctx) => {
   const { getLimits, modelBlockedUntil, noteLimitHit } = await import('../core/limits.mjs');
   const provider = 'stale-success-limit', model = 'shared-model', reset = Date.now() + 60_000;
@@ -1438,14 +1460,39 @@ test('L52: describeTask uses all counted actions including MCP calls beyond the 
   assert.match(describeTask(t), /Actions: 41 commands\/tool calls/);
 });
 
-test('I9: openTasks returns every non-terminal state without the list limit', () => {
+test('I9: openTasks returns every open state except restart-stale tasks without the list limit', () => {
   const cwd = tmpDir('open-tasks');
-  const batch = ['queued', 'running', 'parked', 'done', 'failed', 'canceled'].map((status) => {
+  const batch = ['queued', 'running', 'parked', 'stale', 'done', 'failed', 'canceled'].map((status) => {
     const t = createTask({ cwd }); t.status = status; return t;
   });
   try {
     assert.deepEqual(openTasks().filter((t) => t.cwd === cwd).map((t) => t.status), ['queued', 'running', 'parked']);
   } finally { for (const t of batch) cancelTask(t.id); }
+});
+
+test('stale tasks return immediately from awaitTask and never enter the scheduler', async (ctx) => {
+  let calls = 0;
+  const tk = await tasksWithWorker(ctx, async () => { calls++; return { ok: true, finalMessage: 'done' }; });
+  const t = tk.createTask({ cwd: tmpDir('stale-task'), spec: 'wait' }, { dispatch: false });
+  t.status = 'stale'; t.recoveries = 2;
+  assert.equal(tk.openTasks().some((task) => task.id === t.id), false);
+  assert.equal(tk.openTaskCount(), 0);
+  const result = await tk.awaitTask(t.id, 60_000);
+  assert.equal(result.status, 'stale');
+  assert.equal(result.timedOut, undefined);
+  assert.match(tk.describeTask(t), /Stale: interrupted by 2 restarts in a row\. Ask the user to Re-run or Discard it\./);
+  const previous = process.env.CONDUCTOR_NO_SCHEDULE;
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    tk.schedule();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 0);
+    assert.equal(t.status, 'stale');
+  } finally {
+    if (previous === undefined) delete process.env.CONDUCTOR_NO_SCHEDULE;
+    else process.env.CONDUCTOR_NO_SCHEDULE = previous;
+    tk.cancelTask(t.id);
+  }
 });
 
 for (const scenario of [

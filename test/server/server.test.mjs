@@ -37,7 +37,15 @@ for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'exe
 }
 syncBuiltinESMExports();
 
-const { startServer, lagVerdict, doctorReport, isIdle } = await import('../../server/index.mjs');
+const { statePath, writeJson } = await import('../../core/paths.mjs');
+const bootRecoveryId = 'server-boot-recovery';
+writeJson(join(statePath('tasks'), `${bootRecoveryId}.json`), {
+  id: bootRecoveryId, cwd: tmpDir('server-boot'), title: 'boot recovery', spec: 'resume safely', provider: 'codex', attempts: 1,
+  status: 'running', createdAt: new Date(Date.now() - 1000).toISOString(), updatedAt: new Date().toISOString(),
+});
+const { getTask, cancelTask } = await import('../../core/tasks.mjs');
+assert.equal(getTask(bootRecoveryId).status, 'running', 'module import loads without restart transitions');
+const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
 const { CATEGORIES } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
@@ -56,6 +64,16 @@ after(async () => {
 
 const get = (p) => fetch(url + p).then((r) => r.json());
 const post = (p, b) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then((r) => r.json());
+
+test('server start recovers a running journal task after binding', async () => {
+  const task = getTask(bootRecoveryId);
+  assert.equal(task.status, 'queued');
+  assert.equal(task.resume, true);
+  assert.equal(task.recoveries, 1);
+  const { listImprovements } = await import('../../core/improve.mjs');
+  assert.ok(listImprovements().some((e) => e.source === 'restart' && e.message.startsWith('restart: 1 resumed,')));
+  cancelTask(bootRecoveryId);
+});
 
 test('static UI and state endpoint', async () => {
   const html = await fetch(url + '/').then((r) => r.text());
@@ -270,11 +288,15 @@ test('doctor price check normalizes the [1m] model suffix before config lookup',
   } finally { saveConfig({ scorecard: { prices } }); }
 });
 
-test('auto-update idle gate: empty is not enough, it must also have been quiet', () => {
+test('auto-update idle gate ignores parked and stale tasks, but counts running and queued work', () => {
   const now = 1_000_000, quietMs = 15 * 60_000;
+  const openTasks = taskBusyCount([{ status: 'parked' }, { status: 'stale' }]);
+  assert.equal(openTasks, 0);
   assert.equal(isIdle({ runningSessions: 0, openTasks: 0, lastActivity: now - 60_000, now, quietMs }), false);   // a driver posted a minute ago
   assert.equal(isIdle({ runningSessions: 0, openTasks: 0, lastActivity: now - quietMs, now, quietMs }), true);
   assert.equal(isIdle({ runningSessions: 1, openTasks: 0, lastActivity: now - quietMs * 2, now, quietMs }), false);
+  assert.equal(taskBusyCount([{ status: 'queued' }, { status: 'running' }, { status: 'parked' }, { status: 'stale' }]), 2);
+  assert.equal(isIdle({ runningSessions: 0, openTasks, lastActivity: now - quietMs * 2, now, quietMs }), true);
   assert.equal(isIdle({ runningSessions: 0, openTasks: 2, lastActivity: now - quietMs * 2, now, quietMs }), false);
 });
 
@@ -358,7 +380,7 @@ test('changing the update cadence preserves startup and busy rechecks; off cance
   const context = {
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-    conductor: { listSessions: () => [{ status: 'running' }] }, openTasks: () => [], lastActivity: Date.now(), isIdle,
+    conductor: { listSessions: () => [{ status: 'running' }] }, openTasks: () => [], taskBusyCount, lastActivity: Date.now(), isIdle,
     checkForUpdates: async () => ({ git: true, behind: 1 }), lastUpdateStatus: () => ({ git: true, behind: 1 }), logImprovement() {},
   };
   runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
@@ -388,7 +410,7 @@ test('auto-update defers relaunch when work starts during applyUpdate, then rela
   const context = {
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-    conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, openTasks: () => [], lastActivity: 0, isIdle,
+    conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, openTasks: () => [], taskBusyCount, lastActivity: 0, isIdle,
     checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
     lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
     applyUpdate: () => {
@@ -430,7 +452,7 @@ test('stopped update checks do not pull or relaunch from an in-flight run', asyn
     const context = {
       loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
       clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
-      conductor: { listSessions: () => [] }, openTasks: () => [], lastActivity: 0, isIdle,
+      conductor: { listSessions: () => [] }, openTasks: () => [], taskBusyCount, lastActivity: 0, isIdle,
       lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
       bus: { publish() {} },
       ...extra,
@@ -596,6 +618,8 @@ test('state includes old open tasks as well as the newest 50 without duplicates'
   const cwd = tmpDir('state-tasks');
   const old = createTask({ cwd, spec: 'still open' }, { dispatch: false });
   old.createdAt = '2020-01-01T00:00:00.000Z';
+  const stale = createTask({ cwd, spec: 'needs a decision' }, { dispatch: false });
+  stale.status = 'stale'; stale.createdAt = '2019-01-01T00:00:00.000Z';
   const recent = [];
   for (let i = 0; i < 50; i++) {
     const task = createTask({ cwd, spec: `recent ${i}` }, { dispatch: false });
@@ -605,8 +629,34 @@ test('state includes old open tasks as well as the newest 50 without duplicates'
   try {
     const tasks = (await get('/api/state')).tasks;
     assert.equal(tasks.filter((t) => t.id === old.id).length, 1);
+    assert.equal(tasks.filter((t) => t.id === stale.id).length, 1, 'stale tasks stay visible even outside the newest 50');
     for (const id of recent) assert.ok(tasks.some((t) => t.id === id));
     assert.equal(new Set(tasks.map((t) => t.id)).size, tasks.length);
     assert.ok(tasks.findIndex((t) => t.id === old.id) < tasks.findIndex((t) => t.id === recent[0]));
-  } finally { cancelTask(old.id); }
+  } finally { cancelTask(old.id); cancelTask(stale.id); }
+});
+
+test('stale tasks rerun with a cleared crash guard and can be discarded through cancel', async () => {
+  const { createTask, getTask } = await import('../../core/tasks.mjs');
+  const cwd = tmpDir('stale-routes');
+  const stale = createTask({ cwd, spec: 'recover me' }, { dispatch: false });
+  stale.status = 'stale'; stale.recoveries = 2; stale.error = 'interrupted by 2 restarts in a row; Re-run or Discard';
+  const live = createTask({ cwd, spec: 'not stale' }, { dispatch: false });
+  const conflict = await fetch(url + `/api/tasks/${live.id}/rerun`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(conflict.status, 409);
+  assert.equal((await fetch(url + '/api/tasks/unknown-rerun/rerun', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
+  const rerun = await post(`/api/tasks/${stale.id}/rerun`);
+  assert.equal(rerun.ok, true);
+  assert.equal(rerun.task.status, 'queued');
+  assert.equal(rerun.task.resume, true);
+  assert.equal(rerun.task.recoveries, 0);
+  assert.equal(getTask(stale.id).status, 'queued');
+
+  const discard = createTask({ cwd, spec: 'discard me' }, { dispatch: false });
+  discard.status = 'stale'; discard.recoveries = 2;
+  const canceled = await post(`/api/tasks/${discard.id}/cancel`);
+  assert.deepEqual(canceled.canceled, [discard.id]);
+  assert.equal(getTask(discard.id).status, 'canceled');
+  await post(`/api/tasks/${rerun.task.id}/cancel`);
+  await post(`/api/tasks/${live.id}/cancel`);
 });

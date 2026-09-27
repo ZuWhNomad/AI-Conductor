@@ -203,7 +203,7 @@ test('relaunch refreshes the outgoing journal after binding without replaying co
     process.env.CONDUCTOR_RELAUNCH_WAIT = '20000'; // production handover allowance
     const { getTask, recoverTasks, awaitTask, flushRecords } = await import('./core/tasks.mjs');
     const { startServer, stopBackgroundWork } = await import('./server/index.mjs');
-    for (const id of ['completed', 'canceled', 'interrupted', 'shutdown', 'aged']) assert.equal(getTask(id).status, 'queued');
+    for (const id of ['completed', 'canceled', 'interrupted', 'shutdown', 'aged']) assert.equal(getTask(id).status, 'running', 'import must only load journal state');
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     const starting = startServer({ port: 0 });
     assert.ok(existsSync(join(home, 'relaunch-ok')));
@@ -211,24 +211,24 @@ test('relaunch refreshes the outgoing journal after binding without replaying co
     write({ ...fixture('completed'), status: 'done', result: { finalMessage: 'Outgoing result' } });
     write({ ...fixture('canceled'), status: 'canceled' });
     write({ ...fixture('shutdown'), status: 'queued', resume: true });
-    // Six hours is the configured default recovery age; make the final record older than it.
+    // Make this record old to prove age alone does not cancel durable work.
     write({ ...fixture('aged'), updatedAt: new Date(Date.now() - 7 * 3_600_000).toISOString() });
-    assert.equal(getTask('completed').status, 'queued');
+    assert.equal(getTask('completed').status, 'running');
     const { server } = await starting;
     try {
       assert.equal(getTask('completed').status, 'done');
       assert.equal(getTask('completed').result.finalMessage, 'Outgoing result');
       assert.equal(getTask('canceled').status, 'canceled');
-      assert.equal(getTask('aged').status, 'canceled');
+      assert.equal(getTask('aged').status, 'running', 'age does not cancel durable work');
       const active = getTask('interrupted');
       assert.equal(active.status, 'running');
       recoverTasks();
       assert.equal(getTask('interrupted'), active, 'recovery must not replace live worker objects');
       assert.equal(active.status, 'running');
       release.resolve();
-      for (const id of ['interrupted', 'shutdown']) assert.equal((await awaitTask(id)).status, 'done');
+      for (const id of ['interrupted', 'shutdown', 'aged']) assert.equal((await awaitTask(id)).status, 'done');
       await flushRecords();
-      assert.deepEqual(calls.sort(), ['interrupted', 'shutdown']); // completed dispatch count is ZERO
+      assert.deepEqual(calls.sort(), ['aged', 'interrupted', 'shutdown']); // completed dispatch count is ZERO
       assert.deepEqual(unexpectedIO, []);
     } finally {
       release.resolve();

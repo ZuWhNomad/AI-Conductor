@@ -544,6 +544,16 @@ function taskCard(t) {
   if (t.status === 'running') { const p = el('div', 'prog indet'); p.append(el('i')); c.append(p); }
   const foot = cardFoot(t);
   if (foot) c.append(el('div', 'sub', foot));
+  if (t.status === 'stale') {
+    const actions = el('div', 'row');
+    const rerun = el('button', 'sm', 'Re-run');
+    rerun.onclick = (e) => { e.stopPropagation(); act(() => api.post(`/api/tasks/${t.id}/rerun`)); };
+    rerun.onkeydown = (e) => e.stopPropagation();
+    const discard = el('button', 'sm danger', 'Discard');
+    discard.onclick = (e) => { e.stopPropagation(); act(() => api.post(`/api/tasks/${t.id}/cancel`)); };
+    discard.onkeydown = (e) => e.stopPropagation();
+    actions.append(rerun, discard); c.append(actions);
+  }
   asBtn(c, () => act(() => openTask(t.id)));
   S.taskEls.set(t.id, c);
   return c;

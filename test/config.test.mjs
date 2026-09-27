@@ -27,6 +27,19 @@ test('efficiency mode and task retention settings use the owner defaults and bou
   } finally { saveConfig({ worker: previous }); }
 });
 
+test('resume staggering accepts only whole seconds from zero through 600', () => {
+  const previous = loadConfig().worker;
+  try {
+    assert.equal(DEFAULTS.worker.resumeStaggerSeconds, 15);
+    for (const resumeStaggerSeconds of [0, 1, 600]) {
+      assert.equal(saveConfig({ worker: { resumeStaggerSeconds } }).worker.resumeStaggerSeconds, resumeStaggerSeconds);
+    }
+    for (const resumeStaggerSeconds of [-1, 601, 1.5, null, '15', Infinity]) {
+      assert.equal(saveConfig({ worker: { resumeStaggerSeconds } }).worker.resumeStaggerSeconds, 15);
+    }
+  } finally { saveConfig({ worker: previous }); }
+});
+
 test('new-model benchmarking is opt-in and its mode is normalized', () => {
   assert.equal(DEFAULTS.bench.newModels, 'off');
   assert.deepEqual(DEFAULTS.bench.offPeak, { start: '00:00', end: '07:00', weekends: true });

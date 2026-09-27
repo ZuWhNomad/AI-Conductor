@@ -53,11 +53,10 @@ function trimTasks(keep = loadConfig().worker.tasksInMemory) {
   }
 }
 
-// Load the journal so history survives restarts and interrupted work resumes. Age must not silently cancel work:
-// queued and parked tasks are durable until the user cancels them or they finish.
-export function recoverTasks() {
-  // Never replace objects owned by this process's in-flight workers.
-  if (running.size || settling.size) return;
+// Load the journal without changing task state. CLI imports need the history and open-task guard, but only the server
+// owns restart transitions. Age must not silently cancel work: queued and parked tasks remain durable.
+function loadTasks() {
+  if (running.size || settling.size) return false; // never replace objects owned by this process's in-flight workers
   try {
     const cfg = loadConfig().worker;
     const saved = readJson(INDEX(), {});
@@ -77,18 +76,63 @@ export function recoverTasks() {
     const retained = [...entries.filter((t) => !TERMINAL.has(t.status)), ...entries.filter((t) => TERMINAL.has(t.status)).sort(newestFirst).slice(0, cfg.tasksInMemory)];
     tasks.clear();
     for (const entry of retained) {
-      const file = join(DIR(), `${entry.id}.json`), t = readJson(file);
+      const t = readJson(join(DIR(), `${entry.id}.json`));
       if (t?.id !== entry.id) continue;
-      if (t.status === 'running' || t.status === 'parked' || (t.status === 'queued' && t.resume)) {
-        if (t.status !== 'queued') { t.resume = t.status === 'running' || t.attempts > 0; t.status = 'queued'; } // never-started parked tasks need no interruption note
-      }
       tasks.set(t.id, t);
     }
     trimTasks(cfg.tasksInMemory);
     saveIndex();
-  } catch {}
+    return true;
+  } catch { return false; }
 }
-recoverTasks();
+
+function resumeAtMs(value) { return typeof value === 'number' ? value : Date.parse(value); }
+
+/** Apply restart-only transitions after the server binds. Returns counts for the startup friction line. */
+export function recoverTasks() {
+  const summary = { resumed: 0, parkedKept: 0, earliestParked: null, stale: 0, smokeCanceled: 0 };
+  if (running.size || settling.size || !loadTasks()) return summary;
+  const recovered = [];
+  let earliestParkedMs = Infinity;
+  for (const t of tasks.values()) {
+    if (TERMINAL.has(t.status)) continue;
+    if (t.source === 'smoke') {
+      t.status = 'canceled'; t.error = 'battery interrupted by a restart'; t.finishedAt = nowIso();
+      summary.smokeCanceled++; persist(t); wake(t);
+    } else if (t.status === 'running') {
+      t.recoveries = (t.recoveries || 0) + 1;
+      t.interruptedAt = t.aliveAt || t.updatedAt;
+      if (t.recoveries >= 2) {
+        t.status = 'stale'; t.error = 'interrupted by 2 restarts in a row; Re-run or Discard';
+        summary.stale++; persist(t); wake(t);
+      } else {
+        t.status = 'queued'; t.resume = true; recovered.push(t); summary.resumed++;
+      }
+    } else if (t.status === 'parked') {
+      const until = resumeAtMs(t.resumeAt);
+      if (until > Date.now()) {
+        summary.parkedKept++;
+        earliestParkedMs = Math.min(earliestParkedMs, until);
+        armParkTimer(t, until);
+      } else {
+        t.status = 'queued'; t.resumeAt = null; t.resume = t.attempts > 0;
+        summary.resumed++; persist(t);
+      }
+    }
+  }
+  if (earliestParkedMs < Infinity) summary.earliestParked = new Date(earliestParkedMs).toISOString();
+  recovered.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')) || String(a.id).localeCompare(String(b.id)));
+  const staggerMs = loadConfig().worker.resumeStaggerSeconds * 1000, startedAt = Date.now();
+  for (let i = 0; i < recovered.length; i++) {
+    const t = recovered[i];
+    if (staggerMs > 0 && i > 0) park(t, startedAt + i * staggerMs, 'restart stagger');
+    else persist(t);
+  }
+  return summary;
+}
+
+// Loading is safe in CLI processes; status changes and timers are server-start-only.
+loadTasks();
 
 // Coarse progress for task_status while a worker runs (not a live stream): the last activity line or tool, and tokens
 // when the runtime reports them. Every worker event updates `live`; the task's snapshot copies it at most once a minute.
@@ -162,7 +206,7 @@ export function getTask(id) {
   return t?.id === id ? t : null;
 }
 
-export function openTasks() { return [...tasks.values()].filter((t) => !TERMINAL.has(t.status)); }
+export function openTasks() { return [...tasks.values()].filter((t) => !TERMINAL.has(t.status) && t.status !== 'stale'); }
 
 /** Queued, running and parked tasks. `bench --run`, `smoke` and `review` refuse to start when this is non-zero. */
 export function openTaskCount() { return openTasks().length; }
@@ -276,6 +320,15 @@ export function cancelTask(id, reason) {
   return t;
 }
 
+/** Move a restart-stale task back to the queue after the user chooses Re-run. */
+export function rerunTask(id) {
+  const t = getTask(id);
+  if (!t || t.status !== 'stale') return null;
+  t.status = 'queued'; t.resume = true; t.recoveries = 0; t.error = null;
+  persist(t);
+  return t;
+}
+
 /** Watchdog last resort: abort a proven hang, but do not score infrastructure silence against the model. */
 export function failHungTask(id, reason) {
   const t = getTask(id); if (!t || TERMINAL.has(t.status)) return null;
@@ -301,8 +354,19 @@ export function cancelChain(id) {
 }
 
 let shuttingDown = false;
-/** Abort every active worker. With `requeue`, in-flight tasks are journaled as queued+resume (graceful shutdown) instead of failed. */
-export function abortRunning({ requeue = false } = {}) { shuttingDown = requeue; for (const ac of running.values()) ac.abort(); }
+/** Abort every active worker. With `requeue`, persist queued+resume before aborting (graceful shutdown). */
+export function abortRunning({ requeue = false } = {}) {
+  shuttingDown = requeue;
+  let journalError = null;
+  if (requeue) for (const id of running.keys()) {
+    const t = tasks.get(id);
+    if (!t || t.status !== 'running') continue;
+    t.status = 'queued'; t.resume = true; t.interruptedAt = nowIso(); t.error = 'interrupted by shutdown; resumes on next start';
+    try { persist(t); } catch (e) { journalError ||= e; }
+  }
+  for (const ac of running.values()) ac.abort();
+  if (journalError) throw journalError;
+}
 
 function consumeWake(t) {
   if (t?.wakeEligible && TERMINAL.has(t.status) && !t.wakeConsumedAt) {
@@ -319,7 +383,7 @@ const waitResult = (t) => {
 export function awaitTask(id, timeoutMs) {
   const t = getTask(id);
   if (!t) return Promise.resolve(null);
-  if (TERMINAL.has(t.status)) return Promise.resolve(waitResult(t));
+  if (TERMINAL.has(t.status) || t.status === 'stale') return Promise.resolve(waitResult(t));
   if (timeoutMs == null) {
     const wcfg = loadConfig().worker;
     const minutes = wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes;
@@ -443,6 +507,10 @@ function park(t, until, reason) {
   t.status = 'parked'; t.resumeAt = until; t.error = reason; t.resume = t.attempts > 0; // only a run that started can be resumed
   persist(t);
   wake(t);
+  armParkTimer(t, until);
+}
+
+function armParkTimer(t, until) {
   setTimeout(async () => {
     if (t.status !== 'parked' || shuttingDown) return;
     await refreshLimits({ only: [t.provider] }).catch(() => {});
@@ -497,7 +565,7 @@ async function run(t) {
       return false;
     })();
     const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
-    t.resume = false;
+    if (!(shuttingDown && ac.signal.aborted && t.status === 'queued' && (abortedDuringRun || (r.limitHit && !r.ok)))) t.resume = false;
     let confirmedLimitUntil = null;
     if (r.limitHit && !r.ok && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
       confirmedLimitUntil = noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
@@ -508,7 +576,11 @@ async function run(t) {
     }
     if (r.ok) noteLimitAvailable(t.provider, t.model, t.startedAt);
     if (t.status === 'canceled' || (t.status === 'failed' && t.failKind === 'hung')) { /* watchdog/user already decided it */ }
-    else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
+    else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) {
+      if (t.status === 'running') {
+        t.status = 'queued'; t.resume = true; t.interruptedAt ||= nowIso(); t.error = 'interrupted by shutdown; resumes on next start';
+      } // abortRunning already persisted the graceful requeue before signaling this controller
+    }
     else if (r.limitHit && !r.ok) {
       const next = t.efficiencyMode ? null : failover(t);
       if (!next) {
@@ -536,6 +608,7 @@ async function run(t) {
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else { t.status = 'done'; }
     if (t.isolate && t.isolation && (t.status === 'done' || t.status === 'failed')) await finishIsolation(t, runCwd);
+    if (TERMINAL.has(t.status)) t.recoveries = 0;
     t.finishedAt = nowIso();
     persist(t);
     // A plain cancel is not scored (its ~0 tokens would drag the model's cost means). A smoke timeout
@@ -547,6 +620,7 @@ async function run(t) {
     const alreadyDecided = TERMINAL.has(t.status) || t.status === 'parked' || t.status === 'queued';
     if (!alreadyDecided) { t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso(); }
     else { try { logImprovement('error', `worker:${t.provider}`, `journal persist failed after ${t.status}: ${e?.message || e}`, { taskId: t.id }); } catch {} }
+    if (TERMINAL.has(t.status)) t.recoveries = 0;
     try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().
   } finally {
     running.delete(t.id); live.delete(t.id); delete t.progress;
@@ -930,7 +1004,8 @@ export function describeTask(t) {
   ];
   if (t.warning) lines.push(`Warning: ${t.warning}`);
   if (t.isolation) lines.push(`Isolation: worktree ${t.isolation.dir} from ${t.isolation.base}${t.isolation.branch ? `, branch ${t.isolation.branch}` : ''}; uncommitted changes in the main checkout are not in the worktree; remove it with worktree_cleanup, never plain "git worktree remove" (it follows the linked node_modules/.venv junctions and deletes their contents)`);
-  if (t.error) lines.push(`Error: ${t.error}`);
+  if (t.status === 'stale') lines.push('Stale: interrupted by 2 restarts in a row. Ask the user to Re-run or Discard it.');
+  else if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
   if (t.status === 'parked') lines.push(t.efficiencyMode
     ? `waiting for ${t.provider} reset at ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (efficiency mode)`

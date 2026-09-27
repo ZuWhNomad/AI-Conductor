@@ -1,7 +1,7 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
@@ -19,13 +19,21 @@ for (const t of [
   { id: 'nodate', status: 'parked' },
   { id: 'bad', status: 'done', spec: 42 },
 ]) writeFileSync(join(dir, `${t.id}.json`), JSON.stringify({ cwd, ...t }));
-const { getTask, listTasks } = await import('../core/tasks.mjs');
+const { saveConfig } = await import('../core/config.mjs');
+saveConfig({ worker: { resumeStaggerSeconds: 0 } });
+const { getTask, listTasks, recoverTasks } = await import('../core/tasks.mjs');
 
-test('journal reload queues interrupted and parked tasks and tolerates numeric specs', () => {
-  for (const id of ['p1', 'r1']) {
-    assert.equal(getTask(id).status, 'queued');
-    assert.equal(getTask(id).resume, true);
-  }
+test('journal import is read-only; server recovery queues interrupted and expired parked tasks', () => {
+  assert.equal(getTask('p1').status, 'parked');
+  assert.equal(getTask('r1').status, 'running');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'p1.json'), 'utf8')).status, 'parked');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'r1.json'), 'utf8')).status, 'running');
+  const recovery = recoverTasks();
+  for (const id of ['p1', 'r1', 'old', 'nodate']) assert.equal(getTask(id).status, 'queued');
+  for (const id of ['p1', 'r1', 'old']) assert.equal(getTask(id).resume, true);
+  assert.equal(getTask('nodate').resume, false, 'a never-started parked task stays fresh');
+  assert.equal(recovery.resumed, 4);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'r1.json'), 'utf8')).status, 'queued');
   assert.doesNotThrow(() => listTasks());
   assert.equal(listTasks().find((t) => t.id === 'bad').specPreview, '42');
 });
@@ -37,7 +45,7 @@ test('journal reload resumes old interrupted work instead of canceling it by age
   assert.equal(getTask('old').resume, true);
   assert.equal(getTask('nodate').resume, false, 'a never-started parked task stays fresh even when it has no timestamp');
   const { readFileSync } = await import('node:fs');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'old.json'), 'utf8')).status, 'running', 'recovery leaves the journal available for a later restart until normal persistence runs');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'old.json'), 'utf8')).status, 'queued', 'server recovery persists the transition');
   const { listImprovements } = await import('../core/improve.mjs');
   assert.ok(!listImprovements().some((i) => i.message.includes('interrupted task(s) older than')));
 });
@@ -65,20 +73,85 @@ test('L7: parked staleness starts at the later of the last update and the reset'
     { id: 'recent-park', updatedAt: now, resumeAt: Date.parse(dayAgo) },
   ]) writeFileSync(join(dir, `${t.id}.json`), JSON.stringify({ cwd, status: 'parked', attempts: 1, ...t }));
   const tk = await import('../core/tasks.mjs?l7-recovery');
-  for (const id of ['future-park', 'recent-reset', 'recent-park']) {
+  tk.recoverTasks();
+  assert.equal(tk.getTask('future-park').status, 'parked');
+  for (const id of ['recent-reset', 'recent-park']) {
     assert.equal(tk.getTask(id).status, 'queued');
     assert.equal(tk.getTask(id).resume, true);
   }
   assert.equal(tk.getTask('future-park').resumeAt, resumeAt);
 });
 
-test('L36: recovery does not give never-started parked tasks an interruption prompt', async () => {
+test('L36: recovery keeps a future never-started park without an interruption prompt', async () => {
   writeFileSync(join(dir, 'never-started.json'), JSON.stringify({ id: 'never-started', cwd, status: 'parked', attempts: 0, updatedAt: now, resumeAt: Date.now() + 60_000, spec: 'start fresh' }));
   const tk = await import('../core/tasks.mjs?l36-recovery');
+  tk.recoverTasks();
   const t = tk.getTask('never-started');
-  assert.equal(t.status, 'queued');
-  assert.equal(t.resume, false);
+  assert.equal(t.status, 'parked');
+  assert.notEqual(t.resume, true);
   assert.doesNotMatch(tk.buildPrompt(t), /You were interrupted earlier/);
+});
+
+test('restart transitions stagger running work, keep future parks, cancel smoke work, and stale a second interruption', () => {
+  const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { join } from 'node:path';
+    import { saveConfig } from './core/config.mjs';
+    const home = process.env.CONDUCTOR_HOME, dir = join(home, 'tasks');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now(), cwd = home;
+    const put = (id, status, extra = {}) => fs.writeFileSync(join(dir, id + '.json'), JSON.stringify({ id, cwd, title: id, spec: 'work', provider: 'codex', attempts: 1, createdAt: new Date(now).toISOString(), updatedAt: new Date(now - 1000).toISOString(), status, ...extra }));
+    put('run-old', 'running', { createdAt: new Date(now - 2000).toISOString(), aliveAt: new Date(now - 500).toISOString() });
+    put('run-new', 'running', { createdAt: new Date(now - 1000).toISOString() });
+    put('park-future', 'parked', { resumeAt: now + 60_000 });
+    put('park-past', 'parked', { resumeAt: now - 1000, attempts: 1 });
+    put('queued-resume', 'queued', { resume: true });
+    put('smoke-queued', 'queued', { source: 'smoke' });
+    put('smoke-running', 'running', { source: 'smoke' });
+    saveConfig({ worker: { resumeStaggerSeconds: 1 } });
+    const first = await import('./core/tasks.mjs');
+    assert.equal(first.getTask('run-old').status, 'running', 'import only loads the journal');
+    assert.equal(JSON.parse(fs.readFileSync(join(dir, 'run-old.json'), 'utf8')).status, 'running');
+    const timers = [], setTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (_fn, ms) => { timers.push(ms); return { unref() {} }; };
+    let summary;
+    try { summary = first.recoverTasks(); } finally { globalThis.setTimeout = setTimeout; }
+    assert.equal(first.getTask('run-old').status, 'queued');
+    assert.equal(first.getTask('run-old').recoveries, 1);
+    assert.equal(first.getTask('run-old').interruptedAt, first.getTask('run-old').aliveAt);
+    assert.equal(first.getTask('run-new').status, 'parked');
+    assert.equal(first.getTask('run-new').error, 'restart stagger');
+    assert.ok(first.getTask('run-new').resumeAt > Date.now());
+    assert.equal(first.getTask('park-future').status, 'parked');
+    assert.equal(first.getTask('park-past').status, 'queued');
+    assert.equal(first.getTask('queued-resume').status, 'queued');
+    for (const id of ['smoke-queued', 'smoke-running']) {
+      assert.equal(first.getTask(id).status, 'canceled');
+      assert.equal(first.getTask(id).error, 'battery interrupted by a restart');
+    }
+    assert.equal(summary.resumed, 3);
+    assert.equal(summary.parkedKept, 1);
+    assert.ok(summary.earliestParked);
+    assert.equal(summary.smokeCanceled, 2);
+    assert.ok(timers.some((ms) => ms > 50_000), 'future parked work gets a wake timer');
+    assert.ok(timers.some((ms) => ms >= 1000 && ms < 1500), 'staggered work uses the park timer');
+
+    const old = first.getTask('run-old');
+    fs.writeFileSync(join(dir, 'run-old.json'), JSON.stringify({ ...old, status: 'running' }));
+    const second = await import('./core/tasks.mjs?second-start');
+    assert.equal(second.getTask('run-old').status, 'running', 'second import remains read-only');
+    const secondSummary = second.recoverTasks();
+    assert.equal(second.getTask('run-old').status, 'stale');
+    assert.equal(second.getTask('run-old').recoveries, 2);
+    assert.equal(second.getTask('run-old').error, 'interrupted by 2 restarts in a row; Re-run or Discard');
+    assert.equal(secondSummary.stale, 1);
+    assert.equal(second.openTasks().some((t) => t.id === 'run-old'), false);
+    assert.match(second.describeTask(second.getTask('run-old')), /Stale: interrupted by 2 restarts in a row\. Ask the user to Re-run or Discard it\./);
+    assert.equal((await second.awaitTask('run-old', 60_000)).status, 'stale');
+  `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('openTaskCount sees one open task behind 10000 completed tasks', async () => {
