@@ -1,6 +1,6 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -221,7 +221,14 @@ export function createTask(i, { dispatch = true } = {}) {
     const holder = openTasks().find((task) => task.threadId === parent.threadId);
     if (holder) throw Object.assign(new Error(`task ${holder.id} is still ${holder.status} on thread ${parent.threadId}; wait for it before following up`), { status: 409 });
     Object.assign(t, { writableRoots: writableRoots.length ? writableRoots : parent.writableRoots || [], cwd: parent.cwd, provider: parent.provider, model: parent.model, effort: i.effort || parent.effort, sandbox: i.sandbox || parent.sandbox || null, parallelOverride: !!(i.parallelOverride || parent.parallelOverride), threadId: parent.threadId, rounds: parent.rounds + 1, paths: parent.paths, title: t.title === 'task' ? `${parent.title} (round ${parent.rounds + 2})` : t.title, category: parent.category, difficulty: parent.difficulty, source: parent.source || 'live' });
+    if (parent.isolation) { t.isolate = true; t.isolation = parent.isolation; }
     if (t.rounds > cfg.worker.maxRounds) t.warning = `fix round ${t.rounds} exceeds maxRounds=${cfg.worker.maxRounds}: consider escalating — delegate with retry_of ${t.id} to auto-pick the best AVAILABLE model (up to worker.escalationRounds=${cfg.worker.escalationRounds} attempt(s)); finish it yourself only if that also fails. If this worker is ALREADY the best available model for ${t.category || 'this'}@${t.difficulty ?? 2}, the cap does not apply: keep following up, because a retry_of would route downward (delegate will say so and refuse).`;
+  }
+  if (i.isolation && typeof i.isolation.dir === 'string') { t.isolation = i.isolation; t.isolate = true; }
+  else if (!t.followUpOf && (i.isolate === true || (t.retryOf && getTask(t.retryOf)?.isolate))) {
+    if (t.sandbox === 'read-only') t.warning = [t.warning, 'isolate ignored: sandbox is read-only (nothing to isolate)'].filter(Boolean).join(' ');
+    else if (!findGitRoot(t.cwd)) t.warning = [t.warning, 'isolate ignored: cwd is not inside a git repo'].filter(Boolean).join(' ');
+    else t.isolate = true;
   }
   // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
   // (agy passthrough, kimi / qwen-code / codex-spark) must carry none. An effort-in-id family (agy: it has an
@@ -459,31 +466,32 @@ async function run(t) {
       for (const wid of rw) if (myWins.has(wid)) concurrentByWindow[wid]++;
       return rw.length === 0 || rw.some((wid) => myWins.has(wid));
     }).length;
-    const before = await gitStatus(t.cwd); // async: N tasks starting together must not serialize the event loop on git
-    Object.assign(t, await repoSize(t.cwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
+    const runCwd = t.isolate ? await prepareIsolation(t) : t.cwd;
+    const before = await gitStatus(runCwd); // async: N tasks starting together must not serialize the event loop on git
+    Object.assign(t, await repoSize(runCwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
     const wcfg = loadConfig().worker;
     const providerKind = PROVIDERS[t.provider]?.kind;
     const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
     const timeoutMs = runTimeoutMs(wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes);
-    const r = await runWorker({ ...t, prompt, ...(timeoutMs ? { timeoutMs } : {}) }, { signal: ac.signal });
+    const r = await runWorker({ ...t, cwd: runCwd, prompt, ...(timeoutMs ? { timeoutMs } : {}) }, { signal: ac.signal });
     live.delete(t.id); delete t.progress; // the result replaces the snapshot
     const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
     t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
     const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p; // git reports '/', Windows workers '\\': one file, one entry
-    const rel = (p) => { try { return slash(isAbsolute(p) ? relative(t.cwd, p) || p : p); } catch { return p; } };
-    const after = await gitStatus(t.cwd); // one status read serves the changed-file list, the phantom check and the diff stat
+    const rel = (p) => { try { return slash(isAbsolute(p) ? relative(runCwd, p) || p : p); } catch { return p; } };
+    const after = await gitStatus(runCwd); // one status read serves the changed-file list, the phantom check and the diff stat
     const observed = diffStatus(before, after);
     const claimed = claimedWrites(r.items);
     t.changedFiles = [...new Set([...observed, ...claimed].map(rel))];
-    t.diffStat = await gitDiffStat(t.cwd, after, observed);
+    t.diffStat = await gitDiffStat(runCwd, after, observed);
     // G5: a claimed file that is gitignored or outside the repo won't appear in git status; confirm via disk mtime.
     // Only files that exist AND were modified at or after the task started are enough to disprove a phantom verdict.
     const taskStartMs = Date.parse(t.startedAt) || 0;
     const claimedExistsOnDisk = claimed.length > 0 && observed.length === 0 && await (async () => {
       for (const p of claimed) {
-        try { const s = await stat(resolve(t.cwd, p)); if (s.mtimeMs >= taskStartMs - 1000) return true; } catch {}
+        try { const s = await stat(resolve(runCwd, p)); if (s.mtimeMs >= taskStartMs - 1000) return true; } catch {}
       }
       return false;
     })();
@@ -526,6 +534,7 @@ async function run(t) {
       t.error = 'empty report: the worker ended without a final message or any file change';
       logImprovement('error', `worker:${t.provider}`, t.error, { taskId: t.id, model: t.model, title: t.title });
     } else { t.status = 'done'; }
+    if (t.isolate && t.isolation && (t.status === 'done' || t.status === 'failed')) await finishIsolation(t, runCwd);
     t.finishedAt = nowIso();
     persist(t);
     // A plain cancel is not scored (its ~0 tokens would drag the model's cost means). A smoke timeout
@@ -561,7 +570,7 @@ function failover(t) {
     const alt = recommend({ category: t.category, difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
     if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
     const spec = `${t.attempts > 0 ? FAILOVER_NOTE : ''}${t.spec}`;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots, isolate: t.isolate || undefined, isolation: t.isolation || undefined }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
@@ -613,6 +622,16 @@ async function git(cwd, args) {
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) return null;
   try { return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
+}
+async function gitExec(cwd, args) {
+  const root = findGitRoot(cwd) || cwd;
+  if (gitBin === undefined) gitBin = findCli('git');
+  if (!gitBin) throw new Error('git is not installed');
+  try {
+    return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  } catch (e) {
+    throw new Error(String(e.stderr || e.message || e).trim() || `git ${args[0]} failed`);
+  }
 }
 async function gitStatus(cwd) {
   const root = findGitRoot(cwd);
@@ -669,6 +688,157 @@ async function gitDiffStat(cwd, status = null, observed = null) {
 
 export const _git = { gitStatus, changedSince, gitDiffStat, diffStatus };
 
+/** Attempt root: walk followUpOf only. A retry_of is a new chain root (fresh worktree). */
+function chainRootId(t) {
+  const seen = new Set();
+  let cur = t;
+  while (cur?.followUpOf && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    const p = getTask(cur.followUpOf);
+    if (!p) break;
+    cur = p;
+  }
+  return cur.id;
+}
+
+function isolatedCwd(t) {
+  if (!t.isolation?.dir) return t.cwd;
+  const root = findGitRoot(t.cwd);
+  if (!root) return t.isolation.dir;
+  const rel = relative(root, resolve(t.cwd));
+  if (!rel || rel.startsWith('..') || rel === '.') return t.isolation.dir;
+  return join(t.isolation.dir, rel);
+}
+
+const ISOLATION_LINKS = ['node_modules', '.venv'];
+function linkWorktreeDeps(root, dir, t) {
+  for (const name of ISOLATION_LINKS) {
+    const source = join(root, name), target = join(dir, name);
+    if (!existsSync(source)) continue;
+    try { lstatSync(target); continue; } catch (e) { if (e.code !== 'ENOENT') continue; }
+    try { symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir'); }
+    catch (e) { t.warning = [t.warning, `isolate ${name} link skipped: ${e.message}`].filter(Boolean).join(' '); }
+  }
+}
+
+function unlinkWorktreeDeps(dir) {
+  for (const name of ISOLATION_LINKS) {
+    const target = join(dir, name);
+    try { if (lstatSync(target).isSymbolicLink()) unlinkSync(target); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+}
+
+async function prepareIsolation(t) {
+  const root = findGitRoot(t.cwd);
+  if (!root) throw new Error('isolate: cwd is not inside a git repo');
+  if (t.isolation?.dir && existsSync(t.isolation.dir)) { linkWorktreeDeps(root, t.isolation.dir, t); return isolatedCwd(t); }
+  const dir = t.isolation?.dir || statePath('worktrees', chainRootId(t));
+  mkdirSync(statePath('worktrees'), { recursive: true });
+  const base = (await gitExec(root, ['rev-parse', 'HEAD'])).trim();
+  await gitExec(root, ['worktree', 'add', '--detach', dir, 'HEAD']);
+  linkWorktreeDeps(root, dir, t);
+  t.isolation = { dir, base, branch: t.isolation?.branch ?? null };
+  persist(t);
+  return isolatedCwd(t);
+}
+
+async function finishIsolation(t, runCwd) {
+  const dir = t.isolation.dir;
+  const branch = t.isolation.branch || `conductor/${chainRootId(t)}`;
+  if (!t.isolation.branch) {
+    try { await gitExec(dir, ['switch', '-c', branch]); }
+    catch { await gitExec(dir, ['switch', branch]); }
+    t.isolation.branch = branch;
+  }
+  await gitExec(dir, ['add', '-A', '--', '.', ':(exclude)node_modules', ':(exclude).venv']);
+  let committed = false;
+  try {
+    await gitExec(dir, ['commit', '-m', `${t.title} (conductor task ${t.id})`]);
+    committed = true;
+  } catch (e) {
+    if (!/nothing to commit/i.test(String(e.message))) t.warning = [t.warning, `isolate commit skipped: ${e.message}`].filter(Boolean).join(' ');
+  }
+  if (!committed) return;
+  const names = (await gitExec(dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'])).trim();
+  const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p;
+  t.changedFiles = names ? names.split(/\r?\n/).filter(Boolean).map((n) => {
+    try { return slash(relative(runCwd, join(dir, n)) || n); } catch { return slash(n); }
+  }) : [];
+  t.diffStat = ((await gitExec(dir, ['show', '--stat', '--format=', 'HEAD'])) || '').trim().slice(0, 3000);
+}
+
+function tasksUsingDir(dir) {
+  const out = [];
+  try {
+    for (const f of readdirSync(DIR())) {
+      if (!f.endsWith('.json')) continue;
+      const t = getTask(f.slice(0, -5));
+      if (t?.isolation?.dir === dir) out.push(t);
+    }
+  } catch {}
+  return out;
+}
+
+function ageLabel(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+export async function cleanupWorktree(taskId, { deleteBranch = false } = {}) {
+  const t = getTask(taskId);
+  if (!t) return `unknown task ${taskId}`;
+  const iso = t.isolation;
+  if (!iso?.dir) return `task ${taskId} has no isolation worktree`;
+  const root = findGitRoot(t.cwd);
+  const notes = [];
+  if (existsSync(iso.dir)) {
+    if (!root) return `worktree_cleanup failed: cannot find git repo for ${taskId}`;
+    try { unlinkWorktreeDeps(iso.dir); await gitExec(root, ['worktree', 'remove', '--force', iso.dir]); notes.push(`removed worktree ${iso.dir}`); }
+    catch (e) { return `worktree_cleanup failed: ${e.message}`; }
+  } else notes.push(`worktree ${iso.dir} already gone`);
+  if (deleteBranch && iso.branch && root) {
+    try { await gitExec(root, ['branch', '-D', iso.branch]); notes.push(`deleted branch ${iso.branch}`); }
+    catch (e) { notes.push(`branch ${iso.branch}: ${e.message}`); }
+  }
+  return notes.join('; ') || `removed worktree ${iso.dir}`;
+}
+
+export async function listWorktrees({ pruneDays } = {}) {
+  const rootDir = statePath('worktrees');
+  if (!existsSync(rootDir)) return [];
+  const cutoff = pruneDays != null ? Date.now() - pruneDays * 86_400_000 : null;
+  const out = [];
+  for (const name of readdirSync(rootDir, { withFileTypes: true })) {
+    if (!name.isDirectory()) continue;
+    const dir = join(rootDir, name.name);
+    const using = tasksUsingDir(dir);
+    const live = using.find((x) => !TERMINAL.has(x.status));
+    const latest = using.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || getTask(name.name);
+    const endedAt = !live && using.length ? Math.max(...using.map((x) => Date.parse(x.finishedAt || x.updatedAt || '') || 0)) : null;
+    let mtime = Date.now();
+    try { mtime = statSync(dir).mtimeMs; } catch {}
+    const ageMs = Date.now() - (endedAt || mtime);
+    const entry = { taskId: name.name, dir, branch: latest?.isolation?.branch || null, status: live ? live.status : (latest?.status || 'unknown'), ageMs, age: ageLabel(ageMs), pruned: false };
+    if (cutoff != null && endedAt && endedAt < cutoff) {
+      const root = latest?.cwd ? findGitRoot(latest.cwd) : null;
+      try {
+        if (root) { unlinkWorktreeDeps(dir); await gitExec(root, ['worktree', 'remove', '--force', dir]); }
+        entry.pruned = true;
+      } catch (e) { entry.error = e.message; }
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+export function formatWorktrees(entries) {
+  if (!entries.length) return 'no worktrees';
+  return entries.map((e) => `${e.taskId}  ${e.branch || '-'}  ${e.status}  ${e.age}${e.pruned ? '  pruned' : ''}${e.error ? `  ${e.error}` : ''}`).join('\n');
+}
+
 /** Which tools/programs/MCP calls a worker used: { calls, errors, byName } from its items (all of them, not the journaled tail). */
 export function countTools(items) {
   const out = { calls: 0, errors: 0, byName: {} };
@@ -702,6 +872,7 @@ export function describeTask(t) {
     `Task ${t.id} [${t.status}] ${t.title} — ${t.provider}${t.model ? `/${t.model}` : ''}${t.effort ? ` (${t.effort})` : ''}, round ${t.rounds + 1}${r.durationMs ? `, ${Math.round(r.durationMs / 1000)}s` : ''}${t.threadId ? `, thread ${t.threadId}` : ''}`,
   ];
   if (t.warning) lines.push(`Warning: ${t.warning}`);
+  if (t.isolation) lines.push(`Isolation: worktree ${t.isolation.dir} from ${t.isolation.base}${t.isolation.branch ? `, branch ${t.isolation.branch}` : ''}; uncommitted changes in the main checkout are not in the worktree`);
   if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
   if (t.status === 'parked') lines.push(t.efficiencyMode

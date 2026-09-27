@@ -143,9 +143,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
   (delegate with `sandbox: "read-only"` or use the `reviewer` subagent).
   Read-only is OS-enforced for Codex, tool-enforced for API/Ollama workers, and mapped to plan/read-only
   modes for Claude and vendor CLIs where supported; otherwise tell those reviewers not to modify files.
-  Two competing implementations in the same working directory overwrite
-  each other: if you want a tournament, run the attempts one after another and keep the better
-  diff, or ask the user for a second checkout.
+  Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.
 - Every handoff carries "how to verify". No hidden state: what a worker needs is in its spec.
 - When a worker reports a doubt or a question, answer it in the follow-up instead of ignoring it.
 - Use an adversarial reviewer (a Claude subagent with the reviewer prompt) for security-sensitive

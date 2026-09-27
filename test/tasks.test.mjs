@@ -1,7 +1,7 @@
 import { HOME, tmpDir } from './_env.mjs';
 import { test, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
@@ -1601,4 +1601,173 @@ test('changedFiles lists a file once when git and a Windows worker report it wit
 test('schedule wraps the pass in withLimitsSnapshot', () => {
   const src = readFileSync(new URL('../core/tasks.mjs', import.meta.url), 'utf8');
   assert.match(src, /export function schedule\(\) \{[\s\S]*?withLimitsSnapshot\(/);
+});
+
+function initRepo(cwd) {
+  const run = (...args) => childProcess.execFileSync(git, args, { cwd, windowsHide: true, encoding: 'utf8' });
+  run('init', '--quiet');
+  run('config', 'user.name', 'Test');
+  run('config', 'user.email', 'test@example.com');
+  writeFileSync(join(cwd, 'same.txt'), 'base\n');
+  run('add', '--', 'same.txt');
+  run('commit', '--quiet', '-m', 'fixture');
+  return run;
+}
+
+test('isolate: two parallel editors of the same file succeed on their own branches; main checkout is untouched', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-parallel');
+  const run = initRepo(cwd);
+  writeFileSync(join(cwd, 'dirty.txt'), 'uncommitted in main');
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    writeFileSync(join(t.cwd, 'same.txt'), `${t.title}\n`);
+    return { ok: true, finalMessage: `wrote ${t.title}`, threadId: `th-${t.id}` };
+  });
+  const a = tk.createTask({ cwd, title: 'edit-a', spec: 'x', provider: 'codex', isolate: true, parallelOverride: true });
+  const b = tk.createTask({ cwd, title: 'edit-b', spec: 'x', provider: 'codex', isolate: true, parallelOverride: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const [da, db] = await Promise.all([tk.awaitTask(a.id), tk.awaitTask(b.id)]);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(da.status, 'done', da.error);
+  assert.equal(db.status, 'done', db.error);
+  assert.equal(readFileSync(join(cwd, 'same.txt'), 'utf8'), 'base\n');
+  assert.ok(existsSync(join(cwd, 'dirty.txt')), 'main uncommitted file remains');
+  assert.ok(da.isolation?.dir && db.isolation?.dir);
+  assert.notEqual(da.isolation.dir, db.isolation.dir);
+  assert.equal(da.isolation.branch, `conductor/${da.id}`);
+  assert.equal(db.isolation.branch, `conductor/${db.id}`);
+  assert.deepEqual(da.changedFiles, ['same.txt']);
+  assert.deepEqual(db.changedFiles, ['same.txt']);
+  assert.match(da.diffStat, /same\.txt/);
+  assert.match(db.diffStat, /same\.txt/);
+  assert.match(tk.describeTask(tk.getTask(da.id)), /uncommitted changes in the main checkout are not in the worktree/);
+  assert.equal(run('show', `${da.isolation.branch}:same.txt`).trim(), 'edit-a');
+  assert.equal(run('show', `${db.isolation.branch}:same.txt`).trim(), 'edit-b');
+});
+
+test('isolate: follow-up reuses the dir and adds a second commit; retry_of gets a new dir', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-follow');
+  const run = initRepo(cwd);
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    writeFileSync(join(t.cwd, 'same.txt'), `${t.spec}\n`);
+    return { ok: true, finalMessage: 'ok', threadId: 'th-iso' };
+  });
+  const first = tk.createTask({ cwd, title: 'round1', spec: 'first', provider: 'codex', isolate: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const d1 = await tk.awaitTask(first.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(d1.status, 'done', d1.error);
+  const follow = tk.createTask({ spec: 'second', followUpOf: first.id });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const d2 = await tk.awaitTask(follow.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(d2.status, 'done', d2.error);
+  assert.equal(d2.isolation.dir, d1.isolation.dir);
+  assert.equal(d2.isolation.branch, d1.isolation.branch);
+  assert.equal(run('rev-list', '--count', `${d1.isolation.base}..${d1.isolation.branch}`).trim(), '2');
+  assert.equal(run('show', `${d1.isolation.branch}:same.txt`).trim(), 'second');
+  const retry = tk.createTask({ cwd, title: 'retry', spec: 'retry', provider: 'codex', retryOf: first.id });
+  assert.equal(retry.isolate, true);
+  assert.equal(retry.isolation, undefined);
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const d3 = await tk.awaitTask(retry.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(d3.status, 'done', d3.error);
+  assert.ok(d3.isolation.dir);
+  assert.notEqual(d3.isolation.dir, d1.isolation.dir);
+  assert.equal(d3.isolation.branch, `conductor/${d3.id}`);
+});
+
+test('isolate ignored: non-git cwd and read-only run in place', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const seen = [];
+  const tk = await tasksWithWorker(ctx, async (t) => { seen.push(t.cwd); writeFileSync(join(t.cwd, 'out.txt'), 'x'); return { ok: true, finalMessage: 'ok' }; });
+  const plain = tmpDir('iso-nongit');
+  const a = tk.createTask({ cwd: plain, title: 'nongit', spec: 'x', provider: 'codex', isolate: true, parallelOverride: true });
+  assert.match(a.warning || '', /isolate ignored: cwd is not inside a git repo/);
+  assert.equal(a.isolate, undefined);
+  const repo = tmpDir('iso-ro');
+  initRepo(repo);
+  const b = tk.createTask({ cwd: repo, title: 'ro', spec: 'x', provider: 'codex', isolate: true, sandbox: 'read-only', parallelOverride: true });
+  assert.match(b.warning || '', /isolate ignored: sandbox is read-only/);
+  assert.equal(b.isolate, undefined);
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const [da, db] = await Promise.all([tk.awaitTask(a.id), tk.awaitTask(b.id)]);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(da.status, 'done', da.error);
+  assert.equal(db.status, 'done', db.error);
+  assert.equal(da.cwd, plain);
+  assert.equal(db.cwd, repo);
+  assert.ok(seen.includes(plain) && seen.includes(repo));
+  assert.ok(existsSync(join(plain, 'out.txt')));
+  assert.ok(existsSync(join(repo, 'out.txt')));
+});
+
+test('worktree_cleanup removes the dir and optionally the branch', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-clean');
+  const run = initRepo(cwd);
+  mkdirSync(join(cwd, 'node_modules'));
+  mkdirSync(join(cwd, '.venv'));
+  writeFileSync(join(cwd, 'node_modules', 'dependency.txt'), 'node dependency');
+  writeFileSync(join(cwd, '.venv', 'dependency.txt'), 'python dependency');
+  const linked = [];
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    linked.push(lstatSync(join(t.cwd, 'node_modules')).isSymbolicLink(), lstatSync(join(t.cwd, '.venv')).isSymbolicLink());
+    writeFileSync(join(t.cwd, 'same.txt'), 'edited\n');
+    return { ok: true, finalMessage: 'ok' };
+  });
+  const t = tk.createTask({ cwd, title: 'clean-me', spec: 'x', provider: 'codex', isolate: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(done.status, 'done', done.error);
+  const dir = done.isolation.dir;
+  const branch = done.isolation.branch;
+  assert.ok(existsSync(dir));
+  assert.deepEqual(linked, [true, true], 'the isolated worker shares the checkout dependencies through directory links');
+  assert.match(run('branch', '--list', branch), new RegExp(branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const msg = await tk.cleanupWorktree(t.id, { deleteBranch: true });
+  assert.match(msg, /removed worktree/);
+  assert.match(msg, /deleted branch/);
+  assert.equal(existsSync(dir), false);
+  assert.equal(readFileSync(join(cwd, 'node_modules', 'dependency.txt'), 'utf8'), 'node dependency', 'cleanup unlinks instead of traversing node_modules');
+  assert.equal(readFileSync(join(cwd, '.venv', 'dependency.txt'), 'utf8'), 'python dependency', 'cleanup unlinks instead of traversing .venv');
+  assert.equal(run('branch', '--list', branch).trim(), '');
+});
+
+test('conductor worktrees lists entries and prune-days removes ended worktrees not branches', async (ctx) => {
+  if (!git) { ctx.skip('git is not installed'); return; }
+  const cwd = tmpDir('iso-list');
+  const run = initRepo(cwd);
+  const tk = await tasksWithWorker(ctx, async (t) => {
+    writeFileSync(join(t.cwd, 'same.txt'), 'listed\n');
+    return { ok: true, finalMessage: 'ok' };
+  });
+  const t = tk.createTask({ cwd, title: 'list-me', spec: 'x', provider: 'codex', isolate: true });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  tk.schedule();
+  const done = await tk.awaitTask(t.id);
+  process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  assert.equal(done.status, 'done', done.error);
+  const listed = await tk.listWorktrees();
+  const row = listed.find((e) => e.taskId === t.id);
+  assert.ok(row, JSON.stringify(listed));
+  assert.equal(row.branch, done.isolation.branch);
+  assert.equal(row.status, 'done');
+  assert.ok(row.age);
+  const rec = tk.getTask(t.id);
+  rec.finishedAt = new Date(Date.now() - 10 * 86_400_000).toISOString();
+  rec.updatedAt = rec.finishedAt;
+  const pruned = await tk.listWorktrees({ pruneDays: 7 });
+  assert.equal(pruned.find((e) => e.taskId === t.id)?.pruned, true);
+  assert.equal(existsSync(done.isolation.dir), false);
+  assert.match(run('branch', '--list', done.isolation.branch), new RegExp(done.isolation.branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });

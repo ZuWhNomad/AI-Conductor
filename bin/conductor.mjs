@@ -22,7 +22,7 @@ const { values: flags, positionals } = parseArgs({
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     cwd: { type: 'string' },
-    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' }, 'prune-days': { type: 'string' },
     hypothesis: { type: 'string' }, mechanism: { type: 'string' }, branch: { type: 'string' }, repeats: { type: 'string' }, heldout: { type: 'string' }, 'state-dir': { type: 'string', multiple: true }, verdict: { type: 'string' }, note: { type: 'string' },
   },
 });
@@ -55,6 +55,7 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor experiment list
   conductor experiment report <id> [--state-dir DIR]... [--json] [--verdict keep-a|keep-b|void --note "..."]
                                              record and compare A/B scorecard arms (CONDUCTOR_EXPERIMENT=<id>:<arm>)
+  conductor worktrees [--prune-days N]       list isolate:true worktrees (task id, branch, status, age); prune ended chains older than N days (worktrees only, not branches)
   conductor feedback [--no-open]             write a redacted feedback bundle (versions, limits, improvement log, scores)
                                              to your Desktop and open the issue page to attach it
   conductor help`;
@@ -283,6 +284,12 @@ if (cmd === 'start') {
   else if (sub === 'status' && id) console.log(formatJob(await call('GET', `/api/jobs/${encodeURIComponent(id)}`)));
   else if (sub === 'cancel' && id) console.log(formatJob(await call('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`)));
   else { console.error('usage: conductor job start [--cwd DIR] -- COMMAND…  |  job status ID  |  job cancel ID'); process.exit(2); }
+  process.exit(0);
+} else if (cmd === 'worktrees') {
+  const { listWorktrees, formatWorktrees } = await import('../core/tasks.mjs');
+  const pruneDays = flags['prune-days'] != null ? Number(flags['prune-days']) : undefined;
+  if (flags['prune-days'] != null && !(Number.isFinite(pruneDays) && pruneDays >= 0)) { console.error('usage: conductor worktrees [--prune-days N]'); process.exit(2); }
+  console.log(formatWorktrees(await listWorktrees({ pruneDays })));
   process.exit(0);
 } else if (cmd === 'feedback') {
   const { writeFeedback, issuesUrl } = await import('../core/feedback.mjs');

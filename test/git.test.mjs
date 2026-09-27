@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, utimesSync, mkdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const { findCli } = await import('../core/proc.mjs');
 const { _git } = await import('../core/tasks.mjs');
@@ -57,6 +58,13 @@ test('git observes content edits to already-dirty tracked files with unchanged s
   utimesSync(file, times.atime, times.mtime);
   assert.equal(run('status', '--porcelain', '-z'), porcelain);
   assert.deepEqual(await _git.changedSince(cwd, before), [name]);
+});
+
+test('conductor worktrees with an empty state dir prints no worktrees', { skip: !git }, () => {
+  const bin = fileURLToPath(new URL('../bin/conductor.mjs', import.meta.url));
+  const r = spawnSync(process.execPath, [bin, 'worktrees'], { encoding: 'utf8', env: { ...process.env, CONDUCTOR_HOME: tmpDir('cli-wt') } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /no worktrees/);
 });
 
 test('git status from a subdirectory reports cwd-relative dirty tracked and existing untracked edits', { skip: !git }, async () => {

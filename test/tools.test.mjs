@@ -260,6 +260,15 @@ test('delegate efficiency_mode overrides the global switch for explicit pins', a
   }
 });
 
+test('delegate and run_plan accept isolate; worktree_cleanup reports unknown tasks', async () => {
+  const tools = defs();
+  assert.equal(tools.find((d) => d.name === 'delegate').schema.parse({ title: 't', spec: 's', isolate: true }).isolate, true);
+  const plan = tools.find((d) => d.name === 'run_plan').schema.parse({ goal: 'g', defaults: { isolate: true }, stages: [{ id: 'a', tasks: [{ spec: 'x', isolate: true }] }] });
+  assert.equal(plan.defaults.isolate, true);
+  assert.equal(plan.stages[0].tasks[0].isolate, true);
+  assert.equal(await handler('worktree_cleanup')({ task_id: 'missing' }), 'unknown task missing');
+});
+
 test('model_scores archived returns the archived table without plans or bench hygiene', async () => {
   const scorecard = loadConfig().scorecard;
   const { recordRun, rateTask } = await import('../core/scorecard.mjs');

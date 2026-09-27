@@ -157,8 +157,7 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
    - A report saying `failed over to task <id>` means await that id.
    - `avoid_families` takes model families — `claude`, `gpt` (Codex/OpenAI), `grok`, `gemini`, `deepseek`, `kimi`,
      `qwen` — not provider ids; an unknown name is silently ignored.
-   - Parallel tasks share the `cwd`: fan out read-only work, keep editors sequential (or give each a worktree via
-     `writable_roots`).
+   - Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.
    - Report workbench faults with `log_improvement`.
 4. **Wait cheaply.** `delegate` and `follow_up` (without `background: true`) and `await_task` block until the task
    ends or about an hour passes; a reply ending `(still running — call await_task)` is not final, so call `await_task`

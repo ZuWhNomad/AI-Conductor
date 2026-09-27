@@ -26,7 +26,7 @@ conductor (bin)  -> server/  -> browser UI (SSE stream + JSON API) + /mcp/<sessi
                         codex  : one `codex exec` turn per message (thread resumed); tools via /mcp/<session>
                         loop   : OpenAI-compatible tool loop (Ollama / API models) with the same tools as functions
                         tools (core/tools.mjs, defined once): delegate, follow_up, await_task, task_status,
-                          cancel_task, job_start, job_status, job_cancel, watch_job, allow_command, rate_task,
+                          cancel_task, worktree_cleanup, job_start, job_status, job_cancel, watch_job, allow_command, rate_task,
                           model_scores, smoke_test, list_tasks, list_models, limits, log_improvement,
                           context_tree, install_model, generate_image, run_plan, plan_status
                  -> core/workers/*  : codex | claude-sdk | openai-compat | ollama | image | vendor-cli

@@ -9,7 +9,8 @@ prints. No logic lives here that a route or a core module could not also use —
 **Entry points.** `conductor start` (boots `server/index.mjs`), plus `doctor`, `models`, `limits` (same estimated
 windows as the UI), `scores` (`--csv`), `smoke`, `bench`, `review`, `feedback`, `share`, `update`, `experiment`
 (`new` / `list` / `report`), `stop` (POST
-`/api/shutdown` first; pid-file taskkill only if `/api/state` matches).
+`/api/shutdown` first; pid-file taskkill only if `/api/state` matches), `worktrees [--prune-days N]` (list/prune
+isolate:true git worktrees).
 
 **Invariants.**
 - Every command works headless: no prompt, no colour codes the user's terminal must support.

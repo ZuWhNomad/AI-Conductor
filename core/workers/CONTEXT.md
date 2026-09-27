@@ -38,6 +38,7 @@ it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_
 - `runWorker` redacts its result (keys a CLI echoes, e.g. OpenAI's 401) before anything records it; see `paths.mjs` `redact`.
 - `writableRoots` (delegate `writable_roots`): extra writable directories — Codex `--add-dir`, Claude
   `additionalDirectories`, Antigravity `--add-dir`. Grok runs unsandboxed; the rest ignore it.
+- `isolate: true` is scheduler-owned (`core/tasks.mjs`): the worker just receives `cwd` pointing at the worktree.
 - No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
 - Long-lived CLI/SDK children register their PID owner in `core/proc.mjs`, which lets the watchdog attribute their
   process trees and CPU without killing by image/name.
