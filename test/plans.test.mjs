@@ -2,9 +2,13 @@ import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readJson, writeJson, statePath } from '../core/paths.mjs';
+import { saveConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 
 const { validatePlan, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan, abortPlans, getPlan } = await import('../core/plans.mjs');
+
+// Legacy injected runtimes in this file test plan results, not asynchronous worker warm-up.
+saveConfig({ plans: { warmupSeconds: 0 } });
 
 test('plan IDs avoid persisted journals and simultaneous active plans', async (ctx) => {
   const diskId = (0.125).toString(36).slice(2, 10), file = statePath('plans', `${diskId}.json`);

@@ -22,6 +22,9 @@ export const DEFAULTS = {
     budgetGate: true,                 // admit against per-window targets (session 95% / weekly 100%); over target, sequential per provider — not park-until-reset. A real provider limit fails over or parks. parallelOverride skips the gate. Windowless providers are not gated.
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
     turnTimeoutMinutes: 0,            // hard cap on a single conductor chat turn (Codex and API/Ollama conductors); 0 = off
+    compactAt: 0.7,
+    compactTo: 0.4,
+    cacheLifetimes: {},               // provider -> minutes (or "never") before prompt cache is considered cold
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
     updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
     loopToolsSkip: [],                // tool names a LOOP conductor (Ollama / API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
@@ -62,6 +65,8 @@ export const DEFAULTS = {
     timeoutByCategory: {},            // optional per-category hard caps; 0 = off
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
   },
+  models: { contextWindows: {} },
+  plans: { warmupSeconds: 20 },
   bench: { newModels: 'off', offPeak: { start: '00:00', end: '07:00', weekends: true } }, // local wall-clock window; null/empty disables it
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.

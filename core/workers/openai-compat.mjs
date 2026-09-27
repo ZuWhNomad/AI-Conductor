@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
 import { bus } from '../bus.mjs';
+import { estimateTokens, recordLearnedContextWindow } from '../compaction.mjs';
 import { killTree, registerProc } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
 import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
@@ -412,6 +413,8 @@ export async function runOpenAICompat(t) {
       sentSourceLength = messages.length;
       const routing = cacheRouting(t.baseUrl, t.cacheKey);
       const body = { model: t.model, messages: sentMessages, tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false, ...routing.body };
+      res.lastRequestTokens = estimateTokens(sentMessages);
+      res.lastRequestAt = Date.now();
       if (t.provider === 'deepseek' && t.effort) {
         body.thinking = { type: t.effort === 'none' ? 'disabled' : 'enabled' };
         if (t.effort !== 'none') body.reasoning_effort = t.effort;
@@ -450,6 +453,7 @@ export async function runOpenAICompat(t) {
       if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 500)}`);
       const j = await r.json();
       if (j.usage) {
+        res.lastPromptTokens = Number(j.usage.prompt_tokens) || null;
         res.usage.input_tokens += j.usage.prompt_tokens || 0; res.usage.output_tokens += j.usage.completion_tokens || 0; res.usage.cached_input_tokens = (res.usage.cached_input_tokens || 0) + (j.usage.prompt_cache_hit_tokens ?? j.usage.prompt_tokens_details?.cached_tokens ?? 0); res.usage.reasoning_output_tokens = (res.usage.reasoning_output_tokens || 0) + (j.usage.completion_tokens_details?.reasoning_tokens || 0);
         emit('usage', { usage: { ...res.usage } });
       }
@@ -484,6 +488,7 @@ export async function runOpenAICompat(t) {
     if (!res.ok && !res.error) res.error = 'max iterations reached';
   } catch (e) {
     res.error = String(e?.message || e);
+    if (/context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(res.error)) recordLearnedContextWindow(t.provider || 'openai-compat', t.model, res.lastRequestTokens);
     closeDanglingToolCalls(messages, `not executed: ${res.error}`); // keep the saved history replayable
   }
   // Persist stubs for older turns so follow-ups replay a bounded history. Keep this run's last

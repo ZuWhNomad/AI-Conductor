@@ -20,6 +20,7 @@ import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { spawnTracked } from './proc.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel } from './models.mjs';
+import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow, estimateTokens } from './compaction.mjs';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');
 // Policy + the structural playbook (model-agnostic). {{CONDUCTOR_DOCS}} is this install's docs/, whatever the chat's cwd.
@@ -56,7 +57,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null, lastPromptTokens: s.lastPromptTokens || null, lastRequestAt: s.lastRequestAt || null };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -417,9 +418,33 @@ async function runTurn(s, text) {
       else wc = p.workerConfig();
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
       const timeoutMs = runTimeoutMs(cfg.conductor.turnTimeoutMinutes);
-      r = await runOpenAICompat({ id: `conductor:${s.id}`, cacheKey: s.id, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(cfg.conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: cfg.conductor.maxTurns, ...(timeoutMs ? { timeoutMs } : {}) });
-      if (mine()) { s.history = r.messages || s.history; writeJson(HIST(s.id, 'loop'), s.history); }
-      if (r.error && /context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
+      const compaction = compactForNextTurn({ history: s.history, prompt: text, provider: s.provider, model: s.model, lastPromptTokens: s.lastPromptTokens, lastRequestAt: s.lastRequestAt, config: cfg });
+      if (mine() && compaction.reason) {
+        s.history = compaction.history;
+        writeJson(HIST(s.id, 'loop'), s.history);
+        emit(s, 'compaction', { reason: compaction.reason, beforeTokens: compaction.beforeTokens, afterTokens: compaction.afterTokens });
+      }
+      const history = compaction.history;
+      r = await runOpenAICompat({ id: `conductor:${s.id}`, cacheKey: s.id, cwd: s.cwd, prompt: text, history: history || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(cfg.conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: cfg.conductor.maxTurns, ...(timeoutMs ? { timeoutMs } : {}) });
+      if (mine()) {
+        s.history = r.messages || history;
+        s.lastPromptTokens = r.lastPromptTokens || r.lastRequestTokens || (s.history ? estimateTokens(s.history) : null);
+        s.lastRequestAt = r.lastRequestAt || Date.now();
+        writeJson(HIST(s.id, 'loop'), s.history);
+      }
+      if (r.error && /context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(r.error)) {
+        recordLearnedContextWindow(s.provider, s.model, r.lastRequestTokens || r.lastPromptTokens || estimateTokens(history));
+        if (s.history) {
+          const window = contextWindowFor(s.provider, s.model, cfg);
+          const compacted = compactHistory(s.history, window * Number(cfg.conductor.compactTo ?? 0.4));
+          if (compacted.compacted) {
+            s.history = compacted.messages;
+            writeJson(HIST(s.id, 'loop'), s.history);
+            emit(s, 'compaction', { reason: 'error', beforeTokens: r.lastRequestTokens || r.lastPromptTokens || compacted.beforeTokens, afterTokens: compacted.afterTokens });
+          }
+        }
+        r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
+      }
       if (r.ok && r.finalMessage && !s.messages.some((m) => m.role === 'assistant' && m.blocks?.[0]?.text === r.finalMessage)) onEvent('item', { item: { type: 'agent_message', text: r.finalMessage }, phase: 'completed' });
     }
     // Loop runtimes already record 429s via the http_rate event (with retry-after); only Codex needs an explicit note.
@@ -597,19 +622,4 @@ export async function runOnce({ cwd, prompt: text, model, effort, onText }) {
   const r = await done;
   stopSession(s.id);
   return r;
-}
-
-/** Keep the system prompt plus the most recent turns (cut at a user message so no tool reply is orphaned). */
-export function trimHistory(messages, max = 160) {
-  if (!Array.isArray(messages) || messages.length <= max) return messages;
-  const sys = messages[0]?.role === 'system' ? [messages[0]] : [];
-  let start = messages.length - max;
-  while (start < messages.length && messages[start].role !== 'user') start++;
-  if (start >= messages.length) {
-    // G1: no user turn found in the window — keep the most recent messages but skip any leading orphaned
-    // tool reply (a 'tool' message without its preceding assistant tool_call is an API error).
-    start = messages.length - max;
-    while (start < messages.length && messages[start].role === 'tool') start++;
-  }
-  return [...sys, ...messages.slice(start)];
 }

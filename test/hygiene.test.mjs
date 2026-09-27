@@ -18,18 +18,6 @@ test('limits.json written by another process is picked up on the next read', asy
   delete lim.getLimits().providers.grok;
 });
 
-test('trimHistory keeps the system prompt and the newest turns, cut at a user message', async () => {
-  const { trimHistory } = await import('../core/conductor.mjs');
-  const msgs = [{ role: 'system', content: 's' }];
-  for (let i = 0; i < 50; i++) msgs.push({ role: 'user', content: `u${i}` }, { role: 'assistant', content: null, tool_calls: [{ id: `c${i}` }] }, { role: 'tool', tool_call_id: `c${i}`, content: 'x' }, { role: 'assistant', content: `a${i}` });
-  const out = trimHistory(msgs, 10);
-  assert.equal(out[0].role, 'system');
-  assert.equal(out[1].role, 'user');
-  assert.ok(out.length <= 11 && out.length >= 8);
-  assert.equal(trimHistory(msgs.slice(0, 5), 10).length, 5);
-  assert.equal(trimHistory(null), null);
-});
-
 test('fetch_url returns page text with tags stripped and refuses non-http URLs', async () => {
   const { fetchUrlText } = await import('../core/workers/openai-compat.mjs');
   const srv = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<html><head><style>x{}</style><script>bad()</script></head><body><h1>Title</h1><p>Hello &amp; bye</p></body></html>'); });

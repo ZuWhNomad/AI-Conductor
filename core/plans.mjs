@@ -7,6 +7,7 @@ import { bus } from './bus.mjs';
 import { accessProviders } from './capabilities.mjs';
 import { normFamilies, selsInFamilies } from './models.mjs';
 import { existsSync } from 'node:fs';
+import { loadConfig } from './config.mjs';
 
 /** Shared enum for sandbox values (used in run_plan and delegate schemas). */
 export const SANDBOX_VALUES = /** @type {const} */ (['read-only', 'workspace-write', 'danger-full-access']);
@@ -189,7 +190,16 @@ export function expandStage(stage, ctx) {
   return out;
 }
 
-async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live }) {
+function waitForFirstWorkerEvent(taskId, timeoutMs) {
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); bus.off('event', onEvent); resolve(); };
+    const onEvent = (e) => { if (e.type === 'worker' && e.taskId === taskId) done(); };
+    const timer = setTimeout(done, timeoutMs);
+    bus.on('event', onEvent);
+  });
+}
+
+async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live, warmupSeconds = 20 }) {
   // P10: resolve every selection before creating any task.
   const resolved = [];
   for (const inp of inputs) {
@@ -215,7 +225,10 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
   }
   const created = [];
   let createError = null;
-  for (const r of resolved) {
+  for (const [i, r] of resolved.entries()) {
+    if (i === 1 && resolved.length >= 3 && warmupSeconds > 0 && created[0]?.id) {
+      await (taskRuntime.waitForFirstEvent?.(created[0].id, warmupSeconds * 1000) || waitForFirstWorkerEvent(created[0].id, warmupSeconds * 1000));
+    }
     let t;
     try {
       t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, writableRoots: r.input.writable_roots, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, overflowApi, parallelOverride });
@@ -281,7 +294,7 @@ export function abortPlans(sessionId) {
   }
 }
 
-async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false }) {
+async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRuntime = { createTask, awaitTask, getTask }, overflowApi = false, parallelOverride = false, warmupSeconds }) {
   // 1440 min = config timer bound (below Node's 2^31-1 ms setTimeout maximum).
   const timeoutMs = Math.max(1, Math.min(1440, Number(plan.timeout_minutes) || 45)) * 60_000;
   const ctx = { goal: plan.goal, defaults: plan.defaults || {}, results: {}, seen: [] };
@@ -301,7 +314,8 @@ async function executePlan(id, plan, { sessionId, cwd, recommend = null, taskRun
     if (total + inputs.length > MAX_TASKS) return { tasks: [], findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: `Incomplete: plan exceeds ${MAX_TASKS} tasks` };
     total += inputs.length;
     publish('stage', { stage: stage.id, round, tasks: inputs.length });
-    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live });
+    const warmup = warmupSeconds ?? loadConfig().plans?.warmupSeconds ?? 20;
+    const done = await runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRuntime, overflowApi, parallelOverride, live, warmupSeconds: warmup });
     if (aborted()) {
       for (const d of done) if (d.id) cancelChain(d.id);
       return { tasks: done.map((d) => ({ id: d.id, title: d.input.title, status: d.task?.status || 'canceled' })), findings: [], confirmed: [], rejected: [], unverified: [], incomplete: true, summary: 'Incomplete: plan aborted.' };

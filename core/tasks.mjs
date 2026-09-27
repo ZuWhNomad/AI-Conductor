@@ -338,8 +338,7 @@ function wake(t) {
 }
 
 export function buildPrompt(t) {
-  const pre = t.resume ? RESUME_NOTE : '';
-  if (t.followUpOf) return `${pre}Follow-up from the conductor on your previous work in this same thread. Address every point, re-run the verification, and report in the same format.\n\n${t.spec}`;
+  if (t.followUpOf) return `${t.resume ? RESUME_NOTE : ''}Follow-up from the conductor on your previous work in this same thread. Address every point, re-run the verification, and report in the same format.\n\n${t.spec}`;
   const ctx = contextBlock(t.cwd, t.paths);
   const mcp = t.provider === 'codex' || t.provider === 'claude' ? Object.keys(mcpServersFor(t.category)) : [];
   const mcpNote = mcp.length ? `\n\nMCP servers available to you: ${mcp.join(', ')}. Use them for data instead of guessing.` : '';
@@ -357,7 +356,7 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
   const toolsCap = wcfg.toolLineChars;
   if (recipe && recipe.length > recipeCap) logImprovement('friction', 'recipes', `recipe for '${t.category}'${t.variant ? ` (variant ${t.variant})` : ''} is ${recipe.length} chars, over the ${recipeCap} budget`, { taskId: t.id, title: t.title });
   const tools = capabilityLines(t.category, { maxChars: toolsCap, text: `${t.title || ''}\n${t.spec || ''}\n${(t.paths || []).join('\n')}` });
-  return `${pre}${WORKER_PREAMBLE}${mcpNote}${msw}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}# Task: ${t.title}\n\n${t.spec}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
+  return `${WORKER_PREAMBLE}${msw}${mcpNote}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}${t.resume ? RESUME_NOTE : ''}# Task\n\n${t.spec}\n\nTitle: ${t.title}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 
 /** Providers whose CLI is being updated (core/cli-update.mjs): their queued tasks wait; only the update's own check task runs. */

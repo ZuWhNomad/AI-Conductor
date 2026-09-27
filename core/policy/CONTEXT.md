@@ -19,6 +19,9 @@ not `core/*.mjs`.
 - `priors.json` — shipped hand-picked scorecard tiers. Rules resolve category, then kind, then default; exact
   machine overrides live in `scorecard.priors`. `core/priors.mjs` retains the code table as the no-file fallback.
 
+`context-windows.json` holds verified shipped model context sizes; `core/compaction.mjs` loads it. Per-machine exact
+overrides live in `models.contextWindows`, and learned ceilings live in state `context-windows.json`.
+
 **Invariants.** Machine-independent: no absolute paths, no user names, tools referenced by name. Keep each file short
 enough that a small local model can hold it with the tools' schemas. Path-free: the loaders build paths from
 `REPO_ROOT`, so a folder move here means changing them (`conductor.mjs`, `tasks.mjs`, `recipes.mjs`).
