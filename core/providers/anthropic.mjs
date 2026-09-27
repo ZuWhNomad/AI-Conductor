@@ -153,11 +153,11 @@ export async function pollLimits() {
 // a known non-model suffix (overage_included, overage, oauth_apps). Global keys (five_hour, seven_day) remain unscoped.
 // model_scoped rows are ALWAYS scoped to their own display_name (familyRe, else a regex-escaped name), never left
 // unscoped, so a novel model window (e.g. "Nimbus Quill") never blocks the entire provider.
-const CLAUDE_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
-const familyRe = (s) => CLAUDE_FAMILIES.find((f) => String(s || '').toLowerCase().includes(f)) || null;
+export const CLAUDE_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
+export const familyRe = (s) => CLAUDE_FAMILIES.find((f) => new RegExp(`(^|[^a-z0-9])${f}([^a-z0-9]|$)`, 'i').test(String(s || ''))) || null;
 // Vendor display names / key suffixes become models: regexes. Escape metacharacters and treat
 // runs of [-_ ] as interchangeable so "Nimbus Quill" matches claude-nimbus-quill-1.
-function escapeScope(s) {
+export function escapeScope(s) {
   return String(s || '').toLowerCase().replace(/[-_ ]+/g, '\0').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\0/g, '[-_ ]');
 }
 const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_haiku: 'weekly Haiku', seven_day_fable: 'weekly Fable', seven_day_overage_included: 'weekly (overage)', overage: 'overage' };

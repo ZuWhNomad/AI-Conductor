@@ -1,7 +1,7 @@
 // Limit registry: per-provider usage windows. Never assumed static — polled, updated from live
 // rate-limit events and HTTP headers, and re-derived on every refresh.
 import { PROVIDERS } from './providers/index.mjs';
-import { windowFromEvent } from './providers/anthropic.mjs';
+import { windowFromEvent, familyRe, escapeScope } from './providers/anthropic.mjs';
 import { statSync } from 'node:fs';
 import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 import { bus } from './bus.mjs';
@@ -136,16 +136,27 @@ function earliestReset(windows = []) {
   return full.length ? Math.min(...full) : null;
 }
 
-/** `models` regex, or `fable` when that field is absent and the label names Fable. */
-export const windowModels = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
+/** `models` regex, or derived scope for stale model:* windows, or `fable` when label names Fable. */
+export const windowModels = (w) => w?.models || (w?.id?.startsWith('model:') ? (familyRe(w.id.slice(6)) || escapeScope(w.id.slice(6))) : (/(^|[^a-z0-9])fable([^a-z0-9]|$)/i.test(w?.label || '') ? 'fable' : null));
 const modelScoped = (w) => !!windowModels(w);
 const globalWindowBlocks = (w) => !modelScoped(w) && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
+
+function anchorPattern(s) {
+  const p = String(s || '');
+  if (p.startsWith('^') || p.endsWith('$')) return p;
+  const prefix = /^[a-z0-9]/i.test(p) ? '(^|[^a-z0-9])' : '';
+  const suffix = /[a-z0-9]$/i.test(p) ? '([^a-z0-9]|$)' : '';
+  return prefix + (prefix || suffix ? '(?:' + p + ')' : p) + suffix;
+}
 
 function windowApplies(w, model) {
   const models = windowModels(w);
   if (!models || !model) return true;
-  try { return new RegExp(models, 'i').test(model); }
-  catch { return String(model).toLowerCase().includes(String(models).toLowerCase()); }
+  try { return new RegExp(anchorPattern(models), 'i').test(model); }
+  catch {
+    const escaped = String(models).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(anchorPattern(escaped), 'i').test(model);
+  }
 }
 
 const windowAvailable = (w) => w.status !== 'rejected' && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100;
@@ -205,7 +216,7 @@ function preserveConfirmedLimit(prev, merged, r, before) {
 }
 
 export function mergePoll(prev, r, before = prev, observed = new Set()) {
-  const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !w.models)) : null };
+  const merged = { ...r, blockedUntil: r.blocked ? earliestReset(r.windows?.filter((w) => !modelScoped(w))) : null };
   if (observed.has(HTTP)) {
     delete merged.httpRetryUntil;
     if (prev.last429At != null) merged.last429At = prev.last429At;
@@ -215,7 +226,7 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
   // Preserve only windows observed since this poll began, including allowed transitions.
   const live = (prev.windows || []).filter((w) => observed.has(w.id));
   if (live.length) merged.windows = [...(r.windows || []).filter((w) => !observed.has(w.id)), ...live];
-  if (observed.has(BLOCK) || live.some((w) => !w.models)) {
+  if (observed.has(BLOCK) || live.some((w) => !modelScoped(w))) {
     const full = (merged.windows || []).filter(globalWindowBlocks);
     const independentBlock = merged.blocked && !(r.windows || []).some(globalWindowBlocks) && !observed.has(BLOCK);
     // Window-derived aggregate blocks have no reason; window-backed rejections are already in full.
@@ -230,7 +241,7 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
   // A poll started before a newer 429 cannot establish recovery from that rejection either.
   const recovered = !observed.has(HTTP) && before.last429At === prev.last429At && before.blockedUntil === prev.blockedUntil
     && before.httpRetryUntil === prev.httpRetryUntil
-    && r.windows?.some((w) => w.id === 'requests' && !w.models && w.status !== 'rejected'
+    && r.windows?.some((w) => w.id === 'requests' && !modelScoped(w) && w.status !== 'rejected'
       && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100
       && (!w.resetsAt || w.resetsAt > Date.now()));
   if (prev.blocked && httpUntil > Date.now() && !recovered) {
@@ -320,10 +331,10 @@ export function noteRateLimitEvent(providerId, info) {
     p.windows = [...(p.windows || []).filter((x) => x.id !== w.id), w];
     observe(providerId, w.id);
   }
-  if (info?.status === 'rejected' && !w?.models) {
+  if (info?.status === 'rejected' && !modelScoped(w)) {
     p.blocked = true; p.blockedUntil = w?.resetsAt || Date.now() + blockedMs(); p.blockedReason = info.rateLimitType || 'rate_limit';
     observe(providerId, BLOCK);
-  } else if ((info?.status === 'allowed' || info?.status === 'allowed_warning') && (p.blockedReason === info.rateLimitType || (w && !w.models && !p.blockedReason))) {
+  } else if ((info?.status === 'allowed' || info?.status === 'allowed_warning') && (p.blockedReason === info.rateLimitType || (w && !modelScoped(w) && !p.blockedReason))) {
     const full = (p.windows || []).filter(globalWindowBlocks);
     p.blocked = !!full.length; p.blockedUntil = earliestReset(full); p.blockedReason = null;
     observe(providerId, BLOCK);

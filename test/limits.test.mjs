@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 
-const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlockedUntil, providerWindows } = await import('../core/limits.mjs');
-const { normalizeUsage, windowFromEvent } = await import('../core/providers/anthropic.mjs');
+const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlockedUntil, providerWindows, windowModels } = await import('../core/limits.mjs');
+const { normalizeUsage, windowFromEvent, familyRe } = await import('../core/providers/anthropic.mjs');
 const { PROVIDERS } = await import('../core/providers/index.mjs');
 
 test('quota groups are derived from the windows that meter each model', () => {
@@ -1507,4 +1507,60 @@ test('C3: unknown providers are dropped on load and persist, while known and con
     delete getLimits().providers['test-null-model'];
     delete getLimits().providers['test-prov-avail'];
   }
+});
+
+test('familyRe and windowApplies anchor model-family and window matching to word boundaries', () => {
+  assert.equal(familyRe('claude-opus-5-5'), 'opus');
+  assert.equal(familyRe('Opus'), 'opus');
+  assert.equal(familyRe('magnum-opusx'), null);
+  assert.equal(familyRe('octopus'), null);
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    model_scoped: [
+      { display_name: 'magnum-opusx', utilization: 100 },
+      { display_name: 'Opus 5', utilization: 100 },
+    ],
+  } });
+  assert.equal(r.windows.find((w) => w.id === 'model:magnum-opusx').models, 'magnum[-_ ]opusx');
+  assert.equal(r.windows.find((w) => w.id === 'model:Opus 5').models, 'opus');
+
+  const id = 'anchored-window-test', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [
+      { id: 'weekly-opus', label: 'weekly Opus', models: 'opus', usedPercent: 100, resetsAt: reset },
+    ] };
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5-5'), reset, 'claude-opus-5-5 matches opus window');
+    assert.equal(modelBlockedUntil(id, 'Opus'), reset, 'Opus matches opus window');
+    assert.equal(modelBlockedUntil(id, 'magnum-opusx'), null, 'magnum-opusx does not match opus window');
+    assert.equal(modelBlockedUntil(id, 'octopus'), null, 'octopus does not match opus window');
+    assert.equal(providerWindows(id, 'octopus').length, 0);
+    assert.equal(providerWindows(id, 'claude-opus-5-5').length, 1);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('stale unscoped model:* window applies only to its own model and never blocks all models', () => {
+  const id = 'stale-unscoped-model-win', reset = Date.now() + 60_000;
+  try {
+    const staleNimbus = { id: 'model:Nimbus Quill', label: 'weekly Nimbus Quill', usedPercent: 100, resetsAt: reset };
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [staleNimbus] };
+
+    assert.equal(windowModels(staleNimbus), 'nimbus[-_ ]quill');
+    assert.equal(blockedUntil(id), null, 'stale unscoped model window must not block provider');
+    assert.equal(modelBlockedUntil(id, null), null, 'stale unscoped model window must not block null model');
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null, 'stale Nimbus Quill window must not block Opus');
+    assert.equal(modelBlockedUntil(id, 'claude-sonnet-5'), null, 'stale Nimbus Quill window must not block Sonnet');
+    assert.equal(providerWindows(id, 'claude-opus-5').length, 0, 'Opus does not meter Nimbus Quill window');
+
+    assert.equal(modelBlockedUntil(id, 'claude-nimbus-quill-1'), reset, 'stale Nimbus Quill window blocks its own model');
+    assert.equal(providerWindows(id, 'claude-nimbus-quill-1').length, 1);
+
+    const staleOpus = { id: 'model:Opus', label: 'weekly Opus', usedPercent: 100, resetsAt: reset };
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [staleOpus] };
+    assert.equal(windowModels(staleOpus), 'opus');
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5-5'), reset, 'stale Opus window blocks Opus');
+    assert.equal(modelBlockedUntil(id, 'claude-sonnet-5'), null, 'stale Opus window does not block Sonnet');
+    assert.equal(modelBlockedUntil(id, 'octopus'), null, 'stale Opus window does not block octopus');
+    assert.equal(modelBlockedUntil(id, null), null, 'stale Opus window does not block null model');
+    assert.equal(blockedUntil(id), null, 'stale Opus window does not block provider');
+  } finally { delete getLimits().providers[id]; }
 });
