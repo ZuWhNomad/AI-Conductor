@@ -218,7 +218,7 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
       provider = pick.provider; model = pick.model; effort = ['drafting', 'modeling'].includes(inp.category) ? pick.effort : effort || pick.effort;
       difficulty = inp.difficulty || 2; // L19: persist the routed level when auto-picked
     }
-    resolved.push({ input: inp, provider, model, effort, difficulty, variant });
+    resolved.push({ input: inp, provider, model, effort, difficulty, variant, pinned: !!(inp.provider && inp.model) });
   }
   if (resolved.some((r) => r.noWorker)) {
     return resolved.map((c) => ({ ...c, id: null, taskIds: [], task: { status: 'no_worker' }, complete: false, report: '', ok: false }));
@@ -231,7 +231,8 @@ async function runTasks(inputs, { sessionId, cwd, timeoutMs, recommend, taskRunt
     }
     let t;
     try {
-      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, writableRoots: r.input.writable_roots, isolate: r.input.isolate, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, overflowApi, parallelOverride });
+      const explicitEfficiency = r.input.efficiency_mode ?? (r.input.no_failover == null ? undefined : !!r.input.no_failover);
+      t = taskRuntime.createTask({ sessionId, cwd, title: r.input.title, spec: r.input.spec, provider: r.provider, model: r.model, effort: r.effort, sandbox: r.input.sandbox, paths: r.input.paths, writableRoots: r.input.writable_roots, isolate: r.input.isolate, category: r.input.category, difficulty: r.difficulty, variant: r.variant, avoidFamilies: r.input.avoid_families, efficiencyMode: explicitEfficiency ?? (r.pinned ? true : undefined), overflowApi, parallelOverride });
     } catch (err) {
       createError = String(err?.message || err);
       for (const c of created) { if (c.id) cancelTask(c.id); }
