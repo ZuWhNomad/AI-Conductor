@@ -9,8 +9,21 @@ let cache = readJson(FILE(), { updatedAt: null, providers: {}, models: [] });
 const inflightByScope = new Map(); // coalesce concurrent refreshes per scope so an ollama-only refresh isn't returned to a full one
 let refreshGeneration = 0;
 const committedByProvider = new Map(); // request order, not completion order, determines freshness
+const unavailable = new Map(); // runtime SDK incompatibilities clear on that provider's next successful refresh
 
 export function getModels() { return cache; }
+
+/** Hide a model from lists and picks until its provider is refreshed. */
+export function markUnavailable(provider, model, reason) {
+  if (!provider || !model) return false;
+  const entry = cache.models.find((m) => m.provider === provider && (m.id === model || m.resolved === model));
+  const key = `${provider}:${entry?.id || model}`, requestedKey = `${provider}:${model}`;
+  if (unavailable.has(key) || unavailable.has(requestedKey)) return false;
+  unavailable.set(key, reason || 'unavailable');
+  unavailable.set(requestedKey, reason || 'unavailable');
+  if (entry) cache.models = cache.models.filter((m) => m !== entry);
+  return true;
+}
 
 const ORDER = ['claude', 'codex', 'ollama'];
 const sortModels = (ms) => ms.sort((a, b) => (ORDER.indexOf(a.provider) + 1 || 99) - (ORDER.indexOf(b.provider) + 1 || 99) || a.id.localeCompare(b.id));
@@ -43,6 +56,7 @@ export function refreshModels({ only = null } = {}) {
       if ((committedByProvider.get(id) || 0) > generation) { delete fresh[id]; delete lists[id]; }
       else committedByProvider.set(id, generation);
     }
+    for (const id of Object.keys(lists)) for (const key of unavailable.keys()) if (key.startsWith(`${id}:`)) unavailable.delete(key);
     const before = cache;
     const providers = { ...cache.providers, ...fresh };
     const models = cache.models.filter((m) => !Object.hasOwn(lists, m.provider)).concat(...Object.values(lists));

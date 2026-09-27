@@ -19,10 +19,17 @@ import { runCodex } from './workers/codex.mjs';
 import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { spawnTracked } from './proc.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
-import { getModels, findModel } from './models.mjs';
+import { getModels, findModel, markUnavailable } from './models.mjs';
 import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow, estimateTokens } from './compaction.mjs';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');
+const REQUIRED_VERSION_RE = /version\s+(\d+\.\d+\.\d+)\s+or newer is required/i;
+function noteRequiredVersion(s, message) {
+  const version = String(message || '').match(REQUIRED_VERSION_RE)?.[1];
+  if (!version) return false;
+  if (markUnavailable(s.provider || 'claude', s.model, String(message))) logImprovement('friction', `conductor:${s.runtime}`, `update @anthropic-ai/claude-agent-sdk (needs Claude Code >= ${version})`, { sessionId: s.id, model: s.model });
+  return true;
+}
 // Policy + the structural playbook (model-agnostic). {{CONDUCTOR_DOCS}} is this install's docs/, whatever the chat's cwd.
 export const PROMPT = (prompt('conductor.md') + '\n\n' + prompt('orchestration.md')).replaceAll('{{CONDUCTOR_DOCS}}', () => join(REPO_ROOT, 'docs'));
 const PROMPT_CODEX = prompt('conductor-codex.md');
@@ -297,6 +304,7 @@ async function pump(s, q) {
         const blocks = (m.message.content || []).map((b) => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input } : b.type === 'thinking' ? { type: 'thinking', text: b.thinking || '' } : { type: b.type });
         const msg = { role: 'assistant', blocks, parent: m.parent_tool_use_id, error: m.error || null, subagent: m.subagent_type || null, usage: m.message?.usage || null };
         pushMessage(s, msg); emit(s, 'assistant', msg);
+        noteRequiredVersion(s, m.error);
         if (m.error) logImprovement('error', 'conductor', `assistant error: ${m.error}`, { sessionId: s.id });
       } else if (m.type === 'user') {
         const content = m.message?.content;
@@ -316,6 +324,7 @@ async function pump(s, q) {
         const msg = { role: 'result', subtype: m.subtype, isError: !!m.is_error, text: m.subtype === 'success' && !m.is_error ? '' : (m.errors?.length ? m.errors : [m.result]).filter(Boolean).join('; '), costUsd: m.total_cost_usd, durationMs: m.duration_ms, numTurns: m.num_turns, usage: m.modelUsage || null };
         if (s.interrupted) { msg.subtype = 'interrupted'; msg.text = s.interrupted; s.interrupted = false; }
         pushMessage(s, msg); emit(s, 'result', msg); emit(s, 'status', { status: s.status });
+        noteRequiredVersion(s, msg.text);
         if (m.is_error && msg.subtype !== 'interrupted') logImprovement('error', 'conductor', `result error: ${msg.text || m.subtype}`, { sessionId: s.id });
         if (s.restartPending && !more) { // e.g. effort/permission mode changed: restart the process (same session) without losing queued messages
           s.restartPending = false;
@@ -336,6 +345,7 @@ async function pump(s, q) {
     }
   } catch (e) {
     const msg = String(e?.message || e);
+    noteRequiredVersion(s, msg);
     if (!abort?.signal.aborted && !/aborted/i.test(msg)) {
       emit(s, 'error', { message: msg });
       logImprovement('error', 'conductor', `session loop error: ${msg}`, { sessionId: s.id });

@@ -3,8 +3,19 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { bus } from '../bus.mjs';
 import { spawnTracked } from '../proc.mjs';
+import { markUnavailable } from '../models.mjs';
+import { logImprovement } from '../improve.mjs';
 
 const LIMIT_RE = /usage limit|rate limit|limit reached|too many requests|\b429\b/i;
+const REQUIRED_VERSION_RE = /version\s+(\d+\.\d+\.\d+)\s+or newer is required/i;
+
+function noteRequiredVersion(t, message) {
+  const version = String(message || '').match(REQUIRED_VERSION_RE)?.[1];
+  if (!version) return false;
+  const provider = t.provider || 'claude', model = t.model;
+  if (markUnavailable(provider, model, String(message))) logImprovement('friction', `worker:${provider}`, `update @anthropic-ai/claude-agent-sdk (needs Claude Code >= ${version})`, { taskId: t.id, model });
+  return true;
+}
 
 // 2026-09-25: a worker ran `taskkill //F //IM node.exe` to stop its own script and killed the Conductor server.
 // Killing by image or name hits every process of that name on the machine; only a PID the agent started is safe.
@@ -33,7 +44,7 @@ export async function runClaude(t) {
   const onAbort = () => abort.abort();
   t.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = t.timeoutMs ? setTimeout(() => abort.abort(), t.timeoutMs) : null;
-  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false, authFailed: false };
+  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false, authFailed: false, envFailed: false };
   const emit = (event, data) => bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data });
   const started = Date.now();
   const bypass = (t.permissionMode || 'bypassPermissions') === 'bypassPermissions';
@@ -66,7 +77,7 @@ export async function runClaude(t) {
     for await (const m of q) {
       if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; res.servedModel = m.model || null; emit('session', { sessionId: m.session_id, model: m.model }); }
       else if (m.type === 'assistant') {
-        if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; }
+        if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; if (noteRequiredVersion(t, m.error)) res.envFailed = true; }
         for (const b of m.message.content || []) {
           if (b.type === 'text' && b.text) { res.items.push({ type: 'agent_message', text: b.text }); emit('item', { item: { type: 'agent_message', text: b.text }, phase: 'completed' }); }
           if (b.type === 'tool_use') { res.items.push({ type: 'tool_use', name: b.name, input: b.input }); emit('item', { item: { type: 'tool_use', name: b.name, input: summarizeInput(b.input) }, phase: 'started' }); }
@@ -83,6 +94,7 @@ export async function runClaude(t) {
         res.usage = m.modelUsage || m.usage || null; res.costUsd = m.total_cost_usd || 0;
         if (res.usage) emit('usage', { usage: res.usage });
         if (m.is_error || m.subtype !== 'success') res.error = res.error || res.finalMessage || m.subtype;
+        if (noteRequiredVersion(t, res.error)) res.envFailed = true;
         // Only an ERROR result can mean a limit; a successful report that merely mentions "rate limit" must not park the task.
         if ((m.is_error || m.subtype !== 'success') && LIMIT_RE.test(res.finalMessage || '')) res.limitHit = true;
       }
@@ -92,6 +104,7 @@ export async function runClaude(t) {
     else if (sawRejectedLimit) res.limitHit = true;
   } catch (e) {
     res.error = res.error || (abort.signal.aborted ? (t.timeoutMs ? 'timeout' : 'aborted') : String(e?.message || e));
+    if (noteRequiredVersion(t, res.error)) res.envFailed = true;
     if (LIMIT_RE.test(res.error)) res.limitHit = true;
   } finally {
     if (timer) clearTimeout(timer);
