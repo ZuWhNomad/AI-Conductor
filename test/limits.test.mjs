@@ -493,7 +493,7 @@ test('a confirmed limit survives an estimated refresh until real availability is
     assert.equal(blockedUntil(id), reset);
     assert.equal(getLimits().providers[id].blockedReason, 'limit_hit');
     assert.equal(getLimits().providers[id].windows[0].usedPercent, 100);
-    assert.equal(noteLimitAvailable(id, 'grok-4.5'), true, 'a successful run on a globally blocked provider establishes recovery');
+    assert.equal(noteLimitAvailable(id, 'grok-4.5', getLimits().providers[id].confirmedLimit.hitAt + 1), true, 'a successful run on a globally blocked provider establishes recovery');
     assert.equal(blockedUntil(id), null);
     noteLimitHit(id, { model: 'grok-4.6', resetsAt: reset });
     estimated = false;
@@ -532,9 +532,152 @@ test('a confirmed hit on a model-scoped window blocks only that model', () => {
     assert.equal(p.windows.find((w) => w.id === 'session').usedPercent, 30);
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), reset);
     assert.equal(modelBlockedUntil(id, 'claude-sonnet-5'), null);
-    assert.equal(noteLimitAvailable(id, 'claude-sonnet-5'), false);
+    assert.equal(noteLimitAvailable(id, 'claude-sonnet-5', p.confirmedLimit.hitAt + 1), false);
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), reset);
-    assert.equal(noteLimitAvailable(id, 'claude-opus-5'), true);
+    assert.equal(noteLimitAvailable(id, 'claude-opus-5', p.confirmedLimit.hitAt + 1), true);
+    assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('confirmed recovery requires every recorded window and reset evidence for each', () => {
+  const id = 'confirmed-reset-proof', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [
+      { id: 'weekly-a', models: 'opus', usedPercent: 60, resetsAt: reset },
+      { id: 'weekly-b', models: 'opus', usedPercent: 70, resetsAt: reset },
+    ] };
+    noteLimitHit(id, { model: 'opus' });
+    const hit = structuredClone(getLimits().providers[id]);
+    const poll = (windows) => ({ provider: id, blocked: false, windows });
+    const lagging = mergePoll(hit, poll([
+      { id: 'weekly-a', models: 'opus', usedPercent: 50, resetsAt: reset },
+      { id: 'weekly-b', models: 'opus', usedPercent: 60, resetsAt: reset },
+    ]), hit);
+    assert.ok(lagging.confirmedLimit, 'a small utilization change in the same window is not a reset');
+    const missing = mergePoll(hit, poll([{ id: 'weekly-a', models: 'opus', usedPercent: 20, resetsAt: reset }]), hit);
+    assert.ok(missing.confirmedLimit, 'every recorded real window must be present');
+    const recovered = mergePoll(hit, poll([
+      { id: 'weekly-a', models: 'opus', usedPercent: 40, resetsAt: reset },
+      { id: 'weekly-b', models: 'opus', usedPercent: 69, resetsAt: reset + 60_000 },
+    ]), hit);
+    assert.equal(recovered.confirmedLimit, undefined);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('a hit refreshes confirmation even when the model was already blocked', (ctx) => {
+  const id = 'confirmed-existing', now = Date.now(), reset = now + 60_000;
+  let clock = now; ctx.mock.method(Date, 'now', () => clock);
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 100, resetsAt: reset }] };
+    assert.equal(noteLimitHit(id, { model: 'opus' }), reset);
+    assert.equal(getLimits().providers[id].confirmedLimit.hitAt, now);
+    clock++;
+    assert.equal(noteLimitHit(id, { model: 'opus', resetsAt: now + 1000 }), reset);
+    assert.equal(getLimits().providers[id].confirmedLimit.hitAt, clock);
+    assert.equal(getLimits().providers[id].confirmedLimit.blockedUntil, reset);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('a near-full global window makes an ambiguous model hit provider-wide', () => {
+  const reset = Date.now() + 60_000;
+  for (const [usedPercent, global] of [[89, false], [90, true], [undefined, true]]) {
+    const id = `confirmed-scope-${String(usedPercent)}`;
+    try {
+      getLimits().providers[id] = { provider: id, blocked: false, windows: [
+        { id: 'session', label: '5-hour', usedPercent, resetsAt: reset },
+        { id: 'weekly', label: 'weekly Opus', models: 'opus', usedPercent: 40, resetsAt: reset + 60_000 },
+      ] };
+      noteLimitHit(id, { model: 'claude-opus' });
+      const p = getLimits().providers[id];
+      assert.equal(p.confirmedLimit.global, global);
+      assert.equal(p.windows.find((w) => w.id === (global ? 'session' : 'weekly')).usedPercent, 100);
+      assert.equal(modelBlockedUntil(id, 'claude-sonnet') !== null, global);
+    } finally { delete getLimits().providers[id]; }
+  }
+});
+
+test('null-model availability ignores model-scoped blocks but display keeps their windows', () => {
+  const id = 'confirmed-null-model', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly-fable', label: 'weekly Fable', usedPercent: 100, resetsAt: reset }] };
+    assert.equal(providerWindows(id, null).length, 1, 'display callers still receive all windows');
+    assert.equal(modelBlockedUntil(id, null), null);
+    assert.equal(modelBlockedUntil(id, 'fable'), reset);
+    noteLimitHit(id, { model: 'fable' });
+    assert.equal(modelBlockedUntil(id, null), null, 'a scoped confirmation is also invisible to default selection');
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('confirmed deadlines use targeted resets and only shorten for retry-after', (ctx) => {
+  const now = Date.now(), sessionReset = now + 5 * 60 * 60_000, weeklyReset = now + 7 * 24 * 60 * 60_000;
+  ctx.mock.method(Date, 'now', () => now);
+  const state = (id) => { getLimits().providers[id] = { provider: id, blocked: false, windows: [
+    { id: 'session', label: '5-hour', usedPercent: 40, resetsAt: sessionReset },
+    { id: 'weekly', label: 'weekly Opus', models: 'opus', usedPercent: 40, resetsAt: weeklyReset },
+  ] }; };
+  try {
+    state('confirmed-target-reset');
+    assert.equal(noteLimitHit('confirmed-target-reset', { model: 'opus' }), weeklyReset);
+    state('confirmed-short-retry');
+    assert.equal(noteLimitHit('confirmed-short-retry', { model: 'opus', retryAfterMs: 60_000 }), now + 60_000);
+    state('confirmed-long-retry');
+    assert.equal(noteLimitHit('confirmed-long-retry', { model: 'opus', retryAfterMs: 8 * 24 * 60 * 60_000 }), weeklyReset);
+  } finally {
+    for (const id of ['confirmed-target-reset', 'confirmed-short-retry', 'confirmed-long-retry']) delete getLimits().providers[id];
+  }
+});
+
+test('legacy Fable labels share one scope helper for hits, display, and recovery', () => {
+  const id = 'confirmed-legacy-fable', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [
+      { id: 'session', label: '5-hour', usedPercent: 20, resetsAt: reset },
+      { id: 'fable', label: 'weekly Fable', usedPercent: 40, resetsAt: reset },
+    ] };
+    noteLimitHit(id, { model: 'my-fable-model' });
+    const p = getLimits().providers[id];
+    assert.deepEqual(providerWindows(id, 'other').map((w) => w.id), ['session']);
+    assert.equal(p.confirmedLimit.global, false);
+    assert.equal(p.windows.find((w) => w.id === 'fable').usedPercent, 100);
+    assert.equal(noteLimitAvailable(id, 'other', p.confirmedLimit.hitAt + 1), false);
+    assert.equal(noteLimitAvailable(id, 'another-fable', p.confirmedLimit.hitAt + 1), true);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('clearing confirmation does not overwrite newer utilization', () => {
+  const id = 'confirmed-newer-usage', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
+    noteLimitHit(id, { model: 'opus' });
+    const p = getLimits().providers[id], startedAt = p.confirmedLimit.hitAt + 1;
+    p.windows[0].usedPercent = 55;
+    assert.equal(noteLimitAvailable(id, 'opus', startedAt), true);
+    assert.equal(p.windows[0].usedPercent, 55);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('a full fresh poll retains pre-hit utilization for later clearing', () => {
+  const id = 'confirmed-retain-prior', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
+    noteLimitHit(id, { model: 'opus' });
+    const hit = structuredClone(getLimits().providers[id]);
+    const retained = mergePoll(hit, { provider: id, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 100, resetsAt: reset }] }, hit);
+    assert.equal(retained.confirmedLimit.windows[0].usedPercent, 40);
+    getLimits().providers[id] = retained;
+    assert.equal(noteLimitAvailable(id, 'opus', retained.confirmedLimit.hitAt + 1), true);
+    assert.equal(retained.windows[0].usedPercent, 40);
+  } finally { delete getLimits().providers[id]; }
+});
+
+test('success on a different model clears a shared scoped window', () => {
+  const id = 'confirmed-shared-model', reset = Date.now() + 60_000;
+  try {
+    getLimits().providers[id] = { provider: id, blocked: false, windows: [{ id: 'weekly-opus', models: 'opus', usedPercent: 40, resetsAt: reset }] };
+    noteLimitHit(id, { model: 'claude-opus-5' });
+    const hitAt = getLimits().providers[id].confirmedLimit.hitAt;
+    assert.equal(noteLimitAvailable(id, 'claude-sonnet-5', hitAt + 1), false);
+    assert.equal(noteLimitAvailable(id, 'opus-preview', hitAt + 1), true);
     assert.equal(modelBlockedUntil(id, 'claude-opus-5'), null);
   } finally { delete getLimits().providers[id]; }
 });

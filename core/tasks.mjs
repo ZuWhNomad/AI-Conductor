@@ -442,13 +442,13 @@ async function run(t) {
     const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
     if (r.limitHit && !r.ok && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
+      noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
       await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
       if (t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
         t.limitHit = true; // never scored against the model
-        noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
       }
     }
-    if (r.ok) noteLimitAvailable(t.provider, t.model);
+    if (r.ok) noteLimitAvailable(t.provider, t.model, t.startedAt);
     if (t.status === 'canceled') { /* keep */ }
     else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit && !r.ok) {

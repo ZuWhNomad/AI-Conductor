@@ -129,12 +129,15 @@ function earliestReset(windows = []) {
   return full.length ? Math.min(...full) : null;
 }
 
-const globalWindowBlocks = (w) => !w.models && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
+const windowModels = (w) => w.models || (/fable/i.test(w.label || '') ? 'fable' : null);
+const modelScoped = (w) => !!windowModels(w);
+const globalWindowBlocks = (w) => !modelScoped(w) && (w.status === 'rejected' || w.usedPercent >= 100) && (!w.resetsAt || w.resetsAt > Date.now());
 
 function windowApplies(w, model) {
-  if (!w.models || !model) return true;
-  try { return new RegExp(w.models, 'i').test(model); }
-  catch { return String(model).toLowerCase().includes(String(w.models).toLowerCase()); }
+  const models = windowModels(w);
+  if (!models || !model) return true;
+  try { return new RegExp(models, 'i').test(model); }
+  catch { return String(model).toLowerCase().includes(String(models).toLowerCase()); }
 }
 
 const windowAvailable = (w) => w.status !== 'rejected' && Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent < 100;
@@ -145,6 +148,7 @@ function clearConfirmedLimit(p) {
   for (const prior of hit.windows || []) {
     const i = (p.windows || []).findIndex((w) => w.id === prior.id);
     if (i < 0) continue;
+    if (p.windows[i].usedPercent !== 100) continue;
     if (prior.synthetic) p.windows.splice(i, 1);
     else {
       const w = { ...p.windows[i] };
@@ -165,7 +169,14 @@ function preserveConfirmedLimit(prev, merged, r, before) {
   const hit = prev.confirmedLimit;
   if (!hit || hit.blockedUntil <= Date.now()) return merged;
   const real = (r.windows || []).filter((w) => !w.estimated && windowApplies(w, hit.model));
-  const recovered = before.confirmedLimit?.hitAt === hit.hitAt && real.length && real.every(windowAvailable);
+  const required = (hit.windows || []).filter((w) => !w.synthetic);
+  const recovered = before.confirmedLimit?.hitAt === hit.hitAt && real.length && required.every((prior) => {
+    const fresh = real.find((w) => w.id === prior.id);
+    if (!fresh || !windowAvailable(fresh)) return false;
+    const resetMoved = Number.isFinite(prior.resetsAt) && Number.isFinite(fresh.resetsAt) && fresh.resetsAt > prior.resetsAt;
+    const usageDropped = Number.isFinite(prior.usedPercent) && Number.isFinite(fresh.usedPercent) && fresh.usedPercent <= prior.usedPercent - 20;
+    return resetMoved || usageDropped;
+  });
   if (recovered) return merged;
   const windows = [...(merged.windows || [])];
   const retained = [];
@@ -174,8 +185,9 @@ function preserveConfirmedLimit(prev, merged, r, before) {
     if (!w) continue;
     const i = windows.findIndex((x) => x.id === w.id);
     const reportedFull = i >= 0 && !windows[i].estimated && (windows[i].status === 'rejected' || windows[i].usedPercent >= 100);
-    if (reportedFull) continue;
-    if (i < 0) windows.push(w); else windows[i] = w;
+    if (!reportedFull) {
+      if (i < 0) windows.push(w); else windows[i] = w;
+    }
     retained.push(prior);
   }
   merged.windows = windows;
@@ -226,18 +238,20 @@ export function mergePoll(prev, r, before = prev, observed = new Set()) {
 
 /** Persist a worker-confirmed usage-limit hit. Existing HTTP/SDK blocks remain authoritative. */
 export function noteLimitHit(providerId, { model = null, retryAfterMs = null, resetsAt = null } = {}) {
-  const existing = modelBlockedUntil(providerId, model);
-  if (existing) return existing;
   getLimits();
   const now = Date.now();
   const p = cache.providers[providerId] || { provider: providerId, windows: [] };
+  const existing = modelBlockedUntil(providerId, model);
   const applicable = (p.windows || []).filter((w) => windowApplies(w, model));
-  const scoped = model ? applicable.filter((w) => w.models) : [];
-  let targets = scoped.length ? scoped : applicable.filter((w) => !w.models);
-  const known = applicable.map((w) => w.resetsAt).filter((at) => at > now);
-  const until = known.length ? Math.min(...known)
-    : resetsAt > now ? resetsAt
-      : Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? now + retryAfterMs : now + blockedMs();
+  const scoped = model ? applicable.filter(modelScoped) : [];
+  const globals = applicable.filter((w) => !modelScoped(w));
+  const likelyGlobals = scoped.length ? globals.filter((w) => w.usedPercent == null || w.usedPercent >= 90) : [];
+  let targets = scoped.length && !likelyGlobals.length ? scoped : likelyGlobals.length ? likelyGlobals : globals;
+  const known = targets.map((w) => w.resetsAt).filter((at) => at > now);
+  const windowUntil = known.length ? Math.min(...known) : resetsAt > now ? resetsAt : now + blockedMs();
+  const retryUntil = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? now + retryAfterMs : null;
+  let until = retryUntil && retryUntil < windowUntil ? retryUntil : windowUntil;
+  until = Math.max(until, existing || 0, p.confirmedLimit?.blockedUntil || 0);
   if (!targets.length) {
     const synthetic = { id: `${providerId}:estimated`, label: 'estimated usage', usedPercent: 0, resetsAt: until, estimated: true };
     p.windows = [...(p.windows || []), synthetic]; targets = [synthetic];
@@ -245,13 +259,23 @@ export function noteLimitHit(providerId, { model = null, retryAfterMs = null, re
   const previous = p.confirmedLimit?.windows || [];
   const marked = targets.map((w) => {
     const prior = previous.find((x) => x.id === w.id);
-    return prior || { id: w.id, synthetic: !!w.estimated && w.id === `${providerId}:estimated`, hadUsedPercent: Object.hasOwn(w, 'usedPercent'), usedPercent: w.usedPercent };
+    return {
+      id: w.id,
+      synthetic: prior?.synthetic ?? (!!w.estimated && w.id === `${providerId}:estimated`),
+      hadUsedPercent: prior?.hadUsedPercent ?? Object.hasOwn(w, 'usedPercent'),
+      usedPercent: prior?.usedPercent ?? w.usedPercent,
+      resetsAt: w.resetsAt,
+      models: windowModels(w),
+      label: w.label,
+    };
   });
   const ids = new Set(marked.map((w) => w.id));
   p.windows = (p.windows || []).map((w) => ids.has(w.id) ? { ...w, usedPercent: 100 } : w);
-  const global = !scoped.length;
+  const global = !scoped.length || !!likelyGlobals.length;
   p.confirmedLimit = { hitAt: now, model, global, blockedUntil: until, windows: marked };
-  if (global) { p.blocked = true; p.blockedUntil = until; p.blockedReason = 'limit_hit'; observe(providerId, BLOCK); }
+  if (global && (!p.blockedReason || p.blockedReason === 'limit_hit')) {
+    p.blocked = true; p.blockedUntil = until; p.blockedReason = 'limit_hit'; observe(providerId, BLOCK);
+  }
   for (const w of targets) observe(providerId, w.id);
   p.source = 'worker'; p.updatedAt = nowIso();
   cache.providers[providerId] = p;
@@ -260,10 +284,12 @@ export function noteLimitHit(providerId, { model = null, retryAfterMs = null, re
 }
 
 /** A later successful worker run is positive availability evidence for its provider/model. */
-export function noteLimitAvailable(providerId, model = null) {
+export function noteLimitAvailable(providerId, model = null, startedAt = null) {
   getLimits();
   const p = cache.providers[providerId], hit = p?.confirmedLimit;
-  if (!hit || (!hit.global && ((hit.model && model && hit.model !== model) || (hit.model && !model)))) return false;
+  const started = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt);
+  if (!hit || !Number.isFinite(started) || started <= hit.hitAt) return false;
+  if (!hit.global && (!model || (model !== hit.model && !(hit.windows || []).some((w) => modelScoped(w) && windowApplies(w, model))))) return false;
   clearConfirmedLimit(p);
   p.source = 'worker'; p.updatedAt = nowIso();
   save();
@@ -385,7 +411,7 @@ export function blockedUntil(providerId) {
 
 /** Windows metered by this model; no model means all groups. */
 export function providerWindows(provider, model = null) {
-  return (getLimits().providers[provider]?.windows || []).filter((w) => windowApplies({ ...w, models: w.models || (/fable/i.test(w.label || '') ? 'fable' : null) }, model));
+  return (getLimits().providers[provider]?.windows || []).filter((w) => windowApplies(w, model));
 }
 
 /** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
@@ -394,8 +420,8 @@ export function modelBlockedUntil(provider, model = null) {
   if (global) return global;
   const now = Date.now();
   const hit = getLimits().providers[provider]?.confirmedLimit;
-  if (hit && (!hit.model || !model || hit.model === model) && hit.blockedUntil > now) return hit.blockedUntil;
-  const full = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > now) && (w.status === 'rejected' || w.usedPercent >= 100));
+  if (hit && hit.blockedUntil > now && (hit.global || (model && (model === hit.model || (hit.windows || []).some((w) => modelScoped(w) && windowApplies(w, model)))))) return hit.blockedUntil;
+  const full = providerWindows(provider, model).filter((w) => (model != null || !modelScoped(w)) && (!w.resetsAt || w.resetsAt > now) && (w.status === 'rejected' || w.usedPercent >= 100));
   return full.length ? Math.min(...full.map((w) => w.resetsAt || now + blockedMs())) : null;
 }
 

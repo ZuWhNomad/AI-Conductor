@@ -943,6 +943,61 @@ async function tasksWithWorker(ctx, worker) {
   return tk;
 }
 
+test('a success that started before a confirmed hit cannot clear it', async (ctx) => {
+  const { getLimits, modelBlockedUntil, noteLimitHit } = await import('../core/limits.mjs');
+  const provider = 'stale-success-limit', model = 'shared-model', reset = Date.now() + 60_000;
+  const entered = Promise.withResolvers(), finish = Promise.withResolvers();
+  PROVIDERS[provider] = { id: provider, pollLimits: async () => ({ provider, blocked: false, windows: [] }) };
+  getLimits().providers[provider] = { provider, blocked: false, windows: [] };
+  const tk = await tasksWithWorker(ctx, async () => { entered.resolve(); return finish.promise; });
+  const t = tk.createTask({ cwd: tmpDir('stale-success-limit'), provider, model, spec: 'x' });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    await entered.promise;
+    noteLimitHit(provider, { model, resetsAt: reset });
+    getLimits().providers[provider].confirmedLimit.hitAt = Date.parse(t.startedAt) + 1;
+    finish.resolve({ ok: true, finalMessage: 'done' });
+    assert.equal((await tk.awaitTask(t.id)).status, 'done');
+    assert.equal(modelBlockedUntil(provider, model), reset);
+    assert.ok(getLimits().providers[provider].confirmedLimit);
+    await tk.flushRecords();
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1'; finish.resolve({ ok: true, finalMessage: 'done' }); tk.cancelTask(t.id);
+    await tk.flushRecords(); delete PROVIDERS[provider]; delete getLimits().providers[provider];
+  }
+});
+
+test('a worker limit is confirmed before the recovery poll starts', async (ctx) => {
+  const { getLimits, modelBlockedUntil } = await import('../core/limits.mjs');
+  const { bus } = await import('../core/bus.mjs');
+  const provider = 'confirm-before-poll', model = 'opus', reset = Date.now() + 60_000;
+  let confirmationSeen = false;
+  getLimits().providers[provider] = { provider, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
+  PROVIDERS[provider] = { id: provider, pollLimits: async () => {
+    confirmationSeen = !!getLimits().providers[provider].confirmedLimit;
+    return { provider, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 35, resetsAt: reset }] };
+  } };
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: false, limitHit: true, error: 'usage limit' }));
+  const t = tk.createTask({ cwd: tmpDir('confirm-before-poll'), provider, model, spec: 'x', noFailover: true });
+  const parked = Promise.withResolvers();
+  const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.status === 'parked') parked.resolve(e.task); };
+  bus.on('event', onTask);
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await parked.promise;
+    assert.equal(confirmationSeen, true);
+    assert.equal(done.status, 'parked');
+    assert.equal(modelBlockedUntil(provider, model), reset, 'the lagging poll must not lift the confirmation');
+    assert.ok(getLimits().providers[provider].confirmedLimit);
+    await tk.flushRecords();
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1'; tk.cancelTask(t.id);
+    await tk.flushRecords(); bus.off('event', onTask); delete PROVIDERS[provider]; delete getLimits().providers[provider];
+  }
+});
+
 for (const [id, provider] of [['L1', 'codex'], ['L4', 'claude']]) {
   test(`${id}: a successful worker with limitHit completes and is scored without a limit refresh`, async (ctx) => {
     const { getLimits } = await import('../core/limits.mjs');
