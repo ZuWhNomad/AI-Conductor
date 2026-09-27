@@ -114,7 +114,6 @@ export const DEFAULTS = {
     // Use-it-or-lose-it: step down a subscription's cost as its weekly/monthly reset nears.
     wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], // [hours to reset, absolute discount] × wasteStrength
     wasteStrength: 1,                 // overall multiplier; 0 = off
-    wasteQualityMargin: 0.05,         // a discounted qualified pick this close to best quality wins the tie
     // Reset schedules for providers whose CLI reports NO window (Grok, …). Times are the machine's LOCAL timezone,
     // DST-aware — never a hard-coded zone. Per provider: { periodHours, resetHour } for a daily wall-clock reset
     // (add resetDay 0-6 from Sunday + periodHours 168 for weekly), or { periodHours, anchorAt } to step from an
@@ -260,9 +259,8 @@ function normalize(cfg) {
   // Legacy configs had one linear horizon. Preserve its reach as the outer step unless explicit steps replaced it.
   if (Number.isFinite(cfg.scorecard.wasteHorizonHours) && JSON.stringify(cfg.scorecard.wasteSteps) === JSON.stringify(DEFAULTS.scorecard.wasteSteps)) cfg.scorecard.wasteSteps[0][0] = Math.max(1, cfg.scorecard.wasteHorizonHours);
   delete cfg.scorecard.wasteHorizonHours;
-  for (const key of ['wasteStrength', 'wasteQualityMargin']) if (!Number.isFinite(cfg.scorecard[key])) cfg.scorecard[key] = DEFAULTS.scorecard[key];
+  for (const key of ['wasteStrength']) if (!Number.isFinite(cfg.scorecard[key])) cfg.scorecard[key] = DEFAULTS.scorecard[key];
   cfg.scorecard.wasteStrength = Math.max(0, Math.min(1, cfg.scorecard.wasteStrength));
-  cfg.scorecard.wasteQualityMargin = Math.max(0, Math.min(1, cfg.scorecard.wasteQualityMargin));
   if (!Number.isFinite(cfg.scorecard.rebenchDays) || cfg.scorecard.rebenchDays <= 0) cfg.scorecard.rebenchDays = DEFAULTS.scorecard.rebenchDays;
   if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(cfg.conductor.permissionMode)) cfg.conductor.permissionMode = DEFAULTS.conductor.permissionMode;
   if (!['auto', 'ask', 'off'].includes(cfg.conductor.autoUpdate)) cfg.conductor.autoUpdate = DEFAULTS.conductor.autoUpdate;

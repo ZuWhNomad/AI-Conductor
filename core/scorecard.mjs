@@ -391,29 +391,18 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     if (b.usd <= a.usd + slackOf(a.usd) && b.quality >= a.quality) dominated.add(a);
   }
   for (const p of plans) if (dominated.has(p) || p.steps.some((st) => dominated.has(plans.find((x) => x.steps.length === 1 && x.steps[0] === st)))) p.utility = -Infinity;
-  for (const p of plans) {
-    const firstEv = evidence.find((m) => m.steps === 1 && m.sel === p.steps[0]);
-    const { provider, model } = parseSel(p.steps[0]);
-    p.wasteFactor = waste(provider, model);
-    p.wasteQualified = !!firstEv && firstEv.ref.quality >= cfg.quality && !failedBelow.has(p.steps[0]);
-  }
   // OB7: sort — priced eligible plans before unknown-cost ones; within each group, value ordering applies.
   const eligible = (p) => p.utility > -Infinity;
-  const classOf = (p) => providerClass(p.steps[0].split(':')[0], cfg);
-  const listed = (p) => (cfg.classOrder || []).includes(classOf(p));
-  const bestQuality = Math.max(-Infinity, ...plans.filter((p) => eligible(p) && (escalate || listed(p))).map((p) => p.quality));
-  const wasteTie = (p) => !escalate && eligible(p) && listed(p) && p.wasteQualified && p.wasteFactor < 1 && p.quality >= bestQuality - cfg.wasteQualityMargin;
   const sortCmp = escalate
     ? (x, y) => (y.quality - x.quality) || (x.costUnknown !== y.costUnknown ? (x.costUnknown ? 1 : -1) : 0) || (y.utility - x.utility)
     : (x, y) => {
         if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
-        if (wasteTie(x) !== wasteTie(y)) return wasteTie(x) ? -1 : 1;
-        if (wasteTie(x) && x.wasteFactor !== y.wasteFactor) return x.wasteFactor - y.wasteFactor;
         if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
         return y.utility - x.utility || (y.quality - x.quality) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
       };
   plans.sort(sortCmp);
   // Class walk: the first budget class (in configured order) that holds a viable plan wins; value already ordered the plans.
+  const classOf = (p) => providerClass(p.steps[0].split(':')[0], cfg);
   let best = null, bestClass = null;
   if (escalate) {
     // Escalation is the last rung before the conductor does it itself: take the highest-quality SINGLE model that is
@@ -424,10 +413,8 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     best = plans.find((p) => p.utility > -Infinity && p.steps.length === 1) || plans.find((p) => p.utility > -Infinity) || null;
     bestClass = best ? classOf(best) : null;
   } else {
-    best = plans.find(wasteTie) || null;
-    if (best) bestClass = classOf(best);
     // B7: a class must be listed in classOrder to be eligible — no fallback for unlisted classes.
-    if (!best) for (const cls of cfg.classOrder || []) { best = plans.find((p) => p.utility > -Infinity && classOf(p) === cls); if (best) { bestClass = cls; break; } }
+    for (const cls of cfg.classOrder || []) { best = plans.find((p) => p.utility > -Infinity && classOf(p) === cls); if (best) { bestClass = cls; break; } }
   }
   if (!best) {
     // A provider proven at this level exists but is capped/blocked/excluded: hand the task back (the conductor does it or
@@ -717,7 +704,7 @@ export function formatScores({ category = null, source = null } = {}) {
   const lines = ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | prior'];
   for (const g of rows) lines.push(`${g.sel} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${g.avgUsd == null ? '-' : f(g.avgUsd, 3)} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`);
   const cfg = loadConfig().scorecard;
-  lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); stepped reset discount + Δq≤${cfg.wasteQualityMargin} tie-break)${cfg.usePriors ? '; prior fallback on' : ''}):`);
+  lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.usePriors ? '; prior fallback on' : ''}):`);
   let any = false;
   for (const c of category ? [category] : CATEGORIES) for (const d of LEVELS) {
     const r = recommend({ category: c, difficulty: d, source, summary });
