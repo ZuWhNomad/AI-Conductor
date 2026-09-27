@@ -213,6 +213,7 @@ test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id an
   getModels().models.push({ provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent', efforts: ['low', 'medium', 'high'], effortIds: { low: 'gemini-3.8-flash-low', medium: 'gemini-3.8-flash-medium', high: 'gemini-3.8-flash-high' } });
   const a = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: 'high', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
   assert.equal(a.args[a.args.indexOf('--model') + 1], 'gemini-3.8-flash-high');
+  assert.equal(a.args[a.args.indexOf('--print-timeout') + 1], '60s');
   assert.ok(!a.args.includes('--effort'), 'agy rejects --effort; the level lives in the id');
   // a legacy raw id (+ spurious effort) dispatches as-is — never a bogus "gemini-3.6-flash-low-high"
   const b = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.6-flash-low', effort: 'high', prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
@@ -224,6 +225,8 @@ test('Method C: antigravity headlessArgs maps (family, effort) -> concrete id an
   const d = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: null, prompt: 'x', cwd: 'F:/ws', timeoutMs: 60000 });
   assert.equal(d.args[d.args.indexOf('--model') + 1], 'gemini-3.8-flash-low');
   assert.ok(!d.args.includes('--effort'), 'agy rejects --effort; the level lives in the id');
+  const unlimited = VENDORS.antigravity.headlessArgs({ model: 'gemini-3.8-flash', effort: null, prompt: 'x', cwd: 'F:/ws' });
+  assert.equal(unlimited.args[unlimited.args.indexOf('--print-timeout') + 1], '604800s', 'agy keeps its CLI-side cap out of the way when the worker run is unlimited');
 });
 
 test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a small one stays inline (Windows arg-length safety)', async () => {
@@ -629,4 +632,3 @@ test('vendor read-only snapshot: non-git cwd keeps plan-mode behaviour without s
   assert.equal(seenCwd, plainDir);
   assert.equal(seenSandbox, 'read-only', 'non-git cwd keeps plan mode sandbox');
 });
-

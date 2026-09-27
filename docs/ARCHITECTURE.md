@@ -26,7 +26,7 @@ conductor (bin)  -> server/  -> browser UI (SSE stream + JSON API) + /mcp/<sessi
                         codex  : one `codex exec` turn per message (thread resumed); tools via /mcp/<session>
                         loop   : OpenAI-compatible tool loop (Ollama / API models) with the same tools as functions
                         tools (core/tools.mjs, defined once): delegate, follow_up, await_task, task_status,
-                          cancel_task, job_start, job_status, job_cancel, allow_command, rate_task,
+                          cancel_task, job_start, job_status, job_cancel, watch_job, allow_command, rate_task,
                           model_scores, smoke_test, list_tasks, list_models, limits, log_improvement,
                           context_tree, install_model, generate_image, run_plan, plan_status
                  -> core/workers/*  : codex | claude-sdk | openai-compat | ollama | image | vendor-cli
@@ -58,6 +58,8 @@ core/
   conductor.mjs          chat sessions = Agent SDK queries with streaming input
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, park/resume on limits
+  jobs.mjs               detached commands that survive turns and server restarts
+  watchdog.mjs           non-destructive chat/task check-ins, persisted watches, batched idle-chat wake-ups
   plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
   policy/                the orchestration policy, text only (no code):
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md

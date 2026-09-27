@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, isAbsolute, relative, resolve } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
+import { loadConfig, DEFAULTS, codexSandboxFor, runTimeoutMs } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
@@ -82,7 +82,7 @@ export function recoverTasks() {
       const file = join(DIR(), `${entry.id}.json`), t = readJson(file);
       if (t?.id !== entry.id) continue;
       if (t.status === 'running' || t.status === 'parked' || (t.status === 'queued' && t.resume)) {
-        const last = Math.max(Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0, t.status === 'parked' ? Number(t.resumeAt) || 0 : 0);
+        const last = Math.max(Date.parse(t.updatedAt || t.startedAt || t.createdAt || '') || 0, Date.parse(t.aliveAt || '') || 0, t.status === 'parked' ? Number(t.resumeAt) || 0 : 0);
         if (Date.now() - last > hours * 3_600_000) { t.status = 'canceled'; t.resume = false; t.error = `not resumed: interrupted more than ${hours} h before this start; re-run it if still wanted`; stale++; writeJson(file, t); indexTask(t, file); }
         else if (t.status !== 'queued') { t.resume = t.status === 'running' || t.attempts > 0; t.status = 'queued'; } // never-started parked tasks need no interruption note
       }
@@ -117,6 +117,28 @@ function persist(t) {
   writeJson(join(DIR(), `${t.id}.json`), t);
   indexTask(t); saveIndexSoon(); trimTasks();
   bus.publish('task', { task: taskSummary(t) });
+}
+
+/** Journal watchdog-only metadata without publishing a task event or changing updatedAt. */
+function persistQuiet(t) {
+  writeJson(join(DIR(), `${t.id}.json`), t);
+  indexTask(t); saveIndexSoon(); trimTasks();
+}
+
+export function touchTaskAlive(id, watchdog, at = nowIso()) {
+  const t = getTask(id);
+  if (!t || t.status !== 'running') return false;
+  t.aliveAt = at; t.watchdog = watchdog;
+  persistQuiet(t);
+  return true;
+}
+
+export function markTaskWakeReported(ids, at = nowIso()) {
+  for (const id of ids) {
+    const t = getTask(id);
+    if (!t || t.wakeReportedAt) continue;
+    t.wakeReportedAt = at; persistQuiet(t);
+  }
 }
 
 export function publicTask(t) {
@@ -187,6 +209,7 @@ export function createTask(i, { dispatch = true } = {}) {
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
     avoidFamilies: normFamilies(i.avoidFamilies), // reviews: failover never lands on these model families (see familyOf)
     writableRoots, // extra directories the worker may write besides cwd (a sibling git worktree): Codex --add-dir, Claude additionalDirectories
+    wakeEligible: true, // watchdog may summarize an un-awaited completion once this chat's whole background batch is done
   };
   if (!t.model && t.provider === cfg.worker.provider) t.model = cfg.worker.model;
   // Resolve a Codex task's sandbox now, not at dispatch, so the task record shows what it will actually run under.
@@ -265,7 +288,16 @@ let shuttingDown = false;
 /** Abort every active worker. With `requeue`, in-flight tasks are journaled as queued+resume (graceful shutdown) instead of failed. */
 export function abortRunning({ requeue = false } = {}) { shuttingDown = requeue; for (const ac of running.values()) ac.abort(); }
 
-const waitResult = (t) => t?.status === 'parked' ? { ...publicTask(t), parked: true, message: `parked until ${new Date(t.resumeAt).toISOString()}` } : publicTask(t);
+function consumeWake(t) {
+  if (t?.wakeEligible && TERMINAL.has(t.status) && !t.wakeConsumedAt) {
+    t.wakeConsumedAt = nowIso();
+    try { persistQuiet(t); } catch {} // a broken journal must never strand an awaiter
+  }
+}
+const waitResult = (t) => {
+  consumeWake(t);
+  return t?.status === 'parked' ? { ...publicTask(t), parked: true, message: `parked until ${new Date(t.resumeAt).toISOString()}` } : publicTask(t);
+};
 
 /** Resolve at a terminal state or a park beyond this wait's deadline, else wait until timeout. */
 export function awaitTask(id, timeoutMs) {
@@ -274,7 +306,8 @@ export function awaitTask(id, timeoutMs) {
   if (TERMINAL.has(t.status)) return Promise.resolve(waitResult(t));
   if (timeoutMs == null) {
     const wcfg = loadConfig().worker;
-    timeoutMs = (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000;
+    const minutes = wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes;
+    timeoutMs = (minutes > 0 ? minutes : 55) * 60_000;
   }
   timeoutMs = Math.min(2 ** 31 - 1, timeoutMs);
   const deadline = Date.now() + timeoutMs;
@@ -419,7 +452,8 @@ async function run(t) {
     const wcfg = loadConfig().worker;
     const providerKind = PROVIDERS[t.provider]?.kind;
     const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
-    const r = await runWorker({ ...t, prompt, timeoutMs: Math.min(2 ** 31 - 1, (wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes) * 60_000) }, { signal: ac.signal });
+    const timeoutMs = runTimeoutMs(wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes);
+    const r = await runWorker({ ...t, prompt, ...(timeoutMs ? { timeoutMs } : {}) }, { signal: ac.signal });
     live.delete(t.id); delete t.progress; // the result replaces the snapshot
     const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });

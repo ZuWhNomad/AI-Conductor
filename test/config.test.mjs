@@ -189,7 +189,7 @@ test('turn budgets default high and reject non-positive values', () => {
 
 test('timer and loop settings accept positive finite numbers and otherwise use DEFAULTS', () => {
   const keys = {
-    conductor: ['turnTimeoutMinutes', 'updateQuietMinutes'], // updateCheckHours and detectMinutes: 0 means off, tested below
+    conductor: ['updateQuietMinutes'], // run timeouts, updateCheckHours and detectMinutes: 0 means off, tested below
     worker: ['maxIterations', 'maxTurnsLocal', 'longRunMinutes'],
     scorecard: ['blockedMinutes'], server: ['lagWarnMs'],
   };
@@ -209,6 +209,25 @@ test('timer and loop settings accept positive finite numbers and otherwise use D
     assert.deepEqual(loadConfig().scorecard.windowTargets, DEFAULTS.scorecard.windowTargets);
   }
   saveConfig(Object.fromEntries(Object.keys(keys).map((group) => [group, DEFAULTS[group]])));
+});
+
+test('run timeouts default off and preserve explicit zero globally and by category', () => {
+  assert.equal(DEFAULTS.conductor.turnTimeoutMinutes, 0);
+  assert.equal(DEFAULTS.worker.timeoutMinutes, 0);
+  assert.deepEqual(DEFAULTS.worker.timeoutByCategory, {});
+  saveConfig({ conductor: { turnTimeoutMinutes: 0 }, worker: { timeoutMinutes: 0, timeoutByCategory: { modeling: 0 } } });
+  const cfg = loadConfig();
+  assert.equal(cfg.conductor.turnTimeoutMinutes, 0);
+  assert.equal(cfg.worker.timeoutMinutes, 0);
+  assert.equal(cfg.worker.timeoutByCategory.modeling, 0);
+});
+
+test('watchdog settings use the planned safe defaults and validate their bounds', () => {
+  assert.deepEqual(DEFAULTS.watchdog, { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5, loopTokens: 2_000_000 });
+  let cfg = saveConfig({ watchdog: { intervalMinutes: 4, killAfterStuckChecks: 1, loopRepeat: 0, loopTokens: -1 } });
+  assert.deepEqual(cfg.watchdog, DEFAULTS.watchdog);
+  cfg = saveConfig({ watchdog: { intervalMinutes: 5, killAfterStuckChecks: 0, loopRepeat: 6, loopTokens: 100 } });
+  assert.deepEqual(cfg.watchdog, { intervalMinutes: 5, killAfterStuckChecks: 0, loopRepeat: 6, loopTokens: 100 });
 });
 
 test('the live prompt budgets are settings; the retired shared budget is absent', () => {
@@ -328,7 +347,7 @@ test('config filters invalid usage and category values, validates waste settings
   for (const value of badValues) {
     const cfg = saveConfig({ worker: { timeoutByCategory: { bad: value }, recipeChars: value, toolLineChars: value },
       scorecard: { usageBudgets: { bad: value }, usageGapHours: { bad: value } } });
-    assert.equal(cfg.worker.timeoutByCategory.bad, undefined);
+    assert.equal(cfg.worker.timeoutByCategory.bad, value === 0 ? 0 : undefined, 'category timeout 0 is the documented off switch');
     for (const key of ['usageBudgets', 'usageGapHours']) assert.equal(cfg.scorecard[key].bad, undefined);
     for (const key of ['recipeChars', 'toolLineChars']) assert.equal(cfg.worker[key], DEFAULTS.worker[key]);
   }
@@ -367,14 +386,17 @@ test('timer config bounds prevent Node timer overflow and preserve documented ze
   const cfg = saveConfig({ pollMinutes: Number.MAX_VALUE, ui: { detectMinutes: Number.MAX_VALUE },
     conductor: { turnTimeoutMinutes: Number.MAX_VALUE, updateCheckHours: Number.MAX_VALUE },
     worker: { timeoutMinutes: Number.MAX_VALUE, timeoutByCategory: { huge: Number.MAX_VALUE, valid: 2.5 } },
-    smoke: { timeoutMinutes: Number.MAX_VALUE } });
-  for (const minutes of [cfg.pollMinutes, cfg.ui.detectMinutes, cfg.conductor.turnTimeoutMinutes, cfg.worker.timeoutMinutes, cfg.worker.timeoutByCategory.huge, cfg.smoke.timeoutMinutes]) assert.equal(minutes, 1440);
+    smoke: { timeoutMinutes: Number.MAX_VALUE }, watchdog: { intervalMinutes: Number.MAX_VALUE } });
+  for (const minutes of [cfg.pollMinutes, cfg.ui.detectMinutes, cfg.conductor.turnTimeoutMinutes, cfg.worker.timeoutMinutes, cfg.worker.timeoutByCategory.huge, cfg.smoke.timeoutMinutes, cfg.watchdog.intervalMinutes]) assert.equal(minutes, 1440);
   assert.equal(cfg.conductor.updateCheckHours, 596);
   assert.ok(cfg.conductor.updateCheckHours * 3_600_000 <= 2 ** 31 - 1, 'Node timer maximum');
   assert.equal(cfg.worker.timeoutByCategory.valid, 2.5);
-  saveConfig({ conductor: { updateCheckHours: 0 }, ui: { detectMinutes: 0 } });
+  saveConfig({ conductor: { updateCheckHours: 0, turnTimeoutMinutes: 0 }, ui: { detectMinutes: 0 }, worker: { timeoutMinutes: 0, timeoutByCategory: { modeling: 0 } } });
   assert.equal(loadConfig().conductor.updateCheckHours, 0);
   assert.equal(loadConfig().ui.detectMinutes, 0);
+  assert.equal(loadConfig().conductor.turnTimeoutMinutes, 0);
+  assert.equal(loadConfig().worker.timeoutMinutes, 0);
+  assert.equal(loadConfig().worker.timeoutByCategory.modeling, 0);
 });
 
 test('broad secret flags and URL arguments redact and restore through JSON with reordered nonsecret args', () => {

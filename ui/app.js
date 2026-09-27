@@ -62,7 +62,9 @@ function renderSessions() {
     const t = el('span', 't', s.title || 'New chat'); t.title = `${s.cwd}\n${s.model || 'default model'}`;
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
-    const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
+    const checked = s.status === 'running' && s.watchdog?.checkedAt;
+    const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (checked ? 'check-in' : s.status === 'running' ? '●' : ''));
+    if (checked) st.title = s.watchdog.summary;
     const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', 'approve') : null;
     if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
     const ren = el('span', 'x', '✎'); ren.title = 'Rename chat'; ren.tabIndex = 0; ren.setAttribute('aria-label', 'Rename chat');
@@ -481,6 +483,7 @@ function renderHistory(messages) {
     else if (m.role === 'assistant') addAssistant(m, frag);
     else if (m.role === 'tool_result') addToolResult(m);
     else if (m.role === 'result') addResult(m, frag);
+    else if (m.role === 'watchdog') addSys(m.text, 'watchdog', frag);
   }
   if (!messages.length) frag.append(el('div', 'empty', 'Say what you want done. The conductor will plan, delegate, and review.'));
   T().append(frag);
@@ -524,7 +527,8 @@ function refreshRunningCards() {
 function taskCard(t) {
   const c = el('div', 'task ' + t.status); c.dataset.id = t.id;
   const h = el('div', 'h');
-  const right = t.status === 'running' ? el('span', 'dot') : el('span', 'pill', t.status);
+  const right = t.status === 'running' ? (t.watchdog?.checkedAt ? el('span', 'pill running', 'check-in') : el('span', 'dot')) : el('span', 'pill', t.status);
+  if (t.watchdog?.summary) right.title = t.watchdog.summary;
   h.append(el('span', 't', t.title), right);
   const sub = el('div', 'sub', `${t.provider}${t.model ? '/' + t.model : ''} · ${t.category || '?'}${t.difficulty ? '@' + t.difficulty : ''} · ${statusPhrase(t)}`);
   c.append(h, sub);
@@ -856,6 +860,16 @@ function connect() {
     const c = S.taskEls.get(ev.taskId);
     if (c) { const l = c.querySelector('.last'); if (l) l.textContent = lastAction({ id: ev.taskId }); }
   });
+  on('watchdog', (ev) => {
+    if (ev.itemKind === 'task') {
+      const t = S.tasks.find((x) => x.id === ev.taskId);
+      if (t) updateTask({ ...t, aliveAt: ev.aliveAt, watchdog: { verdict: ev.verdict, checkedAt: ev.checkedAt, lastEventAt: ev.lastEventAt, late: ev.late, summary: ev.summary } });
+    } else if (ev.itemKind === 'session') {
+      const s = S.sessions.find((x) => x.id === ev.sessionId);
+      if (s) { s.watchdog = { verdict: ev.verdict, checkedAt: ev.checkedAt, lastEventAt: ev.lastEventAt, late: ev.late, summary: ev.summary }; renderSessions(); }
+    }
+    if (ev.sessionId === S.current?.id) addSys(`[watchdog] ${ev.itemKind === 'task' ? `Task ${ev.taskId}: ` : ''}${ev.summary}`, 'watchdog');
+  });
   on('score', (ev) => { const s = S.scoreInfo.get(ev.taskId) || {}; if (ev.verdict) s.verdict = ev.verdict; if (ev.pct && typeof ev.pct === 'object') { const vals = Object.values(ev.pct); if (vals.length) s.pct = Math.round(Math.max(...vals) * 10) / 10; } S.scoreInfo.set(ev.taskId, s); const t = S.tasks.find((x) => x.id === ev.taskId); if (t) updateTask(t); });
   on('models', () => coalesce('models', async () => { S.models = await api.get('/api/models'); refreshNewPicker(true); refreshHeaderPicker(); renderProviders(); renderBudget(); }));
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
@@ -994,9 +1008,11 @@ function openSettings() {
   grid.append(Object.assign(el('label', null, 'Codex sandbox'), { title: 'worker.codexSandboxByModel overrides this per model' }), sbxRow);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
   field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API/Ollama conductors; big projects need thousands.');
+  field('Conductor turn timeout (min)', 'conductor.turnTimeoutMinutes', c.conductor.turnTimeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
-  field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number');
-  field('Worker timeout for modeling (min)', 'worker.timeoutByCategory.modeling', c.worker.timeoutByCategory?.modeling ?? '', 'number', 'Image->3D runs iterate for a long time; runs past "long run" minutes are logged so you can watch them.');
+  field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
+  field('Worker timeout for modeling (min)', 'worker.timeoutByCategory.modeling', c.worker.timeoutByCategory?.modeling ?? '', 'number', '0 = no limit. Set only if this category needs a hard cap.');
+  field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. Check-ins never interrupt work.');
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');

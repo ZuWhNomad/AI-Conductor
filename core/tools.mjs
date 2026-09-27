@@ -19,6 +19,7 @@ import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
 import { RECIPE_VARIANTS } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
+import { registerWatch } from './watchdog.mjs';
 
 const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
 const checkVariant = (category, variant) => {
@@ -91,15 +92,19 @@ export function formatLimits(reg = getLimits()) {
  */
 export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
   const effortDesc = 'Reasoning effort: low|medium|high|xhigh|max (Codex also: ultra). Default from settings.';
-  const capWait = (minutes) => {
-    const want = minutes == null ? undefined : minutes * 60_000;
+  const capWait = (minutes, task = null) => {
+    let want = minutes == null ? undefined : minutes * 60_000;
+    if (want == null && maxBlockMs != null) {
+      const cfg = loadConfig().worker;
+      const configured = task ? (cfg.timeoutByCategory[task.category] ?? cfg.timeoutMinutes) : cfg.timeoutMinutes;
+      want = (configured > 0 ? configured : 55) * 60_000;
+    }
     if (maxBlockMs == null) return want;
-    if (want == null) return maxBlockMs;
     return Math.min(want, maxBlockMs);
   };
   const stillRunning = '\n(still running — call await_task)';
   const finish = async (t, minutes) => {
-    const done = await awaitTask(t.id, capWait(minutes));
+    const done = await awaitTask(t.id, capWait(minutes, t));
     return describeTask(getTask(t.id)) + (done?.timedOut ? stillRunning : '');
   };
   return [
@@ -123,7 +128,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         efficiency_mode: z.boolean().optional().describe('Override the global efficiency-mode setting for this task: true waits for the same model\'s usage-limit reset; false fails over to the next available model'),
         no_failover: z.boolean().optional().describe('Deprecated: same as efficiency_mode: true'),
         writable_roots: z.array(z.string()).optional().describe('Absolute paths of existing directories the worker may also write, e.g. a sibling git worktree (Codex --add-dir, Claude additionalDirectories, Antigravity --add-dir). The task still runs in the project directory.'),
-        timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task category timeout, else worker.timeoutMinutes)'),
+        timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task/category run timeout when set, else 55 minutes)'),
         sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
@@ -232,7 +237,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       name: 'await_task',
       description: 'Wait for a background task to finish and return its report.',
       schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional() }),
-      handler: async (a) => { const r = await awaitTask(a.task_id, capWait(a.timeout_minutes)); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
+      handler: async (a) => { const t = getTask(a.task_id); const r = await awaitTask(a.task_id, capWait(a.timeout_minutes, t)); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
     },
     {
       name: 'task_status',
@@ -247,15 +252,30 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     { name: 'cancel_task', description: 'Cancel a queued or running task.', schema: z.object({ task_id: z.string() }), handler: async (a) => { const r = cancelChain(a.task_id); if (!r) return `unknown task ${a.task_id}`; return r.canceled.length ? `Canceled ${r.canceled.join(', ')}${r.canceled[0] !== a.task_id ? ` (the live replacement of ${a.task_id})` : ''}.` : `Task ${a.task_id} is already ${r.already}; nothing to cancel.`; } },
     {
       name: 'job_start',
-      description: 'Start a long shell command as a detached job (a backtest, scrape or build that outlives a worker turn and a server restart). Returns a job id at once; poll it with job_status. Workers start the same jobs with: node <conductor>/bin/conductor.mjs job start --cwd <dir> -- <command>.',
-      schema: z.object({ command: z.string().describe('Shell command line'), cwd: z.string().optional().describe('Directory to run in (default: the project directory)') }),
-      handler: async (a) => { const j = startJob({ command: a.command, cwd: a.cwd || cwd }); return `Job ${j.id} started (pid ${j.pid ?? '?'}). Poll with job_status ${j.id}.`; },
+      description: 'Start a long shell command as a detached job (a backtest, scrape or build that outlives a worker turn and a server restart). The watchdog registers it and wakes this chat once all of its background work is finished. Returns a job id at once; poll it with job_status. Workers start the same jobs with: node <conductor>/bin/conductor.mjs job start --cwd <dir> -- <command>.',
+      schema: z.object({ command: z.string().describe('Shell command line'), cwd: z.string().optional().describe('Directory to run in (default: the project directory)'), note: z.string().optional().describe('What to review when the watchdog wakes this chat') }),
+      handler: async (a) => { const j = startJob({ command: a.command, cwd: a.cwd || cwd }); registerWatch({ sessionId, jobId: j.id, note: a.note || '', cwd }); return `Job ${j.id} started (pid ${j.pid ?? '?'}). The watchdog will wake this chat after all background work finishes; poll with job_status ${j.id}.`; },
     },
     {
       name: 'job_status',
       description: 'Status, exit code and output tail of a detached job.',
       schema: z.object({ job_id: z.string(), tail_chars: z.number().int().min(0).max(20000).optional().describe('Output tail length (default 4000)') }),
       handler: async (a) => { const j = jobStatus(a.job_id, { tailChars: a.tail_chars ?? 4000 }); return j ? formatJob(j) : `unknown job ${a.job_id}`; },
+    },
+    {
+      name: 'watch_job',
+      description: 'Register an already-started detached job, PID, or output path. The watchdog wakes this idle chat once only after every task and registered watch for it has finished.',
+      schema: z.object({
+        job_id: z.string().optional().describe('Conductor detached job id from job_start'),
+        pid: z.number().int().positive().optional().describe('Process id to watch for exit'),
+        path: z.string().optional().describe('Output path to watch for creation or change, relative to the project directory unless absolute'),
+        note: z.string().optional().describe('Short instruction included in the completion summary'),
+      }),
+      handler: async (a) => {
+        if (a.job_id && !jobStatus(a.job_id)) return `unknown job ${a.job_id}`;
+        const w = registerWatch({ sessionId, jobId: a.job_id, pid: a.pid, path: a.path, note: a.note, cwd });
+        return `Watch ${w.id} registered. This chat will wake after all of its background tasks and watches finish.`;
+      },
     },
     {
       name: 'job_cancel',

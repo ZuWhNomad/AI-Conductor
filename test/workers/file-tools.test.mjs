@@ -153,7 +153,7 @@ test('P01: asynchronous tools reject lexical escapes before reading or listing o
   for (const out of outputs(result)) assert.match(out, /^error: path outside project:/);
 });
 
-for (const mode of ['task deadline', 'configured fallback', 'cancellation']) {
+for (const mode of ['task deadline', 'fixed fallback with run timeout off', 'cancellation']) {
   test(`P01: pathological regex keeps the main loop responsive and terminates on ${mode}`, async (ctx) => {
     const cwd = tmpDir('file-redos');
     fs.writeFileSync(join(cwd, 'redos.txt'), 'a'.repeat(60000) + '!');
@@ -177,7 +177,9 @@ for (const mode of ['task deadline', 'configured fallback', 'cancellation']) {
     const timers = ctx.mock.method(globalThis, 'setTimeout');
     const clears = ctx.mock.method(globalThis, 'clearTimeout');
     const ac = new AbortController();
-    const timeoutMs = loadConfig().worker.timeoutMinutes * 60_000;
+    assert.equal(loadConfig().worker.timeoutMinutes, 0);
+    const timeoutMs = (mode === 'task deadline' ? 9 : 10) * 60_000;
+    const requestedAt = Date.now();
     let settled = false;
     const pending = requestTools(ctx, cwd, [['search', { pattern: '(a+)+$' }]], {
       signal: ac.signal, ...(mode === 'task deadline' ? { timeoutMs } : {}),
@@ -186,6 +188,9 @@ for (const mode of ['task deadline', 'configured fallback', 'cancellation']) {
     assert.equal(timers.mock.callCount(), 1);
     const timer = timers.mock.calls[0];
     assert.ok(timer.arguments[1] > 0 && timer.arguments[1] <= timeoutMs);
+    if (mode === 'fixed fallback with run timeout off') {
+      assert.ok(timer.arguments[1] >= 10 * 60_000 - (Date.now() - requestedAt), 'the fixed deadline loses only elapsed setup time');
+    }
     const heartbeat = new Promise((resolve) => setTimeout(resolve, 0));
     ctx.mock.timers.tick(0);
     await heartbeat;

@@ -145,10 +145,10 @@ test('startServer initializes once after two failed binds, and does not initiali
       assert.equal(binds, 3);
       assert.deepEqual(retries, [250, 250]); // existing production bind-retry interval
       assert.equal(initialized, 1);
-      assert.equal(timers.length, 1, 'one reachable lag-monitor timer');
+      assert.equal(timers.length, 2, 'one reachable watchdog timer and one lag-monitor timer');
       assert.equal(process.env.CONDUCTOR_RELAUNCH_WAIT, undefined);
       stopBackgroundWork();
-      assert.equal(timers[0]._destroyed, true, 'shutdown clears the lag-monitor timer');
+      assert.ok(timers.every(timer => timer._destroyed), 'shutdown clears the watchdog and lag-monitor timers');
     } finally {
       stopBackgroundWork();
       for (const timer of timers) clearInterval(timer);

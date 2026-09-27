@@ -21,7 +21,7 @@ export const DEFAULTS = {
                                       // and a low cap silently starves a fan-out (a cap of 3 left a queued model never run)
     budgetGate: true,                 // admit against per-window targets (session 95% / weekly 100%); over target, sequential per provider — not park-until-reset. A real provider limit fails over or parks. parallelOverride skips the gate. Windowless providers are not gated.
     maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
-    turnTimeoutMinutes: 120,          // hard cap on a single conductor chat turn (Codex and API/Ollama conductors)
+    turnTimeoutMinutes: 0,            // hard cap on a single conductor chat turn (Codex and API/Ollama conductors); 0 = off
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
     updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
     loopToolsSkip: [],                // tool names a LOOP conductor (Ollama / API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
@@ -58,8 +58,8 @@ export const DEFAULTS = {
     maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
     maxTurns: 500,                    // tool turns per Claude-harness worker task
     maxTurnsLocal: 60,                // tool turns for a local (Ollama-via-Claude-harness) worker task — smaller models loop more, so cap lower
-    timeoutMinutes: 45,               // per worker run
-    timeoutByCategory: { modeling: 240 }, // categories that legitimately run long (image->3D iterates); watch the durations in the scorecard
+    timeoutMinutes: 0,                // per worker run; 0 = off
+    timeoutByCategory: {},            // optional per-category hard caps; 0 = off
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
   },
   providers: {
@@ -131,6 +131,12 @@ export const DEFAULTS = {
     reservePct: 0.5,
   },
   server: { lagWarnMs: 500 },         // event-loop lag (p99 over the last minute) above this logs a friction entry: the server is stalling
+  watchdog: {
+    intervalMinutes: 30,              // basic running-item check-in cadence
+    killAfterStuckChecks: 3,          // phase 2 consumes this; 0 = never kill, otherwise at least 2
+    loopRepeat: 5,                    // phase 2 looping alert threshold
+    loopTokens: 2_000_000,            // phase 2 token-burn alert threshold per tick
+  },
   smoke: { timeoutMinutes: 20, hardTimeoutMinutes: 30 }, // per smoke-battery task; hardTimeoutMinutes for difficulty 6+ (L6/L7)
   tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
     index: {},                        // machine-specific entries by name: { kind, categories, purpose, invoke, detect, install, platforms }; null removes a shared one; extra fields tag it
@@ -223,17 +229,21 @@ function normalize(cfg) {
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
   if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
   if (!plain(cfg.scorecard.windowTargets)) cfg.scorecard.windowTargets = { ...DEFAULTS.scorecard.windowTargets };
-  // 0 is a documented OFF switch for these two, so it must survive: only garbage (negative, NaN) resets.
-  for (const [obj, defaults, key] of [[cfg.conductor, DEFAULTS.conductor, 'updateCheckHours'], [cfg.ui, DEFAULTS.ui, 'detectMinutes']]) {
+  // 0 is a documented OFF switch for these values, so it must survive: only garbage (negative, NaN) resets.
+  for (const [obj, defaults, key] of [
+    [cfg.conductor, DEFAULTS.conductor, 'updateCheckHours'], [cfg.ui, DEFAULTS.ui, 'detectMinutes'],
+    [cfg.conductor, DEFAULTS.conductor, 'turnTimeoutMinutes'], [cfg.worker, DEFAULTS.worker, 'timeoutMinutes'],
+  ]) {
     if (!Number.isFinite(obj[key]) || obj[key] < 0) obj[key] = defaults[key];
   }
   for (const [obj, defaults, key] of [
     [cfg, DEFAULTS, 'pollMinutes'],
-    ...['maxWorkerConcurrency', 'maxTurns', 'turnTimeoutMinutes', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
-    ...['maxTurns', 'timeoutMinutes', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
+    ...['maxWorkerConcurrency', 'maxTurns', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
+    ...['maxTurns', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
     ...['minSamples', 'benchMinSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
     [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.smoke, DEFAULTS.smoke, 'hardTimeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
+    [cfg.watchdog, DEFAULTS.watchdog, 'loopRepeat'], [cfg.watchdog, DEFAULTS.watchdog, 'loopTokens'],
   ]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }
@@ -241,6 +251,8 @@ function normalize(cfg) {
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch
   if (!Number.isInteger(cfg.worker.tasksInMemory) || cfg.worker.tasksInMemory < 50) cfg.worker.tasksInMemory = DEFAULTS.worker.tasksInMemory;
+  if (!Number.isFinite(cfg.watchdog.intervalMinutes) || cfg.watchdog.intervalMinutes < 5) cfg.watchdog.intervalMinutes = DEFAULTS.watchdog.intervalMinutes;
+  if (!Number.isInteger(cfg.watchdog.killAfterStuckChecks) || (cfg.watchdog.killAfterStuckChecks !== 0 && cfg.watchdog.killAfterStuckChecks < 2)) cfg.watchdog.killAfterStuckChecks = DEFAULTS.watchdog.killAfterStuckChecks;
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
   cfg.scorecard.usePriors = !!cfg.scorecard.usePriors;
@@ -258,7 +270,7 @@ function normalize(cfg) {
   for (const [obj, key] of [[cfg.worker, 'timeoutByCategory'], [cfg.scorecard, 'usageBudgets'], [cfg.scorecard, 'usageGapHours']]) {
     if (!plain(obj[key])) obj[key] = {};
     for (const [name, value] of Object.entries(obj[key])) {
-      if (!Number.isFinite(value) || value <= 0) delete obj[key][name];
+      if (!Number.isFinite(value) || value < (key === 'timeoutByCategory' ? 0 : Number.EPSILON)) delete obj[key][name];
     }
   }
   const validWasteSteps = (v) => Array.isArray(v) && v.length > 0 && v.every((s) => Array.isArray(s) && s.length === 2 && Number.isFinite(s[0]) && s[0] > 0 && Number.isFinite(s[1]) && s[1] >= 0 && s[1] <= 1);
@@ -281,7 +293,7 @@ function normalize(cfg) {
   if (!Number.isFinite(cfg.scorecard.effortSlackUsd) || cfg.scorecard.effortSlackUsd < 0) cfg.scorecard.effortSlackUsd = DEFAULTS.scorecard.effortSlackUsd;
   if (!Number.isFinite(cfg.scorecard.effortSlackPct) || cfg.scorecard.effortSlackPct < 0) cfg.scorecard.effortSlackPct = DEFAULTS.scorecard.effortSlackPct;
   // Config timer bounds: minutes at one day; hours at 596, below Node's 2^31-1 ms timer maximum.
-  for (const [obj, key] of [[cfg, 'pollMinutes'], [cfg.worker, 'timeoutMinutes'], [cfg.conductor, 'turnTimeoutMinutes'], [cfg.smoke, 'timeoutMinutes'], [cfg.smoke, 'hardTimeoutMinutes'], [cfg.ui, 'detectMinutes']]) {
+  for (const [obj, key] of [[cfg, 'pollMinutes'], [cfg.worker, 'timeoutMinutes'], [cfg.conductor, 'turnTimeoutMinutes'], [cfg.smoke, 'timeoutMinutes'], [cfg.smoke, 'hardTimeoutMinutes'], [cfg.ui, 'detectMinutes'], [cfg.watchdog, 'intervalMinutes']]) {
     obj[key] = Math.min(1440, obj[key]);
   }
   for (const key of Object.keys(cfg.worker.timeoutByCategory)) cfg.worker.timeoutByCategory[key] = Math.min(1440, cfg.worker.timeoutByCategory[key]);
@@ -299,6 +311,11 @@ function normalize(cfg) {
     if (s.periodHours == null && (s.resetDay != null || s.resetHour != null)) s.periodHours = s.resetDay != null ? 168 : 24;
   }
   return cfg;
+}
+
+/** Convert an optional run cap to a Node timer duration. Zero means no wall-clock kill. */
+export function runTimeoutMs(minutes) {
+  return Number.isFinite(minutes) && minutes > 0 ? Math.min(2 ** 31 - 1, minutes * 60_000) : undefined;
 }
 
 const SECRET_MASK = '••••';

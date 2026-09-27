@@ -107,7 +107,7 @@ test('awaitTask times out with a snapshot', async () => {
   cancelTask(t.id);
 });
 
-test('all task waits use the category timeout or worker timeout unless explicitly overridden', async (ctx) => {
+test('task waits use the run timeout when set and otherwise use the 55 minute soft-wait default', async (ctx) => {
   const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
   const { conductorToolDefs } = await import('../core/tools.mjs');
   const previous = loadConfig().worker;
@@ -119,7 +119,10 @@ test('all task waits use the category timeout or worker timeout unless explicitl
   try {
     const modeling = createTask({ cwd, category: 'modeling' });
     assert.equal((await awaitTask(modeling.id)).timedOut, true);
-    assert.equal(waits.pop(), DEFAULTS.worker.timeoutByCategory.modeling * 60_000);
+    assert.equal(waits.pop(), 55 * 60_000);
+    const cappedDefs = conductorToolDefs({ sessionId: 'wait-cap', cwd, maxBlockMs: 59 * 60_000 });
+    await cappedDefs.find((d) => d.name === 'await_task').handler({ task_id: modeling.id });
+    assert.equal(waits.pop(), 55 * 60_000, 'the MCP ceiling does not replace the 55 minute default');
     // Change settings after constructing the tools: wait defaults must come from the current config.
     saveConfig({ worker: { timeoutMinutes: 7, timeoutByCategory: { modeling: 11 } } });
     for (const [category, minutes] of [['modeling', 11], ['read', 7], [undefined, 7]]) {
@@ -140,6 +143,22 @@ test('all task waits use the category timeout or worker timeout unless explicitl
     for (const t of listTasks()) cancelTask(t.id);
     saveConfig({ worker: previous });
   }
+});
+
+test('recovery keeps a long interrupted task whose watchdog aliveAt is recent', async () => {
+  const { recoverTasks } = await import('../core/tasks.mjs');
+  const { writeJson } = await import('../core/paths.mjs');
+  const id = 'alive-recovery', now = Date.now();
+  writeJson(join(HOME, 'tasks', `${id}.json`), {
+    id, cwd: tmpDir('alive-recovery'), title: 'long run', spec: 'x', provider: 'codex', model: 'gpt-6-astra',
+    status: 'running', attempts: 1, createdAt: new Date(now - 8 * 3_600_000).toISOString(),
+    updatedAt: new Date(now - 7 * 3_600_000).toISOString(), aliveAt: new Date(now - 10 * 60_000).toISOString(),
+  });
+  recoverTasks();
+  const recovered = getTask(id);
+  assert.equal(recovered.status, 'queued');
+  assert.equal(recovered.resume, true);
+  cancelTask(id);
 });
 
 test('task inputs are validated and normalized before journaling', () => {
@@ -890,7 +909,7 @@ test('graceful shutdown after the worker returns does not requeue a finished run
   }
 });
 
-test('awaitTask and worker timeoutMs are clamped to the Node timer maximum', async (ctx) => {
+test('awaitTask is clamped to the Node timer maximum and worker run caps use the shared zero-aware helper', async (ctx) => {
   const waits = [];
   ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => { waits.push(ms); queueMicrotask(fn); return {}; });
   const queued = createTask({ cwd: tmpDir('e8-await'), spec: 'x' });
@@ -901,7 +920,8 @@ test('awaitTask and worker timeoutMs are clamped to the Node timer maximum', asy
   // Config clamps timeoutMinutes to 1440, so the worker path cannot be driven past 2^31-1 through saveConfig.
   // Assert the runWorker call site still applies the same clamp to whatever minutes loadConfig returns.
   const src = readFileSync(new URL('../core/tasks.mjs', import.meta.url), 'utf8');
-  assert.match(src, /timeoutMs:\s*Math\.min\(2 \*\* 31 - 1,\s*\(wcfg\.timeoutByCategory\[t\.category\] \?\? wcfg\.timeoutMinutes\) \* 60_000\)/);
+  assert.match(src, /const timeoutMs = runTimeoutMs\(wcfg\.timeoutByCategory\[t\.category\] \?\? wcfg\.timeoutMinutes\)/);
+  assert.match(src, /\.\.\.\(timeoutMs \? \{ timeoutMs \} : \{\}\)/);
 });
 
 test('GP7: a noFailover task that parks on a limit hit is scored after a successful resume', async (ctx) => {
@@ -976,6 +996,20 @@ async function tasksWithWorker(ctx, worker) {
   });
   return tk;
 }
+
+test('a worker run with timeout zero receives no timeoutMs', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const previous = loadConfig().worker;
+  let input;
+  const tk = await tasksWithWorker(ctx, async (t) => { input = t; return { ok: true, finalMessage: 'done' }; });
+  saveConfig({ worker: { timeoutMinutes: 0, timeoutByCategory: {} } });
+  try {
+    const t = tk.createTask({ cwd: tmpDir('no-run-timeout'), provider: 'codex', parallelOverride: true });
+    delete process.env.CONDUCTOR_NO_SCHEDULE; tk.schedule();
+    assert.equal((await tk.awaitTask(t.id)).status, 'done');
+    assert.equal(Object.hasOwn(input, 'timeoutMs'), false);
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; saveConfig({ worker: previous }); }
+});
 
 test('a success that started before a confirmed hit cannot clear it', async (ctx) => {
   const { getLimits, modelBlockedUntil, noteLimitHit } = await import('../core/limits.mjs');

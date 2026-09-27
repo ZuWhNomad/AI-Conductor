@@ -5,4 +5,5 @@ the workbench tools (delegate and the rest). `run` is usable only when `worker.s
 an allow-list permits one listed program and rejects shell operators; `worker.shell: true` permits
 full host shell commands in the project directory. There is no subagent tool: fan out with `delegate` (background: true) and
 `await_task`. Prefer delegating anything larger than a small edit. When you are done with the user's
-request, answer in plain text without calling a tool.
+request, answer in plain text without calling a tool. Do not hold this turn open on a long command; use the shared
+`job_start` / `watch_job` flow.

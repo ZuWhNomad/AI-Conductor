@@ -6,7 +6,7 @@ import { query, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig, codexSandboxFor } from './config.mjs';
+import { loadConfig, codexSandboxFor, runTimeoutMs } from './config.mjs';
 import { bus } from './bus.mjs';
 import { mcpServers, forClaudeSdk } from './mcp.mjs';
 import { setSessionFlags, sessionFlags } from './session-flags.mjs';
@@ -55,7 +55,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0 };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -148,7 +148,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
     effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
+    costUsd: 0, watchdog: null, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -173,6 +173,17 @@ function emit(s, kind, data = {}) {
 function pushMessage(s, m) {
   s.messages.push({ ts: Date.now(), ...m });
   if (s.messages.length > 2000) s.messages.splice(0, s.messages.length - 2000);
+}
+
+/** Record a basic watchdog transcript line without starting or interrupting a model turn. */
+export function recordWatchdogCheckIn(sessionId, watchdog) {
+  const s = sessions.get(sessionId);
+  if (!s || s.status !== 'running') return false;
+  s.watchdog = watchdog;
+  pushMessage(s, { role: 'watchdog', text: watchdog.summary });
+  persistAll();
+  if (s.historyLoaded) writeJson(HIST(s.id, 'messages'), s.messages);
+  return true;
 }
 
 // ---------------------------------------------------------------- claude runtime
@@ -359,7 +370,8 @@ async function runTurn(s, text) {
     if (s.runtime === 'codex') {
       const first = !s.threadId;
       const promptText = first ? `${PROMPT}\n\n${PROMPT_CODEX}\n\n# User request\n${text}` : text;
-      r = await runCodex({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: promptText, model: s.model, effort: s.effort || undefined, sandbox: codexSandboxFor(s.model, cfg), network: cfg.worker.codexNetwork, resumeThreadId: s.threadId || undefined, mcp: { ...mcpServers(cfg), conductor: { url: `${serverUrl}/mcp/${s.id}` } }, signal: ac.signal, onEvent, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes) * 60_000 });
+      const timeoutMs = runTimeoutMs(cfg.conductor.turnTimeoutMinutes);
+      r = await runCodex({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: promptText, model: s.model, effort: s.effort || undefined, sandbox: codexSandboxFor(s.model, cfg), network: cfg.worker.codexNetwork, resumeThreadId: s.threadId || undefined, mcp: { ...mcpServers(cfg), conductor: { url: `${serverUrl}/mcp/${s.id}` } }, signal: ac.signal, onEvent, ...(timeoutMs ? { timeoutMs } : {}) });
       if (mine()) s.threadId = r.threadId || s.threadId;
     } else {
       const p = PROVIDERS[s.provider];
@@ -367,7 +379,8 @@ async function runTurn(s, text) {
       if (p.kind === 'ollama') { await ollama.ensureRunning(); wc = { baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama' }; }
       else wc = p.workerConfig();
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
-      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(loadConfig().conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: loadConfig().conductor.maxTurns, timeoutMs: (loadConfig().conductor.turnTimeoutMinutes) * 60_000 });
+      const timeoutMs = runTimeoutMs(cfg.conductor.turnTimeoutMinutes);
+      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: trimHistory(s.history) || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(cfg.conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: cfg.conductor.maxTurns, ...(timeoutMs ? { timeoutMs } : {}) });
       if (mine()) { s.history = r.messages || s.history; writeJson(HIST(s.id, 'loop'), s.history); }
       if (r.error && /context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(r.error)) r.error += ' — the chat history no longer fits this model; start a new chat (history is kept on disk).';
       if (r.ok && r.finalMessage && !s.messages.some((m) => m.role === 'assistant' && m.blocks?.[0]?.text === r.finalMessage)) onEvent('item', { item: { type: 'agent_message', text: r.finalMessage }, phase: 'completed' });

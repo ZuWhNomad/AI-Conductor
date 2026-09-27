@@ -61,6 +61,7 @@ const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
 `);
 const codexUrl = 'data:text/javascript,' + encodeURIComponent(`
   export async function runCodex(t) {
+    globalThis.__lastCodexInput = t;
     globalThis.__codexStarted?.resolve?.();
     if (globalThis.__codexOnEventError) t.onEvent?.('error', { error: globalThis.__codexOnEventError });
     if (globalThis.__codexHold) await globalThis.__codexHold.promise;
@@ -105,6 +106,15 @@ afterEach(() => {
   globalThis.__codexHold?.resolve?.();
   globalThis.__codexHold = null;
   globalThis.__codexOnEventError = null;
+  globalThis.__lastCodexInput = null;
+});
+
+test('a Codex conductor turn with timeout zero receives no timeoutMs', async () => {
+  const s = createSession({ cwd: tmpDir('no-turn-timeout'), provider: 'codex', model: 'gpt-6-astra' });
+  const done = onceSession(s.id, 'result');
+  await sendMessage(s.id, 'keep working');
+  await done;
+  assert.equal(Object.hasOwn(globalThis.__lastCodexInput, 'timeoutMs'), false);
 });
 
 test('queued Claude message keeps the session running so setEffort does not drop it', async () => {
