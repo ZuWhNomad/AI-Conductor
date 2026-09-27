@@ -27,6 +27,7 @@ writeJson(join(HOME, 'history', 'restored-l5.messages.json'), [
 const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
   export function query({ prompt, options }) {
     return (async function* () {
+      if (globalThis.__claudeThrow) throw new Error(globalThis.__claudeThrow);
       if (globalThis.__claudeEndWithoutResult) {
         for await (const msg of prompt) { (globalThis.__claudeInbox ||= []).push(msg); return; }
       }
@@ -83,7 +84,8 @@ registerHooks({
 
 const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
-const { getModels } = await import('../core/models.mjs');
+const { getModels, findModel } = await import('../core/models.mjs');
+const { listImprovements } = await import('../core/improve.mjs');
 
 function onceSession(id, kind) {
   return new Promise((resolve, reject) => {
@@ -103,6 +105,7 @@ afterEach(() => {
   globalThis.__claudeGates = [];
   globalThis.__claudeInbox = [];
   globalThis.__claudeEndWithoutResult = false;
+  globalThis.__claudeThrow = null;
   globalThis.__claudeAskPermission = false;
   globalThis.__claudeStream = false;
   globalThis.__histHold?.resolve?.();
@@ -180,6 +183,18 @@ test('a Claude query that ends without a result does not leave the session runni
   await sendMessage(s.id, 'hello');
   await idle;
   assert.equal((await getSession(s.id)).status, 'idle');
+});
+
+test('Claude conductor SDK version-required errors hide the model and log the update hint', async () => {
+  const model = 'claude-opus-conductor-version-test';
+  getModels().models.push({ provider: 'claude', id: model, kind: 'agent' });
+  globalThis.__claudeThrow = 'Claude Code version 1.2.3 or newer is required to use this model';
+  const s = createSession({ cwd: tmpDir('sdk-version-required'), model });
+  const error = onceSession(s.id, 'error');
+  await sendMessage(s.id, 'hello');
+  await error;
+  assert.equal(findModel('claude', model), null);
+  assert.ok(listImprovements().some((e) => e.kind === 'friction' && /update @anthropic-ai\/claude-agent-sdk \(needs Claude Code >= 1\.2\.3\)/.test(e.message)));
 });
 
 test('deleting a Codex session mid-turn does not rewrite history or emit for the deleted id', async () => {

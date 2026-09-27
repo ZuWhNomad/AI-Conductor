@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 import { PROVIDERS } from '../core/providers/index.mjs';
-import { getModels, refreshModels, familyOf, normFamilies, selsInFamilies } from '../core/models.mjs';
+import { getModels, findModel, markUnavailable, refreshModels, familyOf, normFamilies, selsInFamilies } from '../core/models.mjs';
 
 for (const scope of ['disjoint', 'full', 'failure']) {
   test(`scoped model refresh merges into the live cache: ${scope}`, async (ctx) => {
@@ -120,4 +120,25 @@ test('familyOf maps a model to its family whichever provider serves it', () => {
   const reg = { models: [{ provider: 'claude', id: 'claude-opus-5' }, { provider: 'antigravity', id: 'claude-sonnet-4-6' }, { provider: 'antigravity', id: 'gemini-3.1-pro' }, { provider: 'ollama', id: 'qwen3.8:latest' }] };
   assert.deepEqual(selsInFamilies(['claude', 'qwen'], reg), ['claude:claude-opus-5', 'antigravity:claude-sonnet-4-6', 'ollama:qwen3.8:latest']);
   assert.deepEqual(selsInFamilies([], reg), []);
+});
+
+test('marked models disappear from lookup and return on the next successful provider refresh', async (ctx) => {
+  const originalProviders = { ...PROVIDERS };
+  const originalCache = { ...getModels(), models: [...getModels().models], providers: { ...getModels().providers } };
+  ctx.after(() => {
+    for (const id of Object.keys(PROVIDERS)) delete PROVIDERS[id];
+    Object.assign(PROVIDERS, originalProviders);
+    Object.assign(getModels(), originalCache);
+  });
+  for (const id of Object.keys(PROVIDERS)) delete PROVIDERS[id];
+  const model = { provider: 'claude', id: 'claude-refresh-test', kind: 'agent' };
+  Object.assign(getModels(), { providers: {}, models: [model] });
+  assert.equal(markUnavailable('claude', model.id, 'SDK too old'), true);
+  assert.equal(markUnavailable('claude', model.id, 'SDK too old'), false);
+  assert.deepEqual(getModels().models, []);
+  assert.equal(findModel('claude', model.id), null);
+  PROVIDERS.claude = { id: 'claude', detect: async () => ({ installed: true }), listModels: async () => [model] };
+  await refreshModels({ only: ['claude'] });
+  assert.deepEqual(getModels().models, [model]);
+  assert.equal(findModel('claude', model.id), model);
 });

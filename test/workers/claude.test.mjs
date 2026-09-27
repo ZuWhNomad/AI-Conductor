@@ -7,6 +7,7 @@ const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
   export function query(opts) {
     globalThis.__claudeQueryOpts = opts;
     return (async function* () {
+      if (globalThis.__claudeThrow) throw new Error(globalThis.__claudeThrow);
       for (const m of globalThis.__claudeMessages || []) yield m;
     })();
   }
@@ -19,6 +20,7 @@ registerHooks({
 });
 
 const { runClaude, killByNameDenied } = await import('../../core/workers/claude.mjs');
+const { getModels, findModel } = await import('../../core/models.mjs');
 
 test('rate_limit_event with isUsingOverage does not set limitHit; rejected only marks a failed run', async () => {
   globalThis.__claudeMessages = [
@@ -58,6 +60,18 @@ test('read-only sandbox maps to Claude disallowedTools for write/edit/Bash', asy
   ];
   await runClaude({ id: 't', cwd: process.cwd(), prompt: 'x' });
   assert.equal(globalThis.__claudeQueryOpts.options.disallowedTools, undefined);
+});
+
+test('SDK version-required errors mark the Claude model unavailable and return an environment failure', async () => {
+  const model = 'claude-opus-version-test';
+  getModels().models.push({ provider: 'claude', id: model, kind: 'agent' });
+  globalThis.__claudeThrow = 'Claude Code version 1.2.3 or newer is required to use this model';
+  try {
+    const result = await runClaude({ id: 'version-required', provider: 'claude', model, cwd: process.cwd(), prompt: 'x' });
+    assert.equal(result.ok, false);
+    assert.equal(result.envFailed, true);
+    assert.equal(findModel('claude', model), null);
+  } finally { globalThis.__claudeThrow = null; }
 });
 
 test('kill guard: process kills by name or image are denied, kills by PID are not', async () => {
