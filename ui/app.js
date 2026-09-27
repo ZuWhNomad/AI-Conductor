@@ -63,7 +63,7 @@ function renderSessions() {
     t.ondblclick = (e) => { e.stopPropagation(); renameSession(s); };
     const running = S.tasks.filter((t) => t.sessionId === s.id && t.status === 'running').length;
     const st = el('span', 'pill' + (running || s.status === 'running' ? ' running' : ''), running ? '● ' + running : (s.status === 'running' ? '●' : ''));
-    const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', 'approve') : null;
+    const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', `approve ${s.pendingCount}`) : null;
     if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
     const ren = el('span', 'x', '✎'); ren.title = 'Rename chat'; ren.tabIndex = 0; ren.setAttribute('aria-label', 'Rename chat');
     ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
@@ -164,7 +164,7 @@ function renderProviders() {
       if (w.estimated) { // let the user record an actual reading to re-calibrate the estimate
         const row = el('div', 'wl tiny'); const inp = el('input'); inp.type = 'number'; inp.min = 0; inp.max = 100; inp.placeholder = 'actual %'; inp.style.width = '5em';
         const set = el('button', 'sm', 'Calibrate'); set.title = w.note || 'record the real % from the provider site to refine the estimate';
-        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); S.limits = await api.get('/api/limits'); inp.value = ''; renderProviders(); } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
+        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
         row.append(inp, set); d.append(row);
       }
     }
@@ -264,11 +264,15 @@ const modelLabel = (m, withProvider) => `${withProvider ? m.provider + ' · ' : 
 function resolveOther(prefix, interactive = false) {
   const P = $(`#${prefix}provider`), M = $(`#${prefix}model`);
   if (M.value !== '__other__') return;
-  if (!interactive) { M.selectedIndex = 0; return; }
+  if (!interactive) { M.value = M.dataset.selection; return false; }
   const all = P.value === ALL;
   const typed = (window.prompt(all ? 'Model id (provider:model, e.g. claude:claude-opus-4-8 or codex:gpt-5.6-sol):' : `Model id for ${P.value}:`) || '').trim();
-  if (!typed) { M.selectedIndex = 0; return; }
-  const value = all ? (typed.includes(':') ? typed : `claude:${typed}`) : typed;
+  if (!typed || (all && !/^[^:]+:.+$/.test(typed))) {
+    M.value = M.dataset.selection;
+    if (typed) alert('Enter a model id as provider:model.');
+    return false;
+  }
+  const value = typed;
   M.add(new Option(value.replace(':', ' · '), value), M.options[M.options.length - 1]);
   M.value = value;
 }
@@ -303,6 +307,7 @@ function fillPicker(prefix, sel, opts = {}) {
   M.value = match ? (all ? `${match.provider}:${match.id}` : match.id) : (all ? 'claude:' : '');
   if (!match && sel.model && sel.model !== 'default') { const v = all ? `${sel.provider || 'claude'}:${sel.model}` : sel.model; M.append(new Option(`${all ? (sel.provider || 'claude') + ' · ' : ''}${sel.model}`, v)); M.value = v; } // keep an explicit id even if not listed yet
   M.append(new Option('Other… (type a model id)', '__other__'));
+  M.dataset.selection = M.value;
   const cur = ms.find((m) => (all ? `${m.provider}:${m.id}` : m.id) === M.value);
   const prov = cur?.provider || (all ? (M.value.includes(':') ? M.value.split(':')[0] : 'claude') : P.value);
   const fallbackEfforts = prov === 'claude' ? CLAUDE_EFFORTS : EFFORTS;
@@ -492,7 +497,8 @@ const FLEET_CAP = 30;
 // scope: 'all' when no chat is open, else the remembered choice (default 'mine' = this chat only). sessionless tasks (CLI/API) always show.
 function fleetScope() { return S.current ? (localStorage.getItem('fleetScope') || 'mine') : 'all'; }
 function inFleet(t) { return fleetScope() === 'all' || t.sessionId === S.current?.id || t.sessionId == null; }
-function myTasks() { return S.tasks.filter(inFleet); }
+function terminalTask(t) { return ['done', 'failed', 'canceled'].includes(t?.status); }
+function myTasks() { return S.tasks.filter(inFleet).sort((a, b) => Number(terminalTask(a)) - Number(terminalTask(b))); }
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
   for (const t of myTasks().slice(0, FLEET_CAP)) box.append(taskCard(t));
@@ -596,24 +602,16 @@ function lastAction(t) {
   return t.result?.finalMessage ? t.result.finalMessage.slice(0, 120) : t.specPreview || '';
 }
 function updateTask(t) {
-  if (['done', 'failed', 'canceled'].includes(t.status)) S.workerLog.delete(t.id);
+  if (terminalTask(t)) S.workerLog.delete(t.id);
   const i = S.tasks.findIndex((x) => x.id === t.id);
+  const previous = S.tasks[i];
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
-  if (inFleet(t)) {
-    const box = $('#tasks');
+  if (!previous || terminalTask(previous) !== terminalTask(t)) renderTasks();
+  else {
     const existing = S.taskEls.get(t.id);
-    const fresh = taskCard(t);
-    if (existing) existing.replaceWith(fresh);
-    else {
-      box.prepend(fresh);
-      while (box.children.length > FLEET_CAP) {
-        const last = box.lastElementChild;
-        if (last?.dataset?.id) S.taskEls.delete(last.dataset.id);
-        last?.remove();
-      }
-    }
+    if (existing) existing.replaceWith(taskCard(t));
+    renderFleetHead();
   }
-  renderFleetHead();
   renderSessions();
 }
 async function openTask(id) {
@@ -698,6 +696,7 @@ function setStatus(st) {
 }
 async function newSession() {
   if (newSessionPromise) return newSessionPromise;
+  const button = $('#btn-new'); button.disabled = true; button.textContent = 'Starting…';
   return (newSessionPromise = (async () => {
     const cwd = $('#cwd').value.trim();
     if (!cwd) { $('#stt-hint').textContent = 'Pick a project folder first (left panel).'; $('#cwd').focus(); return; }
@@ -713,8 +712,11 @@ async function newSession() {
       api.post('/api/settings', { conductor: { provider: sel.provider, model: modelOrNull, effort: sel.effort } }).catch(() => {});
     }
     $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
-    await refreshSessions(); await openSession(s.id);
-  })().finally(() => { newSessionPromise = null; }));
+    upsertSession(s); renderSessions(); await openSession(s.id);
+  })().finally(() => { newSessionPromise = null; button.disabled = false; button.textContent = 'Start chat'; }));
+}
+function upsertSession(s) {
+  S.sessions = [...S.sessions.filter((x) => x.id !== s.id), s].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 async function refreshSessions() { S.sessions = await api.get('/api/sessions'); renderSessions(); }
 // Slash commands that send straight to a worker (zero conductor tokens). The send() matcher is built from this table (one source of truth).
@@ -755,7 +757,7 @@ function closeCmdMenu() { const m = $('#cmd-menu'); if (!m) return; m.hidden = t
 function cmdItemsFor(query) {
   const q = query.toLowerCase(); const items = [];
   for (const c of COMMANDS) if (!q || c.cmd.startsWith(q)) items.push({ label: `/${c.cmd} ${c.args}`, help: c.help, insert: `/${c.cmd} ` });
-  for (const m of S.models.models) if (m.kind === 'agent' && (!q || m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))) items.push({ label: `/worker ${m.id}`, help: m.provider, insert: `/worker ${m.id} ` });
+  if (q) for (const m of S.models.models) if (m.kind === 'agent' && (m.id.toLowerCase().includes(q) || (m.label || '').toLowerCase().includes(q))) items.push({ label: `/worker ${m.id}`, help: m.provider, insert: `/worker ${m.id} ` });
   return items;
 }
 /** Open only when the whole composer is a single leading `/token` (no space yet); otherwise close. */
@@ -807,18 +809,21 @@ function noteUpdate(o) {
 }
 
 // ---------- SSE ----------
-async function resync() {
-  const st = await api.get('/api/state');
-  S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
+function applyState(st) {
+  S.boot = st.boot; S.lastSeq = st.seq || 0;
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
+}
+async function resync() {
+  const st = await api.get('/api/state');
+  applyState(st); // state is fresh: do not replay events that predate it on top of it
   renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   seedNewChatDefaults();
   if (S.current) await openSession(S.current.id);
 }
 /** Coalesce bursts (e.g. replayed events) into one refetch per key. */
 const pendingRefetch = new Map();
-function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => {}); }, ms)); }
+function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => resync().catch(() => {})); }, ms)); }
 function applyAutoRefresh() {
   const on = !!S.config?.ui?.autoRefresh;
   const cb = $('#auto-refresh'); if (cb) cb.checked = on;
@@ -887,7 +892,9 @@ function connect() {
 }
 function onSessionEvent(ev) {
   if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') {
-    refreshSessions();
+    if (ev.kind === 'deleted') S.sessions = S.sessions.filter((s) => s.id !== ev.sessionId);
+    else upsertSession(ev.session);
+    renderSessions();
     if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) clearCurrent();
     if (ev.kind === 'updated' && S.current?.id === ev.sessionId) {
       S.current = { ...S.current, ...ev.session };
@@ -972,7 +979,7 @@ function openSettings() {
     setTimeout(() => {
       fillPicker(prefix, sel, opts);
       $(`#${prefix}provider`).onchange = (e) => { const v = e.target.value; fillPicker(prefix, v === ALL ? pickerValue(prefix) : { ...pickerValue(prefix), provider: v, model: '' }, { ...opts, forceProvider: true }); };
-      $(`#${prefix}model`).onchange = () => { resolveOther(prefix, true); fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
+      $(`#${prefix}model`).onchange = () => { if (resolveOther(prefix, true) === false) return; fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
     }, 0);
   };
   body.append(el('h4', null, 'Default worker (the grunt coder) — provider : model : effort'));
@@ -1024,6 +1031,7 @@ function openSettings() {
     const patch = {};
     for (const i of grid.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
+      if (i.type === 'number' && i.value.trim() === '') continue;
       const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'checkbox' ? !!i.checked : i.type === 'number' ? Number(i.value) : i.value;
       if (i.type === 'password') {
         if (v === '••••') continue;
@@ -1057,11 +1065,6 @@ function openSettings() {
     if (changedProviders.length > 0) api.post('/api/models/refresh', { only: changedProviders }).catch(() => {});
   });
   body.append(save);
-  // Quit: stop the server process from the browser (also available top-left in the brand row).
-  const quit = el('button', 'sm danger', 'Quit conductor (stop the server)');
-  quit.style.marginLeft = '8px';
-  quit.onclick = () => quitServer(quit);
-  body.append(quit);
   openModal('Settings', body);
 }
 async function openImprovements(showResolved = false) {
@@ -1149,10 +1152,9 @@ async function openScores() {
 // ---------- boot ----------
 async function boot() {
   const st = await api.get('/api/state');
-  S.boot = st.boot; S.lastSeq = st.seq || 0; // the transcript is rendered from state; only newer events stream in
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
+  applyState(st); // the transcript is rendered from state; only newer events stream in
   $('#cwd').value = localStorage.getItem('cwd') || '';
-  $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
+  S.chatFilter = $('#chat-filter').value;
   refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh(); seedNewChatDefaults(); renderChip();
   connect();
   const last = localStorage.getItem('lastSession');
@@ -1164,7 +1166,7 @@ async function boot() {
   $('#btn-send').onclick = send;
   $('#btn-stop').onclick = () => S.current && act(() => api.post(`/api/sessions/${S.current.id}/interrupt`));
   $('#btn-refresh').onclick = (e) => act(async () => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } });
-  $('#auto-refresh').onchange = async (e) => { const v = e.target.checked; try { S.config = await api.post('/api/settings', { ui: { autoRefresh: v } }); } catch {} applyAutoRefresh(); };
+  $('#auto-refresh').onchange = (e) => act(async () => { S.config = await api.post('/api/settings', { ui: { autoRefresh: e.target.checked } }); applyAutoRefresh(); }, e.target);
   $('#btn-settings').onclick = openSettings;
   $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);
   $('#btn-budget-details').onclick = () => revealProviders();
@@ -1192,12 +1194,12 @@ async function boot() {
   $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
   // Switching back to "all providers" must keep the last real selection (the bare model id in the select no longer carries its provider).
   $('#new-provider').onchange = (e) => { const v = e.target.value; fillPicker('new-', v === ALL ? savedSelection() : { ...savedSelection(), provider: v, model: '' }, { forceProvider: v !== ALL }); refreshNewPicker(true, v !== ALL); };
-  $('#new-model').onchange = () => { resolveOther('new-', true); refreshNewPicker(true, true); };
+  $('#new-model').onchange = () => { if (resolveOther('new-', true) === false) return; refreshNewPicker(true, true); };
   $('#new-effort').onchange = () => refreshNewPicker(true, true);
   $('#provider').onchange = (e) => { const v = e.target.value; const cur = { provider: S.current?.provider || 'claude', model: S.current?.model || '', effort: S.current?.effort || 'high' }; fillPicker('', v === ALL ? cur : { ...cur, provider: v, model: v === cur.provider ? cur.model : '' }, { forceProvider: v !== ALL }); };
   $('#model').onchange = (e) => {
     if (!S.current) return;
-    resolveOther('', true);
+    if (resolveOther('', true) === false) return;
     const v = pickerValue('');
     if (v.provider !== S.current.provider) {
       $('#stt-hint').textContent = 'Provider can only be chosen for a new chat; the model switched within ' + S.current.provider + ' only if it belongs to it.';

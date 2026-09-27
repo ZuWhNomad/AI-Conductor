@@ -1288,6 +1288,7 @@ test('P8: lists and task events omit bulky results while the full record preserv
     for (const key of ['paths', 'imageOptions', 'diffStat']) assert.equal(key in summary, false);
     for (const key of ['items', 'files', 'tools']) assert.equal(key in summary.result, false);
     assert.equal(summary.result.finalMessage, t.result.finalMessage.slice(0, 120));
+    assert.equal(taskSummary({ ...t, spec: 'x'.repeat(400) }).specPreview, 'x'.repeat(120));
     assert.equal(summary.result.durationMs, 10);
     assert.equal(summary.result.costUsd, 2);
     assert.deepEqual(publicTask(getTask(t.id)).result, t.result);
@@ -1550,4 +1551,9 @@ test('changedFiles lists a file once when git and a Windows worker report it wit
   const done = await tk.awaitTask(t.id);
   assert.equal(done.status, 'done', done.error);
   assert.deepEqual(done.changedFiles, ['sub/a.txt']);
+});
+
+test('schedule wraps the pass in withLimitsSnapshot', () => {
+  const src = readFileSync(new URL('../core/tasks.mjs', import.meta.url), 'utf8');
+  assert.match(src, /export function schedule\(\) \{[\s\S]*?withLimitsSnapshot\(\(\) => \{/);
 });

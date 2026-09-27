@@ -33,11 +33,8 @@ export function tryReadJson(file) {
 }
 
 export function readJson(file, fallback = null) {
-  try {
-    const r = tryReadJson(file);
-    if (r.ok) return r.value;
-    return fallback;
-  } catch { return fallback; }
+  const r = tryReadJson(file);
+  return r.ok ? r.value : fallback;
 }
 
 // --- Secrets. One redactor for every text Conductor persists or shows: writeJson/appendNdjson below, the event bus,

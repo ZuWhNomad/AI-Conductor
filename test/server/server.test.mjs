@@ -237,7 +237,12 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
       assert.equal(typeof d.eventLoop.p99Ms, 'number'); assert.ok(d.eventLoop.p99Ms >= 0);
       assert.equal(d.rows.find((r) => r.name === 'codex').value, 'test-version');
       assert.equal(d.rows.find((r) => r.name === 'codex').status, 'logged in');
+      const claude = d.rows.find((r) => r.name === 'claude (Agent SDK)');
+      assert.equal(typeof claude.value, 'string');
+      assert.ok(claude.value === 'unknown' || claude.value.length > 0);
     }
+    const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+    assert.match(src, /claudePkg\?\.version \|\| 'unknown'/);
   } finally {
     if (previousCodex === undefined) delete process.env.CONDUCTOR_CODEX;
     else process.env.CONDUCTOR_CODEX = previousCodex;
@@ -537,7 +542,7 @@ test('/mcp/<session> JSON-RPC initialize, tools/list, tools/call', async () => {
     body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
   }).then((r) => r.json());
   const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
-  assert.match(src, /maxBlockMs = \(\(loadConfig\(\)\.mcp\?\.toolTimeoutSec \?\? 3600\) - 60\) \* 1000/);
+  assert.match(src, /maxBlockMs = \(DEFAULT_TOOL_TIMEOUT_SEC - 60\) \* 1000/);
   const init = await rpc('initialize');
   assert.equal(init.result.serverInfo.name, 'conductor');
   const listed = await rpc('tools/list');
@@ -557,4 +562,24 @@ test('POST /api/tasks accepts avoidFamilies (normalized)', async () => {
   const t = await post('/api/tasks', { cwd, spec: 'review', avoidFamilies: ['Claude', 'grok', 'claude'] });
   assert.deepEqual(t.avoidFamilies, ['claude', 'grok']);
   await post(`/api/tasks/${t.id}/cancel`);
+});
+
+test('state includes old open tasks as well as the newest 50 without duplicates', async () => {
+  const { createTask, cancelTask } = await import('../../core/tasks.mjs');
+  const cwd = tmpDir('state-tasks');
+  const old = createTask({ cwd, spec: 'still open' }, { dispatch: false });
+  old.createdAt = '2020-01-01T00:00:00.000Z';
+  const recent = [];
+  for (let i = 0; i < 50; i++) {
+    const task = createTask({ cwd, spec: `recent ${i}` }, { dispatch: false });
+    cancelTask(task.id);
+    recent.push(task.id);
+  }
+  try {
+    const tasks = (await get('/api/state')).tasks;
+    assert.equal(tasks.filter((t) => t.id === old.id).length, 1);
+    for (const id of recent) assert.ok(tasks.some((t) => t.id === id));
+    assert.equal(new Set(tasks.map((t) => t.id)).size, tasks.length);
+    assert.ok(tasks.findIndex((t) => t.id === old.id) < tasks.findIndex((t) => t.id === recent[0]));
+  } finally { cancelTask(old.id); }
 });

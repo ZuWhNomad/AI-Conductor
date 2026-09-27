@@ -17,17 +17,8 @@ import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
-import { RECIPE_VARIANTS } from './recipes.mjs';
+import { variantsOf, checkVariant } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
-
-const variantsOf = (category) => ({ ...(RECIPE_VARIANTS[category] || {}), ...(loadConfig().recipes?.variants?.[category] || {}) });
-const checkVariant = (category, variant) => {
-  if (!variant) return null;
-  const known = variantsOf(category);
-  if (Object.hasOwn(known, variant)) return null;
-  const names = Object.keys(known);
-  return `unknown variant "${variant}" for ${category || 'this category'}${names.length ? `; known: ${names.join(', ')}` : ''}`;
-};
 
 const offered = new Map(); // sessionId -> Set of capability names already offered in that chat
 

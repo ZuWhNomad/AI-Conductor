@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readJson, writeJson, statePath } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 
-const { validatePlan, extractJson, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan, abortPlans, getPlan } = await import('../core/plans.mjs');
+const { validatePlan, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan, abortPlans, getPlan } = await import('../core/plans.mjs');
 
 test('plan IDs avoid persisted journals and simultaneous active plans', async (ctx) => {
   const diskId = (0.125).toString(36).slice(2, 10), file = statePath('plans', `${diskId}.json`);
@@ -77,7 +77,6 @@ test('findings and verdicts are read from JSON blocks, with sane fallbacks', () 
   assert.equal(findingsOf('plain prose report', 't2')[0].title, 'plain prose report');
   assert.equal(findingsOf('', 't3').length, 0);
   assert.equal(findingKey({ file: 'A.JS', title: 'Null   deref' }), 'a.js|null deref');
-  assert.deepEqual(extractJson('x {"a":1}'), { a: 1 });
   assert.equal(parseVerdict('```json\n{"real": false, "reason": "handled upstream"}\n```').real, false);
   assert.equal(parseVerdict('{"verdict":"confirmed"}').real, true);
   assert.equal(parseVerdict('{"score": 7}').real, true);
@@ -87,7 +86,6 @@ test('findings and verdicts are read from JSON blocks, with sane fallbacks', () 
 
 test('unfenced nested JSON extracts the outer object; a parsed object is not a prose verdict', () => {
   const nested = '{"findings":[{"title":"Null deref","file":"a.js","severity":"high"}]}';
-  assert.equal(extractJson(nested).findings[0].title, 'Null deref');
   assert.equal(findingsOf(nested, 't4').length, 1);
   assert.equal(findingsOf(nested, 't4')[0].title, 'Null deref');
   const v = parseVerdict('{"real":false,"reason":"has {brace}"}');
@@ -97,7 +95,6 @@ test('unfenced nested JSON extracts the outer object; a parsed object is not a p
   const prose = parseVerdict('```json\n{"note":"this is real and confirmed"}\n```');
   assert.equal(prose.real, false);
   assert.match(prose.reason, /note/);
-  assert.deepEqual(extractJson('x {"a":1}'), { a: 1 });
 });
 
 test('parseVerdict ignores incidental unfenced objects without verdict keys', () => {
@@ -121,12 +118,11 @@ test('a planner report containing {} keeps its long summary', async () => {
 test('a 100 KB brace bomb returns in under 200 ms', (t) => {
   const bomb = '{'.repeat(100_000);
   const t0 = performance.now();
-  assert.equal(extractJson(bomb), null);
-  const ms = performance.now() - t0;
-  t.diagnostic(`extractJson: ${ms.toFixed(2)} ms`);
-  assert.ok(ms < 200, `extractJson took ${ms} ms`);
   assert.equal(parseVerdict(bomb).real, false);
   assert.equal(findingsOf(bomb, 't')[0].title.length, 140);
+  const ms = performance.now() - t0;
+  t.diagnostic(`brace bomb: ${ms.toFixed(2)} ms`);
+  assert.ok(ms < 200, `brace bomb took ${ms} ms`);
 });
 
 test('tally modes', () => {

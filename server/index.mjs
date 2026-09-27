@@ -15,7 +15,7 @@ import { killProbes } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp } from '../core/tools.mjs';
@@ -24,6 +24,7 @@ import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
 import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
+import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -152,8 +153,8 @@ async function mcpRoute(req, res, seg) {
   if (req.method === 'DELETE') { res.writeHead(200); res.end(); return true; }
   const body = await readBody(req);
   const reply = (id, result) => json(res, 200, { jsonrpc: '2.0', id, result });
-  // Cap blocking tools below the Codex MCP transport timeout (default 3600s in mcp.mjs). Config key mcp.toolTimeoutSec is not in DEFAULTS; 3600 matches mcp.mjs.
-  const maxBlockMs = ((loadConfig().mcp?.toolTimeoutSec ?? 3600) - 60) * 1000;
+  // Cap blocking tools below the Codex MCP transport timeout.
+  const maxBlockMs = (DEFAULT_TOOL_TIMEOUT_SEC - 60) * 1000;
   const defs = conductorToolDefs({ sessionId: ctx.id, cwd: ctx.cwd, maxBlockMs });
   switch (body.method) {
     case 'initialize': return reply(body.id, { protocolVersion: body.params?.protocolVersion || '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'conductor', version: VERSION }, instructions: `Workbench tools for delegating work from this conductor session. Tasks run in ${ctx.cwd}.` });
@@ -178,7 +179,10 @@ async function route(req, res, url) {
 
   if (m === 'GET' && p === '/api/state') {
     const imps = listImprovements();
-    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks: listTasks({ limit: 50 }), improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
+    const active = openTasks().map(taskSummary);
+    const activeIds = new Set(active.map((t) => t.id));
+    const tasks = [...active, ...listTasks({ limit: 50 }).filter((t) => !activeIds.has(t.id))];
+    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks, improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
   }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
@@ -381,7 +385,8 @@ export async function doctorReport() {
   const rows = [];
   rows.push({ name: 'node', value: process.version, status: Number(process.versions.node.split('.')[0]) >= 22 ? 'ok' : 'need Node 22+' });
   const claude = await PROVIDERS.claude.detect();
-  rows.push({ name: 'claude (Agent SDK)', value: JSON.parse(readFileSync(join(REPO_ROOT, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'), 'utf8')).version, status: claude.loggedIn ? `logged in (${claude.subscription || 'subscription'})` : `NOT logged in → run: ${PROVIDERS.claude.loginCommand()}` });
+  const claudePkg = readJson(join(REPO_ROOT, 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'));
+  rows.push({ name: 'claude (Agent SDK)', value: claudePkg?.version || 'unknown', status: claude.loggedIn ? `logged in (${claude.subscription || 'subscription'})` : `NOT logged in → run: ${PROVIDERS.claude.loginCommand()}` });
   const codex = codexCommand();
   const codexVersion = codex ? await versionOf(codex.command, [...codex.args, '--version']) : null;
   rows.push({ name: 'codex', value: codexVersion || 'missing', status: codex ? ((await PROVIDERS.codex.account().catch(() => ({ loggedIn: false }))).loggedIn ? 'logged in' : 'NOT logged in → run: codex login') : 'install: npm i -g @openai/codex', path: codex ? [codex.command, ...codex.args].join(' ') : findCli('codex') });

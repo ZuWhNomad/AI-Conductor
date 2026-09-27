@@ -11,7 +11,7 @@ import { loadConfig, DEFAULTS, codexSandboxFor } from './config.mjs';
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta } from './limits.mjs';
+import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
@@ -129,6 +129,7 @@ export function publicTask(t) {
 export function taskSummary(t) {
   if (!t) return null;
   const { paths, imageOptions, diffStat, result, ...summary } = publicTask(t);
+  summary.specPreview = summary.specPreview.slice(0, 120);
   if (result) {
     const { items, files, tools, finalMessage, ...small } = result;
     // The fleet's lastAction preview displays 120 characters.
@@ -325,6 +326,10 @@ export const heldProviders = new Set();
 export function schedule() {
   if (shuttingDown) return;
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
+  withLimitsSnapshot(scheduleOnce); // one limits read per pass
+}
+
+function scheduleOnce() {
   const cfg = loadConfig();
   const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled

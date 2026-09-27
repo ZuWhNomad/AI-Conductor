@@ -1,6 +1,7 @@
 // Pull updates for this checkout from its git remote (the repo is worked on from more than one machine).
 // Status is a fetch + counts; applying is a fast-forward pull plus `npm install` when the lockfile moved.
 import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -9,10 +10,7 @@ import { findCli } from './proc.mjs';
 import { bus } from './bus.mjs';
 
 let gitBin;
-const execFileAsync = (cmd, args, opts) => new Promise((resolve, reject) => execFile(cmd, args, opts, (error, stdout, stderr) => {
-  if (error) return reject(Object.assign(error, { stdout, stderr }));
-  resolve({ stdout, stderr });
-}));
+const execFileAsync = promisify(execFile);
 async function git(args, { cwd = REPO_ROOT, timeout = 30_000, exec = execFileAsync } = {}) {
   if (gitBin === undefined) gitBin = findCli('git');
   if (!gitBin) throw new Error('git is not installed (https://git-scm.com)');
@@ -54,7 +52,7 @@ export async function updateStatus({ cwd = REPO_ROOT, fetch = true, exec = execF
 
 /** Fast-forward to origin; refuses when there are local changes or local commits the remote lacks. */
 let applying = null;
-export function applyUpdate({ cwd = REPO_ROOT, npm = true, exec = execFileAsync } = {}) {
+export function applyUpdate({ cwd = applyUpdate.cwd ?? REPO_ROOT, npm = true, exec = applyUpdate.exec ?? execFileAsync } = {}) {
   if (applying) return applying;
   applying = (async () => {
     try {

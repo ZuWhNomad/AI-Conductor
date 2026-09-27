@@ -679,7 +679,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const money = (v) => (v == null ? 'cost unknown' : `$${v.toFixed(v < 0.1 ? 3 : 2)}`);
   const describe = (p) => { const lastSel = p.steps[p.steps.length - 1]; const { provider: prov, model: provModel } = parseSel(lastSel); const rs = reserve(prov, provModel); return `${p.steps.join(' then on fail ')}: expected quality ${p.quality.toFixed(2)} at ${money(p.usd)}${p.estimated ? ' (est.)' : ''}${p.ref.cells > 1 ? ` [levels ${p.ref.difficulty}–${p.ref.difficultyMax} pooled]` : ''}${rs > 1 ? ` [reserve ×${rs.toFixed(2)}: ${prov} proven to level ${ceiling.get(prov)}]` : ''}`; };
   const single = plans.find((p) => p.steps.length === 1);
-  const alt = plans.slice(1, 4).map(describe);
+  const alt = plans.filter((p) => p !== best).slice(0, 3).map(describe);
   return {
     provider: first.provider, model: first.model, effort: first.effort,
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,

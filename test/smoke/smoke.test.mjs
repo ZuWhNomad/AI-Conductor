@@ -12,8 +12,12 @@ const { CANARY, bare } = await import('../../core/smoke/private/common.mjs');
 const PRIVATE = new URL('../../core/smoke/private/', import.meta.url);
 const write = (dir, files) => { for (const [rel, body] of Object.entries(files)) { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), body); } };
 
+// Level 6-7 graders: every plausible wrong solution fails, every different-but-correct one passes. Mutants and
+// benchmark checks that cost multi-seconds or fail by timing out run with CONDUCTOR_SMOKE_SLOW=1.
+const SLOW = process.env.CONDUCTOR_SMOKE_SLOW === '1';
+
 for (const b of BATTERY) {
-  test(`battery ${b.id}: check fails on the untouched fixture and passes on the reference solution`, async () => {
+  test(`battery ${b.id}: check fails on the untouched fixture and passes on the reference solution`, { skip: b.id === 'refactor-6' && !SLOW ? 'slow benchmark (CONDUCTOR_SMOKE_SLOW=1)' : false }, async () => {
     const dir = tmpDir(`smoke-${b.id}`);
     b.setup(dir);
     assert.equal(copiedFromGrader(dir), false, 'a fixture carries the canary');
@@ -89,14 +93,14 @@ test('ui-2 uses string checks for the media rule and inline handlers', async () 
 
 // Level 6-7 graders: every plausible wrong solution fails, every different-but-correct one passes. Mutants that fail only
 // by timing out (refactor-6's benchmark kill, implement-7's 60 s test timeout) run with CONDUCTOR_SMOKE_SLOW=1.
-const SLOW = process.env.CONDUCTOR_SMOKE_SLOW === '1';
 for (const id of ['refactor-6', 'implement-6', 'implement-7', 'debug-7']) {
   const b = BATTERY.find((x) => x.id === id);
   const { MUTANTS, SLOW_MUTANTS = {}, VARIANTS } = await import(new URL(`${id}.mjs`, PRIVATE));
   const cases = [...Object.entries(MUTANTS), ...(SLOW ? Object.entries(SLOW_MUTANTS) : [])].map(([name, files]) => ['mutant', name, files, false])
     .concat(Object.entries(VARIANTS).map(([name, files]) => ['variant', name, files, true]));
   for (const [kind, name, files, pass] of cases) {
-    test(`${id} ${kind} ${pass ? 'passes' : 'fails'}: ${name}`, async () => {
+    const slowBench = id === 'refactor-6' && (kind === 'variant' || name.includes('gaming the equivalence test') || name.includes('forged BENCH line'));
+    test(`${id} ${kind} ${pass ? 'passes' : 'fails'}: ${name}`, { skip: slowBench && !SLOW ? 'slow benchmark (CONDUCTOR_SMOKE_SLOW=1)' : false }, async () => {
       const dir = tmpDir(`smoke-${id}`);
       b.setup(dir); b.solve(dir); write(dir, bare(files));
       const r = await b.check(dir, { result: { finalMessage: 'done' } });
@@ -148,8 +152,13 @@ test("canary: the grader's own hidden files never trigger it, even when left beh
     b.setup(dir); b.solve(dir);
     const left = bodies(await import(new URL(`${id}.mjs`, PRIVATE)));
     b.hidden.forEach((rel, i) => write(dir, { [rel]: left[i] })); // as if a killed earlier check had left them behind
-    const r = await b.check(dir, { result: { finalMessage: 'done' } });
-    assert.equal(r.pass, true, `${id}: ${r.notes}`);
+    if (id === 'refactor-6' && !SLOW) {
+      assert.equal(copiedFromGrader(dir, b.hidden), false, `${id}: canary triggered on hidden files`);
+      b.hidden.forEach((rel) => rmSync(join(dir, rel), { force: true }));
+    } else {
+      const r = await b.check(dir, { result: { finalMessage: 'done' } });
+      assert.equal(r.pass, true, `${id}: ${r.notes}`);
+    }
     for (const rel of b.hidden) assert.equal(existsSync(join(dir, rel)), false, `${id}: ${rel} left behind`);
     rmSync(dir, { recursive: true, force: true });
   }

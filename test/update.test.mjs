@@ -164,21 +164,20 @@ test('update: a lockfile change runs npm through the injected exec; a failing in
   assert.equal(run(b, 'rev-parse', 'HEAD'), run(a, 'rev-parse', 'HEAD')); // HEAD moved anyway: the caller must not restart blindly
 });
 
+test('execFileAsync is util.promisify(execFile)', () => {
+  const src = readFileSync(new URL('../core/update.mjs', import.meta.url), 'utf8');
+  assert.match(src, /^const execFileAsync = promisify\(execFile\);$/m);
+});
+
 test('update: failed npm install reaches the HTTP response and UI without relaunching', { skip: !git && 'git not installed' }, async (ctx) => {
   const { a, b } = setup();
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { server, url } = await startServer({ port: 0 });
-  const exec = childProcess.execFile, read = fs.readFileSync;
   const seq = bus.seq;
-  // Exercise the real route and updater, redirecting checkout reads/git to the temporary clone only.
-  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
   const npmCalls = [];
-  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
-    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
-    npmCalls.push({ cmd, args });
-    callback(new Error('npm install failed: dependency unavailable'));
-  });
+  applyUpdate.cwd = b;
+  applyUpdate.exec = async (cmd, args) => { npmCalls.push({ cmd, args }); throw new Error('npm install failed: dependency unavailable'); };
   const spawn = ctx.mock.method(childProcess, 'spawn', () => { throw new Error('unexpected relaunch'); });
   syncBuiltinESMExports();
   try {
@@ -204,6 +203,7 @@ test('update: failed npm install reaches the HTTP response and UI without relaun
     assert.match(lines[0].textContent, /dependency unavailable/);
     assert.equal(button.hidden, true);
   } finally {
+    delete applyUpdate.cwd; delete applyUpdate.exec;
     ctx.mock.restoreAll(); syncBuiltinESMExports();
     stopBackgroundWork();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -216,12 +216,8 @@ test('POST /api/update defers relaunch when work is in flight unless force:true'
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { server, url } = await startServer({ port: 0 });
-  const exec = childProcess.execFile, read = fs.readFileSync;
-  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
-  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
-    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
-    callback(null, '', '');
-  });
+  applyUpdate.cwd = b;
+  applyUpdate.exec = async () => {};
   const fake = Object.assign(new EventEmitter(), { unref() {}, kill() {} });
   const spawn = ctx.mock.method(childProcess, 'spawn', () => fake);
   syncBuiltinESMExports();
@@ -236,6 +232,7 @@ test('POST /api/update defers relaunch when work is in flight unless force:true'
     assert.equal(d.relaunching, 'when idle');
     assert.equal(spawn.mock.callCount(), 0);
   } finally {
+    delete applyUpdate.cwd; delete applyUpdate.exec;
     ctx.mock.restoreAll(); syncBuiltinESMExports();
     stopBackgroundWork();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -248,12 +245,8 @@ test('POST /api/update force:true relaunches even when a task is open', { skip: 
   writeFileSync(join(a, 'package-lock.json'), '{"v":1}'); run(a, 'add', '.'); run(a, 'commit', '--quiet', '-m', 'lock'); run(a, 'push', '--quiet');
   const { startServer, stopBackgroundWork } = await import('../server/index.mjs');
   const { server, url } = await startServer({ port: 0 });
-  const exec = childProcess.execFile, read = fs.readFileSync;
-  ctx.mock.method(fs, 'readFileSync', (file, ...args) => read(file === join(REPO_ROOT, 'package-lock.json') ? join(b, 'package-lock.json') : file, ...args));
-  ctx.mock.method(childProcess, 'execFile', (cmd, args, opts, callback) => {
-    if (cmd === git) return exec(cmd, args, { ...opts, cwd: opts.cwd === REPO_ROOT ? b : opts.cwd }, callback);
-    callback(null, '', '');
-  });
+  applyUpdate.cwd = b;
+  applyUpdate.exec = async () => {};
   const fake = Object.assign(new EventEmitter(), { unref() {}, kill() {} });
   const spawn = ctx.mock.method(childProcess, 'spawn', () => fake);
   syncBuiltinESMExports();
@@ -267,6 +260,7 @@ test('POST /api/update force:true relaunches even when a task is open', { skip: 
     assert.equal(r.relaunching, true);
     assert.equal(spawn.mock.callCount(), 1);
   } finally {
+    delete applyUpdate.cwd; delete applyUpdate.exec;
     ctx.mock.restoreAll(); syncBuiltinESMExports();
     stopBackgroundWork();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
