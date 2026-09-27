@@ -1,9 +1,32 @@
 // The framework budget gate: may one more task start on a provider right now without blowing its windows?
 // A task's cost is measured per window (the scorecard records each run's % delta) and charged against that window's
 // own target. Used by `core/tasks.mjs schedule()` for ALL tasks.
-import { getLimits, isSession } from './limits.mjs';
+import { getLimits, groupOf, isSession } from './limits.mjs';
 export { isSession };
 import { loadConfig } from './config.mjs';
+
+const filterOwnPct = (row, group, scopedIds) => Object.fromEntries(Object.entries(row.pct || {})
+  .filter(([id]) => !scopedIds.has(id) || group.ids.includes(id)));
+
+/** A run's deltas for windows that meter its model. Unknown historical window ids are retained. */
+export function ownPct(row) {
+  const all = groupOf(row.provider, null);
+  return filterOwnPct(row, groupOf(row.provider, row.model), new Set(all.own.map((w) => w.id)));
+}
+
+/** Attribute a shared poll delta evenly to every task that was using that window. */
+export function perTaskPct(row, pct = ownPct(row)) {
+  return Object.fromEntries(Object.entries(pct).map(([id, delta]) => [id, delta / ((row.concurrentByWindow?.[id] ?? row.concurrent ?? 0) + 1)]));
+}
+
+const rowTokens = (r) => {
+  if (!r.tokens) return null;
+  const cached = Number(r.tokens.cached) || 0;
+  const input = (r.tokens.v || r.provider === 'claude') ? Number(r.tokens.in) || 0 : Math.max(0, (Number(r.tokens.in) || 0) - cached);
+  const total = input + (Number(r.tokens.out) || 0) + cached;
+  return total > 0 ? total : null;
+};
+const mean = (xs) => xs.length ? xs.reduce((sum, x) => sum + x, 0) / xs.length : null;
 
 /**
  * Per-task cost measured SEPARATELY for each window id: `{ windowId: %-per-task }`. A build that moves a 5-hour
@@ -11,23 +34,45 @@ import { loadConfig } from './config.mjs';
  * against both (that wrongly parks a task the weekly has ample room for). The scheduler compares each window's own
  * cost to its own headroom.
  */
-export function measuredCostByWindow(rows, provider, { model = null } = {}) {
+export function measuredCostByWindow(rows, provider, options = {}) {
+  const { model = null } = options;
   const cost = {};
-  const windows = getLimits().providers[provider]?.windows || []; // once: getLimits() stats the file on every call
-  const matches = new Map(windows.filter((w) => w.models).map((w) => {
-    try { const re = new RegExp(w.models, 'i'); return [w.id, (model) => re.test(model)]; }
-    catch { return [w.id, (model) => String(model).toLowerCase().includes(String(w.models).toLowerCase())]; }
-  }));
+  getLimits(); // once before groupOf() reuses the in-memory registry
+  const all = groupOf(provider, null);
+  const scopedIds = new Set(all.own.map((w) => w.id));
+  const groups = new Map();
+  const pctFor = (r) => {
+    if (!groups.has(r.model)) groups.set(r.model, groupOf(provider, r.model));
+    return filterOwnPct(r, groups.get(r.model), scopedIds);
+  };
   for (const r of rows) {
     if (r.provider !== provider || !r.pct) continue;
     if (model && r.model !== model) continue;
-    for (const [id, d] of Object.entries(r.pct)) {
-      if (r.model && matches.has(id) && !matches.get(id)(r.model)) continue;
-      const per = d / ((r.concurrentByWindow?.[id] ?? r.concurrent ?? 0) + 1); // legacy rows have only the scalar
+    for (const [id, per] of Object.entries(perTaskPct(r, pctFor(r)))) {
       // OB2: always record the window (even zero delta) so isUnmeasured knows it has been observed.
       cost[id] = Math.max(cost[id] ?? 0, per);
     }
   }
+  if (!model) return cost; // A rate is model-specific; provider-wide legacy callers keep the historical maximum.
+
+  const rates = new Map();
+  const modelRows = rows.filter((r) => r.provider === provider && r.model === model);
+  for (const r of modelRows.filter((r) => r.pct)) {
+    const tokens = rowTokens(r);
+    if (tokens == null) continue;
+    for (const [id, delta] of Object.entries(pctFor(r))) {
+      const concurrency = (r.concurrentByWindow?.[id] ?? r.concurrent ?? 0) + 1;
+      if (concurrency !== 1) continue;
+      const fit = rates.get(id) || { xy: 0, xx: 0, n: 0 };
+      fit.xy += tokens * delta; fit.xx += tokens * tokens; fit.n++;
+      rates.set(id, fit);
+    }
+  }
+  const cellFields = ['effort', 'category', 'difficulty'].filter((key) => options[key] != null);
+  const expectedTokens = mean(modelRows.filter((r) => cellFields.every((key) => r[key] === options[key])).map(rowTokens).filter((n) => n != null));
+  if (expectedTokens == null) return cost;
+  // The plans specify no sample floor beyond having a usable solo observation: with none, retain the historical max.
+  for (const [id, fit] of rates) if (fit.n && fit.xx) cost[id] = (fit.xy / fit.xx) * expectedTokens;
   return cost;
 }
 

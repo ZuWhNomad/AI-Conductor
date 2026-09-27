@@ -328,8 +328,9 @@ export function schedule() {
   const rows = budget ? runRows() : null;
   const costCache = new Map();
   const costByWindow = (t) => {
-    const key = JSON.stringify([t.provider, t.model ?? null]);
-    if (!costCache.has(key)) costCache.set(key, measuredCostByWindow(rows, t.provider, { model: t.model }));
+    const cell = { model: t.model, effort: t.effort, category: t.category, difficulty: t.difficulty };
+    const key = JSON.stringify([t.provider, cell]);
+    if (!costCache.has(key)) costCache.set(key, measuredCostByWindow(rows, t.provider, cell));
     return costCache.get(key);
   };
   // Cost already committed by in-flight tasks, per provider AND per window id — so a batch does not collectively
