@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os';
 const { codexSandboxFor, DEFAULTS } = await import('../core/config.mjs');
 const { createTask } = await import('../core/tasks.mjs');
 
-test('Astra gets full access by default; every other Codex model keeps the default sandbox', () => {
-  assert.equal(DEFAULTS.worker.codexSandboxByModel['gpt-6-astra'], 'danger-full-access');
-  assert.equal(codexSandboxFor('gpt-6-astra'), 'danger-full-access');
+test('every Codex model keeps the default sandbox unless configured per model', () => {
+  assert.deepEqual(DEFAULTS.worker.codexSandboxByModel, {});
+  assert.equal(codexSandboxFor('gpt-6-astra'), DEFAULTS.worker.codexSandbox);
   assert.equal(codexSandboxFor('gpt-5.6-sol'), DEFAULTS.worker.codexSandbox);
   assert.equal(codexSandboxFor(null), DEFAULTS.worker.codexSandbox, 'a task with no model gets the default');
 });
@@ -22,7 +22,7 @@ test('a garbage exception value falls back to the default instead of reaching th
 
 test('the task record shows the sandbox it will run under, and an explicit sandbox always wins', () => {
   const base = { cwd: tmpdir(), spec: 'noop', provider: 'codex' };
-  assert.equal(createTask({ ...base, model: 'gpt-6-astra' }).sandbox, 'danger-full-access');
+  assert.equal(createTask({ ...base, model: 'gpt-6-astra' }).sandbox, DEFAULTS.worker.codexSandbox);
   assert.equal(createTask({ ...base, model: 'gpt-5.6-sol' }).sandbox, DEFAULTS.worker.codexSandbox);
   assert.equal(createTask({ ...base, model: 'gpt-6-astra', sandbox: 'read-only' }).sandbox, 'read-only', 'a read-only review stays read-only');
 });

@@ -40,11 +40,9 @@ export const DEFAULTS = {
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
-    // gpt-6-astra: under workspace-write the Codex sandbox is denied the geometry libraries' DLLs (manifold3d "Access
-    // is denied", shapely.geometry missing) and Astra correctly stops and reports it, so every modelling or drafting
-    // task on the one model with a recorded modelling pass fails. Full access trades away the OS sandbox for Astra
-    // only; the real fix is FIXES_BACKLOG-v2 item 17. An explicit sandbox on a task always wins.
-    codexSandboxByModel: { 'gpt-6-astra': 'danger-full-access' },
+    // Empty since 2026-09-27: the geometry libraries' DLLs now load under workspace-write (the sandbox group had lost
+    // read access to pip-installed site-packages folders). An explicit sandbox on a task always wins.
+    codexSandboxByModel: {},
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
     // API / Ollama (openai-compat) workers have no OS sandbox. `run` is disabled by default.
     // Explicit true permits any host shell command; an array permits command names (exact basename, no shell
