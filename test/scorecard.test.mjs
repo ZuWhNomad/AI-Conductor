@@ -301,18 +301,17 @@ test('escalate picks the highest measured quality, not the next cheap rung', () 
   assert.match(r.reason, /escalation/);
 });
 
-test('escalation returns the best AVAILABLE model by quality across classes — distinct from best value', () => {
+test('escalation ranks live evidence count across classes', () => {
   saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, providerWeight: { ollama: 0, codex: 0.6, claude: 1 }, classes: { codex: 'subscription' }, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
-  // A free model that clears the bar (0.8) and a subscription model that is strictly better (1.0).
+  // A free model with five live attempts and a subscription model with three perfect attempts.
   seed('ollama', 'qwen', null, 'test', 2, ['pass', 'pass', 'pass', 'pass', 'fail']);
   seed('codex', 'gpt-6-astra', 'medium', 'test', 2, ['pass', 'pass', 'pass']);
   const value = sc.recommend({ category: 'test', difficulty: 2 });
   assert.equal(value.provider, 'ollama'); assert.equal(value.class, 'free');       // best value: free class wins the class walk
   const esc = sc.recommend({ category: 'test', difficulty: 2, escalate: true });
-  assert.equal(esc.provider, 'codex'); assert.equal(esc.model, 'gpt-6-astra');       // escalation: highest-quality single model, any class
-  assert.equal(esc.plan.steps.length, 1);                                            // a strong single model, never a cheap-first ladder
-  assert.match(esc.reason, /escalation: best available/);
-  assert.notEqual(esc.provider, value.provider);                                     // the two picks are genuinely distinct
+  assert.equal(esc.provider, 'ollama'); assert.equal(esc.model, 'qwen');             // five live attempts outrank Astra's three
+  assert.equal(esc.plan.steps.length, 1);
+  assert.match(esc.reason, /escalation: strongest evidence/);
 });
 
 test('a higher effort within the cost slack dominates the lower effort of the same model', (t) => {
@@ -1215,7 +1214,7 @@ test('OB7: unknown-cost plans stay eligible but rank after every priced eligible
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('escalate: priced plan wins a quality tie against an unknown-cost plan', () => {
+test('escalate: prior tier breaks an evidence tie before price', () => {
   const cfg = loadConfig().scorecard;
   try {
     saveConfig({ scorecard: { usePriors: false, reservePct: 0, hourlyUsd: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
@@ -1226,7 +1225,7 @@ test('escalate: priced plan wins a quality tie against an unknown-cost plan', ()
     const priced = cell('gpt-5.6-luna', 'low', 0.05);
     const unknown = cell('gpt-5.6-terra', 'medium', null);
     const r = sc.recommend({ category: 'search', difficulty: 2, summary: [unknown, priced], escalate: true });
-    assert.equal(r.model, 'gpt-5.6-luna', 'priced luna wins the quality tie over unknown-cost terra');
+    assert.equal(r.model, 'gpt-5.6-terra', 'Terra\'s stronger search prior wins before price is considered');
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
@@ -1350,6 +1349,72 @@ test('H2/B1: estimated ladder is pushed only when combined quality clears the ba
     assert.equal(r.model, 'gpt-5.6-terra');
     assert.equal(r.plan.estimated, false);
     assert.equal(r.plan.steps.length, 1);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('B4 deterministic ledger replay changes H2 escalation and M4 estimated-ladder picks', (t) => {
+  const cfg = loadConfig().scorecard;
+  const models = ['replay-smoke', 'replay-live', 'replay-first', 'replay-fallback'];
+  registryModels(t, models.map((model) => ['codex', model]));
+  const rate = (id, model, category, difficulty, verdict, source = 'live') => {
+    run({ id, source, provider: 'codex', model, effort: null, category, difficulty });
+    sc.rateTask(id, verdict);
+  };
+  try {
+    saveConfig({ scorecard: {
+      usePriors: false, minSamples: 1, benchMinSamples: 3, quality: 0.75, qualityValueUsd: 5,
+      reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 },
+      classes: { codex: 'subscription' }, classOrder: ['subscription'],
+      prices: Object.fromEntries(models.map((model) => [`codex:${model}`, { in: 1, out: 1, cached: 0 }])),
+    } });
+
+    for (let i = 0; i < 5; i++) rate(`b4-h2-smoke-${i}`, 'replay-smoke', 'summarize', 2, 'pass', 'smoke');
+    for (const [i, verdict] of ['pass', 'pass', 'pass', 'fixable'].entries()) rate(`b4-h2-live-${i}`, 'replay-live', 'summarize', 2, verdict);
+    const h2Cells = sc.summarize().filter((g) => g.category === 'summarize' && ['replay-smoke', 'replay-live'].includes(g.model));
+    const h2Before = [...h2Cells].sort((a, b) => b.quality - a.quality)[0].sel; // old quality-first comparator
+    const h2After = sc.recommend({ category: 'summarize', difficulty: 2, summary: h2Cells, escalate: true }).plan.steps[0];
+    assert.equal(sc.recommend({ category: 'summarize', difficulty: 2, summary: h2Cells.filter((g) => g.model === 'replay-smoke'), escalate: true }).model, 'replay-smoke', 'smoke-only evidence remains eligible at its own level');
+
+    for (const [i, verdict] of ['fixable', 'fail'].entries()) rate(`b4-m4-first-l3-${i}`, 'replay-first', 'review', 3, verdict);
+    for (let i = 0; i < 3; i++) rate(`b4-m4-first-l5-${i}`, 'replay-first', 'review', 5, 'fail');
+    for (const [i, verdict] of ['pass', 'fixable'].entries()) rate(`b4-m4-fallback-l3-${i}`, 'replay-fallback', 'review', 3, verdict);
+    const m4Cells = sc.summarize().filter((g) => g.category === 'review' && ['replay-first', 'replay-fallback'].includes(g.model));
+    const lowerFirst = m4Cells.find((g) => g.model === 'replay-first' && g.difficulty === 3);
+    const fallback = m4Cells.find((g) => g.model === 'replay-fallback');
+    const legacyCombined = lowerFirst.quality + (1 - lowerFirst.accept) * fallback.quality;
+    const m4Before = legacyCombined >= cfg.quality ? lowerFirst.sel : fallback.sel;
+    const m4After = sc.recommend({ category: 'review', difficulty: 5, summary: m4Cells });
+
+    assert.deepEqual({
+      h2: { before: h2Before, after: h2After },
+      m4: { before: m4Before, after: m4After.plan.steps[0] },
+    }, {
+      h2: { before: 'codex:replay-smoke:default', after: 'codex:replay-live:default' },
+      m4: { before: 'codex:replay-fallback:default', after: 'codex:replay-first:default' },
+    });
+    assert.deepEqual(m4After.plan.steps, ['codex:replay-first:default', 'codex:replay-fallback:default']);
+    assert.equal(m4After.plan.quality, 1, 'the task-level L5 accept=0, not the pooled L3 accept=0.5, drives the estimate');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('H2 escalation orders live class, class evidence count, prior tier, then utility', () => {
+  const cfg = loadConfig().scorecard;
+  const cell = (model, effort, priorTier, avgUsd) => ({
+    sel: `codex:${model}:${effort}`, steps: 1, provider: 'codex', model, effort,
+    category: 'implement', difficulty: 2, n: 3, rated: 3, liveN: 3, liveRated: 3,
+    smokeN: 0, smokeRated: 0, quality: 1, accept: 1, priorTier, avgUsd, avgDurationMs: 0,
+  });
+  try {
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, wasteStrength: 0, providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const astra = cell('gpt-6-astra', 'medium', 'A', 1);
+    const luna = cell('gpt-5.6-luna', 'low', 'B', 0.01);
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, summary: [luna, astra], escalate: true }).model, 'gpt-6-astra');
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, summary: [luna, { ...astra, priorTier: 'B' }], escalate: true }).model, 'gpt-5.6-luna');
+    const smokeMany = { ...astra, n: 5, rated: 5, liveN: 0, liveRated: 0, smokeN: 5, smokeRated: 5, priorTier: 'D' };
+    const smokeFew = { ...luna, liveN: 0, liveRated: 0, smokeN: 3, smokeRated: 3, priorTier: 'A' };
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, summary: [smokeFew, smokeMany], escalate: true }).model, 'gpt-6-astra', 'smoke evidence count precedes prior tier');
+    const liveOne = { ...luna, n: 1, rated: 1, liveN: 1, liveRated: 1, smokeN: 0, smokeRated: 0 };
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, summary: [smokeMany, liveOne], escalate: true }).model, 'gpt-5.6-luna', 'any live rated cell outranks a smoke-only cell');
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
@@ -1549,8 +1614,16 @@ test('L12: a proven-but-capped level stops extrapolation instead of descending f
       run({ id: `${source}-qwen-${i}`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'implement', difficulty: 2 });
       sc.rateTask(`${source}-qwen-${i}`, 'pass');
     }
-    limits.providers.codex = { ...(previous || {}), provider: 'codex', blocked: true, blockedUntil: Date.now() + 3.6e6, windows: previous?.windows || [] };
+    const resetAt = Date.now() + 3.6e6;
+    const picked = sc.recommend({ category: 'implement', difficulty: 3, source, explain: true });
+    assert.equal(picked.explain.status, 'picked');
+    assert.match(picked.explain.reason, /best value/);
+    limits.providers.codex = { ...(previous || {}), provider: 'codex', blocked: true, blockedUntil: resetAt, windows: previous?.windows || [] };
     assert.equal(sc.recommend({ category: 'implement', difficulty: 4, source }), null, 'must not fall through to the level-2 model');
+    const explained = sc.recommend({ category: 'implement', difficulty: 4, source, explain: true });
+    assert.equal(explained.pick, null);
+    assert.equal(explained.explain.status, 'capped');
+    assert.deepEqual(explained.explain.capped, [{ sel: 'codex:gpt-5.6-terra:medium', reason: 'provider limit', resetAt }]);
   } finally {
     limits.providers.codex = previous;
     saveConfig({ scorecard: cfg });
@@ -1761,7 +1834,7 @@ test('recommend excludes archived registry models from measured and prior-only r
       sc.rateTask(id, verdict);
     }
     assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg }).model, 'gpt-5.6-luna');
-    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg, escalate: true }).model, 'gpt-5.6-luna');
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg, escalate: true }).model, 'gpt-5.6-terra');
 
     saveConfig({ scorecard: { archived: ['CODEX:GPT-5.6-LUNA'], usePriors: true } });
     assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg }).model, 'gpt-5.6-terra');

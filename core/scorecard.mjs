@@ -356,10 +356,12 @@ function summarizeUncached({ source = null, archived = false } = {}) {
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, liveN: 0, liveRated: 0, smokeN: 0, smokeRated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
     g.n++;
+    const source = x.source === 'smoke' ? 'smoke' : 'live';
+    g[source + 'N']++;
     if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
-    if (x.verdict) { g.rated++; g[x.verdict]++; }
+    if (x.verdict) { g.rated++; g[source + 'Rated']++; g[x.verdict]++; }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd);
     const xs = x.attempts || [x]; g._attempts += xs.length; g._priced += xs.filter((a) => a.usd != null).length;
@@ -417,9 +419,16 @@ export function errorRates({ source = null, archived = false } = {}) {
  * quality bar, observed ladders, and estimated ladders (cheap first step, qualified fallback; assumes
  * independent failures). Returns null when nothing measured qualifies (then the prior fallback, if enabled).
  */
-export function recommend(opts = {}) { return withLimitsSnapshot(() => recommendPlan(opts)); }
+export function recommend(opts = {}) {
+  const explanation = opts.explain ? {} : null;
+  const pick = withLimitsSnapshot(() => recommendPlan({ ...opts, _explain: explanation }));
+  if (!opts.explain) return pick;
+  if (pick) return { pick, explain: { status: 'picked', reason: pick.reason, capped: [] } };
+  if (explanation.status) return { pick: null, explain: explanation };
+  return { pick: null, explain: { status: 'no-match', reason: `no qualified selection for ${opts.category}@${opts.difficulty ?? 2}`, capped: [] } };
+}
 
-function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null } = {}) {
+function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null, _explain = null } = {}) {
   const cfg = loadConfig().scorecard;
   const archive = archivedSet(cfg);
   const taskDifficulty = _taskDifficulty ?? difficulty;
@@ -435,7 +444,24 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // A transient registry error retains cached models; explicit unavailability or removal does not.
     return reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
+  const unavailable = (g) => {
+    const { provider, model } = g;
+    if (reg.providers[provider]?.status === 'unavailable') return { sel: g.sel, reason: 'provider unavailable', resetAt: null };
+    if (modelInRegistry(reg, provider, model)?.kind !== 'agent') return { sel: g.sel, reason: 'model unavailable', resetAt: null };
+    const blockedUntil = modelBlockedUntil(provider, model);
+    if (blockedUntil) return { sel: g.sel, reason: 'provider limit', resetAt: blockedUntil };
+    const cls = providerClass(provider, cfg);
+    if (cls === 'api' && !overflowApi) return { sel: g.sel, reason: 'API overflow off', resetAt: null };
+    const cap = cfg.classCap?.[cls] ?? 100;
+    const windows = providerWindows(provider, model).filter((w) => (!w.resetsAt || w.resetsAt > Date.now()) && (cls !== 'conductor' || isSession(w)));
+    const capped = windows.filter((w) => (Number(w.usedPercent) || 0) >= cap);
+    const resets = capped.map((w) => Number(w.resetsAt)).filter((t) => Number.isFinite(t) && t > Date.now());
+    return { sel: g.sel, reason: capped.length ? `${cls} class cap` : 'unavailable', resetAt: resets.length ? Math.min(...resets) : null };
+  };
   const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive); }));
+  const cellLiveN = (g) => g.liveN ?? (g.smokeN != null ? 0 : g.n ?? 0); // old and hand-built summaries without source counts are live
+  const cellLiveRated = (g) => g.liveRated ?? (g.smokeRated != null ? 0 : g.rated ?? cellLiveN(g));
+  const cellSmokeRated = (g) => g.smokeRated ?? 0;
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const gate = passGate(category, reg);
   const rows = all.filter((g) => g.category === category && g.rated > 0 && !excluded(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
@@ -464,6 +490,9 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   }
   const evidence = [...bySel.values()].filter((m) => m.cells.length).map((m) => ({ ...m, ref: pool(m.cells.sort((a, b) => a.difficulty - b.difficulty), cfg.minSamples) })).filter((m) => m.ref.rated >= cfg.minSamples);
   const finals = evidence.filter((m) => m.ref.quality >= cfg.quality && !failedBelow.has(m.sel) && !failedBelow.has(m.sel.split('>').at(-1)));
+  // M4: extrapolation may build a plan from a lower-level pool. Once this selection has enough evidence at the
+  // task's actual level, that cell owns the estimated ladder's probability of accepting the first step.
+  const taskLevelAccept = (m) => m.cells.find((c) => c.difficulty === taskDifficulty && c.rated >= cfg.minSamples)?.accept ?? m.ref.accept;
   const plans = [];
   for (const m of finals) {
     if (m.steps === 1) {
@@ -487,7 +516,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   for (const a of evidence.filter((m) => m.steps === 1 && costOf(m.ref) != null)) {
     for (const b of finals.filter((m) => m.steps === 1 && m.sel !== a.sel && costOf(m.ref) != null)) {
       if (evidence.some((m) => m.sel === `${a.sel}>${b.sel}`)) continue; // observed ladder has minSamples — keep the estimate only while it does not
-      const pA = a.ref.accept;
+      const pA = taskLevelAccept(a);
       const combinedQuality = a.ref.quality + (1 - pA) * b.ref.quality;
       // H2/B1: only push the estimated pair when its combined quality clears the bar.
       // A below-bar first step whose combination still clears the bar is allowed.
@@ -514,8 +543,13 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   for (const p of plans) if (dominated.has(p) || p.steps.some((st) => dominated.has(plans.find((x) => x.steps.length === 1 && x.steps[0] === st)))) p.utility = -Infinity;
   // OB7: sort — priced eligible plans before unknown-cost ones; within each group, value ordering applies.
   const eligible = (p) => p.utility > -Infinity;
+  const evidenceRank = (p) => {
+    const live = cellLiveRated(p.ref);
+    return live > 0 ? { live: 1, count: live } : { live: 0, count: cellSmokeRated(p.ref) };
+  };
+  const tier = (p) => TIER_CEILING[p.ref.priorTier] || 0;
   const sortCmp = escalate
-    ? (x, y) => (y.quality - x.quality) || (x.costUnknown !== y.costUnknown ? (x.costUnknown ? 1 : -1) : 0) || (y.utility - x.utility)
+    ? (x, y) => (evidenceRank(y).live - evidenceRank(x).live) || (evidenceRank(y).count - evidenceRank(x).count) || (tier(y) - tier(x)) || (y.utility - x.utility)
     : (x, y) => {
         if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
         if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
@@ -526,11 +560,9 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const classOf = (p) => providerClass(p.steps[0].split(':')[0], cfg);
   let best = null, bestClass = null;
   if (escalate) {
-    // Escalation is the last rung before the conductor does it itself: take the highest-quality SINGLE model that is
-    // still AVAILABLE (limits + budget windows already filtered into `rows`), regardless of budget class — the
-    // strongest model we can still reach, not the cheapest class and not a cheap-first ladder (which would re-dispatch
-    // the rung that has been failing). This is the best-*available* pick, distinct from best-value. Fall back to a
-    // ladder only if no single model clears the bar.
+    // Escalation is the last rung before the conductor does it itself: cells with live rated evidence rank first by
+    // that count; otherwise smoke-only cells rank by smoke evidence. Prior tier and utility break the remaining ties,
+    // regardless of budget class. Prefer a single model so a cheap-first ladder does not re-dispatch a failed rung.
     best = plans.find((p) => p.utility > -Infinity && p.steps.length === 1) || plans.find((p) => p.utility > -Infinity) || null;
     bestClass = best ? classOf(best) : null;
   } else {
@@ -542,11 +574,19 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
     // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
-    const provenButCapped = all.some((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
-    if (provenButCapped) return _noExtrap ? { capped: true } : null;
+    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && g.rated >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
+    if (capped.length) {
+      if (_explain) {
+        const bySel = new Map(capped.map((g) => [g.sel, unavailable(g)]));
+        _explain.status = 'capped';
+        _explain.reason = `qualified selections for ${category}@${difficulty} are unavailable`;
+        _explain.capped = [...bySel.values()].sort((a, b) => (a.resetAt ?? Infinity) - (b.resetAt ?? Infinity) || a.sel.localeCompare(b.sel));
+      }
+      return _noExtrap ? { capped: true } : null;
+    }
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty });
+      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain });
       if (lower?.capped) return null;
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
     }
@@ -562,7 +602,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
     class: bestClass,
-    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: best available model by measured quality (any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}`,
+    reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}`,
     alternatives: alt,
   };
 }
@@ -706,7 +746,12 @@ function pool(cells, floor) {
     const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
     return { sel: s.sel, avgUsd: w('avgUsd', 'n', costs), avgDurationMs: w('avgDurationMs', 'n', costs) };
   });
-  return { ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty, rated, n: used.reduce((s, c) => s + c.n, 0), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n') };
+  const total = (key, fallback = () => 0) => used.reduce((sum, c) => sum + (c[key] ?? fallback(c)), 0);
+  return {
+    ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty,
+    rated, n: total('n'), liveN: total('liveN', (c) => c.smokeN != null ? 0 : c.n), liveRated: total('liveRated', (c) => c.smokeRated != null ? 0 : c.rated),
+    smokeN: total('smokeN'), smokeRated: total('smokeRated'), quality: w('quality', 'rated'), accept: w('accept', 'rated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+  };
 }
 
 // Single source of truth for effort ordering (low -> ultra). Everything that ranks effort imports this;
