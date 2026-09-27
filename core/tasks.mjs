@@ -183,6 +183,7 @@ export function createTask(i, { dispatch = true } = {}) {
     variant: typeof i.variant === 'string' && i.variant ? i.variant.slice(0, 40) : null, // A/B label (e.g. a policy file under test); rows keep it
     overflowApi: !!i.overflowApi, // the chat's API-overflow toggle at delegation time; failover honours it
     parallelOverride: !!i.parallelOverride, // the chat's parallel toggle at delegation time: skip the budget gate
+    efficiencyMode: i.efficiencyMode == null ? !!cfg.worker.efficiencyMode : !!i.efficiencyMode, // wait on this model at a confirmed limit instead of failing over
     noFailover: !!i.noFailover,   // benchmark/bench runs: a limit parks the task, it is never handed to another model
     avoidFamilies: normFamilies(i.avoidFamilies), // reviews: failover never lands on these model families (see familyOf)
     writableRoots, // extra directories the worker may write besides cwd (a sibling git worktree): Codex --add-dir, Claude additionalDirectories
@@ -355,8 +356,7 @@ export function schedule() {
     if (running.size >= max) break;
     const until = modelBlockedUntil(t.provider, t.model);
     if (until) {
-      const threshold = cfg.worker.failoverAfterBlockMinutes;
-      const next = threshold > 0 && until - Date.now() > threshold * 60_000 ? failover(t) : null;
+      const next = t.efficiencyMode ? null : failover(t);
       if (next) {
         t.limitHit = true; t.finishedAt = nowIso(); persist(t); wake(t);
         failovers.push(next);
@@ -443,8 +443,9 @@ async function run(t) {
     })();
     const phantom = !claimedExistsOnDisk && isPhantomCompletion({ ok: r.ok, claimed, canVerify: before !== null, observedCount: observed.length });
     t.resume = false;
+    let confirmedLimitUntil = null;
     if (r.limitHit && !r.ok && t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
-      noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
+      confirmedLimitUntil = noteLimitHit(t.provider, { model: t.model, retryAfterMs: r.retryAfterMs, resetsAt: nextScheduledReset(t.provider) });
       await refreshLimits({ only: [t.provider] }).catch(() => {}); // quota view drives the next pick; cancellation/shutdown must be checked AFTER this await
       if (t.status !== 'canceled' && !(shuttingDown && ac.signal.aborted)) {
         t.limitHit = true; // never scored against the model
@@ -454,9 +455,9 @@ async function run(t) {
     if (t.status === 'canceled') { /* keep */ }
     else if (shuttingDown && ac.signal.aborted && (abortedDuringRun || (r.limitHit && !r.ok))) { t.status = 'queued'; t.resume = true; t.error = 'interrupted by shutdown; resumes on next start'; }
     else if (r.limitHit && !r.ok) {
-      const next = failover(t);
+      const next = t.efficiencyMode ? null : failover(t);
       if (!next) {
-        const until = modelBlockedUntil(t.provider, t.model) || Date.now() + (r.retryAfterMs || (loadConfig().scorecard.blockedMinutes) * 60_000);
+        const until = modelBlockedUntil(t.provider, t.model) || confirmedLimitUntil;
         park(t, until, r.error || 'usage limit');
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }
@@ -504,16 +505,17 @@ async function run(t) {
  * (the section that fell silent hands the part to the next one). null when nothing else qualifies.
  */
 function failover(t) {
-  if (!t.category || !t.difficulty || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
+  if (!t.category || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
   try {
     const gate = accessProviders(`${t.title}\n${t.spec}`); // OG4: honour the capability access gate (same as delegate)
     let providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
     if (gate?.providers) providers = providers.filter((id) => gate.providers.includes(id));
     const avoid = t.avoidFamilies || [];
-    const alt = recommend({ category: t.category, difficulty: t.difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
+    const difficulty = t.difficulty || 2;
+    const alt = recommend({ category: t.category, difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
     if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
     const spec = `${t.attempts > 0 ? FAILOVER_NOTE : ''}${t.spec}`;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty: t.difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
@@ -656,7 +658,9 @@ export function describeTask(t) {
   if (t.warning) lines.push(`Warning: ${t.warning}`);
   if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
-  if (t.status === 'parked') lines.push(`Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (auto-resumes)`);
+  if (t.status === 'parked') lines.push(t.efficiencyMode
+    ? `waiting for ${t.provider} reset at ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (efficiency mode)`
+    : `Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (auto-resumes)`);
   if (t.status === 'running') {
     const p = t.progress, mins = (ms) => `${Math.round(ms / 60_000)} min`;
     lines.push(`Progress: running ${mins(Date.now() - (Date.parse(t.startedAt) || Date.now()))}${p?.activity ? `; last: ${p.activity}` : ''}${p?.tokens ? `; ${p.tokens} tokens so far` : ''}${p ? ` (as of ${mins(Date.now() - p.at)} ago)` : '; no worker activity yet'}`);

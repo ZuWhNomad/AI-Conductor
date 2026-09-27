@@ -1055,7 +1055,7 @@ test('GP: abortPlans cancels a real failover replacement and stops later stages'
   saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'] } });
   recordRun({ id: 'gp-abort-seed', status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask('gp-abort-seed', 'pass');
-  getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + (previous.worker.failoverAfterBlockMinutes + 1) * 60_000, windows: [] };
+  getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + 60_000, windows: [] };
   let planId;
   // Observe the real scheduler's failover, then leave the replacement queued without launching a provider.
   const onTask = (e) => {
