@@ -97,6 +97,7 @@ export const DEFAULTS = {
     quality: 0.75,                    // mean verdict (pass 1, fixable 0.5, fail 0) a final step must reach
     qualityValueUsd: 5,               // $ one full quality point is worth (≈ what a failed task costs you in review + redo)
     hourlyUsd: 0,                     // $ per hour of worker wall clock (0 = ignore speed)
+    reviewUsdPerRound: 0,              // conductor's own $ per review (follow-up) round, added to plan cost as avgRounds × this; 0 = off (A/B before raising)
     coldStart: 'off',                 // off | priors: route by hand-picked priors before measured data exists
     priors: {},                       // exact "provider:model" tier overrides: { category, kind, default }
     prices: {},                       // "provider:model": { in, out, cached } $/M tokens; overrides core/priors.mjs
@@ -272,6 +273,7 @@ function normalize(cfg, raw = {}) {
   if (!Number.isInteger(cfg.watchdog.killAfterStuckChecks) || (cfg.watchdog.killAfterStuckChecks !== 0 && cfg.watchdog.killAfterStuckChecks < 2)) cfg.watchdog.killAfterStuckChecks = DEFAULTS.watchdog.killAfterStuckChecks;
   if (cfg.scorecard.quality > 1) cfg.scorecard.quality = DEFAULTS.scorecard.quality;
   if (!Number.isFinite(cfg.scorecard.hourlyUsd) || cfg.scorecard.hourlyUsd < 0) cfg.scorecard.hourlyUsd = 0;
+  if (!Number.isFinite(cfg.scorecard.reviewUsdPerRound) || cfg.scorecard.reviewUsdPerRound < 0) cfg.scorecard.reviewUsdPerRound = DEFAULTS.scorecard.reviewUsdPerRound;
   // Legacy config.json files used scorecard.usePriors. A real coldStart value wins; otherwise migrate the old key.
   const rawScorecard = plain(raw) && plain(raw.scorecard) ? raw.scorecard : {};
   if (!Object.hasOwn(rawScorecard, 'coldStart') && Object.hasOwn(rawScorecard, 'usePriors')) cfg.scorecard.coldStart = rawScorecard.usePriors ? 'priors' : 'off';

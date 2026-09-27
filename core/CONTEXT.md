@@ -21,9 +21,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `sweep.mjs` — the budget math: `admit` (a task must fit EVERY window under its target — session 95%,
   weekly/budget 100%), `measuredCostByWindow`, `targetFor`.
 - `experiment.mjs` — A/B records (`conductor experiment new|list|report`) over scorecard rows tagged by `CONDUCTOR_EXPERIMENT=<id>:<arm>`.
-- `scorecard.mjs` — the ledger + `recommend()` (utility = value-of-quality − cost; `escalate:true` bypasses the class
-  walk to return the best-*available* single model by quality, for the review→escalation ladder). Escalation first tries
-  an unmeasured next effort of the failed model once when enabled. `wasteDiscount`
+- `scorecard.mjs` — the ledger + `recommend()` (utility = value-of-quality − cost, plus optional `reviewUsdPerRound` ×
+  `avgRounds`; `escalate:true` bypasses the class walk to return the best-*available* single model by quality, for the
+  review→escalation ladder; `delegate` first tries an unmeasured next effort of the failed model once,
+  `worker.escalateEffortFirst`). `wasteDiscount`
   (use-it-or-lose-it), `providerWindows` (model-group scoping), `nextScheduledReset` (windowless resets),
   `migrateScorecard` (one-time void of pre-Method-C polluted antigravity rows, run at server boot).
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
