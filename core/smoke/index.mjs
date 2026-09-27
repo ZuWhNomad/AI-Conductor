@@ -33,6 +33,12 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
   for (const sel of models) {
     for (const b of battery) {
       const base = { provider: sel.provider, model: sel.model || null, effort: sel.effort || null, task: b.id, category: b.category, difficulty: b.difficulty };
+      const voidPrecedingTimeouts = () => {
+        for (let i = results.length - 1; i >= 0 && results[i].provider === sel.provider && results[i].model === base.model && results[i].effort === base.effort && results[i].notes === 'timeout'; i--) {
+          if (results[i].taskId) voidTask(results[i].taskId, 'environment: provider limit (timeout immediately before the limit was detected)');
+          results[i] = { ...results[i], verdict: 'error', notes: 'environment: provider limit (timeout before the limit was detected)' };
+        }
+      };
       if (!providerAvailable(sel.provider, { overflowApi: true, model: sel.model })) { push({ ...base, verdict: 'skipped', notes: 'provider at its usage limit' }); continue; }
       const key = `${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'}:${b.id}`;
       if (inFlight.has(key)) { push({ ...base, verdict: 'skipped', notes: 'already running in another smoke run' }); continue; }
@@ -46,17 +52,23 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
         if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
         const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant: variant || b.variant || null }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
         if ((t.attempts || 0) === 0 && t.status !== 'done') {
+          const limitPark = t.limitHit || t.parked || t.status === 'parked' || !!t.resumeAt || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || '');
+          if (limitPark) {
+            voidPrecedingTimeouts();
+            const err = t.error && t.error !== 'skipped' ? t.error : (t.parked || t.status === 'parked' ? 'parked' : 'limit reached');
+            const notes = /^provider limit/i.test(err) ? String(err).slice(0, 120) : `provider limit: ${String(err).slice(0, 120)}`;
+            push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes });
+            try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
+            break;
+          }
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
         } else {
         const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
-        if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit/i.test(t.error || ''))) {
+        if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
           // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with Kimi and
           // Claude on the Google plan): void them so they do not read as model failures.
-          for (let i = results.length - 1; i >= 0 && results[i].provider === sel.provider && results[i].model === base.model && results[i].effort === base.effort && results[i].notes === 'timeout'; i--) {
-            if (results[i].taskId) voidTask(results[i].taskId, 'environment: provider limit (timeout immediately before the limit was detected)');
-            results[i] = { ...results[i], verdict: 'error', notes: 'environment: provider limit (timeout before the limit was detected)' };
-          }
+          voidPrecedingTimeouts();
           push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: `provider limit: ${String(t.error).slice(0, 120)}` });
           try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
           break;
@@ -130,9 +142,10 @@ async function executeTask(spec, timeoutMinutes) {
   await waitForDispatch(t.id, boundMs);
   const after = getTask(t.id);
   if (!after || ((after.attempts || 0) === 0 && after.status !== 'done')) {
+    const parked = after?.status === 'parked' || !!after?.parked || !!after?.resumeAt || /usage limit|rate limit|quota|limit reached|at its limit|provider limit|parked/i.test(after?.error || '');
     if (after && after.status !== 'done' && after.status !== 'failed' && after.status !== 'canceled') cancelTask(t.id, 'skipped');
     await flushRecords();
-    return { ...getTask(t.id), timedOut: false };
+    return { ...getTask(t.id), timedOut: false, ...(parked ? { parked: true } : {}) };
   }
   const startedMs = Date.parse(after.startedAt) || Date.now();
   const remaining = Math.max(0, boundMs - (Date.now() - startedMs));

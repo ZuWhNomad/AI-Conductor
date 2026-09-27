@@ -105,6 +105,7 @@ const PROVIDER_ENV_FAILURES = [
   'WinError 32', '\\bEBUSY\\b',
   'CUDA out of memory', 'CUDA error', 'llama-server', 'cudaMalloc',
   'quota rejected', 'rejected task at startup',
+  '(?:selected\\s+)?model is at capacity',
 ];
 const CLI_ENV_FAILURES = ['\\b(?:unknown option|unexpected argument)\\b', '\\brequires --\\w+', "\\binvalid value for '--"];
 export const ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES, ...CLI_ENV_FAILURES].join('|'), 'i');

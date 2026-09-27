@@ -49,8 +49,10 @@ test('envFailure identifies provider and CLI environment failures without scanni
     'unexpected argument --effort', 'requires --effort', "invalid value for '--effort'", 'WinError 32: file locked',
     'EBUSY: resource busy or locked', 'CUDA out of memory', 'CUDA error: driver', 'llama-server crashed',
     'cudaMalloc failed', 'provider quota rejected task at startup',
+    'Selected model is at capacity', 'model is at capacity',
   ]) assert.ok(sc.envFailure({ error }), error);
   assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: '503 UNAVAILABLE' }] } }));
+  assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'Selected model is at capacity' }] } }));
   assert.equal(sc.envFailure({ result: { finalMessage: 'This report discusses HTTP 503 handling in prose.' } }), null);
   assert.ok(sc.envFailure({ error: '{"status": "UNAVAILABLE"}' }));
   assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'feature unavailable in this build' }] } }), null);

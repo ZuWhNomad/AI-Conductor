@@ -577,6 +577,30 @@ test('timeouts immediately before a provider limit surfaces are voided as the sa
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => /^stall/.test(a.taskId) && a.verdict)), 'stalled timeouts do not count as failures');
 });
 
+test('timeouts immediately before a dispatch-wait limit skip are voided as the same quota stall', async () => {
+  let n = 0;
+  const execute = async (spec) => {
+    n++;
+    const t = n <= 2 ? { id: `stalldisp${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `parkdisp${n}`, ...spec, status: 'canceled', attempts: 0, error: 'skipped', parked: true, result: null };
+    recordRun(t); return t;
+  };
+  const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
+  assert.deepEqual(rs.map((r) => r.verdict), ['error', 'error', 'skipped']);
+  assert.ok(!rootRuns().some((c) => c.attempts.some((a) => /^stalldisp/.test(a.taskId) && a.verdict)), 'stalled timeouts do not count as failures');
+});
+
+test('a user cancel before dispatch skips without voiding preceding timeouts', async () => {
+  let n = 0;
+  const execute = async (spec) => {
+    n++;
+    const t = n <= 1 ? { id: `stalluser${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `cancuser${n}`, ...spec, status: 'canceled', attempts: 0, error: 'canceled', result: null };
+    recordRun(t); return t;
+  };
+  const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1'], execute });
+  assert.deepEqual(rs.map((r) => r.verdict), ['fail', 'skipped']);
+  assert.ok(rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'stalluser1' && a.verdict === 'fail')), 'preceding timeout remains a failure on user cancel');
+});
+
 test('importing a worker module that process.exit does not kill the check', async () => {
   const b = BATTERY.find((x) => x.id === 'edit-1');
   const dir = tmpDir('smoke-s5');
@@ -600,6 +624,8 @@ test('environment failure classification includes old smoke patterns', async () 
   const { envFailure } = await import('../../core/scorecard.mjs');
   assert.ok(envFailure({ error: 'unexpected status 401 Unauthorized: Incorrect API key provided: sk-svcac***fvMA.' }));
   assert.ok(envFailure({ error: 'Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.' }));
+  assert.ok(envFailure({ error: 'Selected model is at capacity' }));
+  assert.ok(envFailure({ error: 'model is at capacity' }));
   assert.equal(envFailure({ error: 'tests failed: expected 3, got 4' }), null);
 });
 
