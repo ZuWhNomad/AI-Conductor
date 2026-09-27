@@ -597,15 +597,15 @@ test('GP2-02: every visual ladder step needs supported effort; supported alterna
   }
 });
 
-test('wasteDiscount: a soon-resetting subscription window with unused quota is discounted', async () => {
+test('wasteDiscount: a soon-resetting subscription window is discounted regardless of used percent', async () => {
   const { wasteDiscount } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
-  const cfg = { wasteHorizonHours: 48, wasteStrength: 0.9, classes: { codex: 'subscription' }, providerWeight: {} };
+  const cfg = { wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' }, providerWeight: {} };
   const lim = getLimits();
   const wk = (usedPercent, hoursToReset) => { lim.providers.codex = { windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent, resetsAt: Date.now() + hoursToReset * 3600e3, windowMinutes: 10080 }] }; };
-  wk(20, 6); assert.ok(wasteDiscount('codex', cfg, null) < 0.5, 'near reset with 80% headroom -> heavy discount');
+  wk(20, 6); assert.equal(wasteDiscount('codex', cfg, null), 0, 'inside 24 hours is free');
   wk(20, 100); assert.equal(wasteDiscount('codex', cfg, null), 1, 'far from reset -> no discount');
-  wk(95, 6); assert.ok(wasteDiscount('codex', cfg, null) > 0.9, 'near reset but little headroom -> tiny discount');
+  wk(95, 6); assert.equal(wasteDiscount('codex', cfg, null), 0, 'used percent does not scale the discount');
   for (const used of [-50, -Infinity, 0, 100, 150]) {
     wk(used, 0.001);
     const factor = wasteDiscount('codex', cfg, null);
@@ -616,6 +616,82 @@ test('wasteDiscount: a soon-resetting subscription window with unused quota is d
   assert.equal(wasteDiscount('codex', cfg, null), 1, '5-hour window is not a waste source');
   // API / conductor classes are never discounted (no wasted quota / keep a buffer).
   assert.equal(wasteDiscount('claude', cfg, null), 1);
+  assert.equal(wasteDiscount('xai', { ...cfg, classes: { xai: 'api' } }, null), 1);
+});
+
+test('wasteDiscount uses absolute stepped boundaries and strength, with legacy horizon support', async () => {
+  const { wasteDiscount } = await import('../core/scorecard.mjs');
+  const { getLimits } = await import('../core/limits.mjs');
+  const limits = getLimits(), previous = limits.providers.codex;
+  const now = Date.parse('2026-09-20T12:00:00Z');
+  const cfg = { wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' }, providerWeight: {} };
+  const at = (hours, usedPercent = 25) => { limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent, resetsAt: now + hours * 3600e3, windowMinutes: 10080 }] }; };
+  try {
+    for (const usedPercent of [0, 50, 99]) {
+      at(73, usedPercent); assert.equal(wasteDiscount('codex', cfg, null, now), 1);
+      at(71, usedPercent); assert.equal(wasteDiscount('codex', cfg, null, now), 0.5);
+      at(47, usedPercent); assert.ok(Math.abs(wasteDiscount('codex', cfg, null, now) - 0.2) < 1e-12);
+      at(23, usedPercent); assert.equal(wasteDiscount('codex', cfg, null, now), 0);
+    }
+    at(23); assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0.5 }, null, now), 0.5);
+    assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0 }, null, now), 1);
+    at(80); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 96, wasteStrength: 1, classes: cfg.classes }, null, now), 0.5);
+    const scheduled = { ...cfg, classes: { grok: 'included' }, usageResets: { grok: { periodHours: 168, anchorAt: new Date(now + 47 * 3600e3).toISOString() } } };
+    assert.ok(Math.abs(wasteDiscount('grok', scheduled, null, now) - 0.2) < 1e-12, 'windowless schedule uses the same steps');
+  } finally { limits.providers.codex = previous; }
+});
+
+test('waste quality tie-break favors qualified expiring quota only within the configured margin', async (t) => {
+  registryModels(t, [['grok', 'best']]);
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard, limits = getLimits();
+  const previousAntigravity = limits.providers.antigravity, previousGrok = limits.providers.grok, previousCodex = limits.providers.codex;
+  const cell = (provider, model, quality) => ({
+    sel: `${provider}:${model}`, steps: 1, provider, model, effort: null,
+    category: 'search', difficulty: 2, rated: 3, n: 3, quality, accept: 1, avgUsd: 0.01, avgDurationMs: 0,
+  });
+  try {
+    saveConfig({ scorecard: { usePriors: false, quality: 0.75, minSamples: 3, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0,
+      wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, wasteQualityMargin: 0.05,
+      providerWeight: { antigravity: 1, grok: 1, codex: 1 }, classes: { antigravity: 'included', grok: 'included', codex: 'subscription' }, classOrder: ['included', 'subscription'] } });
+    limits.providers.antigravity = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: Date.now() + 23 * 3600e3, windowMinutes: 10080 }] };
+    limits.providers.grok = { windows: [] };
+    limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: Date.now() + 23 * 3600e3, windowMinutes: 10080 }] };
+    assert.equal(sc.recommend({ category: 'search', difficulty: 2, summary: [cell('codex', 'gpt-5.6-luna', 0.81), cell('grok', 'best', 0.85)] }).provider, 'codex');
+    assert.equal(sc.recommend({ category: 'search', difficulty: 2, summary: [cell('codex', 'gpt-5.6-luna', 0.80), cell('grok', 'best', 0.86)] }).provider, 'grok');
+    assert.equal(sc.recommend({ category: 'search', difficulty: 2, summary: [cell('codex', 'gpt-5.6-luna', 0.74), cell('grok', 'best', 0.78)] }).provider, 'grok');
+    limits.providers.codex.windows[0].resetsAt = Date.now() + 47 * 3600e3;
+    assert.equal(sc.recommend({ category: 'search', difficulty: 2, summary: [cell('codex', 'gpt-5.6-luna', 0.82), cell('antigravity', 'flash', 0.82)] }).provider, 'antigravity', 'larger discount wins before utility');
+  } finally {
+    limits.providers.antigravity = previousAntigravity; limits.providers.grok = previousGrok; limits.providers.codex = previousCodex;
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('a fully discounted plan keeps zero cost through utility and score formatting', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const cfg = loadConfig().scorecard, limits = getLimits(), previous = limits.providers.codex;
+  const source = 'waste-zero-cost';
+  try {
+    saveConfig({ scorecard: { usePriors: false, quality: 0.75, minSamples: 3, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0,
+      wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, wasteQualityMargin: 0.05,
+      providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 99, resetsAt: Date.now() + 23 * 3600e3, windowMinutes: 10080 }] };
+    for (let i = 0; i < 3; i++) {
+      const id = `${source}-${i}`;
+      run({ id, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'search', difficulty: 2 });
+      sc.rateTask(id, 'pass');
+    }
+    const summary = sc.summarize({ source });
+    const pick = sc.recommend({ category: 'search', difficulty: 2, summary });
+    assert.equal(pick.plan.usd, 0);
+    assert.equal(pick.plan.utility, 5 * pick.plan.quality);
+    assert.match(pick.reason, /at \$0\.000/);
+    const short = sc.formatScoresShort({ source });
+    const full = sc.formatScores({ category: 'search', source });
+    assert.match(short, /\$0\.000/); assert.match(full, /at \$0\.000/);
+    assert.doesNotMatch(short + full, /NaN|Infinity/);
+  } finally { limits.providers.codex = previous; saveConfig({ scorecard: cfg }); }
 });
 
 test('nextScheduledReset + wasteDiscount apply to a windowless provider on a configured schedule', async () => {
@@ -742,12 +818,16 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
         run({ id: `${id}-ceiling`, source, provider: 'claude', model: 'paid', effort: null, category: 'read', difficulty: 5 });
         sc.rateTask(`${id}-ceiling`, 'pass');
       }
+      if (provider === 'codex') {
+        run({ id: `${source}-single-fail`, source, provider, model, effort: null, category: 'edit', difficulty: 2 });
+        sc.rateTask(`${source}-single-fail`, 'fail'); // keep the discounted single outside the quality tie margin
+      }
       const summary = sc.summarize({ source });
       const r = sc.recommend({ category: 'edit', difficulty: 2, summary });
       assert.deepEqual(r.plan.steps, ['claude:paid:default', `${provider}:${model}:default`]);
       assert.equal(r.plan.estimated, false);
       const paid = 2 * 0.5 * (1 + 0.5 * 0.5 * (5 - 2)) + 0.002; // hourly is not scaled by weight/reserve/waste
-      const fallback = provider === 'ollama' ? 0.004 : 4 * 0.2 * (1 - (1 - 6 / 48) * 0.8 * 0.9) + 0.004; // thin cells do not establish a provider ceiling
+      const fallback = provider === 'ollama' ? 0.004 : 4 * 0.2 * (1 - 0.9) + 0.004; // inner waste step; thin cells do not establish a provider ceiling
       assert.ok(Math.abs(r.plan.usd - paid - fallback) < 1e-9, `${provider}: ${r.plan.usd} vs ${paid + fallback}`);
       assert.deepEqual(summary.filter((g) => g.steps === 2).map((g) => g.avgUsd), [3, 7.5], 'display keeps raw shadow dollars');
     }

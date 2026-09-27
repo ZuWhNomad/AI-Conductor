@@ -326,7 +326,7 @@ test('config validates ports, provider endpoints and malformed MCP entries', () 
   assert.deepEqual(cfg.mcpServers.typed, { command: 'node', args: ['ok'], env: { KEEP: 'value' } });
 });
 
-test('config filters invalid usage and category values, bounds waste settings, and restores prompt budgets', () => {
+test('config filters invalid usage and category values, validates waste settings, and restores prompt budgets', () => {
   const badValues = [0, -1, null, '3', 'bad', NaN, Infinity];
   for (const value of badValues) {
     const cfg = saveConfig({ worker: { timeoutByCategory: { bad: value }, recipeChars: value, toolLineChars: value },
@@ -336,15 +336,23 @@ test('config filters invalid usage and category values, bounds waste settings, a
     for (const key of ['recipeChars', 'toolLineChars']) assert.equal(cfg.worker[key], DEFAULTS.worker[key]);
   }
   for (const value of ['bad', []]) {
-    const cfg = saveConfig({ scorecard: { usageBudgets: value, usageGapHours: value, wasteHorizonHours: value, wasteStrength: value } });
+    const cfg = saveConfig({ scorecard: { usageBudgets: value, usageGapHours: value, wasteSteps: value, wasteStrength: value, wasteQualityMargin: value } });
     assert.deepEqual(cfg.scorecard.usageBudgets, {});
     assert.deepEqual(cfg.scorecard.usageGapHours, {});
-    assert.equal(cfg.scorecard.wasteHorizonHours, DEFAULTS.scorecard.wasteHorizonHours);
+    assert.deepEqual(cfg.scorecard.wasteSteps, DEFAULTS.scorecard.wasteSteps);
     assert.equal(cfg.scorecard.wasteStrength, DEFAULTS.scorecard.wasteStrength);
+    assert.equal(cfg.scorecard.wasteQualityMargin, DEFAULTS.scorecard.wasteQualityMargin);
   }
-  let cfg = saveConfig({ scorecard: { wasteHorizonHours: -1, wasteStrength: -1 } });
-  assert.equal(cfg.scorecard.wasteHorizonHours, 1);
+  for (const wasteSteps of [[], [[48]], [[0, 0.6]], [[48, -0.1]], [[48, 1.1]], [[48, 0.6, 1]]]) {
+    assert.deepEqual(saveConfig({ scorecard: { wasteSteps } }).scorecard.wasteSteps, DEFAULTS.scorecard.wasteSteps);
+  }
+  let cfg = saveConfig({ scorecard: { wasteHorizonHours: 96 } });
+  assert.deepEqual(cfg.scorecard.wasteSteps, [[96, 0.5], [48, 0.8], [24, 1]], 'legacy horizon becomes the outer step');
+  assert.equal('wasteHorizonHours' in cfg.scorecard, false);
+  cfg = saveConfig({ scorecard: { wasteSteps: [[36, 0.4], [12, 0.8]], wasteStrength: -1, wasteQualityMargin: 2 } });
+  assert.deepEqual(cfg.scorecard.wasteSteps, [[36, 0.4], [12, 0.8]]);
   assert.equal(cfg.scorecard.wasteStrength, 0);
+  assert.equal(cfg.scorecard.wasteQualityMargin, 1);
   cfg = saveConfig({ scorecard: { wasteStrength: 2, usageBudgets: { valid: 100 }, usageGapHours: { valid: 1.5 } } });
   assert.equal(cfg.scorecard.wasteStrength, 1);
   assert.equal(loadConfig().scorecard.usageBudgets.valid, 100);
