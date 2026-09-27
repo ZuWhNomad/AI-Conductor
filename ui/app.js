@@ -164,7 +164,7 @@ function renderProviders() {
       if (w.estimated) { // let the user record an actual reading to re-calibrate the estimate
         const row = el('div', 'wl tiny'); const inp = el('input'); inp.type = 'number'; inp.min = 0; inp.max = 100; inp.placeholder = 'actual %'; inp.style.width = '5em';
         const set = el('button', 'sm', 'Calibrate'); set.title = w.note || 'record the real % from the provider site to refine the estimate';
-        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); S.limits = await api.get('/api/limits'); inp.value = ''; renderProviders(); } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
+        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
         row.append(inp, set); d.append(row);
       }
     }
@@ -492,7 +492,8 @@ const FLEET_CAP = 30;
 // scope: 'all' when no chat is open, else the remembered choice (default 'mine' = this chat only). sessionless tasks (CLI/API) always show.
 function fleetScope() { return S.current ? (localStorage.getItem('fleetScope') || 'mine') : 'all'; }
 function inFleet(t) { return fleetScope() === 'all' || t.sessionId === S.current?.id || t.sessionId == null; }
-function myTasks() { return S.tasks.filter(inFleet); }
+function terminalTask(t) { return ['done', 'failed', 'canceled'].includes(t?.status); }
+function myTasks() { return S.tasks.filter(inFleet).sort((a, b) => Number(terminalTask(a)) - Number(terminalTask(b))); }
 function renderTasks() {
   const box = $('#tasks'); box.innerHTML = ''; S.taskEls.clear();
   for (const t of myTasks().slice(0, FLEET_CAP)) box.append(taskCard(t));
@@ -596,24 +597,16 @@ function lastAction(t) {
   return t.result?.finalMessage ? t.result.finalMessage.slice(0, 120) : t.specPreview || '';
 }
 function updateTask(t) {
-  if (['done', 'failed', 'canceled'].includes(t.status)) S.workerLog.delete(t.id);
+  if (terminalTask(t)) S.workerLog.delete(t.id);
   const i = S.tasks.findIndex((x) => x.id === t.id);
+  const previous = S.tasks[i];
   if (i >= 0) S.tasks[i] = t; else S.tasks.unshift(t);
-  if (inFleet(t)) {
-    const box = $('#tasks');
+  if (!previous || terminalTask(previous) !== terminalTask(t)) renderTasks();
+  else {
     const existing = S.taskEls.get(t.id);
-    const fresh = taskCard(t);
-    if (existing) existing.replaceWith(fresh);
-    else {
-      box.prepend(fresh);
-      while (box.children.length > FLEET_CAP) {
-        const last = box.lastElementChild;
-        if (last?.dataset?.id) S.taskEls.delete(last.dataset.id);
-        last?.remove();
-      }
-    }
+    if (existing) existing.replaceWith(taskCard(t));
+    renderFleetHead();
   }
-  renderFleetHead();
   renderSessions();
 }
 async function openTask(id) {
@@ -698,6 +691,7 @@ function setStatus(st) {
 }
 async function newSession() {
   if (newSessionPromise) return newSessionPromise;
+  const button = $('#btn-new'); button.disabled = true; button.textContent = 'Starting…';
   return (newSessionPromise = (async () => {
     const cwd = $('#cwd').value.trim();
     if (!cwd) { $('#stt-hint').textContent = 'Pick a project folder first (left panel).'; $('#cwd').focus(); return; }
@@ -713,8 +707,11 @@ async function newSession() {
       api.post('/api/settings', { conductor: { provider: sel.provider, model: modelOrNull, effort: sel.effort } }).catch(() => {});
     }
     $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
-    await refreshSessions(); await openSession(s.id);
-  })().finally(() => { newSessionPromise = null; }));
+    upsertSession(s); renderSessions(); await openSession(s.id);
+  })().finally(() => { newSessionPromise = null; button.disabled = false; button.textContent = 'Start chat'; }));
+}
+function upsertSession(s) {
+  S.sessions = [...S.sessions.filter((x) => x.id !== s.id), s].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 async function refreshSessions() { S.sessions = await api.get('/api/sessions'); renderSessions(); }
 // Slash commands that send straight to a worker (zero conductor tokens). The send() matcher is built from this table (one source of truth).
@@ -807,18 +804,21 @@ function noteUpdate(o) {
 }
 
 // ---------- SSE ----------
-async function resync() {
-  const st = await api.get('/api/state');
-  S.lastSeq = st.seq || 0; // state is fresh: do not replay events that predate it on top of it
+function applyState(st) {
+  S.boot = st.boot; S.lastSeq = st.seq || 0;
   Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
+}
+async function resync() {
+  const st = await api.get('/api/state');
+  applyState(st); // state is fresh: do not replay events that predate it on top of it
   renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh();
   seedNewChatDefaults();
   if (S.current) await openSession(S.current.id);
 }
 /** Coalesce bursts (e.g. replayed events) into one refetch per key. */
 const pendingRefetch = new Map();
-function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => {}); }, ms)); }
+function coalesce(key, fn, ms = 250) { clearTimeout(pendingRefetch.get(key)); pendingRefetch.set(key, setTimeout(() => { pendingRefetch.delete(key); fn().catch(() => resync().catch(() => {})); }, ms)); }
 function applyAutoRefresh() {
   const on = !!S.config?.ui?.autoRefresh;
   const cb = $('#auto-refresh'); if (cb) cb.checked = on;
@@ -887,7 +887,9 @@ function connect() {
 }
 function onSessionEvent(ev) {
   if (ev.kind === 'created' || ev.kind === 'deleted' || ev.kind === 'updated') {
-    refreshSessions();
+    if (ev.kind === 'deleted') S.sessions = S.sessions.filter((s) => s.id !== ev.sessionId);
+    else upsertSession(ev.session);
+    renderSessions();
     if (ev.kind === 'deleted' && S.current?.id === ev.sessionId) clearCurrent();
     if (ev.kind === 'updated' && S.current?.id === ev.sessionId) {
       S.current = { ...S.current, ...ev.session };
@@ -1147,10 +1149,9 @@ async function openScores() {
 // ---------- boot ----------
 async function boot() {
   const st = await api.get('/api/state');
-  S.boot = st.boot; S.lastSeq = st.seq || 0; // the transcript is rendered from state; only newer events stream in
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
+  applyState(st); // the transcript is rendered from state; only newer events stream in
   $('#cwd').value = localStorage.getItem('cwd') || '';
-  $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
+  S.chatFilter = $('#chat-filter').value;
   refreshNewPicker(false); renderSessions(); renderProviders(); renderBudget(); renderTasks(); renderUpdate(); applyAutoRefresh(); seedNewChatDefaults(); renderChip();
   connect();
   const last = localStorage.getItem('lastSession');

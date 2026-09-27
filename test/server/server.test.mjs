@@ -544,3 +544,23 @@ test('POST /api/tasks accepts avoidFamilies (normalized)', async () => {
   assert.deepEqual(t.avoidFamilies, ['claude', 'grok']);
   await post(`/api/tasks/${t.id}/cancel`);
 });
+
+test('state includes old open tasks as well as the newest 50 without duplicates', async () => {
+  const { createTask, cancelTask } = await import('../../core/tasks.mjs');
+  const cwd = tmpDir('state-tasks');
+  const old = createTask({ cwd, spec: 'still open' }, { dispatch: false });
+  old.createdAt = '2020-01-01T00:00:00.000Z';
+  const recent = [];
+  for (let i = 0; i < 50; i++) {
+    const task = createTask({ cwd, spec: `recent ${i}` }, { dispatch: false });
+    cancelTask(task.id);
+    recent.push(task.id);
+  }
+  try {
+    const tasks = (await get('/api/state')).tasks;
+    assert.equal(tasks.filter((t) => t.id === old.id).length, 1);
+    for (const id of recent) assert.ok(tasks.some((t) => t.id === id));
+    assert.equal(new Set(tasks.map((t) => t.id)).size, tasks.length);
+    assert.ok(tasks.findIndex((t) => t.id === old.id) < tasks.findIndex((t) => t.id === recent[0]));
+  } finally { cancelTask(old.id); }
+});

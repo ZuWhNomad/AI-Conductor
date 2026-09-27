@@ -128,6 +128,7 @@ export function publicTask(t) {
 export function taskSummary(t) {
   if (!t) return null;
   const { paths, imageOptions, diffStat, result, ...summary } = publicTask(t);
+  summary.specPreview = summary.specPreview.slice(0, 120);
   if (result) {
     const { items, files, tools, finalMessage, ...small } = result;
     // The fleet's lastAction preview displays 120 characters.
