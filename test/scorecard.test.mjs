@@ -138,7 +138,7 @@ test('summarize: single-step rows count every attempt, path rows count observed 
 });
 
 test('recommend: value not cheapness — a dearer model wins only when its extra quality is worth it', () => {
-  saveConfig({ scorecard: { providerWeight: { codex: 1, claude: 1, ollama: 0 }, reservePct: 0 } }); // list-price economics for this scenario
+  saveConfig({ scorecard: { minSamples: 3, providerWeight: { codex: 1, claude: 1, ollama: 0 }, reservePct: 0 } }); // list-price economics for this scenario
   // implement@2: Luna 0.8 quality (~$0.023/task), Terra 1.0 quality (10x the tokens price: ~$0.23), Astra 1.0 (~$1.15)
   seed('codex', 'gpt-5.6-luna', 'low', 'implement', 2, ['pass', 'pass', 'pass', 'fixable', 'fail']);
   seed('codex', 'gpt-5.6-terra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']);
@@ -250,6 +250,7 @@ test('thin cells pool harder levels until the sample floor is met', () => {
   const r4 = sc.recommend({ category: 'refactor', difficulty: 4 });
   assert.match(r4.reason, /extrapolated from level 2/);
   assert.equal((r4.reason.match(/extrapolated/g) || []).length, 1);
+  saveConfig({ scorecard: { minSamples: 1 } });
 });
 
 test('prior fallback routes by public tier only when enabled', () => {
@@ -285,13 +286,15 @@ test('source filter separates smoke from live runs', () => {
 
 test('scorecard config is normalized', () => {
   const cfg = loadConfig();
-  assert.equal(cfg.scorecard.minSamples, 3);
+  assert.equal(cfg.scorecard.minSamples, 1);
+  assert.equal(cfg.scorecard.benchMinSamples, 3);
   assert.equal(cfg.scorecard.quality, 0.75);
   assert.equal(cfg.scorecard.qualityValueUsd, 5);
   assert.equal(cfg.scorecard.hourlyUsd, 0);
   const bad = saveConfig({ scorecard: { quality: 5, minSamples: -1, qualityValueUsd: 'x', hourlyUsd: -3, prices: 'x', usePriors: 'yes' }, smoke: { timeoutMinutes: 0 } });
   assert.equal(bad.scorecard.quality, 0.75);
-  assert.equal(bad.scorecard.minSamples, 3);
+  assert.equal(bad.scorecard.minSamples, 1);
+  assert.equal(bad.scorecard.benchMinSamples, 3);
   assert.equal(bad.scorecard.qualityValueUsd, 5);
   assert.equal(bad.scorecard.hourlyUsd, 0);
   assert.deepEqual(bad.scorecard.prices, {});
@@ -588,7 +591,7 @@ test('GP2-02: every visual ladder step needs supported effort; supported alterna
     for (const unsupported of models) {
       reg.models = models.map((m) => m === unsupported ? { ...m, efforts: ['high'] } : m);
       const result = pick(estimated);
-      assert.ok(!result || result.plan.steps.every((sel) => !sel.includes(unsupported.id)), 'estimated ladder drops unsupported step');
+      assert.ok(!result || (result.plan ? result.plan.steps.every((sel) => !sel.includes(unsupported.id)) : result.model !== unsupported.id), 'estimated ladder drops unsupported step');
     }
     reg.models = models.map((m) => ({ ...m, efforts: ['high'] }));
     for (const summary of [observed, estimated]) for (const escalate of [false, true]) {
@@ -636,6 +639,8 @@ test('wasteDiscount uses absolute stepped boundaries and strength, with legacy h
     at(23); assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0.5 }, null, now), 0.5);
     assert.equal(wasteDiscount('codex', { ...cfg, wasteStrength: 0 }, null, now), 1);
     at(80); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 96, wasteStrength: 1, classes: cfg.classes }, null, now), 0.5);
+    at(36); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 24, wasteStrength: 1, classes: cfg.classes }, null, now), 1, 'legacy steps beyond a shorter horizon are dropped');
+    at(20); assert.equal(wasteDiscount('codex', { wasteHorizonHours: 24, wasteStrength: 1, classes: cfg.classes }, null, now), 0);
     const scheduled = { ...cfg, classes: { grok: 'included' }, usageResets: { grok: { periodHours: 168, anchorAt: new Date(now + 47 * 3600e3).toISOString() } } };
     assert.ok(Math.abs(wasteDiscount('grok', scheduled, null, now) - 0.2) < 1e-12, 'windowless schedule uses the same steps');
   } finally { limits.providers.codex = previous; }
@@ -740,7 +745,7 @@ test('short view: best pick + runner-up per category, levels collapsed, same top
     assert.match(line, /runner-up/);
   }
   assert.match(short, /@\d-\d:/);                                     // identical levels collapsed into a range
-  const bad = sc.summarize().find((g) => g.steps === 1 && g.rated >= cfg.minSamples && g.quality != null && g.quality < cfg.quality);
+  const bad = sc.summarize().find((g) => g.steps === 1 && g.rated >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
   if (bad) assert.ok(short.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'benched cell listed');
   assert.equal(sc.formatScoresShort(), short);                           // memoised: same inputs, same text
   const csv = sc.scoresCsv();
@@ -776,7 +781,7 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
   const now = Date.now();
   t.mock.method(Date, 'now', () => now);
   try {
-    saveConfig({ scorecard: { classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, ollama: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'ollama:local:latest': { in: 1, out: 0, cached: 0 } } } });
+    saveConfig({ scorecard: { minSamples: 3, classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, ollama: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'ollama:local:latest': { in: 1, out: 0, cached: 0 } } } });
     limits.providers.claude = { windows: [] };
     limits.providers.ollama = { windows: [] };
     limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: now + 6 * 3600e3 }] };
@@ -1513,4 +1518,122 @@ test('I14: cold-start effort map comes from config with DEFAULTS fallback', () =
 test('D1: visual close is not a modest tier; Sol modeling is a pass', () => {
   assert.equal(pr.priorFor('claude', 'opus', 'modeling').tier, null);
   assert.equal(pr.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, 'A');
+});
+
+test('archived selections split main and archived views without changing the ledger or active retry verdict', () => {
+  const cfg = loadConfig().scorecard;
+  const source = 'archive-views';
+  try {
+    saveConfig({ scorecard: { archived: [], minSamples: 1, benchMinSamples: 3, usePriors: false } });
+    run({ id: `${source}-old`, source, model: 'gpt-5.6-luna', effort: 'low', category: 'debug', difficulty: 3 });
+    sc.rateTask(`${source}-old`, 'fail');
+    run({ id: `${source}-new`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'debug', difficulty: 3, retryOf: `${source}-old` });
+    sc.rateTask(`${source}-new`, 'pass');
+
+    const before = JSON.stringify(sc.summarize({ source }));
+    const beforeShort = sc.formatScoresShort({ source });
+    assert.ok(JSON.parse(before).some((g) => g.steps === 2));
+    saveConfig({ scorecard: { archived: ['CoDeX:GpT-5.6-LuNa'] } });
+
+    const main = sc.summarize({ source }), archived = sc.summarize({ source, archived: true });
+    assert.deepEqual(main.map((g) => g.sel), ['codex:gpt-5.6-terra:medium']);
+    assert.equal(main[0].pass, 1, 'the active retry keeps its own verdict');
+    assert.ok(archived.some((g) => g.sel === 'codex:gpt-5.6-luna:low'));
+    assert.ok(archived.some((g) => g.steps === 2 && g.sel.includes('gpt-5.6-terra')));
+    assert.ok(!archived.some((g) => g.steps === 1 && g.model === 'gpt-5.6-terra'));
+    assert.deepEqual(sc.errorRates({ source }).byModel.map((g) => g.key), ['codex:gpt-5.6-terra:medium']);
+    assert.deepEqual(sc.errorRates({ source, archived: true }).byModel.map((g) => g.key), ['codex:gpt-5.6-luna:low']);
+    assert.ok(sc.runRows().some((r) => r.taskId === `${source}-old`), 'archive never filters runRows()');
+    assert.equal(sc.scoresCsv({ source, archived: true }).trim().split('\n').length, archived.length + 1);
+    assert.doesNotMatch(sc.formatScores({ source, archived: true }), /Plans \(/);
+    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna', 'codex:gpt-5.6-terra'] } });
+    assert.notEqual(sc.formatScoresShort({ source }), beforeShort, 'config change invalidates the short-view memo');
+
+    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna'] } });
+    assert.equal(sc.recommend({ category: 'debug', difficulty: 3, source }).model, 'gpt-5.6-terra');
+    assert.equal(sc.recommend({ category: 'debug', difficulty: 3, source, escalate: true }).model, 'gpt-5.6-terra');
+    saveConfig({ scorecard: { archived: [] } });
+    assert.equal(JSON.stringify(sc.summarize({ source })), before, 'unarchiving restores the summary byte-for-byte');
+    assert.equal(sc.formatScoresShort({ source }), beforeShort, 'unarchiving restores the memoized short view');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('recommend excludes archived registry models from measured and prior-only routing', () => {
+  const cfg = loadConfig().scorecard;
+  const reg = { providers: { codex: { status: 'ok' } }, models: [
+    { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low'] },
+    { provider: 'codex', id: 'gpt-5.6-terra', kind: 'agent', efforts: ['medium'] },
+  ] };
+  try {
+    saveConfig({ scorecard: { archived: [], usePriors: false, minSamples: 1, benchMinSamples: 3, classOrder: ['subscription'] } });
+    run({ id: 'archive-measured-luna', source: 'archive-measured', model: 'gpt-5.6-luna', effort: 'low', category: 'implement', difficulty: 1 });
+    sc.rateTask('archive-measured-luna', 'pass');
+    for (const [id, verdict] of [['archive-measured-terra-pass', 'pass'], ['archive-measured-terra-fix', 'fixable']]) {
+      run({ id, source: 'archive-measured', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 1 });
+      sc.rateTask(id, verdict);
+    }
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg }).model, 'gpt-5.6-luna');
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg, escalate: true }).model, 'gpt-5.6-luna');
+
+    saveConfig({ scorecard: { archived: ['CODEX:GPT-5.6-LUNA'], usePriors: true } });
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg }).model, 'gpt-5.6-terra');
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-measured', reg, escalate: true }).model, 'gpt-5.6-terra');
+    const prior = sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-prior-empty', reg });
+    assert.equal(prior.model, 'gpt-5.6-terra');
+    assert.notEqual(prior.model, 'gpt-5.6-luna');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('[1m] scorecard rows group, price, route and satisfy bench hygiene as the base model', async (t) => {
+  const cfg = loadConfig().scorecard;
+  const source = 'alias-1m';
+  registryModels(t, [['claude', 'claude-fable-5-1']]);
+  try {
+    saveConfig({ scorecard: { archived: [], usePriors: false, minSamples: 1, benchMinSamples: 3, classOrder: ['conductor'] } });
+    run({ id: `${source}-live`, source, provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'docs', difficulty: 2 });
+    sc.rateTask(`${source}-live`, 'pass');
+    const row = sc.summarize({ source }).find((g) => g.steps === 1);
+    assert.equal(row.model, 'claude-fable-5-1');
+    assert.equal(row.sel, 'claude:claude-fable-5-1:low');
+    assert.ok(row.avgUsd > 0, 'the suffixed run uses the base model price');
+    assert.equal(sc.recommend({ category: 'docs', difficulty: 2, source }).model, 'claude-fable-5-1');
+
+    run({ id: `${source}-smoke`, source: 'smoke', provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
+    sc.rateTask(`${source}-smoke`, 'pass');
+    saveConfig({ scorecard: { archived: ['claude:claude-opus-5-5[1m]'] } });
+    const reg = { providers: { claude: { status: 'ok' } }, models: [
+      { provider: 'claude', id: 'claude-fable-5-1', kind: 'agent', efforts: ['low'] },
+      { provider: 'claude', id: 'claude-fable-5-1[1m]', kind: 'agent', efforts: ['low'] },
+      { provider: 'claude', id: 'claude-opus-5-5[1m]', kind: 'agent', efforts: ['low'] },
+    ] };
+    const { dueForBench } = await import('../core/bench.mjs');
+    assert.deepEqual(dueForBench({ days: 21, reg }), [], 'suffix/base duplicates are satisfied once and archived aliases are skipped');
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('one pass qualifies, while benching and failed-below prior suppression require benchMinSamples', () => {
+  const cfg = loadConfig().scorecard;
+  const reg = { providers: { codex: { status: 'ok' } }, models: [{ provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low'] }] };
+  try {
+    saveConfig({ scorecard: { archived: [], usePriors: true, minSamples: 1, benchMinSamples: 3, classOrder: ['subscription'] } });
+    run({ id: 'qualify-one-pass', source: 'qualify-one', category: 'implement', difficulty: 2 });
+    sc.rateTask('qualify-one-pass', 'pass');
+    const qualified = sc.recommend({ category: 'implement', difficulty: 2, source: 'qualify-one', reg });
+    assert.equal(qualified.model, 'gpt-5.6-luna');
+    assert.ok(qualified.plan, 'one rated pass is measured evidence, not a prior-only pick');
+
+    run({ id: 'bench-one-fail', source: 'bench-threshold', category: 'implement', difficulty: 2 });
+    sc.rateTask('bench-one-fail', 'fail');
+    const afterOne = sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg });
+    assert.equal(afterOne.model, 'gpt-5.6-luna', 'one failure does not suppress the prior');
+    assert.match(afterOne.reason, /prior only/);
+    assert.doesNotMatch(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched/);
+
+    for (const i of [2, 3]) {
+      run({ id: `bench-${i}-fail`, source: 'bench-threshold', category: 'implement', difficulty: 2 });
+      sc.rateTask(`bench-${i}-fail`, 'fail');
+    }
+    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg }), null, 'three failures suppress the prior');
+    assert.match(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched \(quality < 0\.75 over >= 3 rated/);
+  } finally { saveConfig({ scorecard: cfg }); }
 });

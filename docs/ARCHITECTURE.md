@@ -169,7 +169,8 @@ and the cut-off attempt is never scored.
 
 `recommend(category, difficulty)` maximizes utility = `scorecard.qualityValueUsd` × expected quality
 − expected $ (+ `hourlyUsd` × wall clock). Plans: a single model whose quality ≥ `scorecard.quality`
-over ≥ `minSamples` rated runs at that level or above with no failure at or below; an observed
+over ≥ `minSamples` rated runs at that level or above, with below-bar evidence disqualifying it only
+after ≥ `benchMinSamples` rated runs; an observed
 ladder; or an estimated ladder (any measured first step, qualified fallback; expected quality
 q₁ + (1−p₁)q₂, cost c₁ + (1−p₁)c₂, assuming independent failures — flagged "est." until observed
 chains replace it). `delegate` without provider/model runs the first step and tells the conductor

@@ -496,6 +496,8 @@ test('GET /api/scores returns only the text the UI reads', async () => {
   const sc = await get('/api/scores');
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
+  const archived = await get('/api/scores?archived=1');
+  assert.equal(typeof archived.text, 'string');
 });
 
 test('POST /api/ollama/pull is gone', async () => {

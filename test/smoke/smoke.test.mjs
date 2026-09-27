@@ -133,6 +133,10 @@ test('smoke tasks at difficulty 6+ get smoke.hardTimeoutMinutes (30); the rest s
 });
 
 test('routing ignores difficulty > 5: L6/L7 rows neither pool into nor lift a level-1-5 pick; delegate stays 1-5', async () => {
+  const { loadConfig, saveConfig } = await import('../../core/config.mjs');
+  const scorecard = loadConfig().scorecard;
+  saveConfig({ scorecard: { minSamples: 3 } });
+  try {
   const reg = { providers: { codex: { status: 'ok' } }, models: ['gpt-5.6-luna', 'gpt-5.6-terra'].map((id) => ({ provider: 'codex', id, kind: 'agent' })) };
   const row = (model, difficulty, rated, quality, avgUsd) => ({ sel: `codex:${model}:low`, steps: 1, provider: 'codex', model, effort: 'low', category: 'debug', difficulty, rated, n: rated, pass: rated * quality, fixable: 0, fail: rated * (1 - quality), phantom: 0, quality, accept: quality, avgUsd, avgDurationMs: 1000 });
   // Luna: one cheap rated run at L5 (below the sample floor) plus passing L6/L7 runs that would pool into it. Terra: proven at L5.
@@ -150,6 +154,7 @@ test('routing ignores difficulty > 5: L6/L7 rows neither pool into nor lift a le
   assert.equal(live.difficulty, null);
   cancelTask(smoke.id); cancelTask(live.id);
   rmSync(cwd, { recursive: true, force: true });
+  } finally { saveConfig({ scorecard }); }
 });
 
 test('implement-4: eval named in a comment or string passes; a real eval or new Function fails', async () => {

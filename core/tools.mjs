@@ -11,7 +11,7 @@ import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
-import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize } from './scorecard.mjs';
+import { CATEGORIES, ROUTED_MAX_DIFFICULTY, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, summarize, isArchived } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
 import { runPlan, getPlan, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
@@ -308,9 +308,13 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'model_scores',
-      description: 'Scorecard. Default: the short view: best pick + runner-up per category and level, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
-      schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs'), detail: z.boolean().optional().describe('Full table, plans with reasons and error rates (long)') }),
-      handler: async (a) => { const { dueForBench, formatBench } = await import('./bench.mjs'); const due = dueForBench(); return (a.detail || a.category ? formatScores({ category: a.category || null, source: a.source || null }) : formatScoresShort({ source: a.source || null })) + (due.length ? `\n\nBench hygiene: ${formatBench(due)}` : ''); },
+      description: 'Scorecard. Default: the short view: best pick + runner-up per category and level, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. archived: true shows only archived history (full table, no routing plans or bench hygiene). `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
+      schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs'), detail: z.boolean().optional().describe('Full table, plans with reasons and error rates (long)'), archived: z.boolean().optional().describe('Show only archived selections') }),
+      handler: async (a) => {
+        if (a.archived) return formatScores({ category: a.category || null, source: a.source || null, archived: true });
+        const { dueForBench, formatBench } = await import('./bench.mjs'); const due = dueForBench();
+        return (a.detail || a.category ? formatScores({ category: a.category || null, source: a.source || null }) : formatScoresShort({ source: a.source || null })) + (due.length ? `\n\nBench hygiene: ${formatBench(due)}` : '');
+      },
     },
     {
       name: 'smoke_test',
@@ -322,7 +326,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         const ids = a.tasks?.length ? SMOKE_TASKS.filter((t) => a.tasks.includes(t.id)).map((t) => t.id) : SMOKE_TASKS.map((t) => t.id);
         if (!ids.length) return `no such smoke tasks; have ${SMOKE_TASKS.map((t) => t.id).join(', ')}`;
         runSmoke({ models: [sel], tasks: ids, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
-        return `Smoke test started: ${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'} on ${ids.length} task(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.`;
+        return `Smoke test started: ${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'} on ${ids.length} task(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
       },
     },
     {
