@@ -69,7 +69,10 @@ bus.on('event', (event) => {
   if (event.sessionId) keys.add(eventKey('session', event.sessionId));
   if (event.task?.sessionId) keys.add(eventKey('session', event.task.sessionId));
   const taskId = event.taskId || event.task?.id;
-  if (taskId && String(taskId).startsWith('conductor:')) keys.add(eventKey('session', String(taskId).slice('conductor:'.length)));
+  if (taskId) {
+    if (String(taskId).startsWith('conductor:')) keys.add(eventKey('session', String(taskId).slice('conductor:'.length)));
+    else keys.add(eventKey('task', taskId)); // worker tasks keep toolRepeat/toolLessTurns for the runaway guard
+  }
   for (const key of keys) {
     // Conductor worker events are translated into session events; parse tools from the latter so they count once.
     if (event.type === 'worker' && String(taskId || '').startsWith('conductor:')) {

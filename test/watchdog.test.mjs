@@ -172,6 +172,23 @@ test('pending permission is resurfaced and a chat waiting on a quiet task inheri
   assert.deepEqual(interrupted, []);
 });
 
+test('a worker task repeating the same tool call is classified looping (task events keep loop counts)', async () => {
+  writeJson(statePath('watches.json'), []);
+  const id = 'loop-task';
+  for (let i = 0; i < 5; i++) bus.publish('worker', { taskId: id, event: 'item', phase: 'started', item: { type: 'command_execution', command: 'npm test' } });
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  const tasks = [{ id, status: 'running', cwd: HOME, startedAt: new Date(now - 60_000).toISOString() }];
+  const checks = [];
+  const watchdog = createWatchdog({
+    listSessions: () => [], listTasks: () => tasks, touchTaskAlive: (_id, state) => { checks.push(state.verdict); return true; },
+    markTaskWakeReported() {}, recordSessionCheckIn: () => false, sendMessage: async () => {}, jobStatus: () => null,
+    processSnapshot: noSnapshot, processSample: noProcess, fileSample: noFiles,
+    publish: () => {}, logFriction: () => {}, config: cfg, clock: () => now,
+  });
+  await watchdog.tick();
+  assert.deepEqual(checks, ['looping']);
+});
+
 test('five tool-less progress turns nudge once, then a still-repeating runaway chat turn is stopped', async () => {
   writeJson(statePath('watches.json'), []);
   const id = 'runaway-chat';
