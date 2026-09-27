@@ -50,6 +50,7 @@ it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_
   ancestors. These checks cannot prevent concurrent link swaps (TOCTOU); they are not an OS sandbox.
 - Claude runs (workers and conductor chats) carry `KILL_GUARD_HOOKS`: a PreToolUse hook denies killing processes by
   name or image (`taskkill /IM`, `Stop-Process -Name`, `pkill`, `killall`), which would kill the Conductor itself.
+  Claude workers also deny file-tool writes outside the task cwd, configured writable roots, and the system temp directory.
   Vendor CLIs can't be hooked; `core/policy/prompts/worker.md` tells them the same rule.
 - Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
 

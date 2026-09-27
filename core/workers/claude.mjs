@@ -1,6 +1,8 @@
 // Claude-harness worker: a one-shot Agent SDK run. Also used for Ollama models, which speak the
 // Anthropic Messages API natively, so local models get the full Claude Code toolset for free.
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import os from 'node:os';
+import path from 'node:path';
 import { bus } from '../bus.mjs';
 import { spawnTracked } from '../proc.mjs';
 import { markUnavailable } from '../models.mjs';
@@ -34,6 +36,30 @@ export const KILL_GUARD_HOOKS = { PreToolUse: [{ hooks: [async (input) => {
   const reason = killByNameDenied(input?.tool_input?.command);
   return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : {};
 }] }] };
+
+export function writeOutsideDenied(toolName, toolInput, roots) {
+  const field = toolName === 'NotebookEdit' ? 'notebook_path' : ['Write', 'Edit', 'MultiEdit'].includes(toolName) ? 'file_path' : null;
+  const filePath = field && toolInput?.[field];
+  if (typeof filePath !== 'string' || !filePath.trim()) return null;
+  const cwd = roots?.[0];
+  if (!cwd) return null;
+  const resolved = path.resolve(cwd, filePath);
+  const allowed = roots.some((root) => {
+    if (!root) return false;
+    const relative = path.relative(path.resolve(root), resolved);
+    return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+  });
+  return allowed ? null : `Blocked by Conductor: ${resolved} is outside this task's folder (${cwd}). Write only inside the task folder; if the task needs another folder, stop and say so in your report.`;
+}
+
+export function workerHooks({ cwd, writableRoots }) {
+  const roots = cwd ? [cwd, ...(writableRoots || []), os.tmpdir()] : [];
+  return { PreToolUse: [{ hooks: [async (input) => {
+    const reason = killByNameDenied(input?.tool_input?.command)
+      || (cwd ? writeOutsideDenied(input?.tool_name, input?.tool_input, roots) : null);
+    return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : {};
+  }] }] };
+}
 
 /**
  * @param {object} t { id, cwd, prompt, model, effort, env, permissionMode, resumeSessionId, signal, maxTurns, timeoutMs, provider }
@@ -69,7 +95,7 @@ export async function runClaude(t) {
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         abortController: abort,
         spawnClaudeCodeProcess: (options) => spawnTracked(t.id, options),
-        hooks: KILL_GUARD_HOOKS,
+        hooks: workerHooks({ cwd: t.cwd, writableRoots: t.writableRoots }),
         // Agent SDK supports disallowedTools; read-only drops write/edit/Bash rather than relying on plan mode.
         ...(readOnly ? { disallowedTools: ['Bash', 'Edit', 'Write', 'NotebookEdit'] } : {}),
       },
