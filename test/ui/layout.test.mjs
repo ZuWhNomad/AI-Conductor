@@ -10,12 +10,48 @@ import { runInNewContext } from 'node:vm';
 const html = readFileSync(new URL('../../ui/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../ui/styles.css', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../../ui/app.js', import.meta.url), 'utf8');
-const executable = process.env.CONDUCTOR_TEST_BROWSER || [
-  ...[process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean)
-    .flatMap((dir) => [join(dir, 'Microsoft/Edge/Application/msedge.exe'), join(dir, 'Google/Chrome/Application/chrome.exe')]),
-  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-].find(existsSync);
+export function browserCandidates(env = process.env, exists = existsSync) {
+  if (env.CONDUCTOR_TEST_BROWSER) return [env.CONDUCTOR_TEST_BROWSER];
+  const dirs = [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA].filter(Boolean);
+  return [
+    ...dirs.map((dir) => join(dir, 'Google/Chrome/Application/chrome.exe')),
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    ...dirs.map((dir) => join(dir, 'Microsoft/Edge/Application/msedge.exe')),
+  ].filter(exists);
+}
+
+export async function launchBrowser(candidates, userDataDir = join(HOME, 'browser')) {
+  let lastError;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    const profileDir = candidates.length > 1 ? `${userDataDir}-${i}` : userDataDir;
+    const browser = spawn(candidate, ['--headless', '--disable-gpu', '--no-first-run', '--no-sandbox',
+      '--remote-debugging-port=0', `--user-data-dir=${profileDir}`, 'about:blank'],
+    { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const exited = once(browser, 'exit').catch(() => {});
+    try {
+      const url = await new Promise((resolve, reject) => {
+        let stderr = '';
+        browser.stderr.on('data', (data) => {
+          stderr += data;
+          const match = stderr.match(/DevTools listening on (ws:\/\/\S+)/);
+          if (match) resolve(match[1]);
+        });
+        browser.once('error', reject);
+        browser.once('exit', (code) => reject(new Error(`Browser exited (${code}): ${stderr}`)));
+      });
+      return { browser, url, exited };
+    } catch (err) {
+      lastError = err;
+      if (browser.pid && browser.exitCode === null) { try { browser.kill(); } catch {} }
+      await exited;
+    }
+  }
+  throw lastError || new Error('No browser candidate could be launched');
+}
+
+const candidates = browserCandidates();
 
 test('quit has a font-independent icon and an accessible name', () => {
   const quit = html.match(/<button\b[^>]*id="btn-quit"[^>]*>[\s\S]*?<\/button>/)?.[0];
@@ -53,23 +89,28 @@ test('bare slash lists commands; model suggestions need a query', () => {
   assert.deepEqual(Array.from(items.query, (item) => item.label), ['/worker gpt-6-astra']);
 });
 
-test('rendered UI regressions', { skip: !executable && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable' }, async (t) => {
-  const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run', '--no-sandbox',
-    '--remote-debugging-port=0', `--user-data-dir=${join(HOME, 'browser')}`, 'about:blank'],
-  { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-  const exited = once(browser, 'exit');
+test('browser candidates prefer Chrome over Edge and respect CONDUCTOR_TEST_BROWSER', () => {
+  const dirs = { ProgramFiles: 'C:\\PF', 'ProgramFiles(x86)': 'C:\\PF86', LOCALAPPDATA: 'C:\\Local' };
+  const list = browserCandidates(dirs, () => true);
+  const lastChrome = list.findLastIndex((p) => p.includes('Chrome') || p.includes('chrome'));
+  const firstEdge = list.findIndex((p) => p.includes('Edge') || p.includes('edge'));
+  assert.ok(lastChrome !== -1 && firstEdge !== -1, 'both Chrome and Edge candidates present');
+  assert.ok(lastChrome < firstEdge, 'all Chrome candidates precede Edge candidates');
+  assert.deepEqual(browserCandidates({ CONDUCTOR_TEST_BROWSER: 'custom-bin' }, () => true), ['custom-bin']);
+});
+
+test('launchBrowser falls back when earlier candidate exits early', {
+  skip: !candidates.length && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable',
+}, async (t) => {
+  const { browser, url, exited } = await launchBrowser([process.execPath, ...candidates], join(HOME, 'browser-fallback'));
+  t.after(async () => { if (browser.pid && browser.exitCode === null) { try { browser.kill(); } catch {} } await exited; });
+  assert.match(url, /^ws:\/\//);
+});
+
+test('rendered UI regressions', { skip: !candidates.length && 'Set CONDUCTOR_TEST_BROWSER to a Chromium executable' }, async (t) => {
+  const { browser, url, exited } = await launchBrowser(candidates);
   let socket;
-  t.after(async () => { socket?.close(); if (browser.exitCode === null) browser.kill(); await exited; });
-  const url = await new Promise((resolve, reject) => {
-    let stderr = '';
-    browser.stderr.on('data', (data) => {
-      stderr += data;
-      const match = stderr.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
-    });
-    browser.once('error', reject);
-    browser.once('exit', (code) => reject(new Error(`Browser exited (${code}): ${stderr}`)));
-  });
+  t.after(async () => { socket?.close(); if (browser.pid && browser.exitCode === null) { try { browser.kill(); } catch {} } await exited; });
   socket = new WebSocket(url);
   await once(socket, 'open');
   let seq = 0;
