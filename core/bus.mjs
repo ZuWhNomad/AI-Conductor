@@ -8,6 +8,7 @@ class Bus extends EventEmitter {
   #max = 2000;
   #bytes = 0;
   #maxBytes = 8 * 1024 * 1024;
+  #sizes = new WeakMap();
 
   constructor({ max = 2000, maxBytes = 8 * 1024 * 1024 } = {}) {
     super();
@@ -19,12 +20,12 @@ class Bus extends EventEmitter {
   publish(type, data = {}) {
     const ev = { seq: ++this.#seq, ts: Date.now(), type, ...redactDeep(data) };
     const bytes = Buffer.byteLength(JSON.stringify(ev), 'utf8');
-    ev.__bytes = bytes;
+    this.#sizes.set(ev, bytes);
     this.#ring.push(ev);
     this.#bytes += bytes;
     while (this.#ring.length > this.#max || (this.#ring.length > 1 && this.#bytes > this.#maxBytes)) {
       const dropped = this.#ring.shift();
-      if (dropped) this.#bytes -= dropped.__bytes ?? 0;
+      if (dropped) this.#bytes -= this.#sizes.get(dropped) ?? 0;
     }
     this.emit('event', ev);
     return ev;

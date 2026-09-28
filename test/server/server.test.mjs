@@ -191,7 +191,11 @@ test('R47: large events evict older ones once the byte cap is passed', async () 
   const ev3 = capped.publish('test-3', { data: payload1 });
   assert.equal(capped.oldest, ev2.seq, 'ev1 was evicted by byte limit');
   assert.ok(capped.bytes <= 5000, 'total retained bytes stays within cap');
-  assert.equal(capped.since(0).length, 2);
+  const replayed = capped.since(0);
+  assert.equal(replayed.length, 2);
+  assert.equal(Object.hasOwn(ev1, '__bytes'), false, 'published event has no __bytes property');
+  assert.equal(Object.hasOwn(ev2, '__bytes'), false, 'retained event has no __bytes property');
+  assert.ok(replayed.every((e) => !Object.hasOwn(e, '__bytes')), 'replayed events have no __bytes property');
 });
 
 
