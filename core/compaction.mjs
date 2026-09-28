@@ -15,9 +15,9 @@ const CACHE_TTL_MS = {
 };
 const keyFor = (provider, model) => `${provider}:${model || 'default'}`;
 
-export function contextWindowFor(provider, model, config = loadConfig()) {
+export function contextWindowFor(provider, model, config = loadConfig(), fallback = 128_000) {
   const key = keyFor(provider, model);
-  const override = config.models?.contextWindows?.[key];
+  const override = config?.models?.contextWindows?.[key];
   if (Number.isFinite(Number(override)) && Number(override) > 0) return Number(override);
   const learned = readJson(statePath('context-windows.json'), {});
   if (Number.isFinite(Number(learned[key])) && Number(learned[key]) > 0) return Number(learned[key]);
@@ -27,7 +27,7 @@ export function contextWindowFor(provider, model, config = loadConfig()) {
     if (pattern.endsWith(':*') && provider === pattern.slice(0, -2) && Number.isFinite(Number(value))) return Number(value);
     if (pattern.startsWith(`${provider}:~`) && model && new RegExp(pattern.slice(provider.length + 2)).test(model) && Number.isFinite(Number(value))) return Number(value);
   }
-  return 128_000;
+  return fallback;
 }
 
 export function cacheLifetimeFor(provider, config = loadConfig()) {

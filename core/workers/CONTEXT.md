@@ -7,7 +7,8 @@ working notes belong in the user's notes location, **never in this repo** — a 
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
 
 **Prompt caching.** The OpenAI-compatible loop keeps request prefixes stable: old tool results are stubbed only when the
-full ones exceed the budget, down to `worker.toolResultLowWater` of it (so requests are append-only between trims), and
+full ones exceed the budget (roughly 25% of the model's context window tokens × 4 chars/token clamped to [32k, 400k] chars;
+fallback 120k), down to `worker.toolResultLowWater` of it (so requests are append-only between trims), and
 it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_cache_key` on api.openai.com).
 
 **Entry points.**

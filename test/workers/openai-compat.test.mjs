@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { loadConfig, saveConfig } from '../../core/config.mjs';
 
-const { runOpenAICompat, fetchUrlText } = await import('../../core/workers/openai-compat.mjs');
+const { runOpenAICompat, fetchUrlText, toolResultBudget, TOOL_RESULT_CHARS } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
 
 function oldStub(messages, budget = 120_000) {
@@ -613,4 +613,84 @@ test('P4: fetch_url caps the body at 2MB and strips HTML without a quadratic com
   const plain = await fetchUrlText('http://127.0.0.1/big', { allowPrivate: true, maxChars: 5 * 1024 * 1024 });
   const body = plain.replace(/^HTTP \d+\n/, '');
   assert.equal(body.length, 2 * 1024 * 1024);
+});
+
+test('T3: tool-result budget is dynamic from context window, clamped to [32k, 400k], fallback 120k', () => {
+  assert.equal(TOOL_RESULT_CHARS, 120_000);
+
+  // Unknown context window falls back to 120_000
+  assert.equal(toolResultBudget('openai-compat', 'unknown-model'), 120_000);
+  assert.equal(toolResultBudget(undefined, 'unlisted-model'), 120_000);
+
+  // Small-window model gets smaller budget
+  const smallCfg = { models: { contextWindows: { 'custom:small': 50_000 } } };
+  assert.equal(toolResultBudget('custom', 'small', smallCfg), 50_000);
+
+  // Large-window model gets larger budget
+  assert.equal(toolResultBudget('xai', 'grok-4.7'), 400_000); // 500k in SHIPPED -> clamped to 400k
+  const midLargeCfg = { models: { contextWindows: { 'custom:large': 250_000 } } };
+  assert.equal(toolResultBudget('custom', 'large', midLargeCfg), 250_000);
+
+  // Clamped to [32_000, 400_000]
+  const tinyCfg = { models: { contextWindows: { 'custom:tiny': 16_000 } } };
+  assert.equal(toolResultBudget('custom', 'tiny', tinyCfg), 32_000);
+  const hugeCfg = { models: { contextWindows: { 'custom:huge': 1_500_000 } } };
+  assert.equal(toolResultBudget('custom', 'huge', hugeCfg), 400_000);
+});
+
+test('T3: worker trims tool results according to model context window budget', async (ctx) => {
+  // 1. Small-window model (budget 40_000 chars): three 15_000-char tool results trigger trimming
+  saveConfig({ models: { contextWindows: { 'openai-compat:small-model': 40_000 } } });
+  try {
+    const bodies = [];
+    let n = 0;
+    const blob = 'M'.repeat(15_000);
+    ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      n++;
+      if (n <= 3) return reply(toolCall('blob', JSON.stringify({ n }), 'c' + n));
+      return reply({ content: 'done' });
+    });
+    const r = await runOpenAICompat({
+      ...base,
+      model: 'small-model',
+      extraTools: [{ def: { name: 'blob', parameters: { type: 'object' } }, impl: () => blob }],
+    });
+    assert.equal(r.ok, true);
+    const lastTools = bodies.at(-1).messages.filter((m) => m.role === 'tool');
+    assert.equal(lastTools.length, 3);
+    // At budget 40k, 45k used > 40k. Trimming target is 0.5 * 40k = 20k.
+    // 45k - 15k - 15k = 15k <= 20k, so tool 0 and 1 trimmed, tool 2 kept in full.
+    assert.match(lastTools[0].content, /^\[output trimmed: 15000 chars\]$/);
+    assert.match(lastTools[1].content, /^\[output trimmed: 15000 chars\]$/);
+    assert.equal(lastTools[2].content, blob);
+  } finally {
+    saveConfig({ models: { contextWindows: {} } });
+  }
+
+  // 2. Large-window model (xai:grok-4.7, budget 400_000 chars): tool results over 120k chars are NOT trimmed
+  {
+    const bodies = [];
+    let n = 0;
+    const bigBlob = 'G'.repeat(80_000);
+    ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      n++;
+      if (n <= 2) return reply(toolCall('bigBlob', JSON.stringify({ n }), 'c' + n));
+      return reply({ content: 'done' });
+    });
+    const r = await runOpenAICompat({
+      ...base,
+      provider: 'xai',
+      model: 'grok-4.7',
+      extraTools: [{ def: { name: 'bigBlob', parameters: { type: 'object' } }, impl: () => bigBlob }],
+    });
+    assert.equal(r.ok, true);
+    const lastTools = bodies.at(-1).messages.filter((m) => m.role === 'tool');
+    assert.equal(lastTools.length, 2);
+    // Total is 160k chars. For 120k budget (unknown), this would trim tool 0.
+    // But for grok-4.7 (400k budget), 160k <= 400k, so neither is trimmed!
+    assert.equal(lastTools[0].content, bigBlob);
+    assert.equal(lastTools[1].content, bigBlob);
+  }
 });
