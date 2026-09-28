@@ -14,7 +14,7 @@ import { contextBlock } from './context.mjs';
 import { groupOf, modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, activeRunRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
 import { findModel, getModels, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -519,7 +519,7 @@ function scheduleOnce() {
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
   const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   if (!queued.length || running.size >= max) return;
-  const rows = budget ? runRows() : null;
+  const rows = budget ? activeRunRows() : null;
   const costCache = new Map();
   const costByWindow = (t) => {
     const cell = { model: t.model, effort: t.effort, category: t.category, difficulty: t.difficulty };

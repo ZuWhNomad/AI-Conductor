@@ -30,8 +30,8 @@ const UI_RE = /\b(u[ix]|css|s[ca]ss|html|tailwind|front-?end|style ?sheets?|styl
 export function classifyCategory(text) {
   return UI_RE.test(String(text || '')) ? 'ui' : null;
 }
-export const VERDICTS = ['pass', 'fixable', 'fail', 'phantom'];
-const SCORE = { pass: 1, fixable: 0.5, fail: 0, phantom: 0 };
+export const VERDICTS = ['pass', 'fixable', 'close', 'fail', 'phantom'];
+const SCORE = { pass: 1, fixable: 0.5, close: 0, fail: 0, phantom: 0 };
 const EVIDENCE_HALF_LIFE_MS = 45 * 24 * 60 * 60 * 1000;
 const recencyWeight = (ts, now = Date.now()) => {
   const at = Date.parse(ts);
@@ -304,6 +304,8 @@ function loadLedger() {
   }
 }
 export function runRows() { return loadLedger().rows; }
+/** Worker-only run rows used by routing budgets and token-based usage estimates. */
+export function activeRunRows() { return runRows().filter((r) => r.category !== 'conductor'); }
 // P3: reuse the same cached parse (rate/void rows live in `all`, not in runRows). Callers do not mutate.
 function allRows() { return loadLedger().all; }
 
@@ -376,7 +378,7 @@ function rootRunsUncached({ source = null } = {}) {
       // Antigravity reports its concrete family-effort id; the logical scorecard selection keeps effort separate.
       const dispatchedEffortId = root.provider === 'antigravity' && root.requestedModel && root.servedModel === root.model && root.model === `${root.requestedModel}-${root.effort}`;
       const model = scorecardModelId(dispatchedEffortId ? root.requestedModel : root.model);
-      a = { ...root, model, sel: selOf({ ...root, model }), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: -1, members: [], verdict: null, notes: null };
+      a = { ...root, model, sel: selOf({ ...root, model }), tokens: { in: 0, out: 0, cached: 0, write: 0 }, pct: null, usd: null, durationMs: 0, rounds: root.category === 'conductor' ? (root.rounds ?? 0) - 1 : -1, members: [], verdict: null, notes: null };
       a.price = priceFor(root.provider, model, cfg);
       attempts.set(root.taskId, a);
     }
@@ -470,7 +472,7 @@ function shippedSummary(c, now) {
   return {
     sel, steps: 1, provider: c.provider, model: c.model, effort: c.effort, category: c.category, difficulty: c.difficulty,
     n: c.rated, rated: c.rated, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: c.rated, smokeRated: c.rated, smokeWeightedRated: weightedRated,
-    weightedRated, pass: c.pass, fixable: c.fixable, fail: c.fail, phantom: c.phantom,
+    weightedRated, pass: c.pass, fixable: c.fixable, close: c.close || 0, fail: c.fail, phantom: c.phantom,
     cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
     quality, liveQuality: null, smokeQuality: quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
     pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
@@ -493,7 +495,7 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
   const add = (sel, steps, cat, diff, x) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, close: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
     g.n++;
     const source = x.source === 'smoke' ? 'smoke' : 'live';
     g[source + 'N']++;
@@ -646,7 +648,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // Reservation capacity is live-only and shared only by models metered by the same quota/window group.
   const quotaGroup = (provider, model) => `${provider}|${groupOf(provider, model).ids.join(',')}`;
   const ceiling = new Map();
-  for (const g of all) if (g.steps === 1 && cellLiveWeightedRated(g) >= cfg.minSamples && (g.liveQuality ?? g.quality) >= cfg.quality) {
+  for (const g of all) if ((g.category === 'conductor') === (category === 'conductor') && g.steps === 1 && cellLiveWeightedRated(g) >= cfg.minSamples && (g.liveQuality ?? g.quality) >= cfg.quality) {
     const key = quotaGroup(g.provider, g.model);
     ceiling.set(key, Math.max(ceiling.get(key) || 0, g.difficulty));
   }
@@ -969,7 +971,7 @@ export function effortForTask({ provider, model, difficulty, defaultEffort = nul
  * Visual work always takes this path, restricted by the pass gate: its benchmark verdicts are our own evidence, not a public prior.
  */
 function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false, providers = null, reg, failedBelow, escalate = false, eligibility = new Map() }) {
-  if (cfg.coldStart !== 'priors' && KIND[category] !== 'visual') return null;
+  if (category === 'conductor' || (cfg.coldStart !== 'priors' && KIND[category] !== 'visual')) return null;
   const gate = passGate(category, reg);
   const cands = [], seen = new Set(), archive = archivedSet(cfg);
   for (const m of reg.models) {
@@ -1070,7 +1072,7 @@ export function formatScoresShort({ source = null } = {}) {
   const benched = benchedCells(all, cfg).filter((g) => manualByCell.get(eligibilityKey(g.sel, g.category))?.action !== 'allow');
   if (benched.length) {
     lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' recency-weighted rated; recommend() skips these cells; a better run lifts them):');
-    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + (g.close || 0) + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
   }
   if (manual.length) {
     lines.push('', 'Manual eligibility (latest per selection + category):');
@@ -1083,7 +1085,7 @@ export function formatScoresShort({ source = null } = {}) {
 
 /** `conductor scores --csv`: the summary table as CSV (opens in Excel). */
 export function scoresCsv({ source = null, archived = false } = {}) {
-  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'phantomRate', 'priorTier', 'cost', 'last'];
+  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'close', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'phantomRate', 'priorTier', 'cost', 'last'];
   const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
   return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
 }
@@ -1096,8 +1098,8 @@ export function formatScores({ category = null, source = null, archived = false,
   const cfg = loadConfig().scorecard;
   if (!rows.length && (archived || (cfg.coldStart !== 'priors' && !manual.length))) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
-  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/fail/phantom | $/task | %window/task | avg s | rounds | hand-picked prior'] : ['No measured score rows.'];
-  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
+  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/close/fail/phantom | $/task | %window/task | avg s | rounds | hand-picked prior'] : ['No measured score rows.'];
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.close || 0}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
   if (!archived) {
     lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} recency-weighted rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.coldStart === 'priors' ? '; cold start: hand-picked priors' : ''}):`);
     let any = false;
