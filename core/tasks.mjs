@@ -751,7 +751,7 @@ function failover(t) {
     const alt = recommend({ category: t.category, difficulty, providers, overflowApi: !!t.overflowApi, exclude });
     if (!alt || avoid.includes(familyOf(alt.provider, alt.model))) return null;
     const spec = `${t.attempts > 0 ? FAILOVER_NOTE : ''}${t.spec}`;
-    const sandbox = alt.provider === 'codex' && (alt.provider !== t.provider || alt.model !== t.model) ? undefined : t.sandbox;
+    const sandbox = alt.provider === 'codex' && (alt.provider !== t.provider || alt.model !== t.model) && t.sandbox !== 'read-only' ? undefined : t.sandbox;
     const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots, isolate: t.isolate || undefined, isolation: t.isolation || undefined }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });

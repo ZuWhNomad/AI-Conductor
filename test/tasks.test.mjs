@@ -556,7 +556,7 @@ test('Codex failover to another model resolves that model’s configured sandbox
   const previous = loadConfig();
   saveConfig({
     scorecard: { minSamples: 1, usePriors: false, classOrder: ['subscription'] },
-    worker: { codexSandboxByModel: { 'gpt-5.6-sol': 'read-only', 'gpt-6-astra': 'danger-full-access' } },
+    worker: { codexSandboxByModel: { 'gpt-5.6-sol': 'workspace-write', 'gpt-6-astra': 'danger-full-access' } },
   });
   for (const m of models) {
     const id = `codex-sandbox-seed-${m.id}`;
@@ -577,7 +577,7 @@ test('Codex failover to another model resolves that model’s configured sandbox
     return { ok: false, limitHit: true, error: 'usage limit' };
   });
   const t = tk.createTask({ sessionId: 'codex-sandbox', cwd: tmpDir('codex-sandbox'), spec: 'x', provider: 'codex', model: 'gpt-5.6-sol', category: 'review', difficulty: 2, parallelOverride: true });
-  assert.equal(t.sandbox, 'read-only');
+  assert.equal(t.sandbox, 'workspace-write');
   try {
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     tk.schedule();
@@ -593,6 +593,57 @@ test('Codex failover to another model resolves that model’s configured sandbox
     tk.cancelTask(t.id);
     await tk.flushRecords();
     delete getLimits().providers.codex;
+    saveLimits(false);
+    saveConfig({ scorecard: previous.scorecard, worker: previous.worker });
+  }
+});
+
+test('a read-only task keeps its sandbox when it fails over to Codex', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits, save: saveLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const models = [
+    { provider: 'antigravity', id: 'claude-sonnet-4-6', kind: 'agent', efforts: [] },
+    { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts: [] },
+  ];
+  registryModels(ctx, models);
+  const previous = loadConfig();
+  saveConfig({
+    scorecard: { minSamples: 1, usePriors: false, classOrder: ['included', 'subscription'] },
+    worker: { codexSandboxByModel: { 'gpt-6-astra': 'danger-full-access' } },
+  });
+  for (const m of models) {
+    const id = `readonly-codex-seed-${m.provider}-${m.id}`;
+    recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const reset = Date.now() + 60_000;
+  const windows = [{ id: 'claude-five-hour', label: '5-hour Claude', models: '^claude-', usedPercent: 10, resetsAt: reset }];
+  delete getLimits().providers.antigravity;
+  getLimits().providers.antigravity = { provider: 'antigravity', blocked: false, windows };
+  saveLimits(false);
+  ctx.mock.method(PROVIDERS.antigravity, 'pollLimits', async () => ({ provider: 'antigravity', blocked: false, windows }));
+  const tk = await tasksWithWorker(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return { ok: false, limitHit: true, error: 'usage limit' };
+  });
+  const t = tk.createTask({ sessionId: 'readonly-codex', cwd: tmpDir('readonly-codex'), spec: 'review x', provider: 'antigravity', model: 'claude-sonnet-4-6', category: 'review', difficulty: 2, sandbox: 'read-only', parallelOverride: true });
+  try {
+    assert.equal(t.sandbox, 'read-only');
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
+    const next = tk.getTask(done.failedOverTo);
+    assert.equal(done.status, 'failed');
+    assert.equal(next?.provider, 'codex');
+    assert.equal(next?.model, 'gpt-6-astra');
+    assert.equal(next?.sandbox, 'read-only');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers.antigravity;
     saveLimits(false);
     saveConfig({ scorecard: previous.scorecard, worker: previous.worker });
   }
