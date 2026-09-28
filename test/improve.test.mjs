@@ -103,6 +103,19 @@ test('logImprovement collapses repeats by kind+source+message even when another 
   assert.ok(c.id !== a.id && mine.some((e) => e.message === 'yet another message'));
 });
 
+test('RAM hold transitions use one fixed improvement source', async () => {
+  const { resourceStatus, setMemoryReader } = await import('../core/resources.mjs');
+  const readings = [{ total: 100, free: 10 }, { total: 100, free: 90 }, { total: 100, free: 10 }];
+  const restoreMemory = setMemoryReader(() => readings.shift());
+  const seq = bus.seq;
+  try {
+    for (let i = 0; i < 3; i++) resourceStatus({ resources: { maxRamPct: 85 } });
+    const transitions = bus.since(seq).filter((event) => event.type === 'improvement' && event.entry?.kind === 'friction');
+    assert.ok(transitions.length >= 2, 'the held state changes at least twice');
+    assert.ok(transitions.every((event) => event.entry.source === 'resources'));
+  } finally { restoreMemory(); }
+});
+
 test('improvement events include the open-entry count', () => {
   const seq = bus.seq;
   const a = logImprovement('idea', 'p14-count', 'one');

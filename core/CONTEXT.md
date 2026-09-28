@@ -9,7 +9,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 **Entry points.**
 - `tasks.mjs` — the worker-task journal + scheduler. `schedule()` is the framework budget gate: it admits queued
   tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); it also
-  holds queued work while system RAM meets `resources.maxRamPct` and retries on the next scheduler pass; a real
+  holds queued work while system RAM meets `resources.maxRamPct` and retries after one unrefed 30-second timer; a real
   provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
   probe exclusion until a post-completion limits poll and scoring settle, without holding worker concurrency slots.
   Import only loads the journal; server-owned `recoverTasks()` staggers crash/graceful resumes, keeps future parks,

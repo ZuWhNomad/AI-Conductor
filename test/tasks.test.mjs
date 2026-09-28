@@ -1471,7 +1471,7 @@ test('draining leaves queued work undispatched and scheduling resumes when drain
   }
 });
 
-test('RAM pressure leaves a task queued until a later scheduler pass has headroom', async (ctx) => {
+test('RAM pressure arms one unrefed retry and starts queued work when headroom returns', async (ctx) => {
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
   const { setMemoryReader } = await import('../core/resources.mjs');
   const resources = loadConfig().resources;
@@ -1480,6 +1480,21 @@ test('RAM pressure leaves a task queued until a later scheduler pass has headroo
   saveConfig({ resources: { maxRamPct: 85 } });
   const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'done' }));
   const t = tk.createTask({ cwd: tmpDir('ram-task'), provider: 'ollama', model: 'qwen', spec: 'run when memory is available' }, { dispatch: false });
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const retryTimers = [];
+  ctx.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 30_000) {
+      const timer = { unrefCalled: false, unref() { this.unrefCalled = true; } };
+      retryTimers.push({ callback: () => callback(...args), timer });
+      return timer;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  });
+  ctx.mock.method(globalThis, 'clearTimeout', (timer) => {
+    if (retryTimers.some((retry) => retry.timer === timer)) { timer.cleared = true; return; }
+    return originalClearTimeout(timer);
+  });
   const previous = process.env.CONDUCTOR_NO_SCHEDULE;
   try {
     delete process.env.CONDUCTOR_NO_SCHEDULE;
@@ -1488,9 +1503,11 @@ test('RAM pressure leaves a task queued until a later scheduler pass has headroo
     assert.equal(tk.getTask(t.id).attempts, 0);
     tk.schedule();
     assert.equal(tk.getTask(t.id).status, 'queued', 'a held queue remains untouched on repeated passes');
+    assert.equal(retryTimers.length, 1, 'held passes share one pending retry timer');
+    assert.equal(retryTimers[0].timer.unrefCalled, true, 'the retry timer does not hold the process open');
 
     free = 90;
-    tk.schedule();
+    retryTimers[0].callback();
     const done = await tk.awaitTask(t.id, 5000);
     assert.equal(done.status, 'done');
     assert.equal(done.attempts, 1);

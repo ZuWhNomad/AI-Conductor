@@ -21,7 +21,7 @@ const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
-    cwd: { type: 'string' },
+    cwd: { type: 'string' }, gpu: { type: 'boolean' },
     models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' }, 'prune-days': { type: 'string' },
     hypothesis: { type: 'string' }, mechanism: { type: 'string' }, branch: { type: 'string' }, repeats: { type: 'string' }, heldout: { type: 'string' }, 'state-dir': { type: 'string', multiple: true }, verdict: { type: 'string' }, note: { type: 'string' },
   },
@@ -49,7 +49,8 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
                                              SDK, dev checkout only) to their latest stable release once idle, verified and
                                              rolled back on failure; --check only reports
   conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)
-  conductor job start [--cwd DIR] -- CMD…    run a long command detached (it survives the caller's exit); prints its id
+  conductor job start [--cwd DIR] [--gpu] -- CMD…
+                                             run a long command detached; set --gpu for GPU-heavy work
   conductor job status ID | job cancel ID    its exit code and output tail, or stop it (needs the running server)
   conductor experiment new <id> --hypothesis "..." --mechanism "..." [--branch B] [--tasks t1,t2] [--heldout t3,t4] [--repeats 3]
   conductor experiment list
@@ -280,10 +281,10 @@ if (cmd === 'start') {
     catch (e) { console.error(`job ${sub}: ${e.message} (is the Conductor server running at ${base}?)`); process.exit(1); }
   };
   const { formatJob } = await import('../core/jobs.mjs');
-  if (sub === 'start' && positionals.length > 2) console.log(formatJob(await call('POST', '/api/jobs', { command: positionals.slice(2).join(' '), cwd: flags.cwd || process.cwd() })));
+  if (sub === 'start' && positionals.length > 2) console.log(formatJob(await call('POST', '/api/jobs', { command: positionals.slice(2).join(' '), cwd: flags.cwd || process.cwd(), gpu: !!flags.gpu })));
   else if (sub === 'status' && id) console.log(formatJob(await call('GET', `/api/jobs/${encodeURIComponent(id)}`)));
   else if (sub === 'cancel' && id) console.log(formatJob(await call('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`)));
-  else { console.error('usage: conductor job start [--cwd DIR] -- COMMAND…  |  job status ID  |  job cancel ID'); process.exit(2); }
+  else { console.error('usage: conductor job start [--cwd DIR] [--gpu] -- COMMAND…  |  job status ID  |  job cancel ID'); process.exit(2); }
   process.exit(0);
 } else if (cmd === 'worktrees') {
   const { listWorktrees, formatWorktrees } = await import('../core/tasks.mjs');

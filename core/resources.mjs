@@ -5,7 +5,6 @@ import { logImprovement } from './improve.mjs';
 
 let readMemory = () => ({ total: totalmem(), free: freemem() });
 let lastHeld = false;
-let transitionId = 0;
 
 /** Replace the OS memory reading; returns a function that restores the prior reader. */
 export function setMemoryReader(reader) {
@@ -22,7 +21,7 @@ export function resourceStatus(cfg = loadConfig()) {
   const held = maxRamPct > 0 && ramPct >= maxRamPct;
   if (held !== lastHeld) {
     const status = { ramPct, maxRamPct, held };
-    logImprovement('friction', `resources:${++transitionId}`, resourceLine(status), { ramPct, maxRamPct, held });
+    logImprovement('friction', 'resources', resourceLine(status), { ramPct, maxRamPct, held });
     lastHeld = held;
   }
   return { ramPct, maxRamPct, held };

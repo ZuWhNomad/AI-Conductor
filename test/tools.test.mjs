@@ -174,6 +174,7 @@ test('job_start documents GPU work and limits output includes RAM headroom', asy
   const tools = defs();
   const job = tools.find((d) => d.name === 'job_start');
   assert.match(job.description, /gpu-heavy work such as Whisper, local model inference, or training/i);
+  assert.match(job.description, /job start \[--cwd <dir>\] \[--gpu\]/);
   assert.deepEqual(job.schema.parse({ command: 'echo x', gpu: true }).gpu, true);
   const limits = await tools.find((d) => d.name === 'limits').handler({});
   assert.match(limits, /^RAM \d+(?:\.\d+)?% (?:≥|<) 85%: new work (?:held|allowed)$/m);
