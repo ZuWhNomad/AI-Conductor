@@ -48,7 +48,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 
 A window is model-scoped when it has a `models` regex, or when that field is absent and the label matches Fable
 (`windowModels` in `limits.mjs`). `measuredCostByWindow` uses the same helper, so the gate charges a Fable window only
-for runs whose model matches.
+for runs whose model matches. Limit failover excludes models sharing the failed model's window-ID group on the same
+provider, or the whole provider when the failed model has no window group.
 
 **Symptom → file.** Start here instead of reading the folder.
 

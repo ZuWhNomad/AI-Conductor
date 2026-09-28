@@ -11,7 +11,7 @@ import { loadConfig, DEFAULTS, codexSandboxFor, runTimeoutMs } from './config.mj
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
+import { groupOf, modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
@@ -736,14 +736,23 @@ function failover(t) {
   if (!t.category || t.followUpOf || t.source === 'smoke' || t.noFailover) return null; // a battery/benchmark measures one selection; never hand its tasks to another
   try {
     const gate = accessProviders(`${t.title}\n${t.spec}`); // OG4: honour the capability access gate (same as delegate)
-    let providers = Object.keys(PROVIDERS).filter((id) => id !== t.provider);
+    let providers = Object.keys(PROVIDERS);
     if (gate?.providers) providers = providers.filter((id) => gate.providers.includes(id));
     const avoid = t.avoidFamilies || [];
+    const groupWindows = t.model ? providerWindows(t.provider, t.model) : [];
+    const exclude = selsInFamilies(avoid);
+    if (groupWindows.length) {
+      const group = groupOf(t.provider, t.model).ids.join(',');
+      exclude.push(...getModels().models
+        .filter((m) => m.provider === t.provider && groupOf(m.provider, m.id).ids.join(',') === group)
+        .map((m) => `${m.provider}:${m.id}`));
+    } else providers = providers.filter((id) => id !== t.provider);
     const difficulty = t.difficulty || 2;
-    const alt = recommend({ category: t.category, difficulty, providers, overflowApi: !!t.overflowApi, exclude: selsInFamilies(avoid) });
-    if (!alt || alt.provider === t.provider || avoid.includes(familyOf(alt.provider, alt.model))) return null;
+    const alt = recommend({ category: t.category, difficulty, providers, overflowApi: !!t.overflowApi, exclude });
+    if (!alt || avoid.includes(familyOf(alt.provider, alt.model))) return null;
     const spec = `${t.attempts > 0 ? FAILOVER_NOTE : ''}${t.spec}`;
-    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox: t.sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots, isolate: t.isolate || undefined, isolation: t.isolation || undefined }, { dispatch: false });
+    const sandbox = alt.provider === 'codex' && (alt.provider !== t.provider || alt.model !== t.model) ? undefined : t.sandbox;
+    const n = createTask({ sessionId: t.sessionId, cwd: t.cwd, title: `FAILOVER: ${t.title}`.slice(0, 200), spec, provider: alt.provider, model: alt.model, effort: alt.effort, paths: t.paths, category: t.category, difficulty, retryOf: t.retryOf || null, reroutedFrom: t.id, source: t.source, variant: t.variant, overflowApi: t.overflowApi, parallelOverride: t.parallelOverride, efficiencyMode: t.efficiencyMode, sandbox, avoidFamilies: avoid, writableRoots: t.writableRoots, isolate: t.isolate || undefined, isolation: t.isolation || undefined }, { dispatch: false });
     t.status = 'failed'; t.failedOverTo = n.id; t.error = `provider ${t.provider} at its limit; failed over to task ${n.id} (${n.provider}:${n.model || 'default'}:${n.effort || 'default'}) — await that id`;
     logImprovement('friction', `worker:${t.provider}`, `usage limit hit; failed over to ${n.provider}:${n.model || 'default'}`, { taskId: t.id, next: n.id });
     return n;
