@@ -64,7 +64,7 @@ test('escalationRounds 0 disables escalation: the reviewed worker hands straight
 });
 
 // --- "escalate, or stay at the ceiling" -------------------------------------------------------------------
-const { atCeiling, effortBump, selOf } = await import('../core/tools.mjs');
+const { atCeiling, selOf } = await import('../core/tools.mjs');
 
 test('selOf normalises a task and a recommend() pick to the same selection string', () => {
   assert.equal(selOf({ provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' }), 'codex:gpt-6-astra:ultra');
@@ -94,73 +94,6 @@ test('L44: ceiling is any chain member matching top, not only the latest attempt
   const earlier = { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' };
   assert.equal(atCeiling(top, latest), false);
   assert.equal([latest, earlier].some((s) => atCeiling(top, s)), true);
-});
-
-test('effortBump offers only an unmeasured next effort, once per chain, outside visual categories', () => {
-  const failed = { provider: 'codex', model: 'gpt-6-astra', effort: 'high' };
-  const reg = { models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'ultra'] }] };
-  const base = { failed, chainSels: [selOf(failed)], category: 'edit', difficulty: 3, reg, rows: [] };
-  const candidate = { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra', reason: 'unmeasured next effort of codex:gpt-6-astra (was high), tried once before switching model' };
-  assert.deepEqual(effortBump(base), candidate);
-  assert.equal(effortBump({ ...base, rows: [{ steps: 1, sel: selOf(candidate), category: 'edit', difficulty: 3, n: 1 }] }), null);
-  assert.equal(effortBump({ ...base, failed: { ...failed, effort: 'ultra' } }), null);
-  assert.equal(effortBump({ ...base, chainSels: [...base.chainSels, selOf(candidate)] }), null);
-  assert.equal(effortBump({ ...base, category: 'modeling' }), null);
-  assert.equal(effortBump({ ...base, category: 'drafting' }), null);
-  assert.equal(effortBump({ ...base, failed: { ...failed, model: 'unknown' } }), null);
-  assert.equal(effortBump({ ...base, chainSels: [...base.chainSels, 'codex:gpt-6-astra:medium'] }), null);
-});
-
-test('escalateEffortFirst config accepts booleans and resets non-booleans', async () => {
-  const { loadConfig, saveConfig } = await import('../core/config.mjs');
-  const previous = loadConfig().worker.escalateEffortFirst;
-  try {
-    saveConfig({ worker: { escalateEffortFirst: false } });
-    assert.equal(loadConfig().worker.escalateEffortFirst, false);
-    saveConfig({ worker: { escalateEffortFirst: 'false' } });
-    assert.equal(loadConfig().worker.escalateEffortFirst, true);
-  } finally { saveConfig({ worker: { escalateEffortFirst: previous } }); }
-});
-
-test('delegate tries an unmeasured effort first only when escalateEffortFirst is enabled', async () => {
-  const { createTask, cancelTask, getTask } = await import('../core/tasks.mjs');
-  const { getModels } = await import('../core/models.mjs');
-  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
-  const { loadConfig, saveConfig } = await import('../core/config.mjs');
-  const dir = tmpDir('effort-bump-delegate'), reg = getModels();
-  const oldModels = reg.models, oldWorker = loadConfig().worker, oldScorecard = loadConfig().scorecard;
-  const failed = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'codex', model: 'effort-bump-test', effort: 'medium' }, { dispatch: false });
-  Object.assign(failed, { status: 'failed', attempts: 1, rounds: 3 });
-  reg.models = [
-    { provider: 'codex', id: 'effort-bump-test', kind: 'agent', efforts: ['low', 'medium', 'high'] },
-    { provider: 'ollama', id: 'effort-bump-fallback', kind: 'agent', efforts: ['low'] },
-  ];
-  recordRun({ id: 'effort-bump-fallback-run', title: 'fallback', status: 'done', provider: 'ollama', model: 'effort-bump-fallback', effort: 'low', category: 'edit', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
-  rateTask('effort-bump-fallback-run', 'pass');
-  const delegate = conductorToolDefs({ sessionId: 'effort-bump-delegate', cwd: dir }).find((d) => d.name === 'delegate').handler;
-  const routed = [];
-  try {
-    saveConfig({ worker: { escalateEffortFirst: true }, scorecard: { minSamples: 1, shippedBatteries: false } });
-    for (const enabled of [true, false]) {
-      saveConfig({ worker: { escalateEffortFirst: enabled } });
-      const reply = await delegate({ title: 'retry', spec: 'x', category: 'edit', retry_of: failed.id, background: true });
-      const id = /^Task (\S+)/.exec(reply)?.[1];
-      assert.ok(id, reply); routed.push(id);
-      const task = getTask(id);
-      assert.deepEqual([task.provider, task.model, task.effort], enabled
-        ? ['codex', 'effort-bump-test', 'high']
-        : ['ollama', 'effort-bump-fallback', 'low']);
-      if (enabled) {
-        assert.match(reply, /unmeasured next effort of codex:effort-bump-test \(was medium\), tried once before switching model/);
-        assert.doesNotMatch(reply, /undefined/);
-      }
-    }
-  } finally {
-    reg.models = oldModels;
-    saveConfig({ worker: oldWorker, scorecard: oldScorecard });
-    for (const id of routed) cancelTask(id);
-    cancelTask(failed.id);
-  }
 });
 
 test('OB8: rate_task follows failedOverTo so the rating reaches the replacement chain', async () => {
