@@ -116,6 +116,8 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     return Math.min(want, maxBlockMs);
   };
   const stillRunning = '\n(still running — call await_task)';
+  const resumeAt = (t) => t?.resumeAt ? new Date(t.resumeAt).toISOString() : '?';
+  const backgroundStatus = (t) => `${t.status}${t.status === 'parked' ? ` until ${resumeAt(t)}` : ''}`;
   const trackedWait = async (taskId, promise) => {
     const ids = taskWaits.get(sessionId) || new Set(); ids.add(taskId); taskWaits.set(sessionId, ids);
     try { return await promise; }
@@ -123,7 +125,8 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
   };
   const finish = async (t, minutes) => {
     const done = await trackedWait(t.id, awaitTask(t.id, capWait(minutes, t)));
-    return describeTask(getTask(t.id)) + (done?.timedOut ? stillRunning : '');
+    const task = done?.id ? getTask(done.id) || done : getTask(t.id);
+    return describeTask(task) + (done?.followedFrom ? `\nFollowed from task ${done.followedFrom}.` : '') + (done?.timedOut ? stillRunning : '');
   };
   return [
     {
@@ -241,7 +244,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
           }).catch(() => {});
         }
         const chosen = (pick ? `\nWorker auto-picked: ${selOf(t)} — ${pick.reason}${fb}` : '') + offerNote;
-        if (a.background) return `Task ${t.id} queued (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
+        if (a.background) return `Task ${t.id} ${backgroundStatus(t)} (${t.provider}/${t.model || 'default'}). Use await_task or task_status.${chosen}`;
         return (await finish(t, a.timeout_minutes)) + chosen;
       },
     },
@@ -251,15 +254,20 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       schema: z.object({ task_id: z.string(), comments: z.string(), background: z.boolean().optional(), timeout_minutes: z.number().max(1440).optional(), sandbox: z.enum(SANDBOX_VALUES).optional().describe('Override the inherited Codex sandbox, e.g. workspace-write to turn a read-only review thread into a fix round') }),
       handler: async (a) => {
         const t = createTask({ sessionId, cwd, spec: a.comments, followUpOf: a.task_id, sandbox: a.sandbox, parallelOverride: !!sessionFlags(sessionId).parallelOverride });
-        if (a.background) return `Follow-up task ${t.id} queued on thread of ${a.task_id}${t.warning ? `\nWarning: ${t.warning}` : ''}.`;
+        if (a.background) return `Follow-up task ${t.id} ${backgroundStatus(t)} on thread of ${a.task_id}${t.warning ? `\nWarning: ${t.warning}` : ''}.`;
         return finish(t, a.timeout_minutes);
       },
     },
     {
       name: 'await_task',
-      description: 'Wait for a background task to finish and return its report.',
-      schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional() }),
-      handler: async (a) => { const t = getTask(a.task_id); const r = await trackedWait(a.task_id, awaitTask(a.task_id, capWait(a.timeout_minutes, t))); return r ? describeTask(getTask(a.task_id)) + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`; },
+      description: 'Wait for a background task to finish and return its report. Set wait_if_parked to keep waiting through provider-limit parks.',
+      schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional(), wait_if_parked: z.boolean().optional().describe('Keep waiting through parks until the timeout or task completion') }),
+      handler: async (a) => {
+        const t = getTask(a.task_id);
+        const r = await trackedWait(a.task_id, awaitTask(a.task_id, capWait(a.timeout_minutes, t), { onPark: a.wait_if_parked ? 'never' : 'deadline' }));
+        const task = r?.id ? getTask(r.id) || r : getTask(a.task_id);
+        return r ? describeTask(task) + (r.followedFrom ? `\nFollowed from task ${r.followedFrom}.` : '') + (r.timedOut ? stillRunning : '') : `unknown task ${a.task_id}`;
+      },
     },
     {
       name: 'task_status',
@@ -394,7 +402,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'list_tasks', description: 'List tasks of this chat session.', schema: z.object({}),
-      handler: async () => { const ts = listTasks({ sessionId }); return ts.length ? ts.map((t) => `${t.id} [${t.status}] ${t.title} (${t.provider}/${t.model || 'default'}, round ${t.rounds + 1})`).join('\n') : 'no tasks yet'; },
+      handler: async () => { const ts = listTasks({ sessionId }); return ts.length ? ts.map((t) => `${describeTask(t).split('\n')[0]}${t.status === 'parked' ? ` — parked until ${resumeAt(t)}` : t.status === 'stale' ? ' — stale (needs the user)' : ''}`).join('\n') : 'no tasks yet'; },
     },
     {
       name: 'list_models', description: 'Models available right now across providers, with status and effort levels.',

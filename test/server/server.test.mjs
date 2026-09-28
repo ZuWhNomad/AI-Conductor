@@ -45,7 +45,7 @@ writeJson(join(statePath('tasks'), `${bootRecoveryId}.json`), {
 });
 const { getTask, cancelTask } = await import('../../core/tasks.mjs');
 assert.equal(getTask(bootRecoveryId).status, 'running', 'module import loads without restart transitions');
-const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount } = await import('../../server/index.mjs');
+const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount, updateWaitingDetail } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
 const { CATEGORIES } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
@@ -300,6 +300,13 @@ test('auto-update idle gate ignores parked and stale tasks, but counts running a
   assert.equal(isIdle({ runningSessions: 0, openTasks: 2, lastActivity: now - quietMs * 2, now, quietMs }), false);
 });
 
+test('update waiting detail includes chat turns, busy tasks, and carried-over parked and stale tasks', () => {
+  assert.equal(updateWaitingDetail(
+    [{ status: 'running' }, { status: 'idle' }],
+    [{ status: 'running' }, { status: 'queued' }, { status: 'parked', resumeAt: '2030-01-02T03:04:05.000Z' }, { status: 'stale' }],
+  ), 'waiting for 1 chat turn(s), 1 running, 1 queued · carries over 1 parked (earliest 2030-01-02T03:04:05.000Z), 1 stale');
+});
+
 test('POST /api/models/refresh: no body, {} and {only:[…]} all work; junk JSON is 400', async () => {
   // The route started reading a body when `only` was added; the UI posts it both with and without one, so a bodyless
   // POST must not hang or 400. (A scoped refresh also skips the capability detection a full one triggers.)
@@ -381,7 +388,7 @@ test('changing the update cadence preserves startup and busy rechecks; off cance
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
     conductor: { listSessions: () => [{ status: 'running' }] }, openTasks: () => [], taskBusyCount, lastActivity: Date.now(), isIdle,
-    checkForUpdates: async () => ({ git: true, behind: 1 }), lastUpdateStatus: () => ({ git: true, behind: 1 }), logImprovement() {},
+    bus: { publish() {} }, updateWaitingDetail: () => '', checkForUpdates: async () => ({ git: true, behind: 1 }), lastUpdateStatus: () => ({ git: true, behind: 1 }), logImprovement() {},
   };
   runInNewContext(src.slice(src.indexOf('let updateInterval ='), src.indexOf('\nfunction serveStatic')) + '\nglobalThis.start = startUpdateChecks;', context);
   context.start();
@@ -411,7 +418,7 @@ test('auto-update defers relaunch when work starts during applyUpdate, then rela
     loadConfig: () => cfg, process: { env: {} }, setInterval: timer, setTimeout: timer,
     clearInterval: (t) => { if (t) t.cleared = true; }, clearTimeout: (t) => { if (t) t.cleared = true; },
     conductor: { listSessions: () => running ? [{ status: 'running' }] : [] }, openTasks: () => [], taskBusyCount, lastActivity: 0, isIdle,
-    checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
+    bus: { publish() {} }, updateWaitingDetail: () => '', checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
     lastUpdateStatus: () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }), logImprovement() {},
     applyUpdate: () => {
       applyCalls++;
@@ -485,7 +492,7 @@ test('stopped update checks do not pull or relaunch from an in-flight run', asyn
   applyCalls = 0; relaunches = 0;
   let applyRelease, applying;
   const b = boot({
-    checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
+    bus: { publish() {} }, updateWaitingDetail: () => '', checkForUpdates: async () => ({ git: true, behind: 1, error: null, dirty: 0, ahead: 0 }),
     applyUpdate: () => {
       applyCalls++;
       const p = new Promise((resolve) => { applyRelease = () => resolve(applyResult); });

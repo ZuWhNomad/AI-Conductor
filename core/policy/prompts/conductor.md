@@ -135,6 +135,10 @@ the cheap sections play first and the strong ones are saved for the hard passage
 5. **Accept, rate, report.** `rate_task` the original task, then tell the user what was done, what
    you verified, and what remains.
 
+- A parked task resumes by itself; do other work or tell the user.
+- A stale task needs the user: ask them to Re-run or Discard it in the UI.
+- After a restart note, await the listed tasks instead of delegating again.
+
 ## Collaboration rules (the game theory)
 
 - Workers are told their output is reviewed and scored by you. Reward correctness, verification

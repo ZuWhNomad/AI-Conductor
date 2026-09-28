@@ -510,7 +510,11 @@ function renderTasks() {
 }
 function since(iso) { if (!iso) return ''; const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`; }
 function isToday(iso) { if (!iso) return false; return new Date(iso).toDateString() === new Date().toDateString(); }
-function statusPhrase(t) { return t.status === 'running' ? `running ${since(t.startedAt)}` : t.status; }
+function statusPhrase(t) {
+  if (t.status === 'running') return `running ${since(t.startedAt)}`;
+  if (t.status === 'parked') return `parked until ${t.resumeAt ? new Date(t.resumeAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '?'}`;
+  return t.status;
+}
 function cardFoot(t) {
   const info = S.scoreInfo.get(t.id) || {};
   const pct = t.pctWindow != null ? t.pctWindow : info.pct;
@@ -562,8 +566,10 @@ function renderFleetHead() {
   const mine = myTasks();
   const running = mine.filter((t) => t.status === 'running').length;
   const queued = mine.filter((t) => t.status === 'queued').length;
+  const parked = mine.filter((t) => t.status === 'parked').length;
+  const stale = mine.filter((t) => t.status === 'stale').length;
   const doneToday = mine.filter((t) => t.status === 'done' && isToday(t.finishedAt || t.updatedAt)).length;
-  $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${doneToday} done today` : 'no workers yet';
+  $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${parked} parked · ${stale} stale · ${doneToday} done today` : 'no workers yet';
   const scope = fleetScope();
   for (const b of $('#fleet-scope').querySelectorAll('button')) {
     const on = b.dataset.scope === scope;

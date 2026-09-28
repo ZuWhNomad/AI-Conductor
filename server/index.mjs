@@ -15,7 +15,7 @@ import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask, setDraining } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
@@ -139,6 +139,11 @@ bus.on('event', (ev) => { if (ev.type === 'task') lastActivity = Date.now(); });
 /** Pure: may the server restart itself now? */
 export const isIdle = ({ runningSessions, openTasks, lastActivity, now = Date.now(), quietMs }) => runningSessions === 0 && openTasks === 0 && now - lastActivity >= quietMs;
 export const taskBusyCount = (tasks) => tasks.filter((t) => t.status === 'running' || t.status === 'queued').length;
+export function updateWaitingDetail(sessions = conductor.listSessions(), tasks = listTasks({ limit: Infinity })) {
+  const parked = tasks.filter((t) => t.status === 'parked');
+  const earliest = parked.map((t) => Date.parse(t.resumeAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  return `waiting for ${sessions.filter((s) => s.status === 'running').length} chat turn(s), ${tasks.filter((t) => t.status === 'running').length} running, ${tasks.filter((t) => t.status === 'queued').length} queued · carries over ${parked.length} parked (earliest ${earliest ? new Date(earliest).toISOString() : 'none'}), ${tasks.filter((t) => t.status === 'stale').length} stale`;
+}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
@@ -376,6 +381,7 @@ async function route(req, res, url) {
       return json(res, 200, { ...r, relaunching });
     }
     pendingRelaunch = r;
+    publishUpdateWaiting();
     deferPendingRelaunch();
     return json(res, 200, { ...r, relaunching: 'when idle' });
   }
@@ -471,6 +477,7 @@ let relaunchPending = null; // in-flight child; overlapping scheduleRelaunch ret
  *  injectable for tests. */
 export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () => process.exit(0), okTimeoutMs = 10_000 } = {}) {
   if (relaunchPending) return true; // handoff already in progress
+  setDraining(true);
   const argv = [join(REPO_ROOT, 'bin', 'conductor.mjs'), 'start', '--no-open', ...(port ? ['--port', String(port)] : [])];
   const okFile = statePath('relaunch-ok'); try { unlinkSync(okFile); } catch {}
   let child;
@@ -478,7 +485,7 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
   try { logFd = openSync(statePath('launcher.log'), 'a'); } catch {}
   try {
     child = spawnFn(process.execPath, argv, { detached: true, stdio: logFd != null ? ['ignore', logFd, logFd] : 'ignore', windowsHide: true, env: { ...process.env, CONDUCTOR_RELAUNCH_WAIT: String(RELAUNCH_WAIT_MS) } });
-  } catch { if (logFd != null) try { closeSync(logFd); } catch {} return false; } // couldn't even spawn → stay up, let the caller show the manual-restart message
+  } catch { if (logFd != null) try { closeSync(logFd); } catch {} setDraining(false); try { schedule(); } catch {} return false; } // couldn't even spawn → stay up, let the caller show the manual-restart message
   if (logFd != null) try { closeSync(logFd); } catch {}
   relaunchPending = child;
   const release = () => { if (relaunchPending === child) relaunchPending = null; };
@@ -497,6 +504,8 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
   const fail = (why) => {
     if (settled) return; settled = true;
     release();
+    setDraining(false);
+    try { schedule(); } catch {}
     try { child.kill?.(); } catch {}
     try { logImprovement('friction', 'update', 'update applied, but the new version failed to start (' + why + '); still running the previous version — fix it, then restart by hand'); } catch {}
     bus.publish('update', { relaunchFailed: true, why });
@@ -512,7 +521,7 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
     timer.unref?.();
   });
   child.once?.('exit', (code, sig) => fail('exited with ' + (sig || 'code ' + code) + ' before binding'));
-  child.once?.('error', (e) => { if (!settled) release(); try { logImprovement('friction', 'update', 'relaunch child failed: ' + (e?.message || e) + ' — staying up; restart manually'); } catch {} });
+  child.once?.('error', (e) => fail('spawn failed: ' + (e?.message || e)));
   return true;
 }
 
@@ -520,6 +529,7 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
  *  self-restarts — but only while the server is IDLE (no chat turn running, no worker task active), so an update never
  *  interrupts in-flight work; while busy it defers and re-checks on a short cadence, applying as soon as work settles. */
 let updateInterval = null, updateStartup = null, recheck = null, pendingRelaunch = null, updateGen = 0;
+function publishUpdateWaiting() { bus.publish('update', { waitingForWork: true, detail: updateWaitingDetail() }); }
 function workInFlight() {
   try {
     if (conductor.listSessions().some((s) => s.status === 'running')) return true;
@@ -582,6 +592,7 @@ function startUpdateChecks({ initial = true } = {}) {
       if (stale()) return;
       if (!auto() || !st?.git || st.error || !st.behind || st.dirty || st.ahead) return;
       if (!idle()) { // update ready but work is in flight — defer; re-check soon so it applies as soon as we're idle
+        publishUpdateWaiting();
         defer();
         return;
       }
@@ -591,7 +602,7 @@ function startUpdateChecks({ initial = true } = {}) {
       // next check finds nothing behind and never restarts — start→pull→restart→start cannot loop.
       const moved = !!(r.updated && r.to && r.to !== r.from);
       if (r.npmError) logImprovement('friction', 'update', `auto-updated ${r.commits} commit(s) to ${String(r.to).slice(0, 8)}, but npm install failed (${r.npmError}) — run \`npm install\` in the Conductor folder, then restart`, {});
-      else if (moved && !idle()) { pendingRelaunch = r; defer(); }
+      else if (moved && !idle()) { pendingRelaunch = r; publishUpdateWaiting(); defer(); }
       else if (moved) relaunch(r);
     } catch (e) { try { logImprovement('friction', 'update', `update check failed: ${e.message}`, {}); } catch {} }
   };
@@ -651,6 +662,12 @@ export function startServer({ port = null } = {}) {
         logImprovement('friction', 'restart', `restart: ${recovered.resumed} resumed, ${parked}, ${recovered.stale} stale, ${recovered.smokeCanceled} smoke canceled`, recovered);
       }
       if (process.env.CONDUCTOR_RELAUNCH_WAIT) { try { conductor.reloadSessions?.(); } catch {} }
+      const restartAt = new Date();
+      for (const [sessionId, outcomes] of Object.entries(recovered.bySession || {})) {
+        const tasks = outcomes.map((t) => `${t.id}: ${t.status === 'parked' ? `parked until ${t.resumeAt}` : t.status === 'stale' ? 'stale (needs the user)' : 'resumed'}`).join('; ');
+        const note = `Conductor restarted at ${restartAt.toISOString().slice(11, 16)}Z. Your tasks: ${tasks}. They were not lost: await them, do not delegate them again.`;
+        void conductor.recordTaskRestartNote(sessionId, note).catch((e) => logImprovement('error', 'restart', `task restart note failed for session ${sessionId}: ${e.message}`, { sessionId }));
+      }
       delete process.env.CONDUCTOR_RELAUNCH_WAIT; // don't let the relaunch flag linger into normal operation or child processes
       const addr = `http://127.0.0.1:${boundPort}`;
       conductor.setServerUrl(addr);

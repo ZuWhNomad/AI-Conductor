@@ -35,8 +35,23 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
   return respond(url, options);
 });
 
-const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords } = await import('../core/tasks.mjs');
+const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords, setDraining } = await import('../core/tasks.mjs');
+const { bus } = await import('../core/bus.mjs');
 const { getModels } = await import('../core/models.mjs');
+const waitForTaskStatus = (id, statuses) => {
+  const current = getTask(id);
+  if (statuses.includes(current?.status)) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); bus.off('event', onEvent); };
+    const onEvent = (event) => {
+      if (event.type !== 'task' || event.task?.id !== id || !statuses.includes(event.task.status)) return;
+      cleanup(); resolve(getTask(id));
+    };
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`task ${id} did not reach ${statuses.join('/')}`)); }, 15000);
+    bus.on('event', onEvent);
+    onEvent({ type: 'task', task: getTask(id) });
+  });
+};
 const registryModels = (ctx, models) => {
   const reg = getModels(), previous = { models: reg.models, providers: reg.providers };
   // Selection reads the imported registry cache, not later writes to models.json.
@@ -132,6 +147,43 @@ test('awaitTask times out with a snapshot', async () => {
   cancelTask(t.id);
 });
 
+test('awaitTask park modes return any park or keep waiting through a park until timeout', async () => {
+  const cwd = tmpDir('await-park-modes');
+  const any = createTask({ cwd, spec: 'any' }, { dispatch: false });
+  Object.assign(any, { status: 'parked', resumeAt: Date.now() + 60_000 });
+  const returned = await awaitTask(any.id, 10_000, { onPark: 'any' });
+  assert.equal(returned.status, 'parked');
+  assert.equal(returned.parked, true);
+
+  const never = createTask({ cwd, spec: 'never' }, { dispatch: false });
+  Object.assign(never, { status: 'parked', resumeAt: Date.now() + 5 });
+  const started = Date.now();
+  const timed = await awaitTask(never.id, 35, { onPark: 'never' });
+  assert.equal(timed.timedOut, true);
+  assert.ok(Date.now() - started >= 25, 'never waits through a park until its deadline');
+  cancelTask(any.id); cancelTask(never.id);
+});
+
+test('awaitTask follows failedOverTo without resetting its deadline and identifies the prior task', async (ctx) => {
+  const timers = [];
+  ctx.mock.method(globalThis, 'setTimeout', (fn, ms) => { timers.push({ fn, ms }); return {}; });
+  const cwd = tmpDir('await-failover');
+  const original = createTask({ cwd, spec: 'original' }, { dispatch: false });
+  const target = createTask({ cwd, spec: 'replacement' }, { dispatch: false });
+  original.failedOverTo = target.id;
+  const pending = awaitTask(original.id, 1000);
+  assert.equal(timers.length, 1);
+  failHungTask(original.id, 'fixture failover'); // wake the waiter on the original, which follows the replacement
+  assert.equal(timers.length, 1, 'following the target keeps the original timer');
+  timers[0].fn();
+  const result = await pending;
+  assert.equal(result.id, target.id);
+  assert.equal(result.status, 'queued');
+  assert.equal(result.timedOut, true);
+  assert.equal(result.followedFrom, original.id);
+  cancelTask(target.id);
+});
+
 test('task waits use the run timeout when set and otherwise use the 55 minute soft-wait default', async (ctx) => {
   const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
   const { conductorToolDefs } = await import('../core/tools.mjs');
@@ -175,14 +227,15 @@ test('recovery keeps a long interrupted task whose watchdog aliveAt is recent', 
   const { writeJson } = await import('../core/paths.mjs');
   const id = 'alive-recovery', now = Date.now();
   writeJson(join(HOME, 'tasks', `${id}.json`), {
-    id, cwd: tmpDir('alive-recovery'), title: 'long run', spec: 'x', provider: 'codex', model: 'gpt-6-astra',
+    id, sessionId: 'alive-recovery-session', cwd: tmpDir('alive-recovery'), title: 'long run', spec: 'x', provider: 'codex', model: 'gpt-6-astra',
     status: 'running', attempts: 1, createdAt: new Date(now - 8 * 3_600_000).toISOString(),
     updatedAt: new Date(now - 7 * 3_600_000).toISOString(), aliveAt: new Date(now - 10 * 60_000).toISOString(),
   });
-  recoverTasks();
+  const summary = recoverTasks();
   const recovered = getTask(id);
   assert.equal(recovered.status, 'queued');
   assert.equal(recovered.resume, true);
+  assert.deepEqual(summary.bySession['alive-recovery-session'], [{ id, status: 'resumed' }]);
   cancelTask(id);
 });
 
@@ -320,7 +373,7 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
   delete process.env.CONDUCTOR_NO_SCHEDULE;
   let done;
   try {
-    schedule(); done = await awaitTask(t.id, 15000);
+    schedule(); done = await waitForTaskStatus(t.id, ['failed']);
     assert.equal(done.status, 'failed');
     assert.match(done.error, /failed over to task/);
     const next = getTask(done.failedOverTo);
@@ -896,7 +949,7 @@ test('failover passes the access-gate provider restriction intersected with the 
     assert.equal(recommend({ category: 'search', difficulty: 2, overflowApi: true }).provider, 'ollama', 'without the gate, free-local would win');
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     schedule();
-    const done = await awaitTask(t.id, 15000);
+    const done = await waitForTaskStatus(t.id, ['failed']);
     assert.equal(done.status, 'failed');
     assert.equal(getTask(done.failedOverTo)?.provider, 'grok');
     assert.equal(getTask(done.failedOverTo)?.model, 'grok-4.6');
@@ -1401,6 +1454,23 @@ test('L37: schedule does not dispatch queued tasks during graceful shutdown', ()
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; abortRunning(); cancelTask(t.id); }
 });
 
+test('draining leaves queued work undispatched and scheduling resumes when draining clears', () => {
+  const t = createTask({ cwd: tmpDir('draining-gate'), provider: 'missing-test-provider' }, { dispatch: false });
+  const previous = process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    abortRunning();
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    setDraining(true); schedule();
+    assert.equal(t.status, 'queued');
+    assert.equal(t.attempts, 0);
+    setDraining(false); schedule();
+    assert.equal(t.status, 'running');
+  } finally {
+    setDraining(false); abortRunning(); cancelTask(t.id);
+    if (previous === undefined) delete process.env.CONDUCTOR_NO_SCHEDULE; else process.env.CONDUCTOR_NO_SCHEDULE = previous;
+  }
+});
+
 test('GP: awaitTask keeps a 30 s park inside longer waits and resolves parks past each deadline', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
   const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
@@ -1601,7 +1671,7 @@ test('failover skips avoided families, carries avoidFamilies to the replacement,
     delete getLimits().providers.deepseek; // else the previous run's 429 parks this task before it runs
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     schedule();
-    return { t, done: await awaitTask(t.id, 15000) };
+    return { t, done: await waitForTaskStatus(t.id, ['failed', 'parked']) };
   };
   const made = [];
   try {

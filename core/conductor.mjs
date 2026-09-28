@@ -64,7 +64,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null, lastPromptTokens: s.lastPromptTokens || null, lastRequestAt: s.lastRequestAt || null };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null, pendingNote: s.pendingNote || null, lastPromptTokens: s.lastPromptTokens || null, lastRequestAt: s.lastRequestAt || null };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -157,7 +157,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
     effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, watchdog: null, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
+    costUsd: 0, watchdog: null, pendingNote: null, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -192,6 +192,19 @@ export function recordWatchdogCheckIn(sessionId, watchdog) {
   pushMessage(s, { role: 'watchdog', text: watchdog.summary });
   persistAll();
   if (s.historyLoaded) writeJson(HIST(s.id, 'messages'), s.messages);
+  return true;
+}
+
+/** Put a recovery note in one chat's transcript and ahead of its next conductor turn. */
+export async function recordTaskRestartNote(sessionId, text) {
+  const s = sessions.get(sessionId); if (!s) return false;
+  const note = String(text);
+  s.pendingNote = note;
+  persistAll();
+  await ensureHistory(s);
+  pushMessage(s, { role: 'watchdog', text: note });
+  persistAll();
+  writeJson(HIST(s.id, 'messages'), s.messages);
   return true;
 }
 
@@ -485,17 +498,19 @@ export async function sendMessage(sessionId, text) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
   await ensureHistory(s);
   if (s.status === 'running' && s.runtime !== 'claude') throw Object.assign(new Error('the conductor is still working on the previous message; wait or press Stop'), { status: 409 });
+  const turnText = s.pendingNote ? `${s.pendingNote}\n\n${text}` : text;
+  if (s.pendingNote) { s.pendingNote = null; persistAll(); }
   if (s.runtime === 'claude' && !s.query) start(s);
   const autoTitle = s.title === 'New chat';
   if (autoTitle) s.title = text.trim().slice(0, 60) || 'New chat';
-  if (s.status !== 'running') { s.interrupted = false; s.turn = { startedAt: nowIso(), text: String(text) }; }
+  if (s.status !== 'running') { s.interrupted = false; s.turn = { startedAt: nowIso(), text: String(turnText) }; }
   s.status = 'running'; s.updatedAt = nowIso(); persistAll();
   if (autoTitle) emit(s, 'updated', { session: publicSession(s) }); // U7: persist then emit, same as setTitle
   const msg = { role: 'user', text };
   pushMessage(s, msg); emit(s, 'user', msg); emit(s, 'status', { status: 'running' });
   if (s.runtime === 'claude') {
-    s.inbox.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
-  } else void runTurn(s, text);
+    s.inbox.push({ type: 'user', message: { role: 'user', content: turnText }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });
+  } else void runTurn(s, turnText);
   return publicSession(s);
 }
 

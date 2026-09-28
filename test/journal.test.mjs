@@ -244,7 +244,10 @@ test('P9: bounded records, disk-backed chains and indexed recovery preserve the 
     assert.equal(follow.threadId, 'old-thread');
     assert.deepEqual(tk.cancelChain('root'), { canceled: ['live'], already: null });
     assert.deepEqual(tk.cancelChain('root'), { canceled: [], already: 'canceled' });
-    assert.equal((await tk.awaitTask('root')).status, 'failed');
+    const waited = await tk.awaitTask('root');
+    assert.equal(waited.id, 'live');
+    assert.equal(waited.status, 'canceled');
+    assert.equal(waited.followedFrom, 'root');
     reads = [];
     for (const id of ['../config', '..\\\\config', 'root:stream']) assert.equal(tk.getTask(id), null);
     assert.deepEqual(reads, []);

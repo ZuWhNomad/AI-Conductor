@@ -88,7 +88,7 @@ registerHooks({
   },
 });
 
-const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, PROMPT } = await import('../core/conductor.mjs');
+const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels, findModel } = await import('../core/models.mjs');
 const { listImprovements } = await import('../core/improve.mjs');
@@ -142,6 +142,25 @@ test('an interrupted persisted Codex turn resumes its thread once and records th
   assert.equal(live.turn, null);
   assert.ok(live.messages.some((m) => m.role === 'watchdog' && /do not redo finished work/.test(m.text)));
   assert.deepEqual(await resumeInterruptedTurns(), [], 'the persisted marker is cleared before resuming');
+});
+
+test('task restart note is recorded and prepended once to the affected chat next turn only', async () => {
+  const affected = createSession({ cwd: tmpDir('task-restart-note'), provider: 'codex', model: 'gpt-6-astra' });
+  const other = createSession({ cwd: tmpDir('task-restart-other'), provider: 'codex', model: 'gpt-6-astra' });
+  const note = 'Conductor restarted at 12:34Z. Your tasks: task1: resumed. They were not lost: await them, do not delegate them again.';
+  await recordTaskRestartNote(affected.id, note);
+  const first = onceSession(affected.id, 'result');
+  await sendMessage(affected.id, 'continue'); await first;
+  assert.ok(globalThis.__lastCodexInput.prompt.includes(`${note}\n\ncontinue`));
+  assert.ok((await getSession(affected.id)).messages.some((m) => m.role === 'watchdog' && m.text === note));
+  const second = onceSession(affected.id, 'result');
+  await sendMessage(affected.id, 'later turn'); await second;
+  assert.equal(globalThis.__lastCodexInput.prompt, 'later turn');
+  assert.equal((await getSession(other.id)).pendingNote, null);
+  const unrelated = onceSession(other.id, 'result');
+  await sendMessage(other.id, 'unaffected'); await unrelated;
+  assert.ok(globalThis.__lastCodexInput.prompt.includes('unaffected'));
+  assert.ok(!globalThis.__lastCodexInput.prompt.includes(note));
 });
 
 test('queued Claude message keeps the session running so setEffort does not drop it', async () => {
@@ -445,4 +464,3 @@ test('an SDK-initiated turn without a user message sets status to running and re
   assert.equal((await getSession(s.id)).status, 'idle');
   assert.deepEqual(statuses, ['running', 'idle', 'running', 'idle']);
 });
-

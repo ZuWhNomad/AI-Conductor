@@ -90,10 +90,14 @@ function resumeAtMs(value) { return typeof value === 'number' ? value : Date.par
 
 /** Apply restart-only transitions after the server binds. Returns counts for the startup friction line. */
 export function recoverTasks() {
-  const summary = { resumed: 0, parkedKept: 0, earliestParked: null, stale: 0, smokeCanceled: 0 };
+  const summary = { resumed: 0, parkedKept: 0, earliestParked: null, stale: 0, smokeCanceled: 0, bySession: {} };
   if (running.size || settling.size || !loadTasks()) return summary;
   const recovered = [];
   let earliestParkedMs = Infinity;
+  const noteOutcome = (t, status, resumeAt = null) => {
+    if (!t.sessionId) return;
+    (summary.bySession[t.sessionId] ||= []).push({ id: t.id, status, ...(resumeAt ? { resumeAt: new Date(resumeAt).toISOString() } : {}) });
+  };
   for (const t of tasks.values()) {
     if (TERMINAL.has(t.status)) continue;
     if (t.source === 'smoke') {
@@ -104,19 +108,20 @@ export function recoverTasks() {
       t.interruptedAt = t.aliveAt || t.updatedAt;
       if (t.recoveries >= 2) {
         t.status = 'stale'; t.error = 'interrupted by 2 restarts in a row; Re-run or Discard';
-        summary.stale++; persist(t); wake(t);
+        summary.stale++; noteOutcome(t, 'stale'); persist(t); wake(t);
       } else {
-        t.status = 'queued'; t.resume = true; recovered.push(t); summary.resumed++;
+        t.status = 'queued'; t.resume = true; recovered.push(t); summary.resumed++; noteOutcome(t, 'resumed');
       }
     } else if (t.status === 'parked') {
       const until = resumeAtMs(t.resumeAt);
       if (until > Date.now()) {
         summary.parkedKept++;
         earliestParkedMs = Math.min(earliestParkedMs, until);
+        noteOutcome(t, 'parked', until);
         armParkTimer(t, until);
       } else {
         t.status = 'queued'; t.resumeAt = null; t.resume = t.attempts > 0;
-        summary.resumed++; persist(t);
+        summary.resumed++; noteOutcome(t, 'resumed'); persist(t);
       }
     }
   }
@@ -354,6 +359,8 @@ export function cancelChain(id) {
 }
 
 let shuttingDown = false;
+let draining = false;
+export function setDraining(value) { draining = !!value; }
 /** Abort every active worker. With `requeue`, persist queued+resume before aborting (graceful shutdown). */
 export function abortRunning({ requeue = false } = {}) {
   shuttingDown = requeue;
@@ -380,10 +387,9 @@ const waitResult = (t) => {
 };
 
 /** Resolve at a terminal state or a park beyond this wait's deadline, else wait until timeout. */
-export function awaitTask(id, timeoutMs) {
-  const t = getTask(id);
+export function awaitTask(id, timeoutMs, { onPark = 'deadline' } = {}) {
+  let t = getTask(id);
   if (!t) return Promise.resolve(null);
-  if (TERMINAL.has(t.status) || t.status === 'stale') return Promise.resolve(waitResult(t));
   if (timeoutMs == null) {
     const wcfg = loadConfig().worker;
     const minutes = wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes;
@@ -391,19 +397,69 @@ export function awaitTask(id, timeoutMs) {
   }
   timeoutMs = Math.min(2 ** 31 - 1, timeoutMs);
   const deadline = Date.now() + timeoutMs;
-  if (t.status === 'parked' && t.resumeAt > deadline) return Promise.resolve(waitResult(t));
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { const l = waiters.get(id) || []; waiters.set(id, l.filter((x) => x !== waiter)); resolve({ ...publicTask(tasks.get(id)), timedOut: true }); }, timeoutMs);
-    const waiter = { deadline, done: (task) => { clearTimeout(timer); resolve(waitResult(task)); } };
-    waiters.set(id, [...(waiters.get(id) || []), waiter]);
+    let currentId = id, followedFrom = null, timer;
+    const followed = new Set([id]);
+    const unlink = () => {
+      const list = waiters.get(currentId) || [];
+      const next = list.filter((x) => x !== waiter);
+      if (next.length) waiters.set(currentId, next); else waiters.delete(currentId);
+    };
+    const detach = () => {
+      unlink();
+      clearTimeout(timer);
+    };
+    const finish = (task, extra = {}) => {
+      detach();
+      resolve(task ? { ...waitResult(task), ...(followedFrom ? { followedFrom } : {}), ...extra } : null);
+    };
+    const attach = (task) => {
+      if (!task) return finish(getTask(currentId));
+      currentId = task.id;
+      if (TERMINAL.has(task.status) || task.status === 'stale') {
+        if (task.status === 'failed' && task.failedOverTo) {
+          const target = getTask(task.failedOverTo);
+          if (target && !followed.has(target.id)) { followed.add(target.id); followedFrom ||= task.id; attach(target); return; }
+        }
+        finish(task); return;
+      }
+      if (task.status === 'parked') {
+        const until = resumeAtMs(task.resumeAt);
+        if (onPark === 'any' || (onPark === 'deadline' && until > deadline)) { finish(task); return; }
+      }
+      waiters.set(currentId, [...(waiters.get(currentId) || []), waiter]);
+    };
+    const waiter = {
+      deadline,
+      onPark,
+      done: (task) => {
+        if (task.status === 'failed' && task.failedOverTo) {
+          const target = getTask(task.failedOverTo);
+          if (target && !followed.has(target.id)) { unlink(); followed.add(target.id); followedFrom ||= task.id; attach(target); return true; }
+        }
+        if (task.status === 'parked') {
+          if (onPark === 'any' || (onPark === 'deadline' && resumeAtMs(task.resumeAt) > deadline)) finish(task);
+          else return false;
+        } else if (onPark === 'never' && !TERMINAL.has(task.status) && task.status !== 'stale') {
+          return false;
+        }
+        finish(task);
+        return true;
+      },
+    };
+    timer = setTimeout(() => {
+      detach();
+      const task = getTask(currentId);
+      resolve(task ? { ...publicTask(task), timedOut: true, ...(followedFrom ? { followedFrom } : {}) } : null);
+    }, timeoutMs);
+    attach(t);
   });
 }
 
 function wake(t) {
   const pending = [];
   for (const w of waiters.get(t.id) || []) {
-    if (t.status === 'parked' && !(t.resumeAt > w.deadline)) pending.push(w);
-    else w.done(t);
+    if (w.done(t) === false) pending.push(w);
   }
   if (pending.length) waiters.set(t.id, pending);
   else waiters.delete(t.id);
@@ -435,12 +491,13 @@ Remember to follow the MSW deletion rule for all claims - no exceptions.`;
 export const heldProviders = new Set();
 
 export function schedule() {
-  if (shuttingDown) return;
+  if (shuttingDown || draining) return;
   if (process.env.CONDUCTOR_NO_SCHEDULE) return; // tests
   withLimitsSnapshot(scheduleOnce); // one limits read per pass
 }
 
 function scheduleOnce() {
+  if (shuttingDown || draining) return;
   const cfg = loadConfig();
   const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
@@ -514,7 +571,7 @@ function armParkTimer(t, until) {
   setTimeout(async () => {
     if (t.status !== 'parked' || shuttingDown) return;
     await refreshLimits({ only: [t.provider] }).catch(() => {});
-    if (t.status === 'parked' && !shuttingDown) { t.status = 'queued'; t.resumeAt = null; persist(t); schedule(); }
+    if (t.status === 'parked' && !shuttingDown) { t.status = 'queued'; t.resumeAt = null; persist(t); if (!draining) schedule(); }
   }, Math.min(2 ** 31 - 1, Math.max(1000, until - Date.now()))).unref();
 }
 

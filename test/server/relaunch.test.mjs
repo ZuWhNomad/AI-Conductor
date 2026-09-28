@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const OK = join(process.env.CONDUCTOR_HOME, 'relaunch-ok');
 
 const { scheduleRelaunch, startServer } = await import('../../server/index.mjs');
+const { createTask, getTask, cancelTask, schedule, abortRunning, setDraining } = await import('../../core/tasks.mjs');
 
 const fakeChild = () => Object.assign(new EventEmitter(), { unref() {} });
 const listen0 = async () => { const s = createServer((_, res) => res.end()); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
@@ -44,10 +45,22 @@ test('scheduleRelaunch spawns a detached same-port conductor with THIS process e
 test('scheduleRelaunch stays up (never exits) when the relaunch child errors — fallback to manual restart', async () => {
   let exited = 0;
   const child = fakeChild();
-  assert.equal(scheduleRelaunch({ port: 1, spawnFn: () => child, exit: () => { exited++; } }), true);
-  child.emit('error', new Error('spawn ENOENT'));
-  await new Promise((r) => setTimeout(r, 300));
-  assert.equal(exited, 0);
+  const previous = process.env.CONDUCTOR_NO_SCHEDULE;
+  setDraining(false); abortRunning();
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  const task = createTask({ cwd: process.env.CONDUCTOR_HOME, provider: 'missing-test-provider' }, { dispatch: false });
+  try {
+    assert.equal(scheduleRelaunch({ port: 1, spawnFn: () => child, exit: () => { exited++; } }), true);
+    schedule();
+    assert.equal(task.status, 'queued', 'draining prevents dispatch before handoff');
+    child.emit('error', new Error('spawn ENOENT'));
+    assert.equal(exited, 0);
+    assert.equal(getTask(task.id).status, 'running', 'a failed relaunch clears draining and schedules queued work');
+  } finally {
+    setDraining(false); abortRunning(); cancelTask(task.id);
+    if (previous === undefined) delete process.env.CONDUCTOR_NO_SCHEDULE; else process.env.CONDUCTOR_NO_SCHEDULE = previous;
+  }
+  await new Promise((r) => setTimeout(r, 30));
 });
 
 test('scheduleRelaunch returns false and never exits when spawn throws', () => {

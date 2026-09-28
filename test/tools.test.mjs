@@ -98,6 +98,37 @@ test('L25: delegate and run_plan accept a known variant and reject an unknown on
   cancelTask(id);
 });
 
+test('background delegate reports the task status and resume time when parked', async () => {
+  const sessionId = 'background-parked', until = Date.now() + 60_000;
+  let taskId;
+  const onTask = (e) => {
+    if (e.type !== 'task' || e.task.sessionId !== sessionId || e.task.status !== 'queued') return;
+    const task = getTask(e.task.id); taskId = task.id;
+    task.status = 'parked'; task.resumeAt = until;
+  };
+  bus.on('event', onTask);
+  try {
+    const reply = await handler('delegate', { sessionId, cwd: cwd() })({ title: 'park me', spec: 'wait', provider: 'ollama', model: 'qwen3.8', background: true });
+    assert.match(reply, new RegExp(`Task ${taskId} parked until ${new Date(until).toISOString()}`));
+  } finally {
+    bus.off('event', onTask);
+    if (taskId) cancelTask(taskId);
+  }
+});
+
+test('await_task wait_if_parked waits through a park while the default returns its status', async () => {
+  const sessionId = 'await-park-tool', task = createTask({ cwd: cwd(), sessionId, spec: 'wait' }, { dispatch: false });
+  Object.assign(task, { status: 'parked', resumeAt: Date.now() + 60_000 });
+  try {
+    const awaitTool = handler('await_task', { sessionId });
+    const current = await awaitTool({ task_id: task.id, timeout_minutes: 0 });
+    assert.match(current, /Parked until/);
+    assert.doesNotMatch(current, /still running/);
+    const waiting = await awaitTool({ task_id: task.id, timeout_minutes: 0, wait_if_parked: true });
+    assert.match(waiting, /still running/);
+  } finally { cancelTask(task.id); }
+});
+
 test('GP: run_plan validates variants after merging plan, stage and task or template defaults', async () => {
   const sessionId = 'gp-plan-variants', created = [];
   const onTask = (e) => {
