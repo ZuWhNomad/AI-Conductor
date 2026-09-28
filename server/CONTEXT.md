@@ -20,7 +20,7 @@ The update gate counts running chats and running/queued tasks, excluding parked 
 |---|---|---|
 | `GET /api/state` | everything the UI needs at boot / resync | all |
 | `GET /api/events?since=` | SSE stream with ring-buffer replay | `bus` |
-| `/api/sessions[/<id>[/messages\|interrupt\|stop\|permission\|title\|model\|effort\|mode\|overflow\|parallel]]` | chat sessions | `conductor` |
+| `/api/sessions[/<id>[/messages\|interrupt\|stop\|permission\|title\|model\|effort\|mode\|overflow\|parallel\|rate]]` | chat sessions and operator scorecard ratings | `conductor`, `scorecard` |
 | `/api/tasks[/<id>[/cancel\|rerun]]` | worker tasks; `POST` = direct-to-worker (`/worker …`); rerun queues stale work | `tasks` |
 | `GET /api/models`, `POST /api/models/refresh` | model registry | `models` |
 | `GET /api/limits`, `POST /api/limits/refresh` | provider windows (+ synthetic "estimated" window: `limitsWithEstimates`) | `limits`, `usage-estimate` |

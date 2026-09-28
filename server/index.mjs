@@ -9,7 +9,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { REPO_ROOT, readJson, writeJson, statePath, redact } from '../core/paths.mjs';
 import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
-import { getModels, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
+import { getModels, findModel, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
 import { getLimits, refreshLimits, startLimitPolling, stopLimitPolling } from '../core/limits.mjs';
 import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
@@ -19,7 +19,7 @@ import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, sc
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
-import { summarize, formatScores, scoresGrid, benchedCells, migrateScorecard, EFFORTS, scorecardModelId, eligibilityOverrides, setEligibility } from '../core/scorecard.mjs';
+import { summarize, formatScores, scoresGrid, benchedCells, migrateScorecard, EFFORTS, scorecardModelId, eligibilityOverrides, setEligibility, recordRun, rateTask } from '../core/scorecard.mjs';
 import { priceFor } from '../core/priors.mjs';
 import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
@@ -245,6 +245,41 @@ async function route(req, res, url) {
     const id = seg[2];
     if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, { ...s, seq: bus.seq }) : json(res, 404, { error: 'not found' }); }
     if (m === 'DELETE' && !seg[3]) return json(res, 200, { ok: conductor.deleteSession(id) });
+    if (m === 'POST' && seg[3] === 'rate') {
+      const session = conductor.listSessions().find((s) => s.id === id);
+      if (!session) return json(res, 404, { error: 'not found' });
+      const b = await readBody(req);
+      if (!b || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'body must be an object' });
+      const verdicts = ['pass', 'close', 'fail', 'void'];
+      const failKinds = ['timeout', 'limit', 'crash', 'lost', 'stuck'];
+      const verdict = b.verdict;
+      const level = b.level ?? 4;
+      const rounds = b.rounds;
+      const durationMs = b.durationMs;
+      const provider = Object.hasOwn(b, 'provider') ? b.provider : session.provider;
+      const model = Object.hasOwn(b, 'model') ? b.model : session.model;
+      const effort = Object.hasOwn(b, 'effort') ? b.effort : session.effort;
+      const notes = b.notes ?? '';
+      if (!verdicts.includes(verdict)) return json(res, 400, { error: `verdict must be one of ${verdicts.join('|')}` });
+      if (!Number.isInteger(level) || level < 1 || level > 5) return json(res, 400, { error: 'level must be 1-5' });
+      if (!Number.isInteger(rounds) || rounds < 0) return json(res, 400, { error: 'rounds must be a nonnegative integer' });
+      if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) return json(res, 400, { error: 'durationMs must be a nonnegative number' });
+      if (b.failKind !== undefined && !failKinds.includes(b.failKind)) return json(res, 400, { error: `failKind must be one of ${failKinds.join('|')}` });
+      if (typeof notes !== 'string' || notes.length > 1000) return json(res, 400, { error: 'notes must be a string of at most 1000 characters' });
+      const registeredModel = typeof provider === 'string' && typeof model === 'string' ? findModel(provider, scorecardModelId(model)) : null;
+      if (!provider || !registeredModel || registeredModel.kind !== 'agent') {
+        return json(res, 400, { error: 'provider/model must identify an agent model' });
+      }
+      if (effort != null && typeof effort !== 'string') return json(res, 400, { error: 'effort must be a string or null' });
+      const taskId = `chat-${id}-${b.n ?? 1}`;
+      const standIn = {
+        id: taskId, provider, model, effort, category: 'conductor', difficulty: level, status: 'done', sessionId: id,
+        source: 'live', title: null, rounds, result: { durationMs, usage: b.usage }, failKind: b.failKind,
+      };
+      const run = recordRun(standIn, { before: null });
+      const rating = rateTask(taskId, verdict, notes);
+      return json(res, 200, { ok: true, taskId, run, rating });
+    }
     const b = m === 'POST' ? await readBody(req) : {};
     if (m === 'POST' && seg[3] === 'messages') return json(res, 200, await conductor.sendMessage(id, String(b.text || '')));
     if (m === 'POST' && seg[3] === 'interrupt') return json(res, 200, { ok: await conductor.interrupt(id) });

@@ -15,7 +15,7 @@
 // averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
 // A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
 import { appendNdjson, readNdjson, statePath } from './paths.mjs';
-import { runRows, tokensOf, mean, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
+import { activeRunRows, tokensOf, mean, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 import { getLimits } from './limits.mjs';
 import { PROVIDERS } from './providers/index.mjs';
@@ -27,7 +27,7 @@ const gapMs = (provider) => { const g = loadConfig().scorecard?.usageGapHours ||
 
 /** Provider run rows (in+out tokens) sorted oldest-first. Cached tokens are excluded — they barely move a plan window. */
 function tokenRuns(provider) {
-  return runRows().filter((r) => r.provider === provider && r.tokens).map((r) => { const t = tokensOf(r); return { ts: Date.parse(r.ts), tokens: t.in + t.out }; }).filter((r) => r.ts).sort((a, b) => a.ts - b.ts);
+  return activeRunRows().filter((r) => r.provider === provider && r.tokens).map((r) => { const t = tokensOf(r); return { ts: Date.parse(r.ts), tokens: t.in + t.out }; }).filter((r) => r.ts).sort((a, b) => a.ts - b.ts);
 }
 
 /** The current usage window: cumulative provider tokens spent since the last long gap (window start). */

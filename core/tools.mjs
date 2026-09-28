@@ -321,7 +321,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'rate_task',
-      description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; fail = abandoned, redone elsewhere or by you; void = the model was not at fault (harness, sign-in, bad fixture): the run is dropped from every score. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
+      description: 'Record your verdict on a task after you verified it yourself (diff + tests): pass = accepted as delivered; fixable = accepted after follow-up rounds; close = a near miss that scores 0; fail = abandoned, redone elsewhere or by you; void = the model was not at fault (harness, sign-in, bad fixture): the run is dropped from every score. Rate the original task id once its fix rounds are over. This trains worker selection — rate honestly.',
       schema: z.object({ task_id: z.string(), verdict: z.enum([...VERDICTS, 'void']), notes: z.string().optional().describe('What was wrong, briefly') }),
       handler: async (a) => {
         let t = getTask(a.task_id);

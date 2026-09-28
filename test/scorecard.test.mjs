@@ -867,7 +867,7 @@ test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', 
 
 test('formatScores surfaces the phantom column and error-rate section', () => {
   const text = sc.formatScores();
-  assert.match(text, /pass\/fix\/fail\/phantom/);
+  assert.match(text, /pass\/fix\/close\/fail\/phantom/);
   assert.match(text, /Error rates/);
 });
 
@@ -2093,4 +2093,39 @@ test('B10: manual eligibility blocks measured and prior picks; latest allow lift
     assert.equal(sc.recommend({ category: 'review', difficulty: 2, source: 'eligibility-measured', reg }), null);
     assert.match(sc.formatScoresShort({ source: 'eligibility-bench' }), /ALLOW fixture:manual:low for other: re-enabled after review/);
   } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('conductor rows stay out of worker routing ceilings and worker-only run reads', () => {
+  const source = 'conductor-rating-isolation';
+  for (let i = 0; i < 3; i++) {
+    const id = `${source}-worker-${i}`;
+    run({ id, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'docs', difficulty: 1 });
+    sc.rateTask(id, 'pass');
+  }
+  const request = { category: 'docs', difficulty: 1, source };
+  const before = sc.recommend(request);
+  assert.ok(before, 'worker evidence produces a recommendation');
+
+  const conductorIds = [];
+  for (let i = 0; i < 3; i++) {
+    const id = `${source}-chat-${i}`; conductorIds.push(id);
+    run({ id, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'conductor', difficulty: 5 });
+    sc.rateTask(id, 'pass');
+  }
+  assert.deepEqual(sc.recommend(request), before);
+  assert.ok(sc.runRows().some((r) => conductorIds.includes(r.taskId)), 'ratings remain in the scorecard ledger');
+  assert.equal(sc.activeRunRows().some((r) => conductorIds.includes(r.taskId)), false, 'budget and usage inputs exclude conductor rows');
+});
+
+test('close counts as zero quality without changing accept or errorRate', () => {
+  const id = 'close-is-not-accepted';
+  run({ id, category: 'conductor', difficulty: 4 });
+  sc.rateTask(id, 'close');
+  const row = sc.summarize({ shipped: false }).find((g) => g.category === 'conductor' && g.difficulty === 4);
+  assert.equal(row.close, 1);
+  assert.equal(row.quality, 0);
+  assert.equal(row.accept, 0);
+  assert.equal(row.errorRate, 0);
+  assert.match(sc.formatScores({ category: 'conductor' }), /pass\/fix\/close\/fail\/phantom/);
+  assert.match(sc.scoresCsv().split('\n')[0], /,close,/);
 });

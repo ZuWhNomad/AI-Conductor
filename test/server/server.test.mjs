@@ -47,7 +47,7 @@ const { getTask, cancelTask } = await import('../../core/tasks.mjs');
 assert.equal(getTask(bootRecoveryId).status, 'running', 'module import loads without restart transitions');
 const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount, updateWaitingDetail } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
-const { CATEGORIES } = await import('../../core/scorecard.mjs');
+const { CATEGORIES, runRows, summarize } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
 const realFetch = globalThis.fetch;
 mock.method(globalThis, 'fetch', (input, options) => {
@@ -126,6 +126,61 @@ test('sessions, tasks, browse and SSE replay', async () => {
   await post(`/api/tasks/${t.id}/cancel`);
   assert.equal((await fetch(url + `/api/sessions/${s.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await get('/api/sessions')).length, 0);
+});
+
+test('POST session rating validates first, records conductor rows, and lets a later rating replace an earlier one', async () => {
+  const { refreshModels } = await import('../../core/models.mjs');
+  await refreshModels({ only: ['claude'] });
+  const cwd = tmpDir('session-rate');
+  const session = await post('/api/sessions', { cwd, provider: 'claude', model: 'test-model', effort: 'low' });
+  const rate = (id, body) => fetch(url + `/api/sessions/${id}/rate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const valid = { verdict: 'pass', rounds: 1, durationMs: 10 };
+  const before = runRows().length;
+  const invalid = [
+    ['missing-session', valid, 404],
+    [session.id, { ...valid, verdict: 'fixable' }, 400],
+    [session.id, { ...valid, level: 0 }, 400],
+    [session.id, { verdict: 'pass', durationMs: 10 }, 400],
+    [session.id, { verdict: 'pass', rounds: 1 }, 400],
+    [session.id, { ...valid, failKind: 'hung' }, 400],
+    [session.id, { ...valid, failKind: null }, 400],
+    [session.id, { ...valid, notes: 'n'.repeat(1001) }, 400],
+    [session.id, { ...valid, model: 'missing-model' }, 400],
+  ];
+  for (const [id, body, status] of invalid) assert.equal((await rate(id, body)).status, status, JSON.stringify(body));
+  assert.equal(runRows().length, before, 'invalid requests write no score rows');
+
+  const first = await rate(session.id, { verdict: 'fail', level: 4, rounds: 3, durationMs: 1000, failKind: 'limit', notes: 'first rating' });
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).taskId, `chat-${session.id}-1`);
+  const corrected = await rate(session.id, {
+    verdict: 'pass', rounds: 5, durationMs: 2300,
+    usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 30 },
+    notes: 'corrected', model: 'test-model[1m]',
+  });
+  assert.equal(corrected.status, 200, 'a registered model with the [1m] suffix is accepted');
+  const close = await rate(session.id, { verdict: 'close', rounds: 7, durationMs: 3000, n: 2 });
+  assert.equal(close.status, 200);
+  const voided = await rate(session.id, { verdict: 'void', rounds: 1, durationMs: 10, n: 3 });
+  assert.equal(voided.status, 200);
+  assert.equal((await voided.json()).rating.op, 'void');
+
+  const recorded = runRows().filter((r) => r.taskId === `chat-${session.id}-1`).at(-1);
+  assert.deepEqual({ provider: recorded.provider, model: recorded.model, effort: recorded.effort, category: recorded.category, difficulty: recorded.difficulty, status: recorded.status, sessionId: recorded.sessionId, source: recorded.source, title: recorded.title, rounds: recorded.rounds, durationMs: recorded.durationMs, tokens: recorded.tokens }, {
+    provider: 'claude', model: 'test-model[1m]', effort: 'low', category: 'conductor', difficulty: 4, status: 'done', sessionId: session.id, source: 'live', title: null, rounds: 5, durationMs: 2300,
+    tokens: { in: 100, out: 30, cached: 20, write: 0, v: 2 },
+  });
+  const row = summarize({ shipped: false }).find((g) => g.category === 'conductor' && g.model === 'test-model' && g.effort === 'low' && g.difficulty === 4);
+  assert.deepEqual({ n: row.n, rated: row.rated, pass: row.pass, close: row.close, fail: row.fail, quality: row.quality, accept: row.accept, errorRate: row.errorRate, avgRounds: row.avgRounds }, {
+    n: 2, rated: 2, pass: 1, close: 1, fail: 0, quality: 0.5, accept: 0.5, errorRate: 0, avgRounds: 6,
+  });
+  assert.equal(CATEGORIES.includes('conductor'), false);
+  const scores = await get('/api/scores?category=conductor');
+  assert.match(scores.text, /claude:test-model:low \| conductor@4 \| 2 \| 2 \| 0\.50 \| 0\.50 \| 1\/0\/1\/0\/0/);
+  assert.match(scores.text, /\| 6\.0 \|/);
+  await fetch(url + `/api/sessions/${session.id}`, { method: 'DELETE' });
 });
 
 test('task follow-ups inherit cwd without requiring it in the request', async () => {
