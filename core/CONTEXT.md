@@ -79,7 +79,8 @@ provider, or the whole provider when the failed model has no window group.
 
 **Prompt caching.** Put shared, stable text first and task-specific text last. Conductor history stays append-only between
 deliberate compaction cut points (`compaction.mjs`); worker prompt order lives in `tasks.mjs` (`buildPrompt`), with
-worker/MSW instructions before MCP and project context, then the resume note, task, recipe and capabilities.
+worker/MSW instructions before MCP and project context, then the resume note, task, recipe and capabilities. `plans.mjs`
+keeps a `for_each` stage's title and shared spec before each vote's item JSON, lens and vote index.
 
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.

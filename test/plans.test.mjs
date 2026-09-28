@@ -6,6 +6,7 @@ import { saveConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 
 const { validatePlan, findingsOf, findingKey, parseVerdict, tally, expandStage, runPlan, abortPlans, getPlan } = await import('../core/plans.mjs');
+const { buildPrompt } = await import('../core/tasks.mjs');
 
 // Legacy injected runtimes in this file test plan results, not asynchronous worker warm-up.
 saveConfig({ plans: { warmupSeconds: 0 } });
@@ -246,7 +247,7 @@ test('item with all votes failed goes to unverified with failed task ids, and re
   assert.match(criticTask.spec, /Unverified:/);
   assert.match(criticTask.spec, /Bug Two/);
   assert.match(criticTask.spec, /"failedTasks": \[\s*"t4",\s*"t5"\s*\]/);
-  const recheckTask = created.find((c) => c.spec.startsWith('recheck'));
+  const recheckTask = created.find((c) => c.spec.startsWith('Stage: recheck'));
   assert.ok(recheckTask, 'recheck task ran on unverified item');
   assert.match(recheckTask.spec, /Bug Two/);
 });
@@ -353,8 +354,15 @@ test('stages expand with templates, per-item votes and lenses, and inherited def
   assert.equal(finders[0].provider, 'codex'); assert.equal(finders[1].provider, 'deepseek');
   const refuters = expandStage({ id: 'verify', for_each: 'find', votes: 2, lenses: ['read', 'reproduce'], task: { spec: 'Refute {{item}} via {{lens}}' } }, ctx);
   assert.equal(refuters.length, 4);
-  assert.match(refuters[0].spec, /Bug A/); assert.match(refuters[0].spec, /via read/); assert.match(refuters[1].spec, /via reproduce/);
+  assert.match(refuters[0].spec, /Refute the item below via the lens below/);
+  assert.match(refuters[0].spec, /Bug A/); assert.match(refuters[0].spec, /Lens: read/); assert.match(refuters[0].spec, /Vote index: 0/);
+  assert.match(refuters[1].spec, /Lens: reproduce/);
   assert.equal(refuters[3].item.id, 'f2'); assert.equal(refuters[3].vote, 1);
+  const votePrompts = refuters.slice(0, 2).map((t) => buildPrompt({ ...t, cwd: HOME, category: 'other', provider: 'deepseek', paths: [] }));
+  const sharedSpec = refuters[0].spec.slice(0, refuters[0].spec.indexOf('\n\nPer-item vote context:'));
+  let common = 0;
+  while (common < votePrompts[0].length && common < votePrompts[1].length && votePrompts[0][common] === votePrompts[1][common]) common++;
+  assert.ok(common >= votePrompts[0].indexOf(sharedSpec) + sharedSpec.length, 'vote prompts share the complete stage title and spec before item details');
   const critic = expandStage({ id: 'critic', tasks: [{ spec: 'Given:\n{{results:find}}\nWhat is missing?' }] }, ctx);
   assert.match(critic[0].spec, /Bug A/);
   assert.match(critic[0].spec, /"file": "a.js"/);
@@ -576,7 +584,7 @@ test('finder rounds accumulate unique findings that survive dedupe and receive e
       createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
       async awaitTask(id) {
         const input = created[Number(id.slice(5)) - 1];
-        const output = input.spec.startsWith('vote') ? { real: true, reason: 'verified' }
+        const output = input.spec.startsWith('Stage: vote\n') ? { real: true, reason: 'verified' }
           : { findings: input.spec.startsWith('find') && ++rounds === 1 ? [a, a] : [a, b, a, b] };
         return { id, status: 'done', result: { finalMessage: '```json\n' + JSON.stringify(output) + '\n```' } };
       },
@@ -609,7 +617,7 @@ test('dedupe repeats keep unchanged findings once while global novelty controls 
       createTask(input) { created.push(input); return { id: `task-${created.length}` }; },
       async awaitTask(id) {
         const input = created[Number(id.slice(5)) - 1];
-        const output = input.spec.startsWith('vote') ? { real: true } : { findings: [finding, finding] };
+        const output = input.spec.startsWith('Stage: vote\n') ? { real: true } : { findings: [finding, finding] };
         return { id, status: 'done', result: { finalMessage: '```json\n' + JSON.stringify(output) + '\n```' } };
       },
       getTask() { assert.fail('use the awaitTask snapshot'); },
@@ -621,7 +629,7 @@ test('dedupe repeats keep unchanged findings once while global novelty controls 
   assert.equal(out.stages.dedupe.fresh, 0);
   assert.equal(out.stages.vote.tasks.length, 2);
   assert.equal(out.stages.vote.confirmed[0].tally, '2/2');
-  for (const input of created.slice(1)) assert.match(input.spec, /seen: - Bug A \(a.mjs\)$/);
+  for (const input of created.slice(1)) assert.match(input.spec, /seen: - Bug A \(a.mjs\)/);
 });
 
 test('until_dry records capped when max_rounds is hit with fresh findings', async () => {

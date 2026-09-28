@@ -186,7 +186,15 @@ export function expandStage(stage, ctx) {
   const out = [];
   for (const item of items) for (let v = 0; v < stage.votes; v++) {
     const lens = Array.isArray(stage.lenses) && stage.lenses.length ? stage.lenses[v % stage.lenses.length] : '';
-    out.push({ ...base, ...stage.task, item, vote: v, title: `${stage.task.title || stage.id}: ${titleOf(item).slice(0, 50)}${stage.votes > 1 ? ` [${v + 1}/${stage.votes}]` : ''}`, spec: fill(stage.task.spec, { ...vars, item: JSON.stringify(item, null, 1), lens }) });
+    const stageTitle = stage.task.title || stage.id;
+    const sharedSpec = fill(stage.task.spec, { ...vars, item: 'the item below', lens: 'the lens below' });
+    const itemContext = [
+      'Per-item vote context:',
+      `Item JSON:\n${JSON.stringify(item, null, 1)}`,
+      `Lens: ${lens || '(none)'}`,
+      `Vote index: ${v}`,
+    ].join('\n');
+    out.push({ ...base, ...stage.task, item, vote: v, title: `${stageTitle}: ${titleOf(item).slice(0, 50)}${stage.votes > 1 ? ` [${v + 1}/${stage.votes}]` : ''}`, spec: `Stage: ${stageTitle}\n\n${sharedSpec}\n\n${itemContext}` });
   }
   return out;
 }
