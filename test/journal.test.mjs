@@ -125,12 +125,12 @@ test('restart transitions stagger running work, keep future parks, cancel smoke 
     assert.ok(first.getTask('run-new').resumeAt > Date.now());
     assert.equal(first.getTask('park-future').status, 'parked');
     assert.equal(first.getTask('park-past').status, 'queued');
-    assert.equal(first.getTask('queued-resume').status, 'queued');
+    assert.equal(first.getTask('queued-resume').status, 'parked');
     for (const id of ['smoke-queued', 'smoke-running']) {
       assert.equal(first.getTask(id).status, 'canceled');
       assert.equal(first.getTask(id).error, 'battery interrupted by a restart');
     }
-    assert.equal(summary.resumed, 3);
+    assert.equal(summary.resumed, 4);
     assert.equal(summary.parkedKept, 1);
     assert.ok(summary.earliestParked);
     assert.equal(summary.smokeCanceled, 2);
@@ -149,6 +149,53 @@ test('restart transitions stagger running work, keep future parks, cancel smoke 
     assert.equal(second.openTasks().some((t) => t.id === 'run-old'), false);
     assert.match(second.describeTask(second.getTask('run-old')), /Stale: interrupted by 2 restarts in a row\. Ask the user to Re-run or Discard it\./);
     assert.equal((await second.awaitTask('run-old', 60_000)).status, 'stale');
+  `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test('graceful requeues share crash recovery staggering and notes without incrementing recoveries', () => {
+  const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { saveConfig } from './core/config.mjs';
+    const dir = join(process.env.CONDUCTOR_HOME, 'tasks');
+    mkdirSync(dir, { recursive: true });
+    const records = [
+      { id: 'z-graceful-old', status: 'queued', resume: true, createdAt: '2026-01-01', recoveries: 1 },
+      { id: 'm-crash', status: 'running', createdAt: '2026-01-02' },
+      { id: 'a-graceful-new', status: 'queued', resume: true, createdAt: '2026-01-03' },
+      { id: 'fresh', status: 'queued', resume: false, attempts: 0, createdAt: '2026-01-04' },
+    ];
+    for (const task of records) writeFileSync(join(dir, task.id + '.json'), JSON.stringify({
+      cwd: process.env.CONDUCTOR_HOME, sessionId: 'chat', attempts: 1,
+      updatedAt: '2026-01-05', interruptedAt: '2026-01-05', ...task,
+    }));
+    saveConfig({ worker: { resumeStaggerSeconds: 1 } });
+    const { recoverTasks, getTask } = await import('./core/tasks.mjs');
+    const setTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = () => ({ unref() {} });
+    let summary;
+    try { summary = recoverTasks(); } finally { globalThis.setTimeout = setTimeout; }
+    assert.equal(summary.resumed, 3);
+    assert.equal(summary.stale, 0);
+    assert.deepEqual(summary.bySession.chat.sort((a, b) => a.id.localeCompare(b.id)),
+      records.slice(0, 3).map(({ id }) => ({ id, status: 'resumed' })).sort((a, b) => a.id.localeCompare(b.id)));
+    assert.equal(getTask('z-graceful-old').status, 'queued');
+    assert.equal(getTask('z-graceful-old').recoveries, 1);
+    assert.equal(getTask('z-graceful-old').interruptedAt, '2026-01-05');
+    assert.equal(getTask('m-crash').recoveries, 1);
+    assert.equal(getTask('a-graceful-new').recoveries, undefined);
+    for (const id of ['m-crash', 'a-graceful-new']) {
+      assert.equal(getTask(id).status, 'parked');
+      assert.equal(getTask(id).error, 'restart stagger');
+      assert.equal(getTask(id).resume, true);
+    }
+    assert.equal(getTask('a-graceful-new').resumeAt - getTask('m-crash').resumeAt, 1000);
+    assert.equal(getTask('fresh').status, 'queued');
+    assert.equal(getTask('fresh').resume, false);
+    for (const { id } of records) assert.deepEqual(JSON.parse(readFileSync(join(dir, id + '.json'), 'utf8')), getTask(id));
   `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -266,6 +313,7 @@ test('P9: bounded records, disk-backed chains and indexed recovery preserve the 
     assert.ok(reads.includes('root'));
     assert.ok(!reads.includes('terminal-0'), 'unchanged evicted terminal payload stays on disk');
     // The same index survives a new task-module instance, as in a relaunch.
+    await new Promise(setImmediate); // recovery persists queued resumes; let the batched index save settle
     reads = [];
     const relaunched = await import('./core/tasks.mjs?p9-relaunch');
     assert.deepEqual(reads.sort(), relaunched.listTasks({ limit: Infinity }).map(t => t.id).sort());

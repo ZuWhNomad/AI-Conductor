@@ -112,6 +112,8 @@ export function recoverTasks() {
       } else {
         t.status = 'queued'; t.resume = true; recovered.push(t); summary.resumed++; noteOutcome(t, 'resumed');
       }
+    } else if (t.status === 'queued' && t.resume === true) {
+      recovered.push(t); summary.resumed++; noteOutcome(t, 'resumed');
     } else if (t.status === 'parked') {
       const until = resumeAtMs(t.resumeAt);
       if (until > Date.now()) {

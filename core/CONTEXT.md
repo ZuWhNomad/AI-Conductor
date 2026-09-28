@@ -11,6 +11,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); a real
   provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
   probe exclusion until a post-completion limits poll and scoring settle, without holding worker concurrency slots.
+  Import only loads the journal; server-owned `recoverTasks()` staggers crash/graceful resumes, keeps future parks,
+  and makes a second crash recovery `stale` (Re-run or Discard). Graceful stop journals the requeue before aborting.
   `isolate: true` (delegate / run_plan / createTask): the scheduler creates `git worktree add --detach` under
   `statePath('worktrees', <attempt root id>)` before the worker starts, junctions/symlinks `worker.isolateLinks`
   (`node_modules`, `.venv`) from the source checkout, commits onto `conductor/<id>` when the worker ends, and

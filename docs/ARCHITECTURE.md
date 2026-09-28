@@ -41,11 +41,27 @@ Selections are written `provider:model:effort` everywhere (UI, config, API, CLI)
 the last segment when it is a known effort word, so Ollama ids like `qwen3.8:latest` survive.
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
-thread/session id, status, result, usage). Tasks that die at a provider limit are parked with a
+thread/session id, status, result, usage). States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
+and `canceled`; `stale` is non-terminal and waits for the user. Tasks that die at a provider limit are parked with a
 `resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). The git reads around a run (`status`
 before and after, `diff --stat`) are asynchronous through `execFile`. Ledger parsing and journal I/O remain
 synchronous; scorecard `runRows` reads are cached by file size and mtime. `/api/doctor` reports the loop's p99 lag,
 and a friction entry is logged when a minute's p99 exceeds `server.lagWarnMs`.
+
+### Queue and restarts
+
+Importing `tasks.mjs` only loads the journal; each `startServer()` calls `recoverTasks()` after binding.
+Fresh queued work stays queued. Running work requeues with `resume` and increments `recoveries`; the second
+interruption makes it `stale` instead (the crash guard). Running recoveries and graceful `queued` + `resume`
+requeues share creation-time ordering, spaced by `worker.resumeStaggerSeconds` with park reason `restart stagger`;
+graceful requeues do not increment `recoveries`. Future parks keep their `resumeAt` and get a new timer;
+expired parks requeue. Terminal tasks and stale tasks stay unchanged, except open `source: 'smoke'` tasks are canceled.
+Stale work is never dispatched: Re-run (`POST /api/tasks/:id/rerun`) resets the crash count and queues it;
+Discard uses the cancel route. Affected chats receive a restart note, held in `pendingNote` for the next turn.
+
+Graceful shutdown journals `queued` + `resume` + `interruptedAt` before aborting workers. `scheduleRelaunch()`
+sets draining to stop new dispatches during handover. The update gate counts only running and queued worker tasks
+(plus running chats); parked and stale tasks do not count as busy.
 
 ## Directory map
 
@@ -243,8 +259,8 @@ Repeated identical tools, tool-less progress turns or configured token burn rais
 corrective nudge, then a still-repeating runaway turn is stopped; worker count caps remain their independent guard.
 
 A chat turn is persisted while it is active. After a server restart, a Claude/Codex thread resumes once with a note
-to continue from the files; a non-resumable runtime records the interruption and waits for the user. Worker tasks are
-durable and requeue on restart. Detached `job_start` / `watch_job` work survives the turn and wakes an idle chat once
+to continue from the files; a non-resumable runtime records the interruption and waits for the user. Worker recovery
+follows the queue rules above. Detached `job_start` / `watch_job` work survives the turn and wakes an idle chat once
 when its whole background batch is terminal. The watchdog never restarts the server.
 
 ## Context management

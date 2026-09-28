@@ -11,6 +11,8 @@ state of its own: every route is a thin call into a `core/` module.
 `scheduleRelaunch()` (self-restart after an update), `stopBackgroundWork()`. Server start/stop owns the liveness
 watchdog interval and starts one-shot recovery of interrupted resumable turns; the watchdog may wake an idle chat but
 never restarts the server.
+Each start calls `recoverTasks()` and records chat restart notes; relaunch drains dispatches before handover.
+The update gate counts running chats and running/queued tasks, excluding parked and stale work.
 
 **Routes.** All in `route()`; find one by grepping its path (`/api/<resource>` or `seg[1] === '<resource>'`).
 
@@ -19,7 +21,7 @@ never restarts the server.
 | `GET /api/state` | everything the UI needs at boot / resync | all |
 | `GET /api/events?since=` | SSE stream with ring-buffer replay | `bus` |
 | `/api/sessions[/<id>[/messages\|interrupt\|stop\|permission\|title\|model\|effort\|mode\|overflow\|parallel]]` | chat sessions | `conductor` |
-| `/api/tasks[/<id>[/cancel]]` | worker tasks; `POST` = direct-to-worker (`/worker …`) | `tasks` |
+| `/api/tasks[/<id>[/cancel\|rerun]]` | worker tasks; `POST` = direct-to-worker (`/worker …`); rerun queues stale work | `tasks` |
 | `GET /api/models`, `POST /api/models/refresh` | model registry | `models` |
 | `GET /api/limits`, `POST /api/limits/refresh` | provider windows (+ synthetic "estimated" window: `limitsWithEstimates`) | `limits`, `usage-estimate` |
 | `POST /api/providers/<id>/usage` | user check-in that calibrates the usage estimate | `usage-estimate` |

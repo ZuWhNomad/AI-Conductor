@@ -104,6 +104,9 @@ request); it can then do the work itself or delegate to budget-scored worker sub
 - **Live stream:** `GET /api/events?since=<seq>` is a Server-Sent-Events feed of all activity
   (`user`, `assistant`, tool results, `status`, `init`). Reconnect with the last `seq` you saw.
 
+A chat may receive a restart note describing recovered tasks; it is also supplied to the next turn. Await those tasks
+instead of delegating them again.
+
 ```bash
 # one-shot status
 curl -s "$BASE/api/sessions/$SID" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log(j.status, (j.messages||[]).length+' msgs')})"
@@ -154,7 +157,7 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
      Pin a model only with a reason.
    - Verify the diff yourself; `follow_up` for fix rounds; to escalate, `delegate` with `retry_of` set to the **last
      follow-up task's id** (its spent rounds trip the escalation); `rate_task` the original task id.
-   - A report saying `failed over to task <id>` means await that id.
+   - `await_task` follows `failedOverTo` automatically when a task fails over to another provider.
    - `avoid_families` takes model families — `claude`, `gpt` (Codex/OpenAI), `grok`, `gemini`, `deepseek`, `kimi`,
      `qwen` — not provider ids; an unknown name is silently ignored.
    - Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.
@@ -163,11 +166,14 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
    ends or about an hour passes; a reply ending `(still running — call await_task)` is not final, so call `await_task`
    again. `run_plan` likewise answers "still running" — then call `plan_status`. Run these calls in the background of
    your own harness and read one compact report, instead of polling `/api/tasks`.
+   `await_task` returns early if a park outlasts its wait deadline; set `wait_if_parked: true` to keep waiting through
+   parks until completion or timeout. A `stale` result needs the user's Re-run or Discard decision.
 
 **Raw tasks.** `POST /api/tasks` `{cwd, spec, title?, provider?, model?, effort?, sandbox?, category?, difficulty?}`
 queues one task with **no** auto-pick (it falls back to the configured default worker) and no rating path. Track it with
 `GET /api/tasks/:id` (the report is `result.finalMessage`; `changedFiles`, `diffStat`; statuses `queued`, `running`,
-`parked`, `done`, `failed`, `canceled`) and cancel with `POST /api/tasks/:id/cancel`. Prefer the tools above.
+`parked`, `stale`, `done`, `failed`, `canceled`) and cancel with `POST /api/tasks/:id/cancel`. Stale tasks wait for the
+user: `POST /api/tasks/:id/rerun` queues one again; Discard uses cancel. Prefer the tools above.
 
 ## Optional: a `/conductor` skill for Claude Code
 
