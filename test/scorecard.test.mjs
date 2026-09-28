@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { appendNdjson, statePath, writeJson } from '../core/paths.mjs';
 
 // Registries are loaded at import time: seed them before importing the scorecard.
-writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' }, ollama: { status: 'ok' } }, models: [
-  { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' }, deepseek: { status: 'ok' } }, models: [
+  { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api' },
   { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
   { provider: 'codex', id: 'gpt-5.6-terra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
   { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
@@ -24,6 +24,8 @@ const sc = await import('../core/scorecard.mjs');
 const pr = await import('../core/priors.mjs');
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
 const { getModels } = await import('../core/models.mjs');
+// Explicit fixture class and zero price keep routing/cost scenarios independent of a local provider.
+saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, prices: { 'deepseek:deepseek-chat': { in: 0, out: 0, cached: 0 } } } });
 const registryModels = (t, models) => {
   const reg = getModels(), previous = reg.models;
   reg.models = [...previous, ...models.map(([provider, id]) => ({ provider, id, kind: 'agent' }))];
@@ -42,6 +44,14 @@ const seed = (provider, model, effort, category, difficulty, verdicts, { usage =
   }
   return ids;
 };
+
+test('ledger rows for a removed provider cannot be routed', () => {
+  const source = 'removed-provider-ledger';
+  run({ id: source, source, provider: 'ollama', model: 'old-local', effort: null, category: 'review', difficulty: 2 });
+  sc.rateTask(source, 'pass');
+  const reg = { providers: { ollama: { status: 'ok' } }, models: [{ provider: 'ollama', id: 'old-local', kind: 'agent' }] };
+  assert.equal(sc.recommend({ category: 'review', difficulty: 2, source, reg, overflowApi: true }), null);
+});
 
 test('envFailure identifies provider and CLI environment failures without scanning report prose', () => {
   for (const error of [
@@ -82,7 +92,7 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('grok', 'grok-4.6', 'debug').tier, 'D');
   assert.equal(pr.priorFor('claude', 'claude-fable-5-1[1m]').tier, 'A');
   assert.equal(pr.priorFor('antigravity', 'gemini-3.8-flash-low').tier, 'A');
-  assert.equal(pr.priorFor('ollama', 'qwen3.8:latest').price.in, 0);
+  assert.equal(pr.priorFor('deepseek', 'deepseek-chat:latest').price.in, 0.3);
   assert.equal(pr.priorFor('codex', 'gpt-5.3-codex-spark').price, null);
   assert.equal(pr.priorFor('nope', 'x'), null);
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.6-luna'), { in: 0.2, out: 1.2, cached: 0.02 });
@@ -91,13 +101,11 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.deepEqual(pr.priceFor('codex', 'gpt-6-luna', {}), { in: 0.1, out: 0.5, cached: 0.01 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.7-build-fast', {}), { in: 4, out: 12, cached: 1 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
-  assert.deepEqual(pr.priceFor('xai', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.5', {}), { in: 2, out: 6, cached: 0.3 });
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5', {}), { in: 4, out: 20, cached: 0.2 });
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5[1m]', {}), { in: 4, out: 20, cached: 0.2 });
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5', {}), { in: 5, out: 25, cached: 0.5 });
   assert.equal(pr.priceFor('antigravity', 'gpt-oss-120b', {}), null);
-  assert.equal(pr.priceFor('qwen-code', 'qwen3-coder-flash', {}), null);
   assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 3 } } } }), { in: 1, out: 2, cached: 0.1, write: 3 });
@@ -207,7 +215,6 @@ test('fix rounds fold into an attempt; retries fold attempts into a chain with t
   run({ id: 'signin', category: 'edit', status: 'failed' });
   assert.equal(sc.rateTask('signin', 'void', 'codex 401').op, 'void');
   assert.equal(sc.rootRuns().find((r) => r.taskId === 'signin'), undefined);
-  assert.equal(sc.recordRun({ id: 'img', imageOptions: {} }), null);
   assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
 });
 
@@ -248,7 +255,7 @@ test('summarize: single-step rows count every attempt, path rows count observed 
 });
 
 test('recommend: value not cheapness — a dearer model wins only when its extra quality is worth it', () => {
-  saveConfig({ scorecard: { minSamples: 3, providerWeight: { codex: 1, claude: 1, ollama: 0 }, reservePct: 0 } }); // list-price economics for this scenario
+  saveConfig({ scorecard: { minSamples: 3, providerWeight: { codex: 1, claude: 1, deepseek: 0 }, reservePct: 0 } }); // list-price economics for this scenario
   // implement@2: Luna 0.8 quality (~$0.023/task), Terra 1.0 quality (10x the tokens price: ~$0.23), Astra 1.0 (~$1.15)
   seed('codex', 'gpt-5.6-luna', 'low', 'implement', 2, ['pass', 'pass', 'pass', 'fixable', 'fail']);
   seed('codex', 'gpt-5.6-terra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']);
@@ -294,11 +301,11 @@ test('recommend: value not cheapness — a dearer model wins only when its extra
   assert.match(sc.recommend({ category: 'implement', difficulty: 4 }).reason, /extrapolated from level 3/);
 
   // free local model: $0 -> wins as soon as it clears the bar with enough samples
-  seed('ollama', 'qwen', null, 'implement', 2, ['pass', 'pass']);
+  seed('deepseek', 'deepseek-chat', null, 'implement', 2, ['pass', 'pass']);
   assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).model, 'gpt-5.6-terra');
-  seed('ollama', 'qwen', null, 'implement', 2, ['pass']);
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).provider, 'ollama');
-  // ...unless wall clock is priced: qwen took 1000 ms like the others here, so make it slow
+  seed('deepseek', 'deepseek-chat', null, 'implement', 2, ['pass']);
+  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).provider, 'deepseek');
+  // ...unless wall clock is priced: deepseek-chat took 1000 ms like the others here, so make it slow
   assert.equal(sc.recommend({ category: 'docs', difficulty: 1 }), null);
 
   const text = sc.formatScores();
@@ -309,31 +316,31 @@ test('recommend: value not cheapness — a dearer model wins only when its extra
 });
 
 test('escalate picks the highest measured quality, not the next cheap rung', () => {
-  // implement@2 after seeding: Terra (1.0, $0.23), Astra (1.0, $1.15), qwen (1.0, $0) -> value pick is qwen; escalation ties on quality, then utility -> still qwen;
+  // implement@2 after seeding: Terra (1.0, $0.23), Astra (1.0, $1.15), deepseek-chat (1.0, $0) -> value pick is deepseek-chat; escalation ties on quality, then utility -> still deepseek-chat;
   // exclude the free one and Terra: value pick would be a Luna-first ladder, escalation goes straight to Astra alone.
-  const r = sc.recommend({ category: 'implement', difficulty: 2, exclude: ['ollama:qwen', 'codex:gpt-5.6-terra'], escalate: true });
+  const r = sc.recommend({ category: 'implement', difficulty: 2, exclude: ['deepseek:deepseek-chat', 'codex:gpt-5.6-terra'], escalate: true });
   assert.deepEqual(r.plan.steps, ['codex:gpt-6-astra:medium']);
   assert.match(r.reason, /escalation/);
 });
 
 test('escalation ranks live evidence count across classes', () => {
-  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, providerWeight: { ollama: 0, codex: 0.6, claude: 1 }, classes: { codex: 'subscription' }, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
+  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, providerWeight: { deepseek: 0, codex: 0.6, claude: 1 }, classes: { codex: 'subscription', deepseek: 'free' }, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
   // A free model with five live attempts and a subscription model with three perfect attempts.
-  seed('ollama', 'qwen', null, 'test', 2, ['pass', 'pass', 'pass', 'pass', 'fail']);
+  seed('deepseek', 'deepseek-chat', null, 'test', 2, ['pass', 'pass', 'pass', 'pass', 'fail']);
   seed('codex', 'gpt-6-astra', 'medium', 'test', 2, ['pass', 'pass', 'pass']);
   const value = sc.recommend({ category: 'test', difficulty: 2 });
-  assert.equal(value.provider, 'ollama'); assert.equal(value.class, 'free');       // best value: free class wins the class walk
+  assert.equal(value.provider, 'deepseek'); assert.equal(value.class, 'free');       // best value: free class wins the class walk
   const esc = sc.recommend({ category: 'test', difficulty: 2, escalate: true });
-  assert.equal(esc.provider, 'ollama'); assert.equal(esc.model, 'qwen');             // five live attempts outrank Astra's three
+  assert.equal(esc.provider, 'deepseek'); assert.equal(esc.model, 'deepseek-chat');             // five live attempts outrank Astra's three
   assert.equal(esc.plan.steps.length, 1);
   assert.match(esc.reason, /escalation: strongest evidence/);
 });
 
 test('recommend alternatives exclude the chosen plan', () => {
   const prev = loadConfig().scorecard;
-  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, minSamples: 1, providerWeight: { ollama: 0, codex: 0.6 }, classes: { ollama: 'free', codex: 'subscription' }, classOrder: ['subscription', 'free'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
+  saveConfig({ scorecard: { qualityValueUsd: 5, reservePct: 0, minSamples: 1, providerWeight: { deepseek: 0, codex: 0.6 }, classes: { deepseek: 'free', codex: 'subscription' }, classOrder: ['subscription', 'free'], classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
   try {
-    seed('ollama', 'qwen', null, 'debug', 2, ['pass', 'pass', 'pass']);
+    seed('deepseek', 'deepseek-chat', null, 'debug', 2, ['pass', 'pass', 'pass']);
     seed('codex', 'gpt-6-astra', 'medium', 'debug', 2, ['pass', 'pass', 'pass']);
     const r = sc.recommend({ category: 'debug', difficulty: 2 });
     assert.equal(r.provider, 'codex');
@@ -341,7 +348,7 @@ test('recommend alternatives exclude the chosen plan', () => {
     const chosen = r.plan.steps.join(' then on fail ') + ':';
     assert.ok(r.alternatives.length);
     for (const a of r.alternatives) assert.ok(!a.startsWith(chosen), a);
-    assert.ok(r.alternatives.some((a) => a.startsWith('ollama:qwen')), r.alternatives.join('\n'));
+    assert.ok(r.alternatives.some((a) => a.startsWith('deepseek:deepseek-chat')), r.alternatives.join('\n'));
   } finally { saveConfig({ scorecard: prev }); }
 });
 
@@ -384,9 +391,9 @@ test('prior fallback routes by public tier only when enabled', () => {
   const r = sc.recommend({ category: 'design', difficulty: 5 });
   assert.equal(r.model, 'gpt-6-astra'); // only tier A among the seeded registry models with a price (Astra $10/$50)
   assert.match(r.reason, /prior only/);
-  assert.equal(sc.recommend({ category: 'design', difficulty: 2 }).model, 'gpt-5.6-luna'); // reason tier B covers 3; cheapest priced (qwen: tier D)
-  assert.equal(sc.recommend({ category: 'summarize', difficulty: 2 }).model, 'gpt-5.6-terra'); // Luna's read tier is D: long-context recall
-  assert.equal(sc.recommend({ category: 'design', difficulty: 1 }).provider, 'ollama');    // tier D covers 1; $0
+  assert.equal(sc.recommend({ category: 'design', difficulty: 2 }).model, 'deepseek-chat'); // reason tier B covers 3; cheapest priced (deepseek-chat: tier D)
+  assert.equal(sc.recommend({ category: 'summarize', difficulty: 2 }).model, 'deepseek-chat'); // Luna's read tier is D: long-context recall
+  assert.equal(sc.recommend({ category: 'design', difficulty: 1 }).provider, 'deepseek');    // tier D covers 1; $0
   saveConfig({ scorecard: { usePriors: false } });
 });
 
@@ -479,12 +486,12 @@ test('provider weight: included subscriptions are near-free until their window f
   assert.equal(sc.recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'codex');                // blocked provider excluded outright
   lim.getLimits().providers.deepseek = { provider: 'deepseek', blocked: false, windows: [] };
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] };
-  saveConfig({ scorecard: { providerWeight: { ollama: 0, codex: 0.2, antigravity: 0.2, grok: 0.2, kimi: 0.2, 'qwen-code': 0.2, claude: 1 }, classes: { codex: 'subscription', deepseek: 'api' } } });
+  saveConfig({ scorecard: { providerWeight: { deepseek: 0, codex: 0.2, antigravity: 0.2, grok: 0.2, claude: 1 }, classes: { codex: 'subscription', deepseek: 'api' } } });
 });
 
 test('default reservation holds capacity proven at high levels back for high levels; the cheap tier does the grunt work', () => {
   // Two providers with identical list cost and quality at level 1: antigravity (weight 0.1, ceiling 1) vs codex Terra (weight 0.6, ceiling 4).
-  saveConfig({ scorecard: { prices: { 'antigravity:flash': { in: 2, out: 12, cached: 0.2 } }, providerWeight: { antigravity: 0.1, codex: 0.6, claude: 1, ollama: 0 }, reservePct: null } });
+  saveConfig({ scorecard: { prices: { 'antigravity:flash': { in: 2, out: 12, cached: 0.2 } }, providerWeight: { antigravity: 0.1, codex: 0.6, claude: 1, deepseek: 0 }, reservePct: null } });
   seed('antigravity', 'flash', null, 'docs', 1, ['pass', 'pass', 'pass']);
   seed('codex', 'gpt-5.6-terra', 'low', 'docs', 1, ['pass', 'pass', 'pass']);
   seed('codex', 'gpt-5.6-terra', 'low', 'docs', 4, ['pass', 'pass', 'pass']);
@@ -495,12 +502,11 @@ test('default reservation holds capacity proven at high levels back for high lev
   // when antigravity proves level 4 too, it earns the same reservation (nothing hard-coded to a name)
   seed('antigravity', 'flash', null, 'docs', 4, ['pass', 'pass', 'pass']);
   assert.equal(sc.recommend({ category: 'docs', difficulty: 4 }).provider, 'antigravity');
-  saveConfig({ scorecard: { providerWeight: { ollama: 0, antigravity: 0.1, grok: 0.1, kimi: 0.1, 'qwen-code': 0.1, deepseek: 0.3, codex: 0.6, claude: 1 }, classes: { codex: 'subscription' } } });
+  saveConfig({ scorecard: { providerWeight: { antigravity: 0.1, grok: 0.1, deepseek: 0.3, codex: 0.6, claude: 1 }, classes: { codex: 'subscription' } } });
 });
 
 test('class walk: the first budget class proven at the level wins; capped classes are skipped; APIs only with overflow', async () => {
   saveConfig({ scorecard: { classes: { codex: 'subscription' }, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classCap: { included: 95, subscription: 80, conductor: 95 }, reservePct: 0, prices: { 'antigravity:flash': { in: 2, out: 12, cached: 0.2 }, 'deepseek:deepseek-flash': { in: 0.3, out: 1.2, cached: 0.006 } } } });
-  assert.equal(sc.providerClass('ollama'), 'free');
   assert.equal(sc.providerClass('antigravity'), 'included');
   assert.equal(sc.providerClass('codex'), 'subscription');
   assert.equal(sc.providerClass('claude'), 'conductor');
@@ -527,23 +533,23 @@ test('class walk: the first budget class proven at the level wins; capped classe
   assert.equal(sc.recommend({ category: 'refactor', difficulty: 2, overflowApi: true }).provider, 'deepseek'); // overflow on -> API class
   lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: [] };
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] };
-  saveConfig({ scorecard: { reservePct: 0.5, classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
+  saveConfig({ scorecard: { reservePct: 0.5, classes: { deepseek: 'free' }, classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
 });
 
 test('bench: lists models with no battery or a stale one', async () => {
   const { BENCH_TASK_IDS, dueForBench, formatBench } = await import('../core/bench.mjs');
-  const reg = { updatedAt: 'x', providers: { codex: { status: 'ok' }, ollama: { status: 'ok' }, kimi: { status: 'unavailable' } }, models: [
+  const reg = { updatedAt: 'x', providers: { codex: { status: 'ok' }, deepseek: { status: 'ok' }, grok: { status: 'unavailable' } }, models: [
     { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low', 'high'] },
     { provider: 'codex', id: 'brand-new', kind: 'agent', efforts: ['low'] },
-    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local', efforts: [] },
-    { provider: 'kimi', id: 'kimi-k3', kind: 'agent', efforts: [] },
+    { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api', efforts: [] },
+    { provider: 'grok', id: 'grok-4.7', kind: 'agent', efforts: [] },
   ] };
   const attempt = (effort, smokeId, i) => ({ provider: 'codex', model: 'gpt-5.6-luna', effort, smokeId, verdict: 'pass', ts: new Date(Date.now() - i).toISOString() });
   const runs = [{ attempts: BENCH_TASK_IDS.slice(0, 8).map((id, i) => attempt('low', id, i)).concat(BENCH_TASK_IDS.slice(0, 7).map((id, i) => attempt('high', id, i))) }];
   const due = dueForBench({ days: 21, reg, runs });
-  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}:${d.effort}`), ['codex:brand-new:low', 'codex:gpt-5.6-luna:high']);
-  assert.match(formatBench(due), /2 selection\(s\) due/);
-  assert.equal(dueForBench({ days: -1, reg, runs }).length, 3); // covered low is stale; local and ignored providers remain excluded
+  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}:${d.effort}`), ['codex:brand-new:low', 'codex:gpt-5.6-luna:high', 'deepseek:deepseek-chat:null']);
+  assert.match(formatBench(due), /3 selection\(s\) due/);
+  assert.equal(dueForBench({ days: -1, reg, runs }).length, 4); // the covered low effort becomes stale
 });
 
 test("the conductor's plan is capped on its session window only; weekly (Fable weekly included) may run to 100%", async () => {
@@ -910,26 +916,26 @@ test('short view: every category@level is a compact pick, capped cell, or no-dat
 });
 
 test('B1: a winning observed ladder dispatches its exact first worker, including tagged model IDs', (t) => {
-  registryModels(t, [['ollama', 'qwen3.8:latest']]);
+  registryModels(t, [['deepseek', 'deepseek-chat:latest']]);
   for (const effort of [null, 'high']) {
     const source = `B1-${effort}`;
     for (const i of [1, 2, 3]) {
       const id = `${source}-${i}`;
-      run({ id, source, provider: 'ollama', model: 'qwen3.8:latest', effort, category: 'edit' });
+      run({ id, source, provider: 'deepseek', model: 'deepseek-chat:latest', effort, category: 'edit' });
       sc.rateTask(id, 'fail');
       run({ id: `${id}-retry`, source, retryOf: id, model: 'gpt-5.6-terra', effort: 'medium', category: 'edit' });
       sc.rateTask(`${id}-retry`, 'pass');
     }
     const r = sc.recommend({ category: 'edit', difficulty: 2, source });
     assert.equal(r.plan.estimated, false);
-    assert.deepEqual(r.plan.steps, [`ollama:qwen3.8:latest:${effort || 'default'}`, 'codex:gpt-5.6-terra:medium']);
-    assert.deepEqual({ provider: r.provider, model: r.model, effort: r.effort }, { provider: 'ollama', model: 'qwen3.8:latest', effort });
+    assert.deepEqual(r.plan.steps, [`deepseek:deepseek-chat:latest:${effort || 'default'}`, 'codex:gpt-5.6-terra:medium']);
+    assert.deepEqual({ provider: r.provider, model: r.model, effort: r.effort }, { provider: 'deepseek', model: 'deepseek-chat:latest', effort });
     assert.deepEqual(r.fallback, { provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium' });
   }
 });
 
-test('B6: observed mixed-provider costs are weighted per step, including paid then local and pooled levels', async (t) => {
-  registryModels(t, [['claude', 'paid'], ['codex', 'fallback'], ['ollama', 'local:latest']]);
+test('B6: observed mixed-provider costs are weighted per step, including paid then API and pooled levels', async (t) => {
+  registryModels(t, [['claude', 'paid'], ['codex', 'fallback'], ['deepseek', 'local:latest']]);
   const cfg = loadConfig().scorecard;
   const { getLimits } = await import('../core/limits.mjs');
   const limits = getLimits();
@@ -937,12 +943,12 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
   const now = Date.now();
   t.mock.method(Date, 'now', () => now);
   try {
-    saveConfig({ scorecard: { minSamples: 3, classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, ollama: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'ollama:local:latest': { in: 1, out: 0, cached: 0 } } } });
+    saveConfig({ scorecard: { minSamples: 3, classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, deepseek: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'deepseek:local:latest': { in: 1, out: 0, cached: 0 } } } });
     limits.providers.claude = { windows: [] };
-    limits.providers.ollama = { windows: [] };
+    limits.providers.deepseek = { windows: [] };
     limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 20, resetsAt: now + 6 * 3600e3 }] };
-    for (const provider of ['ollama', 'codex']) {
-      const source = `B6-${provider}`, model = provider === 'ollama' ? 'local:latest' : 'fallback';
+    for (const provider of ['deepseek', 'codex']) {
+      const source = `B6-${provider}`, model = provider === 'deepseek' ? 'local:latest' : 'fallback';
       for (const i of [1, 2, 3]) {
         const id = `${source}-${i}`, difficulty = i === 1 ? 2 : 3;
         run({ id, source, provider: 'claude', model: 'paid', effort: null, category: 'edit', difficulty, result: { usage: { input_tokens: i * 1e6 }, durationMs: i * 1000 } });
@@ -961,9 +967,9 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
       assert.deepEqual(r.plan.steps, ['claude:paid:default', `${provider}:${model}:default`]);
       assert.equal(r.plan.estimated, false);
       const paid = 2 * 0.5 * (1 + 0.5 * 0.5 * (5 - 2)) + 0.002; // hourly is not scaled by weight/reserve/waste
-      const fallback = provider === 'ollama' ? 0.004 : 4 * 0.2 * (1 - 0.9) + 0.004; // inner waste step; thin cells do not establish a provider ceiling
+      const fallback = provider === 'deepseek' ? 0.004 : 4 * 0.2 * (1 - 0.9) + 0.004; // inner waste step; thin cells do not establish a provider ceiling
       assert.ok(Math.abs(r.plan.usd - paid - fallback) < 1e-9, `${provider}: ${r.plan.usd} vs ${paid + fallback}`);
-      assert.deepEqual(summary.filter((g) => g.steps === 2).map((g) => g.avgUsd), [3, 7.5], 'display keeps raw shadow dollars');
+      assert.deepEqual(summary.filter((g) => g.steps === 2).map((g) => g.avgUsd), provider === 'deepseek' ? [2, 5] : [3, 7.5], 'display keeps raw shadow dollars');
     }
   } finally {
     saveConfig({ scorecard: cfg });
@@ -1001,16 +1007,16 @@ test('B4: extrapolated cheap-first ladders require an unfailed final worker', ()
       const source = `B4-ladder-${observed}`;
       for (const i of [1, 2, 3]) {
         const id = `${source}-${i}`;
-        run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'edit', difficulty: 2 });
+        run({ id, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'edit', difficulty: 2 });
         sc.rateTask(id, observed ? 'fail' : 'pass');
         run({ id: `${id}-fallback`, source, retryOf: observed ? id : null, model: 'gpt-5.6-terra', effort: 'medium', category: 'edit', difficulty: 2 });
         sc.rateTask(`${id}-fallback`, 'pass');
-        run({ id: `${id}-fail`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'edit', difficulty: 3 });
+        run({ id: `${id}-fail`, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'edit', difficulty: 3 });
         sc.rateTask(`${id}-fail`, 'fail');
       }
       const request = { category: 'edit', difficulty: 3, source };
       const ladder = sc.recommend(request);
-      assert.deepEqual(ladder.plan.steps, ['ollama:qwen:default', 'codex:gpt-5.6-terra:medium']);
+      assert.deepEqual(ladder.plan.steps, ['deepseek:deepseek-chat:default', 'codex:gpt-5.6-terra:medium']);
       assert.equal(ladder.plan.estimated, !observed);
       assert.match(ladder.reason, /extrapolated from level 2/);
       for (const i of [1, 2, 3]) {
@@ -1035,72 +1041,74 @@ test('B5: prior fallback honors exact-effort and whole-model exclusions', () => 
       assert.equal(sc.selOf(sc.recommend({ ...request, exclude: [excluded] })), 'codex:gpt-5.6-terra:medium');
     }
     assert.equal(sc.selOf(sc.recommend({ ...request, exclude: ['codex:gpt-5.6-luna:low'] })), 'codex:gpt-5.6-luna:medium', 'another effort is not excluded');
-    const local = { ...request, difficulty: 1, providers: ['ollama'] };
-    assert.equal(sc.selOf(sc.recommend(local)), 'ollama:qwen:default');
-    assert.equal(sc.recommend({ ...local, exclude: ['ollama:qwen:default'] }), null, 'models without effort use the canonical default selection');
+    const local = { ...request, difficulty: 1, providers: ['deepseek'] };
+    assert.equal(sc.selOf(sc.recommend(local)), 'deepseek:deepseek-chat:default');
+    assert.equal(sc.recommend({ ...local, exclude: ['deepseek:deepseek-chat:default'] }).model, 'deepseek-flash', 'models without effort use the canonical default selection');
   } finally {
     saveConfig({ scorecard: cfg });
   }
 });
 
 test('R2H1: tagged measured selections honor whole-model exclusions and scoped quotas', async (t) => {
-  registryModels(t, [['ollama', 'qwen3.8:latest']]);
+  registryModels(t, [['deepseek', 'deepseek-chat:latest']]);
   const { getLimits } = await import('../core/limits.mjs');
-  const limits = getLimits(), previous = limits.providers.ollama;
+  const limits = getLimits(), previous = limits.providers.deepseek;
   const cfg = loadConfig().scorecard;
   const source = 'R2H1';
   try {
     saveConfig({ scorecard: { usePriors: false } });
-    limits.providers.ollama = { windows: [] };
+    limits.providers.deepseek = { windows: [] };
     for (const i of [1, 2, 3]) {
-      run({ id: `${source}-${i}`, source, provider: 'ollama', model: 'qwen3.8:latest', effort: 'high' });
+      run({ id: `${source}-${i}`, source, provider: 'deepseek', model: 'deepseek-chat:latest', effort: 'high' });
       sc.rateTask(`${source}-${i}`, 'pass');
-      run({ id: `${source}-other-${i}`, source, provider: 'ollama', model: 'qwen', effort: null });
+      run({ id: `${source}-other-${i}`, source, provider: 'deepseek', model: 'deepseek-chat', effort: null });
       sc.rateTask(`${source}-other-${i}`, 'pass');
     }
-    const request = { category: 'implement', difficulty: 2, source, exclude: ['ollama:qwen'] };
-    assert.equal(sc.recommend(request).model, 'qwen3.8:latest');
-    for (const excluded of ['ollama:qwen3.8:latest', 'ollama:qwen3.8:latest:high']) {
+    const request = { category: 'implement', difficulty: 2, source, exclude: ['deepseek:deepseek-chat'] };
+    assert.equal(sc.recommend(request).model, 'deepseek-chat:latest');
+    for (const excluded of ['deepseek:deepseek-chat:latest', 'deepseek:deepseek-chat:latest:high']) {
       assert.equal(sc.recommend({ ...request, exclude: [...request.exclude, excluded] }), null);
     }
-    assert.equal(sc.recommend({ ...request, exclude: [...request.exclude, 'ollama:qwen3.8:latest:low'] }).model, 'qwen3.8:latest');
-    limits.providers.ollama.windows = [{ id: 'tagged', models: ':latest$', usedPercent: 100, resetsAt: Date.now() + 60_000 }];
+    assert.equal(sc.recommend({ ...request, exclude: [...request.exclude, 'deepseek:deepseek-chat:latest:low'] }).model, 'deepseek-chat:latest');
+    limits.providers.deepseek.windows = [{ id: 'tagged', models: ':latest$', usedPercent: 100, resetsAt: Date.now() + 60_000 }];
     assert.equal(sc.recommend(request), null, 'full tagged-model window blocks the measured selection');
-    assert.equal(sc.recommend({ ...request, exclude: [] }).model, 'qwen', 'unmetered model stays usable');
-    limits.providers.ollama.windows[0].usedPercent = 0;
-    limits.providers.ollama.windows[0].status = 'rejected';
+    assert.equal(sc.recommend({ ...request, exclude: [] }).model, 'deepseek-chat', 'unmetered model stays usable');
+    limits.providers.deepseek.windows[0].usedPercent = 0;
+    limits.providers.deepseek.windows[0].status = 'rejected';
     assert.equal(sc.recommend(request), null, 'rejected scoped window also blocks');
-    limits.providers.ollama.windows[0].resetsAt = Date.now() - 1;
-    assert.equal(sc.recommend(request).model, 'qwen3.8:latest', 'expired scoped windows do not block');
-  } finally { limits.providers.ollama = previous; saveConfig({ scorecard: cfg }); }
+    limits.providers.deepseek.windows[0].resetsAt = Date.now() - 1;
+    assert.equal(sc.recommend(request).model, 'deepseek-chat:latest', 'expired scoped windows do not block');
+  } finally { limits.providers.deepseek = previous; saveConfig({ scorecard: cfg }); }
 });
 
 test('R2B2: every measured plan step must remain usable in the registry, including aliases', async () => {
   const { getModels } = await import('../core/models.mjs');
+// Explicit fixture class and zero price keep routing/cost scenarios independent of a local provider.
+saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, prices: { 'deepseek:deepseek-chat': { in: 0, out: 0, cached: 0 } } } });
   const { getLimits } = await import('../core/limits.mjs');
   const reg = getModels(), limits = getLimits();
   const previous = { models: reg.models, providers: reg.providers, limits: limits.providers };
   const cfg = loadConfig().scorecard;
-  const local = 'ollama:qwen:default', remote = 'codex:gpt-5.6-terra:medium';
+  const local = 'deepseek:deepseek-chat:default', remote = 'codex:gpt-5.6-terra:medium';
   const cell = (steps) => ({ sel: steps.join('>'), steps: steps.length, provider: steps.length === 1 ? steps[0].split(':')[0] : undefined,
     category: 'edit', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 });
   try {
     saveConfig({ scorecard: { usePriors: false } });
-    reg.models = [{ provider: 'ollama', id: 'qwen', kind: 'agent' }, { provider: 'codex', id: 'terra-alias', resolved: 'gpt-5.6-terra', kind: 'agent' }];
-    reg.providers = { ollama: { status: 'ok' }, codex: { status: 'ok' } };
+    reg.models = [{ provider: 'deepseek', id: 'deepseek-chat', kind: 'agent' }, { provider: 'codex', id: 'terra-alias', resolved: 'gpt-5.6-terra', kind: 'agent' }];
+    reg.providers = { deepseek: { status: 'ok' }, codex: { status: 'ok' } };
     limits.providers = {};
     const pick = (summary) => sc.recommend({ category: 'edit', difficulty: 2, summary });
     assert.equal(pick([cell([remote])]).model, 'gpt-5.6-terra', 'resolved registry aliases are usable');
     for (const steps of [[local], [local, remote], [remote, local]]) {
       const summary = [cell(steps)];
       assert.ok(pick(summary), `available plan ${steps}`);
-      reg.providers.ollama.status = 'unavailable';
+      reg.providers.deepseek.status = 'unavailable';
       assert.equal(pick(summary), null, `unavailable provider anywhere in ${steps}`);
-      reg.providers.ollama.status = 'error';
+      reg.providers.deepseek.status = 'error';
       assert.ok(pick(summary), 'transient errors retain cached measured models');
-      delete reg.providers.ollama;
+      delete reg.providers.deepseek;
       assert.ok(pick(summary), 'unknown provider status does not reject a listed measured model');
-      reg.providers.ollama = { status: 'ok' };
+      reg.providers.deepseek = { status: 'ok' };
       const model = reg.models.shift();
       assert.equal(pick(summary), null, `removed model anywhere in ${steps}`);
       reg.models.unshift(model);
@@ -1108,7 +1116,7 @@ test('R2B2: every measured plan step must remain usable in the registry, includi
       assert.equal(pick(summary), null, 'non-agent entries cannot execute a measured worker plan');
       model.kind = 'agent';
     }
-    reg.providers.ollama.status = 'unavailable';
+    reg.providers.deepseek.status = 'unavailable';
     assert.equal(pick([cell([local]), cell([remote])]).provider, 'codex', 'qualified available alternative wins');
   } finally { reg.models = previous.models; reg.providers = previous.providers; limits.providers = previous.limits; saveConfig({ scorecard: cfg }); }
 });
@@ -1171,11 +1179,11 @@ test('D7: a run with no reported usage is unknown cost, except a zero list price
   assert.equal(missing.attempts[0].usd, null);
   assert.equal(sc.summarize({ source: 'D7-missing' }).find((g) => g.sel === 'codex:gpt-5.6-luna:low').avgUsd, null);
 
-  run({ id: 'D7-local', source: 'D7-local', provider: 'ollama', model: 'qwen', effort: null, category: 'read', difficulty: 1, result: { durationMs: 1000 } });
+  run({ id: 'D7-local', source: 'D7-local', provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'read', difficulty: 1, result: { durationMs: 1000 } });
   sc.rateTask('D7-local', 'pass');
   const local = sc.rootRuns({ source: 'D7-local' }).find((c) => c.taskId === 'D7-local');
   assert.equal(local.usd, 0);
-  assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'ollama').avgUsd, 0);
+  assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'deepseek').avgUsd, 0);
 });
 
 test('A2: Claude uses reported list cost, cells expose priced share, and chains estimate known steps', () => {
@@ -1302,12 +1310,12 @@ test('B5: provenButCapped honors the caller providers allow-list so a blocked ex
     for (const i of [1, 2, 3]) {
       run({ id: `${source}-codex-${i}`, source, provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 4 });
       sc.rateTask(`${source}-codex-${i}`, 'pass');
-      run({ id: `${source}-ollama-${i}`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'implement', difficulty: 2 });
-      sc.rateTask(`${source}-ollama-${i}`, 'pass');
+      run({ id: `${source}-deepseek-${i}`, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'implement', difficulty: 2 });
+      sc.rateTask(`${source}-deepseek-${i}`, 'pass');
     }
     limits.providers.codex = { ...(previous || {}), provider: 'codex', blocked: true, blockedUntil: Date.now() + 3.6e6, windows: previous?.windows || [] };
-    const r = sc.recommend({ category: 'implement', difficulty: 4, source, providers: ['ollama'] });
-    assert.equal(r.provider, 'ollama');
+    const r = sc.recommend({ category: 'implement', difficulty: 4, source, providers: ['deepseek'] });
+    assert.equal(r.provider, 'deepseek');
     assert.match(r.reason, /extrapolated from level 2/);
   } finally {
     limits.providers.codex = previous;
@@ -1316,16 +1324,16 @@ test('B5: provenButCapped honors the caller providers allow-list so a blocked ex
 });
 
 test('B1: effort dominance uses parseSel so model ids containing a colon still dominate', (t) => {
-  registryModels(t, [['ollama', 'qwen3.8:latest']]);
+  registryModels(t, [['deepseek', 'deepseek-chat:latest']]);
   const cfg = loadConfig().scorecard;
   saveConfig({ scorecard: { usePriors: false, reservePct: 0, effortSlackUsd: 0.01, effortSlackPct: 10 } });
   t.after(() => saveConfig({ scorecard: cfg }));
   const cell = (effort) => ({
-    sel: `ollama:qwen3.8:latest:${effort}`, steps: 1, provider: 'ollama', model: 'qwen3.8:latest', effort,
+    sel: `deepseek:deepseek-chat:latest:${effort}`, steps: 1, provider: 'deepseek', model: 'deepseek-chat:latest', effort,
     category: 'docs', difficulty: 1, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0, avgDurationMs: 0,
   });
   const r = sc.recommend({ category: 'docs', difficulty: 1, summary: [cell('low'), cell('high')] });
-  assert.equal(r.model, 'qwen3.8:latest');
+  assert.equal(r.model, 'deepseek-chat:latest');
   assert.equal(r.effort, 'high');
 });
 
@@ -1385,9 +1393,9 @@ test('GP2: a no-usage attempt does not poison group avgUsd or the pick', () => {
     run({ id: `${source}-spark`, source, provider: 'codex', model: 'gpt-5.3-codex-spark', effort: 'low', category: 'search', difficulty: 1, result: { usage: USAGE, durationMs: 1000 } });
     sc.rateTask(`${source}-spark`, 'pass');
     assert.equal(sc.summarize({ source }).find((g) => /spark/.test(g.sel)).avgUsd, null, 'no list price stays cost-unknown');
-    run({ id: `${source}-local`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'search', difficulty: 1, result: { durationMs: 1000 } });
+    run({ id: `${source}-local`, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'search', difficulty: 1, result: { durationMs: 1000 } });
     sc.rateTask(`${source}-local`, 'pass');
-    assert.equal(sc.summarize({ source }).find((g) => g.provider === 'ollama').avgUsd, 0);
+    assert.equal(sc.summarize({ source }).find((g) => g.provider === 'deepseek').avgUsd, 0);
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
@@ -1398,7 +1406,7 @@ test('H2/B1: estimated ladder is pushed only when combined quality clears the ba
     saveConfig({ scorecard: { usePriors: false, minSamples: 3, quality: 0.75, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0 } });
     for (const v of ['fixable', 'fixable', 'fixable']) {
       const id = `${source}-local-${++n}`;
-      run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'search', difficulty: 2 });
+      run({ id, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'search', difficulty: 2 });
       sc.rateTask(id, v);
     }
     for (const v of ['pass', 'pass', 'fixable']) {
@@ -1562,10 +1570,10 @@ test('B7: a class not listed in classOrder is not eligible (no any-plan fallback
   const cfg = loadConfig().scorecard;
   const source = 'B7-class';
   try {
-    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classes: { ollama: 'special' }, classOrder: ['subscription', 'conductor'] } });
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classes: { deepseek: 'special' }, classOrder: ['subscription', 'conductor'] } });
     for (let i = 0; i < 3; i++) {
       const id = `${source}-${i}`;
-      run({ id, source, provider: 'ollama', model: 'qwen', effort: null, category: 'read', difficulty: 2 });
+      run({ id, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'read', difficulty: 2 });
       sc.rateTask(id, 'pass');
     }
     assert.equal(sc.recommend({ category: 'read', difficulty: 2, source }), null, 'unlisted class must not win via fallback');
@@ -1587,20 +1595,20 @@ test('B2: a ledger model no longer in the registry does not veto extrapolation',
   const { getLimits } = await import('../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
-  const prevOllama = limits.providers.ollama;
+  const prevDeepSeek = limits.providers.deepseek;
   const cell = (sel, difficulty, extra = {}) => ({ sel, steps: 1, ...extra, category: 'implement', difficulty, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 });
   const gone = cell('codex:gone:low', 4, { provider: 'codex', model: 'gone', effort: 'low' });
-  const live = cell('ollama:qwen:default', 2, { provider: 'ollama', model: 'qwen', effort: null });
-  const reg = { models: [{ provider: 'ollama', id: 'qwen', kind: 'agent' }], providers: { ollama: { status: 'ok' }, codex: { status: 'ok' } } };
+  const live = cell('deepseek:deepseek-chat:default', 2, { provider: 'deepseek', model: 'deepseek-chat', effort: null });
+  const reg = { models: [{ provider: 'deepseek', id: 'deepseek-chat', kind: 'agent' }], providers: { deepseek: { status: 'ok' }, codex: { status: 'ok' } } };
   try {
-    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classes: { codex: 'subscription', ollama: null } } });
-    limits.providers.ollama = { provider: 'ollama', blocked: false, windows: [] };
+    saveConfig({ scorecard: { usePriors: false, reservePct: 0, classOrder: ['free', 'included', 'subscription', 'conductor', 'api'], classes: { codex: 'subscription', deepseek: 'free' } } });
+    limits.providers.deepseek = { provider: 'deepseek', blocked: false, windows: [] };
     // Removed model stays unusable as a plan (R2B2); it must not freeze provenButCapped either.
     assert.equal(sc.recommend({ category: 'implement', difficulty: 4, summary: [gone], reg }), null);
     const r = sc.recommend({ category: 'implement', difficulty: 4, summary: [gone, live], reg });
-    assert.equal(r.provider, 'ollama');
+    assert.equal(r.provider, 'deepseek');
     assert.match(r.reason, /extrapolated from level 2/);
-  } finally { limits.providers.ollama = prevOllama; saveConfig({ scorecard: cfg }); }
+  } finally { limits.providers.deepseek = prevDeepSeek; saveConfig({ scorecard: cfg }); }
 });
 
 test('B3: each retry attempt is scored under its own category/difficulty; untagged attempts are skipped', () => {
@@ -1684,11 +1692,7 @@ test('P3: rootRuns reuses the runRows size/mtime cache', async (t) => {
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
 
-test('B9: kimi-k2 prior does not match kimi-k2.5', () => {
-  assert.equal(pr.priorFor('kimi', 'kimi-k2').tier, 'D');
-  assert.equal(pr.priorFor('kimi', 'kimi-k2.5'), null);
-  assert.equal(pr.priorFor('kimi', 'kimi-k3').tier, 'A');
-});
+
 
 test('B11: claude opus/default aliases are anchored so 4.x ids use the 4.x rules', () => {
   assert.equal(pr.priorFor('claude', 'opus').tier, 'A');
@@ -1751,8 +1755,8 @@ test('L12: a proven-but-capped level stops extrapolation instead of descending f
     for (let i = 0; i < 3; i++) {
       run({ id: `${source}-terra-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 3 });
       sc.rateTask(`${source}-terra-${i}`, 'pass');
-      run({ id: `${source}-qwen-${i}`, source, provider: 'ollama', model: 'qwen', effort: null, category: 'implement', difficulty: 2 });
-      sc.rateTask(`${source}-qwen-${i}`, 'pass');
+      run({ id: `${source}-deepseek-chat-${i}`, source, provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'implement', difficulty: 2 });
+      sc.rateTask(`${source}-deepseek-chat-${i}`, 'pass');
     }
     const resetAt = Date.now() + 3.6e6;
     const picked = sc.recommend({ category: 'implement', difficulty: 3, source, explain: true });
@@ -1792,7 +1796,7 @@ test('L40: escalation prior fallback sorts by tier, not cheapest price', () => {
   try {
     saveConfig({ scorecard: { usePriors: true } });
     const value = sc.recommend({ category: 'design', difficulty: 2, summary: [] });
-    assert.equal(value.model, 'gpt-5.6-luna', 'value walk still picks the cheapest covering tier');
+    assert.equal(value.model, 'deepseek-chat', 'value walk still picks the cheapest covering tier');
     const esc = sc.recommend({ category: 'design', difficulty: 2, summary: [], escalate: true });
     assert.equal(esc.model, 'gpt-6-astra', 'escalate picks the best public tier');
     assert.match(esc.reason, /prior only/);
@@ -2056,19 +2060,19 @@ test('B10: shipped priors use category then kind then default, with exact config
 
 test('B10: manual eligibility blocks measured and prior picks; latest allow lifts a bench and explains why', () => {
   const cfg = loadConfig().scorecard;
-  const reg = { providers: { fixture: { status: 'ok' } }, models: [{ provider: 'fixture', id: 'manual', kind: 'agent', efforts: ['low'] }] };
-  const sel = 'fixture:manual:low';
+  const reg = { providers: { codex: { status: 'ok' } }, models: [{ provider: 'codex', id: 'manual', kind: 'agent', efforts: ['low'] }] };
+  const sel = 'codex:manual:low';
   try {
     saveConfig({ scorecard: {
       coldStart: 'priors', shippedBatteries: false, minSamples: 1, benchMinSamples: 3,
-      classOrder: ['free'], classes: { fixture: 'free' }, providerWeight: { fixture: 0 },
-      prices: { 'fixture:manual': { in: 1, out: 1 } }, priors: { 'fixture:manual': { default: 'B' } },
+      classOrder: ['free'], classes: { codex: 'free' }, providerWeight: { codex: 0 },
+      prices: { 'codex:manual': { in: 1, out: 1 } }, priors: { 'codex:manual': { default: 'B' } },
     } });
     assert.equal(sc.recommend({ category: 'other', difficulty: 2, summary: [], reg }).model, 'manual');
     assert.match(sc.formatScores({ summary: [] }), /hand-picked prior/);
 
     for (let i = 0; i < 3; i++) {
-      run({ id: `eligibility-fail-${i}`, source: 'eligibility-bench', provider: 'fixture', model: 'manual', effort: 'low', category: 'other', difficulty: 2 });
+      run({ id: `eligibility-fail-${i}`, source: 'eligibility-bench', provider: 'codex', model: 'manual', effort: 'low', category: 'other', difficulty: 2 });
       sc.rateTask(`eligibility-fail-${i}`, 'fail');
     }
     assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }), null, 'bench suppresses the prior');
@@ -2087,11 +2091,11 @@ test('B10: manual eligibility blocks measured and prior picks; latest allow lift
     sc.setEligibility(sel, 'other', 'allow', 're-enabled after review');
     assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }).model, 'manual');
 
-    run({ id: 'eligibility-measured-pass', source: 'eligibility-measured', provider: 'fixture', model: 'manual', effort: 'low', category: 'review', difficulty: 2 });
+    run({ id: 'eligibility-measured-pass', source: 'eligibility-measured', provider: 'codex', model: 'manual', effort: 'low', category: 'review', difficulty: 2 });
     sc.rateTask('eligibility-measured-pass', 'pass');
     sc.setEligibility(sel, 'review', 'block', 'manual measured block');
     assert.equal(sc.recommend({ category: 'review', difficulty: 2, source: 'eligibility-measured', reg }), null);
-    assert.match(sc.formatScoresShort({ source: 'eligibility-bench' }), /ALLOW fixture:manual:low for other: re-enabled after review/);
+    assert.match(sc.formatScoresShort({ source: 'eligibility-bench' }), /ALLOW codex:manual:low for other: re-enabled after review/);
   } finally { saveConfig({ scorecard: cfg }); }
 });
 

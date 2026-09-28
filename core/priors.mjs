@@ -113,7 +113,7 @@ const VISUAL_TIER = { pass: 'A', close: null, fail: null };
 
 // Order matters: first matching rule wins. `re` is tested against `provider:model` lowercased.
 // Sources: Terminal-Bench 2.1 (llm-stats.com), SWE-bench Verified + GDPval-AA (benchlm.ai), MRCR
-// (vellum GPT-5.6 tier guide), OpenAI/Anthropic/Google/Moonshot/xAI/DeepSeek/Alibaba pricing pages.
+// (vellum GPT-5.6 tier guide), provider pricing pages.
 export const PRIORS = [
   { re: /^codex:.*astra/, tier: 'A', price: { in: 10, out: 50, cached: 1 } }, // leads Terminal-Bench 4.0; ~1/3 of Sol tokens; #2 BenchLM composite
   { re: /^codex:gpt-5\.6-sol/, tier: 'A', tb21: 88.8, swev: 96.2, gdpval: 1743, mrcr: 91.5, price: { in: 5, out: 30, cached: 0.5 } },
@@ -140,17 +140,12 @@ export const PRIORS = [
   { re: /^antigravity:claude-opus-4-6/, tier: 'B', price: { in: 5, out: 25, cached: 0.5 } },
   { re: /^antigravity:claude-sonnet-4-6/, tier: 'C', price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^antigravity:gpt-oss/, tier: 'D', price: null },
-  { re: /^kimi:kimi-k3/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 88.3, swev: 93.4, gdpval: 1668, price: { in: 3, out: 15, cached: 0.3 } },
-  { re: /^kimi:kimi-k2$/, tier: 'D', swev: 76.8, price: null },
-  { re: /^(grok|xai):grok-4\.7-build-fast/, tier: null, price: { in: 4, out: 12, cached: 1 } }, // xAI "Grok 4.7 Fast" (Cursor / Grok Build only)
-  { re: /^(grok|xai):grok-4\.7/, tier: null, price: { in: 2, out: 6, cached: 0.5 } }, // >=200K prompt: 2x
-  { re: /^(grok|xai):grok-4\.5/, tier: null, price: { in: 2, out: 6, cached: 0.3 } },
+  { re: /^grok:grok-4\.7-build-fast/, tier: null, price: { in: 4, out: 12, cached: 1 } }, // xAI "Grok 4.7 Fast" (Cursor / Grok Build only)
+  { re: /^grok:grok-4\.7/, tier: null, price: { in: 2, out: 6, cached: 0.5 } }, // >=200K prompt: 2x
+  { re: /^grok:grok-4\.5/, tier: null, price: { in: 2, out: 6, cached: 0.3 } },
   { re: /^grok:grok-4\.6/, tier: 'D', tiers: { read: 'B', reason: 'B' }, gdpval: 1730, price: { in: 2, out: 6, cached: 0.5 } }, // strong knowledge work (GDPval 1730); no TB2.1 score found
   { re: /^deepseek:(deepseek-flash|.*v4(.1)?-flash|deepseek-chat)/, tier: 'B', tb21: 82.7, swev: 79, price: { in: 0.30, out: 1.20, cached: 0.006 } }, // deepseek-flash = V4.1 Flash (284B MoE, 13B active, 1M ctx); peak rate, off-peak is half; 92GB+ to run locally
   { re: /^deepseek:.*v4-pro|^deepseek:deepseek-reasoner/, tier: 'A', tb21: 87.9, swev: 80.6, price: { in: 1.32, out: 3.96, cached: 0.044 } }, // routes to V4.1 Flash at Flash pricing from 2026-09-14
-  { re: /^(qwen|qwen-code):qwen3-coder-plus/, tier: 'D', price: { in: 0.65, out: 3.25, cached: 0.065 } },
-  { re: /^(qwen|qwen-code):/, tier: 'D', price: null },
-  { re: /^ollama:/, tier: 'D', price: { in: 0, out: 0, cached: 0 } }, // local; no per-token cost
 ];
 
 const key = (provider, model) => `${provider}:${model || ''}`.toLowerCase();

@@ -1,7 +1,7 @@
 // Conductor chat sessions. Three runtimes, one contract:
 //   claude — a long-lived Agent SDK query (Claude Code harness, subagents, in-process MCP tools)
 //   codex  — one `codex exec` turn per message (thread resumed), tools via the /mcp HTTP endpoint
-//   loop   — the OpenAI-compatible tool loop (Ollama / API models) with the same tools as functions
+//   loop   — the OpenAI-compatible API tool loop with the same tools as functions
 import { query, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,7 +14,6 @@ import { conductorTools, conductorToolDefs, toolsAsFunctions, CONDUCTOR_AGENTS }
 import { abortPlans } from './plans.mjs';
 import { logImprovement } from './improve.mjs';
 import { PROVIDERS } from './providers/index.mjs';
-import * as ollama from './providers/ollama.mjs';
 import { runCodex } from './workers/codex.mjs';
 import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { spawnTracked } from './proc.mjs';
@@ -49,13 +48,13 @@ for (const rec of readJson(FILE(), [])) sessions.set(rec.id, hydrateSession(rec)
 const syncFlags = (s) => setSessionFlags(s.id, { overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride });
 for (const s of sessions.values()) syncFlags(s);
 
-/** Which runtime conducts for a provider; throws for worker-only providers (images). */
+/** Which runtime conducts for a provider; throws for worker-only providers. */
 export function runtimeFor(provider) {
   const p = PROVIDERS[provider];
   if (!p) throw new Error(`unknown provider "${provider}"`);
   if (p.kind === 'claude') return 'claude';
   if (p.kind === 'codex') return 'codex';
-  if (p.kind === 'ollama' || p.kind === 'openai-compat') return 'loop';
+  if (p.kind === 'openai-compat') return 'loop';
   throw new Error(`${provider} (${p.kind}) cannot conduct; it is a worker-only provider`);
 }
 
@@ -69,8 +68,8 @@ export function publicSession(s) {
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
 /**
- * "provider:model:effort" -> { provider, model, effort }. Model ids may contain colons (Ollama's
- * "qwen3.8:latest"), so the effort is only the LAST segment when it is a known effort word, and the
+ * "provider:model:effort" -> { provider, model, effort }. Model ids may contain colons, so the
+ * effort is only the LAST segment when it is a known effort word, and the
  * provider is the first segment when there are at least two. Any part may be omitted or "default".
  */
 export function parseSelection(sel, fallback = {}) {
@@ -95,7 +94,7 @@ const clampClaudeEffort = (provider, model, effort) => {
   return effort && (effort === 'ultra' || (listed?.length && !listed.includes(effort))) ? 'max' : effort;
 };
 
-/** A model whose registry entry lists no efforts must never carry one (same guard as createTask): Ollama answers 400 "does not support thinking". */
+/** A model whose registry entry lists no efforts must never carry one (same guard as createTask). */
 const honoredEffort = (provider, model, effort) => (findModel(provider, model)?.efforts?.length === 0 ? null : effort);
 
 function defaultModelFor(provider) {
@@ -141,7 +140,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
   if (permissionMode !== null && !['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'].includes(permissionMode)) throw Object.assign(new Error('invalid permissionMode'), { status: 400 });
   const cfg = loadConfig();
   // `model` may be a composite "provider:model:effort". With an explicit provider the model is a bare id
-  // (which may itself contain colons, e.g. "qwen3.8:latest"), so compose the selection instead of parsing it.
+  // (which may itself contain colons), so compose the selection instead of parsing it.
   const sel = provider
     ? parseSelection(`${provider}:${model == null || model === '' ? 'default' : model}${effort ? `:${effort}` : ''}`, { ...cfg.conductor, provider, model: null })
     : parseSelection(model, cfg.conductor);
@@ -476,9 +475,7 @@ async function runTurn(s, text) {
       if (mine()) s.threadId = r.threadId || s.threadId;
     } else {
       const p = PROVIDERS[s.provider];
-      let wc;
-      if (p.kind === 'ollama') { await ollama.ensureRunning(); wc = { baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama' }; }
-      else wc = p.workerConfig();
+      const wc = p.workerConfig();
       if (mine() && s.history == null) s.history = readJson(HIST(s.id, 'loop'), null);
       const timeoutMs = runTimeoutMs(cfg.conductor.turnTimeoutMinutes);
       const compaction = compactForNextTurn({ history: s.history, prompt: text, provider: s.provider, model: s.model, lastPromptTokens: s.lastPromptTokens, lastRequestAt: s.lastRequestAt, config: cfg });
@@ -488,7 +485,7 @@ async function runTurn(s, text) {
         emit(s, 'compaction', { reason: compaction.reason, beforeTokens: compaction.beforeTokens, afterTokens: compaction.afterTokens });
       }
       const history = compaction.history;
-      r = await runOpenAICompat({ id: `conductor:${s.id}`, cacheKey: s.id, cwd: s.cwd, prompt: text, history: history || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(cfg.conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: cfg.conductor.maxTurns, ...(timeoutMs ? { timeoutMs } : {}) });
+      r = await runOpenAICompat({ id: `conductor:${s.id}`, cwd: s.cwd, prompt: text, history: history || undefined, system: `${PROMPT}\n\n${PROMPT_LOOP}`, model: s.model, effort: honoredEffort(s.provider, s.model, s.effort) || undefined, ...wc, provider: s.provider, extraTools: toolsAsFunctions(conductorToolDefs({ sessionId: s.id, cwd: s.cwd })).filter((x) => !(cfg.conductor.loopToolsSkip || []).includes(x.def.name)), signal: ac.signal, onEvent, maxIterations: cfg.conductor.maxTurns, ...(timeoutMs ? { timeoutMs } : {}) });
       if (mine()) {
         s.history = r.messages || history;
         s.lastPromptTokens = r.lastPromptTokens || r.lastRequestTokens || (s.history ? estimateTokens(s.history) : null);

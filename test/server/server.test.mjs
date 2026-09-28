@@ -381,9 +381,9 @@ test('event-loop lag: sampled live for doctor; a friction verdict only above the
   }
 });
 
-test('doctor reports registry agent models without a price, except local ollama', async () => {
+test('doctor reports registered agent models without a price', async () => {
   const reg = getModels(), models = reg.models;
-  reg.models = [...models, { provider: 'fixture', id: 'unpriced-fixture', kind: 'agent' }, { provider: 'ollama', id: 'unpriced-local', kind: 'agent' }];
+  reg.models = [...models, { provider: 'deepseek', id: 'unpriced-fixture', kind: 'agent' }, { provider: 'ollama', id: 'unpriced-local', kind: 'agent' }];
   try {
     assert.deepEqual((await import('../../server/index.mjs')).unpricedModels(reg).filter((id) => /unpriced/.test(id)), ['unpriced-fixture']);
   } finally { reg.models = models; }
@@ -392,9 +392,9 @@ test('doctor reports registry agent models without a price, except local ollama'
 test('doctor price check normalizes the [1m] model suffix before config lookup', async () => {
   const { loadConfig } = await import('../../core/config.mjs');
   const prices = loadConfig().scorecard.prices;
-  saveConfig({ scorecard: { prices: { ...prices, 'fixture:priced-base': { in: 1, out: 2 } } } });
+  saveConfig({ scorecard: { prices: { ...prices, 'deepseek:priced-base': { in: 1, out: 2 } } } });
   try {
-    const reg = { models: [{ provider: 'fixture', id: 'priced-base[1m]', kind: 'agent' }] };
+    const reg = { models: [{ provider: 'deepseek', id: 'priced-base[1m]', kind: 'agent' }] };
     assert.deepEqual((await import('../../server/index.mjs')).unpricedModels(reg), []);
   } finally { saveConfig({ scorecard: { prices } }); }
 });

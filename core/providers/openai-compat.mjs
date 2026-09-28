@@ -3,11 +3,6 @@ import { loadConfig } from '../config.mjs';
 
 export const CATALOG = {
   deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', env: 'DEEPSEEK_API_KEY', signup: 'https://platform.deepseek.com' },
-  moonshot: { label: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.ai/v1', env: 'MOONSHOT_API_KEY', signup: 'https://platform.moonshot.ai' },
-  xai: { label: 'Grok (xAI)', baseUrl: 'https://api.x.ai/v1', env: 'XAI_API_KEY', signup: 'https://console.x.ai' },
-  qwen: { label: 'Qwen (DashScope)', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', env: 'DASHSCOPE_API_KEY', signup: 'https://modelstudio.console.alibabacloud.com' },
-  gemini: { label: 'Gemini (Google AI Studio, free tier)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', env: 'GEMINI_API_KEY', signup: 'https://aistudio.google.com/apikey' },
-  openai: { label: 'OpenAI API (key-based; also DALL-E / gpt-image)', baseUrl: 'https://api.openai.com/v1', env: 'OPENAI_API_KEY', signup: 'https://platform.openai.com/api-keys' },
 };
 
 const NOT_CHAT = /embed|tts|whisper|audio|image|dall|moderation|realtime|transcribe|vision-preview|rerank|ocr|aqa|imagen|veo|embedding/i;

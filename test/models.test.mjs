@@ -58,13 +58,13 @@ for (const newerFails of [false, true]) {
         for (const id of Object.keys(PROVIDERS)) delete PROVIDERS[id];
         Object.assign(PROVIDERS, original);
       });
-      const initial = { provider: 'ollama', id: 'cached' };
-      Object.assign(getModels(), { providers: { ollama: { status: 'ok', count: 1 } }, models: [initial] });
+      const initial = { provider: 'deepseek', id: 'cached' };
+      Object.assign(getModels(), { providers: { deepseek: { status: 'ok', count: 1 } }, models: [initial] });
       const old = Promise.withResolvers(), newer = Promise.withResolvers(), slow = Promise.withResolvers();
       const oldEntered = Promise.withResolvers(), newerEntered = Promise.withResolvers();
       let calls = 0;
-      PROVIDERS.ollama = {
-        id: 'ollama', detect: async () => ({ installed: true }),
+      PROVIDERS.deepseek = {
+        id: 'deepseek', detect: async () => ({ installed: true }),
         listModels: () => {
           if (++calls === 1) { oldEntered.resolve(); return old.promise; }
           newerEntered.resolve(); return newer.promise;
@@ -78,27 +78,27 @@ for (const newerFails of [false, true]) {
         await oldEntered.promise;
         old.resolve([]);
         await old.promise; // the registry has collected the empty list, but still awaits slow
-        scoped = refreshModels({ only: ['ollama'] });
-        assert.equal(refreshModels({ only: ['ollama'] }), scoped, 'same-scope refreshes coalesce');
+        scoped = refreshModels({ only: ['deepseek'] });
+        assert.equal(refreshModels({ only: ['deepseek'] }), scoped, 'same-scope refreshes coalesce');
         await newerEntered.promise;
-        const finishNewer = () => newerFails ? newer.reject(new Error('newer failed')) : newer.resolve([{ provider: 'ollama', id: 'added' }]);
+        const finishNewer = () => newerFails ? newer.reject(new Error('newer failed')) : newer.resolve([{ provider: 'deepseek', id: 'added' }]);
         if (firstToCommit === 'older') {
           slow.resolve([{ provider: 'slow', id: 'unrelated' }]);
           await full;
-          assert.deepEqual(getModels().models.filter((m) => m.provider === 'ollama'), [], 'old data remains usable until a newer result commits');
+          assert.deepEqual(getModels().models.filter((m) => m.provider === 'deepseek'), [], 'old data remains usable until a newer result commits');
           finishNewer(); await scoped;
         } else {
           finishNewer(); await scoped;
-          const provider = { ...getModels().providers.ollama };
+          const provider = { ...getModels().providers.deepseek };
           slow.resolve([{ provider: 'slow', id: 'unrelated' }]);
           await full;
-          assert.deepEqual(getModels().providers.ollama, provider, 'old collection cannot overwrite newer metadata');
+          assert.deepEqual(getModels().providers.deepseek, provider, 'old collection cannot overwrite newer metadata');
         }
         assert.equal(calls, 2);
-        const expected = newerFails ? (firstToCommit === 'older' ? [] : [initial]) : [{ provider: 'ollama', id: 'added' }];
+        const expected = newerFails ? (firstToCommit === 'older' ? [] : [initial]) : [{ provider: 'deepseek', id: 'added' }];
         assert.deepEqual(getModels().models, [...expected, { provider: 'slow', id: 'unrelated' }]);
-        assert.equal(getModels().providers.ollama.status, newerFails ? 'error' : 'ok');
-        assert.equal(getModels().providers.ollama.error, newerFails ? 'newer failed' : null);
+        assert.equal(getModels().providers.deepseek.status, newerFails ? 'error' : 'ok');
+        assert.equal(getModels().providers.deepseek.error, newerFails ? 'newer failed' : null);
         assert.deepEqual(readJson(join(HOME, 'models.json')), getModels());
       } finally {
         old.resolve([]); newer.resolve([]); slow.resolve([]);
@@ -110,15 +110,14 @@ for (const newerFails of [false, true]) {
 
 test('familyOf maps a model to its family whichever provider serves it', () => {
   for (const [provider, model, family] of [
-    ['claude', 'claude-opus-5-5[1m]', 'claude'], ['claude', 'default', 'claude'], ['claude', null, 'claude'], ['anthropic', '', 'claude'],
-    ['codex', 'gpt-5.5', 'gpt'], ['codex', 'gpt-6-astra', 'gpt'], ['codex', 'luna', 'gpt'], ['openai', 'o3-mini', 'gpt'], ['codex', 'default', 'gpt'],
+    ['claude', 'claude-opus-5-5[1m]', 'claude'], ['claude', 'default', 'claude'], ['claude', null, 'claude'],
+    ['codex', 'gpt-5.5', 'gpt'], ['codex', 'gpt-6-astra', 'gpt'], ['codex', 'luna', 'gpt'],  ['codex', 'default', 'gpt'],
     ['antigravity', 'claude-sonnet-4-6', 'claude'], ['antigravity', 'claude-opus-4-6-thinking', 'claude'], ['antigravity', 'gpt-oss-120b', 'gpt'], ['antigravity', 'gemini-3.1-pro', 'gemini'],
-    ['grok', 'grok-4.7-build-fast', 'grok'], ['grok', 'default', 'grok'], ['xai', 'default', 'grok'], ['gemini', null, 'gemini'], ['deepseek', 'deepseek-v4-pro', 'deepseek'], ['kimi', 'kimi-k3', 'kimi'], ['moonshot', null, 'kimi'],
-    ['qwen-code', 'qwen3-coder-plus', 'qwen'], ['ollama', 'qwen3.8:latest', 'qwen'], ['ollama', 'n2ft:latest', 'ollama'], ['ollama', 'hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M', 'qwen'],
+    ['grok', 'grok-4.7-build-fast', 'grok'], ['grok', 'default', 'grok'], ['deepseek', 'deepseek-v4-pro', 'deepseek'],
   ]) assert.equal(familyOf(provider, model), family, `${provider}:${model}`);
   assert.deepEqual(normFamilies([' Claude', 'claude', 'GPT', 7, '']), ['claude', 'gpt']);
-  const reg = { models: [{ provider: 'claude', id: 'claude-opus-5' }, { provider: 'antigravity', id: 'claude-sonnet-4-6' }, { provider: 'antigravity', id: 'gemini-3.1-pro' }, { provider: 'ollama', id: 'qwen3.8:latest' }] };
-  assert.deepEqual(selsInFamilies(['claude', 'qwen'], reg), ['claude:claude-opus-5', 'antigravity:claude-sonnet-4-6', 'ollama:qwen3.8:latest']);
+  const reg = { models: [{ provider: 'claude', id: 'claude-opus-5' }, { provider: 'antigravity', id: 'claude-sonnet-4-6' }, { provider: 'antigravity', id: 'gemini-3.1-pro' }, { provider: 'deepseek', id: 'deepseek-chat' }] };
+  assert.deepEqual(selsInFamilies(['claude', 'deepseek'], reg), ['claude:claude-opus-5', 'antigravity:claude-sonnet-4-6', 'deepseek:deepseek-chat']);
   assert.deepEqual(selsInFamilies([], reg), []);
 });
 

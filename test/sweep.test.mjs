@@ -116,7 +116,7 @@ test('admit: gates dispatch on per-window headroom under targets', () => {
   assert.equal(admit(codex91, [c(3)], { runningByWindow: { 'codex:w': 8 } }).n, 0);             // 8% already in flight: only 1% free
   const full = [{ id: 'codex:w', label: 'Codex weekly', usedPercent: 100, resetsAt: tw }];
   assert.equal(admit(full, [c(1)]).n, 0);                                                       // tapped out
-  assert.equal(admit([], [c(5)]).n, 1);                                                         // no windows reported (grok/ollama): not gated
+  assert.equal(admit([], [c(5)]).n, 1);                                                         // no windows reported (grok/deepseek): not gated
   const sess = [{ id: 'c:5h', label: '5-hour', usedPercent: 94, resetsAt: Date.now() + 3600e3 }]; // session target 95 -> 1% headroom
   assert.equal(admit(sess, [{ costs: { 'c:5h': 2 } }]).n, 0);                                   // 2% > 1% (session capped at 95%, not 100%)
 });

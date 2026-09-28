@@ -31,7 +31,7 @@ const cmd = positionals[0] || 'start';
 const HELP = `conductor 2.0 — multi-model orchestration workbench
 
   conductor [start] [--port N] [--no-open]   start the local server + open the browser UI
-  conductor doctor                           check Node, Claude login, Codex login, Ollama
+  conductor doctor                           check Node, Claude login, Codex login
   conductor models [--refresh] [--json]      list models across providers
   conductor limits [--refresh] [--json]      show usage limits per provider
   conductor scores [--category C] [--source live|smoke] [--archived] [--json|--csv] [--void-env]
@@ -45,7 +45,7 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
   conductor review [--model M]               headless self-review of this workbench from the improvement log
   conductor share                            zip the committed files (what git tracks) to your Desktop
   conductor update [--check]                 pull the latest version from GitHub (fast-forward + npm install when needed); --check only reports
-  conductor cli-update [provider] [--check]  update worker CLIs (codex, antigravity, grok, qwen-code, kimi; claude = the Agent
+  conductor cli-update [provider] [--check]  update worker CLIs (codex, antigravity, grok; claude = the Agent
                                              SDK, dev checkout only) to their latest stable release once idle, verified and
                                              rolled back on failure; --check only reports
   conductor stop                             stop the local server (POST /api/shutdown; pid-file fallback only if /api/state matches)

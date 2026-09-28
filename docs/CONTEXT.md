@@ -10,6 +10,7 @@ what to do next, or what went wrong on one machine) → the notes location.
 | file | is |
 |---|---|
 | `ARCHITECTURE.md` | The codebase overview: goal, how it works, directory map, external programs. **Current state only** — update it in the same commit as the change it describes. |
+| `ADD-A-PROVIDER.md` | The practical checklist for adding one provider and proving it works. |
 | `DRIVE-CONDUCTOR.md` | How another agent drives a running Conductor over HTTP. No machine-specific values. |
 | `REVIEW-FRAMEWORK.md` | How a review pass is run (the method, not any one review's findings). |
 | `video-briefing-finance-prompt.md` | Operator-facing prompt that pairs with `core/policy/recipes/video-briefing-finance.md`. |

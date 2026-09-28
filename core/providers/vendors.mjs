@@ -1,8 +1,8 @@
 // Vendor agent CLIs on consumer subscriptions. One spec per vendor: where the binary lives, how to
 // install and sign in, how to probe auth and list models, how to run headless, how to parse output.
 // Verified flag sets: agy 1.2.1 (2026-09-11; `-p /usage --output-format json` answers quota without a turn), grok 1.0.0 (2026-09, event schema provisional until a
-// signed-in run), Qwen Code 0.23 and Kimi CLI 1.50 (see notes per spec).
-import { existsSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+// signed-in run).
+import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -53,13 +53,6 @@ export function promptFileThreshold(id, cfg = loadConfig()) {
 const WIN = process.platform === 'win32';
 const home = homedir();
 const first = (paths) => paths.find((p) => p && existsSync(p)) || null;
-// Any installed Python 3.x user-scripts dir (was pinned to Python312, which hid a kimi installed under 3.11/3.13/3.14).
-const pyScripts = WIN
-  ? [join(process.env.APPDATA || '', 'Python'), join(process.env.LOCALAPPDATA || '', 'Programs', 'Python')].flatMap((base) => {
-      try { return readdirSync(base).filter((d) => /^Python3/i.test(d)).map((d) => join(base, d, 'Scripts')); } catch { return []; }
-    })
-  : [join(home, '.local', 'bin')];
-
 /**
  * Run a CLI with stdin closed and capture output (auth probes, model lists). An npm `.cmd` shim is unwrapped to
  * `node <entry>` and spawned directly — no cmd.exe, so no console window ever flashes during polling.
@@ -271,76 +264,6 @@ export const VENDORS = {
     },
   },
 
-  'qwen-code': {
-    id: 'qwen-code', label: 'Qwen Code (Qwen OAuth free tier)', budgetLabel: 'Qwen account',
-    readOnlyViaSnapshot: true,
-    bin: () => findCli('qwen'),
-    install: { npm: '@qwen-code/qwen-code', win: 'npm i -g @qwen-code/qwen-code', posix: 'npm i -g @qwen-code/qwen-code' },
-    login: { interactive: true, args: [], note: 'Run `qwen`, pick "Qwen OAuth", finish in the browser, then type /quit.' },
-    loginHint: 'run `qwen` and choose Qwen OAuth',
-    probe: { args: ['--version'], signedOut: /never/, needsAuthFile: () => existsSync(join(home, '.qwen', 'oauth_creds.json')) },
-    parseModels: () => ['qwen3-coder-plus', 'qwen3-coder-flash'].map((id) => ({ id, label: id })),
-    efforts: [],
-    // Qwen Code 0.23.3 supports --resume <id>; --continue resumes only the most recent project session.
-    // Long prompts: omit the positional query; `--input-format text` (default) consumes stdin (qwen 0.23.3 --help:
-    // "The format consumed from standard input"; `-p` "Appended to input on stdin"). No --prompt-file. Threshold: promptFileThreshold (default 8000).
-    headlessArgs: (t) => {
-      const long = !!(t.prompt && t.prompt.length > promptFileThreshold('qwen-code'));
-      const args = long ? ['-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd]
-        : [t.prompt, '-o', 'stream-json', '--approval-mode', t.sandbox === 'read-only' ? 'plan' : 'yolo', '--include-directories', t.cwd];
-      if (t.resumeThreadId) args.push('--resume', t.resumeThreadId);
-      if (t.model) args.push('-m', t.model);
-      return { args, stdinPrompt: long };
-    },
-    // Qwen Code 0.23 emits Claude-style Anthropic Messages frames, not Gemini-CLI {type:'message'|'tool_use'}.
-    parse: (obj, st, emit) => parseMessagesStream(obj, st, emit, 'qwen'),
-    onClose: (st) => {
-      const text = st.finalText || st.text || '';
-      if (!st.error && /\[API Error:/i.test(text)) st.error = text.trim();
-    },
-  },
-
-  kimi: {
-    id: 'kimi', label: 'Kimi CLI (Moonshot account)', budgetLabel: 'Kimi account',
-    readOnlyViaSnapshot: true,
-    bin: () => findCli('kimi') || first(pyScripts.map((d) => join(d, WIN ? 'kimi.exe' : 'kimi'))),
-    install: { pip: 'kimi-cli', win: 'pip install --user kimi-cli', posix: 'pip install --user kimi-cli' },
-    login: { args: ['login'], fallbackInteractive: true, note: 'Run `kimi login` (or `kimi` and /login) and finish in the browser.' },
-    loginHint: 'kimi login',
-    probe: { args: ['--version'], signedOut: /never/, needsAuthFile: () => existsSync(join(home, '.kimi', 'credentials.json')) || existsSync(join(home, '.kimi', 'config.toml')) },
-    parseModels: () => ['kimi-k3', 'kimi-k2.5'].map((id) => ({ id, label: id })),
-    efforts: [],
-    env: () => ({ PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }),
-    // kimi 1.50: `--print` = non-interactive with auto-approval. `--output-format stream-json` is on
-    // `kimi --help` (1.50). Session resume via --session <id> (ids come from `kimi export`).
-    // Long prompts: drop `-p` (valued flag) and pipe stdin; `--input-format` "must be piped in via stdin"
-    // (kimi 1.50 --help; Print.run reads stdin when `-p` is omitted). No --prompt-file. Threshold: promptFileThreshold (default 8000).
-    headlessArgs: (t) => {
-      const long = !!(t.prompt && t.prompt.length > promptFileThreshold('kimi'));
-      const args = ['--print', '-w', t.cwd, '--output-format', 'stream-json'];
-      if (t.sandbox === 'read-only') args.push('--plan');
-      else args.push('--yolo');
-      if (long) args.push('--input-format', 'text');
-      else args.push('-p', t.prompt);
-      if (t.resumeThreadId) args.push('--session', t.resumeThreadId);
-      if (t.model) args.push('--model', t.model);
-      return { args, stdinPrompt: long };
-    },
-    parse: (obj, st, emit) => {
-      const type = obj.type || obj.event;
-      if ((obj.session_id || obj.sessionId) && !st.threadId) st.threadId = obj.session_id || obj.sessionId;
-      const raw = obj.text ?? obj.content ?? obj.message?.content;
-      const txt = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw.map((c) => (typeof c === 'string' ? c : c?.text || '')).join('') : '';
-      if ((obj.role === 'assistant' || /^(assistant|message|agent_message|text)/i.test(String(type))) && txt) { P.message(st, emit, txt.trim()); st.text += txt; }
-      else if (/tool_(use|call)/i.test(String(type))) P.toolStart(st, emit, obj.id || `kimi-${st.items.length}`, obj.name || obj.tool_name || 'tool', obj.input || obj.arguments);
-      else if (/tool_result/i.test(String(type))) P.toolDone(st, emit, obj.id || obj.tool_use_id, obj.name || 'tool', typeof obj.output === 'string' ? obj.output : JSON.stringify(obj.output ?? obj.content ?? 'done'));
-      if (obj.usage) P.addUsage(st, obj.usage, { input: 'input_tokens', output: 'output_tokens', cached: 'cached_tokens' });
-      if (/^(result|done|complete|final)/i.test(String(type))) { st.finalText = obj.result ?? obj.response ?? st.text; if (obj.error || obj.status === 'error') st.error = String(obj.error?.message || obj.error || 'kimi run failed'); }
-      else if (type === 'error') st.error = String(obj.error?.message || obj.error || obj.message);
-      // Unrecognised objects (JSON-parseable echoed prompts) fall through; the runner calls parseText.
-    },
-    parseText: (line, st) => { st.text += line + '\n'; },
-  },
 };
 
 // One-shot handoff: detect() stores a models-probe so the following listModels() does not spawn again.
@@ -364,8 +287,7 @@ export function providerFor(spec) {
     },
     listModels: async () => {
       const bin = spec.bin(); if (!bin) return [];
-      // A CLI that can't self-list its models (qwen-code, kimi) ships a hard-coded default; `providers.<id>.models`
-      // in config overrides it so a newly-released vendor model needs no code edit. Array of ids or {id,label}.
+      // A configured model-list override lets a new vendor model be used before the CLI lists it.
       const override = loadConfig().providers?.[spec.id]?.models;
       let list;
       if (Array.isArray(override) && override.length) list = override.map((m) => (typeof m === 'string' ? { id: m } : m));
@@ -389,7 +311,7 @@ export function providerFor(spec) {
       loginCmd = `${q(bin)}${spec.login?.args?.length ? ' ' + spec.login.args.join(' ') : ''}`;
       return loginCmd;
     },
-    // Sub-command CLIs (grok/kimi: `<bin> login`) have a matching `<bin> logout`; re-auth runs it first so a stale
+    // Sub-command CLIs (grok: `<bin> login`) have a matching `<bin> logout`; re-auth runs it first so a stale
     // token (e.g. a free-tier grant that a new subscription must replace) is cleared before the fresh sign-in.
     logoutCommand: spec.login?.args?.[0] === 'login' ? () => { const bin = spec.bin() || spec.id; return `${/\s/.test(bin) ? `"${bin}"` : bin} logout`; } : undefined,
   };

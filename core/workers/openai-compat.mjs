@@ -1,5 +1,5 @@
 // Generic tool-calling worker for any OpenAI-compatible chat-completions API
-// (DeepSeek, Kimi/Moonshot, Grok/xAI, Qwen/DashScope, Gemini's compat endpoint, Ollama /v1).
+// (DeepSeek).
 // File tools check workspace containment; optional command execution has unsandboxed host access.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { readdir, realpath } from 'node:fs/promises';
@@ -16,7 +16,7 @@ import { stateDir } from '../paths.mjs';
 import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
 
 /**
- * Gate for the `run` tool (API/Ollama workers have no OS sandbox). Returns a refusal string when the command is not
+ * Gate for the `run` tool (API workers have no OS sandbox). Returns a refusal string when the command is not
  * permitted under `worker.shell`, or null when it may run. `worker.shell`: true = allowed; false/'off' = disabled;
  * an array = allow-list of command names. Allow-list mode permits ONE simple command whose executable is listed
  * (exact name/basename, extension-insensitive — never a prefix or path) and rejects shell operators even inside quotes, so
@@ -294,15 +294,6 @@ function stubOldToolResults(messages, watermark) {
   });
 }
 
-function cacheRouting(baseUrl, cacheKey) {
-  if (!cacheKey) return {};
-  let host;
-  try { host = new URL(baseUrl).hostname.toLowerCase(); } catch { return {}; }
-  if (host === 'api.x.ai') return { headers: { 'x-grok-conv-id': cacheKey } };
-  if (host === 'api.openai.com') return { body: { prompt_cache_key: cacheKey } };
-  return {};
-}
-
 function waitForRetry(ms, signal, deadline) {
   if (signal?.aborted) return Promise.reject(new Error('aborted'));
   if (deadline !== Infinity && Date.now() >= deadline) return Promise.reject(new Error('timeout'));
@@ -443,8 +434,7 @@ export async function runOpenAICompat(t) {
       if (!sentMessages || advanced.advanced) sentMessages = stubOldToolResults(messages, watermark);
       else sentMessages = [...sentMessages, ...messages.slice(sentSourceLength)];
       sentSourceLength = messages.length;
-      const routing = cacheRouting(t.baseUrl, t.cacheKey);
-      const body = { model: t.model, messages: sentMessages, tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false, ...routing.body };
+      const body = { model: t.model, messages: sentMessages, tools: defs.map((f) => ({ type: 'function', function: f })), tool_choice: 'auto', stream: false };
       res.lastRequestTokens = estimateTokens(sentMessages);
       res.lastRequestAt = Date.now();
       if (t.provider === 'deepseek' && t.effort) {
@@ -452,7 +442,7 @@ export async function runOpenAICompat(t) {
         if (t.effort !== 'none') body.reasoning_effort = t.effort;
       } else if (t.effort) body.reasoning_effort = t.effort;
       const url = `${t.baseUrl.replace(/\/$/, '')}/chat/completions`;
-      const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}), ...routing.headers };
+      const headers = { 'content-type': 'application/json', ...(t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : {}), ...(t.headers || {}) };
       let r;
       for (let attempt = 1; ; attempt++) {
         if (t.signal?.aborted) throw new Error('aborted');

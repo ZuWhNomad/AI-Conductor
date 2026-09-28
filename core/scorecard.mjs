@@ -194,7 +194,6 @@ export function ledgerOf(file) {
 
 /** Record one terminal worker run. tasks.mjs calls this after refreshing the provider's limits. */
 export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow = null } = {}) {
-  if (t.imageOptions) return null;
   const requestedModel = t.model || null;
   const servedModel = t.result?.servedModel || null;
   const model = servedModel || requestedModel;
@@ -617,7 +616,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const blockedSel = (sel) => sel.split('>').some((s) => {
     const { provider, model } = parseSel(s);
     // A transient registry error retains cached models; explicit unavailability or removal does not.
-    return reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
+    return !Object.hasOwn(PROVIDERS, provider) || reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
   const unavailable = (g) => {
     const { provider, model } = g;
@@ -720,7 +719,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const dominated = new Set();
   for (const a of plans) for (const b of plans) {
     if (a === b || a.steps.length !== 1 || b.steps.length !== 1 || a.usd == null || b.usd == null) continue;
-    // B1: use parseSel so model ids containing ':' (e.g. qwen3.8:latest) parse correctly.
+    // B1: use parseSel so model ids containing ':' parse correctly.
     const { provider: pa, model: ma, effort: ea } = parseSel(a.steps[0]), { provider: pb, model: mb, effort: eb } = parseSel(b.steps[0]);
     if (pa !== pb || ma !== mb || EFFORTS.indexOf(eb) <= EFFORTS.indexOf(ea)) continue;
     if (b.usd <= a.usd + slackOf(a.usd) && b.quality >= a.quality) dominated.add(a);
@@ -798,7 +797,6 @@ export function providerClass(provider, cfg = loadConfig().scorecard) {
   if (cfg.classes?.[provider]) return cfg.classes[provider];
   const p = PROVIDERS[provider];
   if (!p) return 'api';
-  if (provider === 'ollama' || p.kind === 'ollama') return 'free';
   if (provider === 'claude' || p.kind === 'claude') return 'conductor';
   if (p.auth?.type === 'apiKey') return (getLimits().providers[provider]?.balance?.granted || 0) > 0 ? 'free' : 'api'; // granted credit is spent first, so it is free until gone
   return 'included';
@@ -812,6 +810,7 @@ export function providerUsedPct(provider, { sessionOnly = false, model = null } 
 
 /** May the router hand new work to this provider right now? Blocked, or past its class cap, means no. */
 export function providerAvailable(provider, { overflowApi = false, cfg = loadConfig().scorecard, model = null } = {}) {
+  if (!Object.hasOwn(PROVIDERS, provider)) return false;
   if (modelBlockedUntil(provider, model)) return false;
   const cls = providerClass(provider, cfg);
   if (cls === 'api' && !overflowApi) return false;

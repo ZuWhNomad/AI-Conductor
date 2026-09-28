@@ -2,8 +2,8 @@
 
 A local, multi-model agent workbench: a Claude Code clone whose selected Claude model is the
 **conductor** (plans, delegates, reviews) and whose grunt work goes to cheaper workers
-(GPT-6 Astra via the Codex CLI on your ChatGPT subscription, local Ollama models, or any
-OpenAI-compatible API). Browser UI with speech-to-text. Node >= 22, two runtime
+(GPT-6 Astra via the Codex CLI on your ChatGPT subscription, Antigravity and Grok CLIs,
+or the DeepSeek API). Browser UI with speech-to-text. Node >= 22, two runtime
 dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 
 ## Ladder decisions (why it is built this way)
@@ -13,8 +13,7 @@ dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 | Claude agent loop, tools, subagents, sessions, subscription auth | `@anthropic-ai/claude-agent-sdk` | It *is* Claude Code as a library. Rewriting it would be worse. |
 | GPT-6 Astra on the ChatGPT subscription | `codex exec --json` (work) + `codex app-server` (limits/models) | Official non-interactive surfaces of the installed Codex CLI. |
 | Speech-to-text | Browser Web Speech API | Free, native in Edge/Chrome on `http://localhost`. No model to install. |
-| Other models (DeepSeek, Kimi, Grok, Qwen, Gemini) | Generic OpenAI-compatible tool loop over `fetch` | One 300-line loop covers every chat-completions API. |
-| Local models | Ollama (`/api/tags`, `/v1/chat/completions`) | Already installed; zero cost. |
+| DeepSeek | Generic OpenAI-compatible tool loop over `fetch` | Shared chat-completions API runner. |
 | UI | Vanilla HTML/JS served by a Node HTTP server, SSE for streaming | No build step, no framework, shareable by zipping the folder. |
 
 ## Process model
@@ -24,21 +23,20 @@ conductor (bin)  -> server/  -> browser UI (SSE stream + JSON API) + /mcp/<sessi
                  -> core/conductor.mjs : one chat session = one conductor runtime
                         claude : Agent SDK query() — Claude Code tools, subagents, in-process MCP tools
                         codex  : one `codex exec` turn per message (thread resumed); tools via /mcp/<session>
-                        loop   : OpenAI-compatible tool loop (Ollama / API models) with the same tools as functions
+                        loop   : OpenAI-compatible tool loop (DeepSeek) with the same tools as functions
                         tools (core/tools.mjs, defined once): delegate, follow_up, await_task, task_status,
                           cancel_task, worktree_cleanup, job_start, job_status, job_cancel, watch_job, allow_command, rate_task,
                           model_scores, smoke_test, list_tasks, list_models, limits, log_improvement,
-                          context_tree, install_model, generate_image, run_plan, plan_status
-                 -> core/workers/*  : codex | claude-sdk | openai-compat | ollama | image | vendor-cli
+                          context_tree, run_plan, plan_status
+                 -> core/workers/*  : codex | claude-sdk | openai-compat | vendor-cli
                  -> core/providers/*: detect / listModels / pollLimits per vendor
-                    providers/vendors.mjs: one spec per subscription CLI (Antigravity `agy`, Grok, Qwen Code,
-                    Kimi) — binary lookup, install + login commands, auth probe, model list, headless args,
+                    providers/vendors.mjs: one spec per subscription CLI (Antigravity `agy`, Grok) — binary lookup, install + login commands, auth probe, model list, headless args,
                     output parser. workers/vendor-cli.mjs runs any spec; server exposes
                     POST /api/providers/<id>/{install,login} which open a terminal for the user.
 ```
 
 Selections are written `provider:model:effort` everywhere (UI, config, API, CLI); the effort is only
-the last segment when it is a known effort word, so Ollama ids like `qwen3.8:latest` survive.
+the last segment when it is a known effort word, preserving colons in model ids.
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
 thread/session id, status, result, usage). States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
@@ -82,8 +80,8 @@ core/
     recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)
     capabilities.json    shared catalogue of programs / access rules per category (path-free; machine entries live in config)
     priors.json           hand-picked cold-start tiers (category → kind → default; config overrides are exact selections)
-  workers/               codex.mjs, claude.mjs, openai-compat.mjs, image.mjs, vendor-cli.mjs, index.mjs
-  providers/             anthropic.mjs, codex.mjs, ollama.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
+  workers/               codex.mjs, claude.mjs, openai-compat.mjs, vendor-cli.mjs, index.mjs
+  providers/             anthropic.mjs, codex.mjs, openai-compat.mjs, vendors.mjs (subscription-CLI specs), index.mjs
   models.mjs             model registry: merges provider lists, auto-poll + force refresh
   limits.mjs             limit registry: per-provider windows, never assumed static
   context.mjs            CONTEXT.md discovery + path-scoped injection into worker specs
@@ -100,7 +98,7 @@ core/
   bench.mjs              durable new-model seen-set + per-provider benchmark lanes
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
-  cli-update.mjs         worker CLI updates (codex, agy, grok, qwen, kimi; the Agent SDK in dev): daily check, install when idle, verify, roll back
+  cli-update.mjs         worker CLI updates (codex, agy, grok; the Agent SDK in dev): daily check, install when idle, verify, roll back
   proc.mjs               spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
@@ -160,7 +158,7 @@ Shadow dollars are scaled by `scorecard.providerWeight` (local 0, included subsc
 Codex 0.6, Claude 1) because a token from a subscription you already pay for costs nothing until its window fills;
 past `quotaPressurePct` (80%) a provider counts at full list price, and a blocked provider is never
 proposed. **Budget classes** are the cross-provider rule: every provider belongs to a class derived from how it
-authenticates (`free` local · `included` subscription CLIs such as Antigravity/Grok/Kimi · `subscription`
+authenticates (`free` granted API credit · `included` subscription CLIs such as Antigravity/Grok · `subscription`
 = Codex, by config · `conductor` = the Claude plan the conductor itself runs on · `api` key-based), and
 `recommend` walks `scorecard.classOrder` taking the first class that holds a plan proven at the task's
 level and under its cap (`classCap`: subscriptions to 100%; the conductor's plan 95% of its *session*
@@ -176,7 +174,7 @@ off-peak rule (half price outside Mon-Fri 01-04 / 06-10 UTC) is applied to its l
 `conductor bench [--run]` lists every offered effort below the 8-of-11 rated smoke-task coverage bar (or older than
 `rebenchDays`), then sends explicit runs through restart-safe per-provider lanes. `bench.json` retains registry
 selections, decisions and remaining task ids across list flaps and restarts. Fresh clones default
-`bench.newModels` to `off`; local/Ollama, archived, Qwen Code and Kimi selections are never auto-benched.
+`bench.newModels` to `off`; archived selections are never auto-benched.
 Pay-per-token API selections still require an explicit answer when the designated copy uses `auto`.
 
 Limit windows may be scoped to a model group: Antigravity's `agy -p /usage --output-format json` reports separate
@@ -240,7 +238,6 @@ into a refactor (`mcpServersFor` in `core/mcp.mjs`).
 
 - Claude: SDK `rate_limit_event`s during sessions + `usage` control request (5h / 7d / per-model windows).
 - Codex: app-server `account/rateLimits/read` (used %, window, resets) and `model/list`.
-- Ollama: local, unlimited; models from `/api/tags`.
 - API-key providers: models from `/models`; limits learned from 429 `retry-after`.
 - Registry refreshes on startup, on the UI's **Refresh** button, and every `pollMinutes` (default 15) when `ui.autoRefresh` is enabled (default false).
 
@@ -266,7 +263,7 @@ when its whole background batch is terminal. The watchdog never restarts the ser
 
 ## Context management
 
-API/Ollama workers using the OpenAI-compatible loop disable host commands by default (`worker.shell: false`).
+API workers using the OpenAI-compatible loop disable host commands by default (`worker.shell: false`).
 Setting `worker.shell` to `true` allows any host shell command; an array of command names enables a command
 filter that rejects shell control operators. Either opt-in trusts host execution: allowed interpreters and package
 managers can access arbitrary host files. The filter does not sandbox those programs. File tools separately check
@@ -285,8 +282,8 @@ How `sandbox: 'read-only'` is enforced depends on the worker runner:
 
 - **Codex:** native `sandbox: "read-only"` CLI execution enforced by Codex's seatbelt/sandbox.
 - **Claude SDK:** runs with `permissionMode: "plan"` (or SDK tool permission hooks).
-- **OpenAI-compatible / Ollama:** tool loop disables write, edit and command execution tools; `worker.shell` governs host shell access.
-- **Vendor CLIs (Antigravity `agy`, xAI `grok`, Qwen Code, Kimi CLI):** Subscription CLIs either cancel shell execution in their native plan modes or lack Windows sandbox enforcement. When `readOnlyViaSnapshot: true` is set on the vendor spec and the task `cwd` is in a git repository, the vendor runner runs the task in normal (non-plan, auto-approved) mode inside a disposable snapshot worktree: snapshots uncommitted tracked changes with `git stash create`, checks out a detached worktree via `git worktree add --detach <tmp dir> <sha>`, runs the CLI with `cwd` set to the snapshot (`writableRoots` cleared), and force-removes the worktree afterwards (`git worktree remove --force`) on completion, failure, or cancellation. Untracked files in the original workspace are not in the snapshot (since `git stash create` captures only tracked modifications). The snapshot is not a sandbox: the CLI runs auto-approved and can reach absolute paths. Stray files written to the snapshot are listed in the final task report (`Stray files in snapshot: ...`). Writes to the original project are detected and reported (`Stray writes to the project during a read-only run: ...`); they are not prevented or reverted. For a non-git `cwd`, it falls back to the vendor CLI's native plan-mode flags (`--mode plan`, `--permission-mode plan`, `--approval-mode plan`, `--plan`).
+- **OpenAI-compatible:** tool loop disables write, edit and command execution tools; `worker.shell` governs host shell access.
+- **Vendor CLIs (Antigravity `agy`, xAI `grok`):** Subscription CLIs either cancel shell execution in their native plan modes or lack Windows sandbox enforcement. When `readOnlyViaSnapshot: true` is set on the vendor spec and the task `cwd` is in a git repository, the vendor runner runs the task in normal (non-plan, auto-approved) mode inside a disposable snapshot worktree: snapshots uncommitted tracked changes with `git stash create`, checks out a detached worktree via `git worktree add --detach <tmp dir> <sha>`, runs the CLI with `cwd` set to the snapshot (`writableRoots` cleared), and force-removes the worktree afterwards (`git worktree remove --force`) on completion, failure, or cancellation. Untracked files in the original workspace are not in the snapshot (since `git stash create` captures only tracked modifications). The snapshot is not a sandbox: the CLI runs auto-approved and can reach absolute paths. Stray files written to the snapshot are listed in the final task report (`Stray files in snapshot: ...`). Writes to the original project are detected and reported (`Stray writes to the project during a read-only run: ...`); they are not prevented or reverted. For a non-git `cwd`, it falls back to the vendor CLI's native plan-mode flags (`--mode plan`, `--permission-mode plan`, `--approval-mode plan`, `--plan`).
 
 ## Self-iteration
 
@@ -326,5 +323,5 @@ model all obey the same budget. Two rules matter:
 - **A fresh window with no measured cost is a probe:** exactly one task of that provider runs at a time until its
   cost is measured, so a batch can't flood an unmetered window.
 
-Providers that report no windows (grok, ollama) are not gated. Disable with `conductor.budgetGate: false`.
+Providers that report no windows (grok) are not gated. Disable with `conductor.budgetGate: false`.
 `admit` returns `{ n }`, how many of the pending tasks fit.

@@ -506,8 +506,6 @@ export async function doctorReport() {
   const codex = codexCommand();
   const codexVersion = codex ? await versionOf(codex.command, [...codex.args, '--version']) : null;
   rows.push({ name: 'codex', value: codexVersion || 'missing', status: codex ? ((await PROVIDERS.codex.account().catch(() => ({ loggedIn: false }))).loggedIn ? 'logged in' : 'NOT logged in → run: codex login') : 'install: npm i -g @openai/codex', path: codex ? [codex.command, ...codex.args].join(' ') : findCli('codex') });
-  const ol = await PROVIDERS.ollama.detect();
-  rows.push({ name: 'ollama', value: ol.version || (ol.installed ? 'installed (not running)' : 'missing'), status: ol.installed ? 'ok' : 'optional: https://ollama.com' });
   const unpriced = unpricedModels(getModels());
   rows.push({ name: 'priced agent models', value: String(unpriced.length), status: unpriced.length ? `${unpriced.length} unpriced: ${unpriced.join(', ')} — their cells rank last as cost unknown` : 'ok' });
   rows.push({ name: 'git', value: await versionOf(findCli('git')) || 'missing', status: '' });
@@ -515,7 +513,7 @@ export async function doctorReport() {
 }
 
 export function unpricedModels(reg = getModels()) {
-  return (reg.models || []).filter((m) => m.kind === 'agent' && m.provider !== 'ollama' && priceFor(m.provider, scorecardModelId(m.id)) == null).map((m) => m.id);
+  return (reg.models || []).filter((m) => m.kind === 'agent' && Object.hasOwn(PROVIDERS, m.provider) && priceFor(m.provider, scorecardModelId(m.id)) == null).map((m) => m.id);
 }
 
 /** Optional periodic self-review (config.review.everyDays > 0): opens a review session when due. */

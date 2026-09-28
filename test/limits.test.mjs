@@ -1527,7 +1527,7 @@ test('a window at its limit is re-polled when its reset passes (no stale "100%, 
   assert.equal(getLimits().providers.antigravity.windows[0].usedPercent, 0);
 });
 
-test('C3: unknown providers are dropped on load and persist, while known and config-defined providers survive', async () => {
+test('C3: unknown providers are dropped on load and persist, while registered providers survive', async () => {
   const { getLimits, save } = await import('../core/limits.mjs');
   const { saveConfig, loadConfig } = await import('../core/config.mjs');
   const { formatLimits } = await import('../core/tools.mjs');
@@ -1558,8 +1558,7 @@ test('C3: unknown providers are dropped on load and persist, while known and con
     assert.equal(limits.providers['test-prov-avail'], undefined, 'unknown provider test-prov-avail must be dropped from limits');
     assert.ok(limits.providers.claude, 'known provider claude must survive in limits');
     assert.equal(limits.providers.claude.windows[0].usedPercent, 20);
-    assert.ok(limits.providers['custom-compat'], 'config-defined provider custom-compat must survive in limits');
-    assert.equal(limits.providers['custom-compat'].windows[0].usedPercent, 10);
+    assert.equal(limits.providers['custom-compat'], undefined, 'config-only provider is not registered');
 
     const formatted = formatLimits(limits);
     assert.ok(!formatted.includes('test-null-model'), 'test-null-model must not appear in formatLimits output');
@@ -1571,8 +1570,7 @@ test('C3: unknown providers are dropped on load and persist, while known and con
     assert.equal(persisted.providers['test-prov-avail'], undefined, 'test-prov-avail must be gone from persisted file');
     assert.ok(persisted.providers.claude, 'known provider claude must survive in persisted file');
     assert.equal(persisted.providers.claude.windows[0].usedPercent, 20);
-    assert.ok(persisted.providers['custom-compat'], 'config-defined provider custom-compat must survive in persisted file');
-    assert.equal(persisted.providers['custom-compat'].windows[0].usedPercent, 10);
+    assert.equal(persisted.providers['custom-compat'], undefined);
   } finally {
     saveConfig({ providers: origProviders });
     delete getLimits().providers['custom-compat'];

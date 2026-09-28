@@ -45,15 +45,6 @@ test('bench.json silently seeds once, absorbs list flaps, and detects new effort
     assert.deepEqual(noteNewModels(expanded, expanded), []);
     assert.equal(readFileSync(FILE, 'utf8'), unchanged, 'unchanged models and aliases do not rewrite bench.json');
 
-    const excluded = reg([
-      ...expanded.models,
-      model('ollama', 'local', [], { cost: 'free-local' }),
-      model('qwen-code', 'qwen-new'),
-      model('kimi', 'kimi-new'),
-    ]);
-    assert.deepEqual(noteNewModels(expanded, excluded), []);
-    const disk = JSON.parse(readFileSync(FILE, 'utf8'));
-    assert.ok(disk.seen.includes('ollama:local:default'), 'excluded listings are still remembered across flaps');
   } finally { saveConfig({ bench: previous }); }
 });
 
@@ -187,12 +178,11 @@ test('durable provider lanes run in parallel across providers, serially within o
   assert.equal(resumed.state.lanes.codex.queue.length, 0);
 });
 
-test('queued archived, local, qwen-code and kimi selections are refused, and live work yields every lane', async () => {
+test('queued archived selections are refused, and live work yields every lane', async () => {
   reset();
   saveConfig({ scorecard: { archived: ['codex:old'] } });
   const registry = reg([
     model('codex', 'old', ['low']), model('codex', 'new', ['low']),
-    model('ollama', 'local', [], { cost: 'free-local' }), model('qwen-code', 'q'), model('kimi', 'k'),
   ]);
   enqueueBench(registry.models.map((m) => ({ provider: m.provider, model: m.id, effort: m.efforts[0] || null })), { reg: registry, taskIds: ['a'], probe: false });
   assert.deepEqual(Object.values(getBenchState().lanes).flatMap((lane) => lane.queue.map((q) => q.selection.model)), ['new']);

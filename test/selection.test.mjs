@@ -6,7 +6,7 @@ import { readJson, writeJson } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 
 // The registry is loaded at import time: seed the one model the no-effort test needs (no Codex models, on purpose).
-writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'ollama', id: 'qwen2.5:3b', kind: 'agent', cost: 'free-local', efforts: [] }] });
+writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'deepseek', id: 'fixture:3b', kind: 'agent', cost: 'free-local', efforts: [] }] });
 const { parseSelection, createSession, deleteSession, setTitle, setEffort, sendMessage, setPermissionMode, getSession } = await import('../core/conductor.mjs');
 
 test('provider:model:effort parsing', () => {
@@ -17,8 +17,8 @@ test('provider:model:effort parsing', () => {
   assert.deepEqual(parseSelection('sonnet', cfg), { provider: 'claude', model: 'sonnet', effort: 'high' });
   assert.deepEqual(parseSelection('default', cfg), { provider: 'claude', model: null, effort: 'high' });
   assert.deepEqual(parseSelection('codex:gpt-6-astra', cfg), { provider: 'codex', model: 'gpt-6-astra', effort: 'high' });
-  assert.deepEqual(parseSelection('ollama:qwen3.8:latest:low', cfg), { provider: 'ollama', model: 'qwen3.8:latest', effort: 'low' });
-  assert.deepEqual(parseSelection('ollama:qwen3.8:latest', cfg), { provider: 'ollama', model: 'qwen3.8:latest', effort: 'high' });
+  assert.deepEqual(parseSelection('deepseek:fixture:latest:low', cfg), { provider: 'deepseek', model: 'fixture:latest', effort: 'low' });
+  assert.deepEqual(parseSelection('deepseek:fixture:latest', cfg), { provider: 'deepseek', model: 'fixture:latest', effort: 'high' });
   assert.deepEqual(parseSelection('codex:gpt-6-astra:ultra', cfg), { provider: 'codex', model: 'gpt-6-astra', effort: 'ultra' });
 });
 
@@ -40,10 +40,10 @@ test('session ID collisions preserve existing sessions and their histories', asy
   const samples = [0.125, 0.125, 0.25];
   ctx.mock.method(Math, 'random', () => { assert.ok(samples.length); return samples.shift(); });
   const cwd = tmpDir('session-collision');
-  const first = createSession({ cwd, title: 'first', provider: 'ollama', model: 'qwen2.5:3b' });
+  const first = createSession({ cwd, title: 'first', provider: 'deepseek', model: 'fixture:3b' });
   const history = [{ role: 'user', text: 'keep this history' }];
   writeJson(join(HOME, 'history', `${first.id}.messages.json`), history);
-  const second = createSession({ cwd, title: 'second', provider: 'ollama', model: 'qwen2.5:3b' });
+  const second = createSession({ cwd, title: 'second', provider: 'deepseek', model: 'fixture:3b' });
   try {
     assert.notEqual(second.id, first.id);
     const { getSession } = await import('../core/conductor.mjs');
@@ -67,7 +67,7 @@ test('setTitle renames a chat, trims and clamps, and rejects empty or unknown', 
   deleteSession(s.id);
 });
 
-test('sessions use the configured default; any agent provider can conduct, image providers cannot', () => {
+test('sessions use the configured default; any agent provider can conduct, removed providers cannot', () => {
   const cwd = tmpDir('sel');
   const s = createSession({ cwd });
   assert.equal(s.model, 'claude-opus-5-5[1m]'); // DEFAULTS.conductor.model: an exact id, never an alias
@@ -82,28 +82,28 @@ test('sessions use the configured default; any agent provider can conduct, image
   assert.equal(c.runtime, 'codex');
   assert.equal(c.selection, 'codex:gpt-6-astra:high');
   deleteSession(c.id);
-  const o = createSession({ cwd, model: 'ollama:qwen3.8:low' });
+  const o = createSession({ cwd, model: 'deepseek:fixture:low' });
   assert.equal(o.runtime, 'loop');
   deleteSession(o.id);
   // The UI posts provider + bare model id separately; a colon in the id must survive.
-  const o2 = createSession({ cwd, provider: 'ollama', model: 'qwen3.8:latest', effort: 'low' });
-  assert.equal(o2.model, 'qwen3.8:latest');
-  assert.equal(o2.selection, 'ollama:qwen3.8:latest:low');
+  const o2 = createSession({ cwd, provider: 'deepseek', model: 'fixture:latest', effort: 'low' });
+  assert.equal(o2.model, 'fixture:latest');
+  assert.equal(o2.selection, 'deepseek:fixture:latest:low');
   deleteSession(o2.id);
   const c2 = createSession({ cwd, provider: 'codex', model: 'gpt-6-astra' });
   assert.equal(c2.selection, 'codex:gpt-6-astra:high');
   deleteSession(c2.id);
   assert.throws(() => createSession({ cwd, model: 'codex::high' }), /No model known/); // no Codex models in the test registry
-  assert.throws(() => createSession({ cwd, model: 'sd:x:low' }), /cannot conduct/);
+  assert.throws(() => createSession({ cwd, model: 'sd:x:low' }), /unknown provider/);
 });
 
 test('a model that lists no efforts never carries one: not on the session, not in the loop request', async (ctx) => {
   const cwd = tmpDir('sel-noeffort');
-  const d = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b' }); // would inherit the configured default (high)
+  const d = createSession({ cwd, provider: 'deepseek', model: 'fixture:3b' }); // would inherit the configured default (high)
   assert.equal(d.effort, null);
-  assert.equal(d.selection, 'ollama:qwen2.5:3b:default');
+  assert.equal(d.selection, 'deepseek:fixture:3b:default');
   deleteSession(d.id);
-  const s = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b', effort: 'high' }); // the UI picker always posts one
+  const s = createSession({ cwd, provider: 'deepseek', model: 'fixture:3b', effort: 'high' }); // the UI picker always posts one
   assert.equal(s.effort, null);
   setEffort(s.id, 'high'); // the header picker (or a session saved before this guard) can still put one back
   let body;
@@ -115,7 +115,7 @@ test('a model that lists no efforts never carries one: not on the session, not i
   const idle = new Promise((r) => bus.on('event', function f(e) { if (e.sessionId === s.id && e.kind === 'status' && e.status === 'idle') { bus.off('event', f); r(); } }));
   await sendMessage(s.id, 'hello');
   await idle;
-  assert.equal(body.model, 'qwen2.5:3b');
+  assert.equal(body.model, 'fixture:3b');
   assert.equal('reasoning_effort' in body, false);
   deleteSession(s.id);
 });
@@ -145,7 +145,7 @@ test('I8: loop conductor rewrites only context-length errors', async (ctx) => {
   });
   const run = async (message) => {
     apiError = message;
-    const s = createSession({ cwd, provider: 'ollama', model: 'qwen2.5:3b', title: 'i8' });
+    const s = createSession({ cwd, provider: 'deepseek', model: 'fixture:3b', title: 'i8' });
     const idle = new Promise((r) => bus.on('event', function f(e) { if (e.sessionId === s.id && e.kind === 'status' && e.status === 'idle') { bus.off('event', f); r(); } }));
     await sendMessage(s.id, 'hello');
     await idle;

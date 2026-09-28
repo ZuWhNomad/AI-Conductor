@@ -184,7 +184,7 @@ test('relaunch refreshes the outgoing journal after binding without replaying co
     import { registerHooks, syncBuiltinESMExports } from 'node:module';
     const home = process.env.CONDUCTOR_HOME, dir = join(home, 'tasks');
     mkdirSync(dir);
-    const fixture = id => ({ id, cwd: home, title: id, spec: 'read only', provider: 'ollama',
+    const fixture = id => ({ id, cwd: home, title: id, spec: 'read only', provider: 'deepseek',
       model: 'fixture', status: 'running', attempts: 1, updatedAt: new Date().toISOString() });
     const write = task => writeFileSync(join(dir, task.id + '.json'), JSON.stringify(task));
     for (const id of ['completed', 'canceled', 'interrupted', 'shutdown', 'aged']) write(fixture(id));

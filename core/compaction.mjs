@@ -7,11 +7,9 @@ import { loadConfig } from './config.mjs';
 const SHIPPED = JSON.parse(readFileSync(join(REPO_ROOT, 'core', 'policy', 'context-windows.json'), 'utf8'));
 const CACHE_TTL_MS = {
   anthropic: 5 * 60_000, claude: 5 * 60_000,
-  openai: 60 * 60_000, codex: 60 * 60_000, // measured 2026-09-27: >=96% cached after 15-51 min idle, gone by ~86 min (15k Codex requests)
-  xai: 10 * 60_000, grok: 10 * 60_000,
-  moonshot: 5 * 60_000, kimi: 5 * 60_000,
-  qwen: 5 * 60_000, 'qwen-code': 5 * 60_000,
-  gemini: 10 * 60_000, deepseek: 60 * 60_000, ollama: Infinity,
+  codex: 60 * 60_000, // measured 2026-09-27: >=96% cached after 15-51 min idle, gone by ~86 min (15k Codex requests)
+  grok: 10 * 60_000,
+  deepseek: 60 * 60_000,
 };
 const keyFor = (provider, model) => `${provider}:${model || 'default'}`;
 

@@ -10,8 +10,7 @@ import { loadConfig } from './config.mjs';
 const blockedMs = () => (loadConfig().scorecard.blockedMinutes) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after
 
 const pruneUnknown = (providers) => {
-  const cfg = loadConfig().providers || {};
-  return Object.fromEntries(Object.entries(providers || {}).filter(([id]) => Object.hasOwn(PROVIDERS, id) || Object.hasOwn(cfg, id)));
+  return Object.fromEntries(Object.entries(providers || {}).filter(([id]) => Object.hasOwn(PROVIDERS, id)));
 };
 
 const FILE = () => statePath('limits.json');

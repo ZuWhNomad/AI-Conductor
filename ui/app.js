@@ -108,7 +108,7 @@ function renderProviders() {
     const controls = el('span', 'row');
     const runAction = (act) => async (e) => {
       e.stopPropagation();
-      if (act === 'relogin' && (['claude', 'grok', 'kimi'].includes(p.id) || p.auth?.logout)) {
+      if (act === 'relogin' && (['claude', 'grok'].includes(p.id) || p.auth?.logout)) {
         if (!confirm(`Re-authenticating ${p.id} will log out of the current account first. Continue?`)) return;
       }
       const b = e.target; b.disabled = true;
@@ -229,7 +229,7 @@ function renderBudget() {
       const w = windows.reduce((max, cur) => ((Number(cur.usedPercent) || 0) > (Number(max.usedPercent) || 0) ? cur : max), windows[0]);
       const wLbl = w.label || w.scope || windowScope(w) || '';
       parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id}${wLbl ? ` (${wLbl})` : ''} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
-    } else if (p.kind === 'ollama') parts.push(el('span', null, `${p.id} local`));
+    }
   }
   if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
   if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
@@ -251,11 +251,11 @@ function renderChip() {
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const composite = (v) => `${v.provider}:${v.model || 'default'}:${v.effort || 'default'}`;
-const CONDUCT_KINDS = new Set(['claude', 'codex', 'ollama', 'openai-compat']);
+const CONDUCT_KINDS = new Set(['claude', 'codex', 'openai-compat']);
 const ALL = '*';
 /** Providers that can conduct (agent harnesses) or, for the worker picker, anything with agent models. */
 function agentProviders({ conductOnly }) {
-  const ps = S.providers.filter((p) => (conductOnly ? CONDUCT_KINDS.has(p.kind) : p.kind !== 'image'));
+  const ps = S.providers.filter((p) => (conductOnly ? CONDUCT_KINDS.has(p.kind) : true));
   return ps.length ? ps : [{ id: 'claude' }];
 }
 function modelsFor(provider, opts = {}) {
@@ -698,7 +698,7 @@ function clearCurrent() {
   setStatus('idle');
   clearTranscript();
   const em = el('div', 'empty');
-  em.append(document.createTextNode('Pick a project folder, choose the conductor model, and start a chat.'), el('br'), el('span', 'muted', 'The conductor plans and reviews; workers (Astra via Codex, local Ollama models, API models) do the typing.'));
+  em.append(document.createTextNode('Pick a project folder, choose the conductor model, and start a chat.'), el('br'), el('span', 'muted', 'The conductor plans and reviews; workers (Astra via Codex and API models) do the typing.'));
   T().append(em);
   renderTasks();
   renderSessions();
@@ -739,7 +739,6 @@ const COMMANDS = [
   { cmd: 'worker', args: '<spec>', help: 'Default worker (no conductor tokens)' },
   { cmd: 'astra', args: '<spec>', help: 'Astra — Codex worker' },
   { cmd: 'codex', args: '<spec>', help: 'Codex worker' },
-  { cmd: 'ollama', args: '<model> <spec>', help: 'Local Ollama model' },
   { cmd: 'claude', args: '<model> <spec>', help: 'Claude worker' },
 ];
 const DIRECT_RE = new RegExp(`^\\/(${COMMANDS.map((c) => c.cmd).join('|')})(?:\\s+(\\S+))?\\s+([\\s\\S]+)$`);
@@ -750,12 +749,12 @@ async function send() {
     try { await newSession(); } catch {}
     if (!S.current) { if (!ta.value) ta.value = text; return; }
   }
-  // "/worker <spec>" (or "/astra", "/ollama <model> <spec>") sends straight to a worker: zero conductor tokens.
+  // "/worker <spec>" (or "/astra") sends straight to a worker: zero conductor tokens.
   const direct = text.match(DIRECT_RE);
   if (direct) {
     const [, kind, arg, spec] = direct;
     let provider = kind === 'worker' ? undefined : kind === 'astra' ? 'codex' : kind;
-    let model = kind === 'ollama' || kind === 'claude' ? arg : undefined;
+    let model = kind === 'claude' ? arg : undefined;
     if (kind === 'worker' && arg) { const m = S.models.models.find((x) => x.id === arg || x.resolved === arg); if (m) { provider = m.provider; model = m.id; } } // /worker <model> targets it; otherwise arg is prepended to the spec (below)
     const body = { sessionId: S.current.id, cwd: S.current.cwd, spec: model ? spec : (arg ? `${arg} ${spec}` : spec), provider, model };
     addUser(text);
@@ -1045,7 +1044,7 @@ function openSettings() {
   sbxRow.append(sbxSel, sbxNote);
   grid.append(Object.assign(el('label', null, 'Codex sandbox'), { title: 'worker.codexSandboxByModel overrides this per model' }), sbxRow);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
-  field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API/Ollama conductors; big projects need thousands.');
+  field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API conductors; big projects need thousands.');
   field('Conductor turn timeout (min)', 'conductor.turnTimeoutMinutes', c.conductor.turnTimeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
   field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
@@ -1063,11 +1062,9 @@ function openSettings() {
   const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
   body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
-  for (const id of ['deepseek', 'moonshot', 'xai', 'qwen', 'gemini', 'openai', 'stability']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
-  field('Ollama URL', 'providers.ollama.baseUrl', c.providers.ollama.baseUrl);
+  for (const id of ['deepseek']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
   // Worker CLI updates: off = never check; notify = show "update available"; auto = install when the provider is idle.
-  for (const id of ['codex', 'antigravity', 'grok', 'qwen-code', 'kimi', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
-  field('Local SD URL', 'providers.sd.baseUrl', c.providers.sd.baseUrl);
+  for (const id of ['codex', 'antigravity', 'grok', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
   body.append(grid);
   const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
   upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } };

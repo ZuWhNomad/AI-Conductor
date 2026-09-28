@@ -1,5 +1,4 @@
-// Claude-harness worker: a one-shot Agent SDK run. Also used for Ollama models, which speak the
-// Anthropic Messages API natively, so local models get the full Claude Code toolset for free.
+// Claude-harness worker: a one-shot Agent SDK run.
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { bus } from '../bus.mjs';
 import { spawnTracked } from '../proc.mjs';

@@ -209,13 +209,13 @@ test('research-3 requires gold claims, sections, citations and verbatim excerpt 
 test('writing variants enforce adherence and use only an optional different-provider judge', async () => {
   for (const id of ['writing-2', 'writing-3']) {
     const b = BATTERY.find((x) => x.id === id), dir = tmpDir(id);
-    b.setup(dir); const solved = b.solve(dir), worker = { provider: 'ollama', result: solved };
+    b.setup(dir); const solved = b.solve(dir), worker = { provider: 'deepseek', result: solved };
     assert.equal((await b.check(dir, worker)).pass, true, id);
     let request;
     const judged = await b.check(dir, worker, { judge: async (r) => { request = r; return { provider: 'claude', yes: false, notes: 'taste' }; } });
     assert.equal(judged.pass, false, id); assert.match(judged.notes, /cross-provider judge \(claude\): NO/);
-    assert.equal(request.workerProvider, 'ollama'); assert.match(request.question, /Reply with exactly YES or NO\.$/);
-    assert.equal((await b.check(dir, worker, { judge: async () => ({ provider: 'ollama', yes: false }) })).pass, true, 'same-provider verdict is ignored');
+    assert.equal(request.workerProvider, 'deepseek'); assert.match(request.question, /Reply with exactly YES or NO\.$/);
+    assert.equal((await b.check(dir, worker, { judge: async () => ({ provider: 'deepseek', yes: false }) })).pass, true, 'same-provider verdict is ignored');
     rmSync(dir, { recursive: true, force: true });
   }
   const b = BATTERY.find((x) => x.id === 'writing-2'), dir = tmpDir('writing-slop');
@@ -229,8 +229,8 @@ test('the default subjective judge is off when no different provider is availabl
   const { getModels } = await import('../../core/models.mjs');
   const reg = getModels(), saved = { models: reg.models, providers: reg.providers };
   try {
-    reg.models = [{ provider: 'ollama', id: 'qwen', kind: 'agent' }]; reg.providers = { ollama: { status: 'ok' } };
-    assert.equal(await crossProviderJudge({ workerProvider: 'ollama', question: 'Reply YES or NO.', cwd: process.cwd() }), null);
+    reg.models = [{ provider: 'deepseek', id: 'deepseek-chat', kind: 'agent' }]; reg.providers = { deepseek: { status: 'ok' } };
+    assert.equal(await crossProviderJudge({ workerProvider: 'deepseek', question: 'Reply YES or NO.', cwd: process.cwd() }), null);
   } finally { Object.assign(reg, saved); }
 });
 
@@ -331,7 +331,7 @@ test("canary: the grader's own hidden files never trigger it, even when left beh
 test('scratch dirs and task titles are neutral (no conductor, smoke or task id); the dirs are removed', async () => {
   const specs = [];
   const execute = async (spec) => { specs.push(spec); assert.ok(existsSync(spec.cwd)); return { status: 'canceled', timedOut: true }; };
-  await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'debug-7'], execute });
+  await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1', 'debug-7'], execute });
   assert.equal(specs.length, 2);
   assert.deepEqual(specs.map((s) => s.smokeId), ['read-1', 'debug-7']); // the id travels beside the title, not in it
   for (const { cwd, title } of specs) {
@@ -348,7 +348,7 @@ test('smoke tasks at difficulty 6+ get smoke.hardTimeoutMinutes (30); the rest s
   const previous = loadConfig().smoke;
   const waits = [];
   const execute = async (spec, minutes) => { waits.push([spec.difficulty, minutes]); return { status: 'canceled', timedOut: true }; };
-  const models = [{ provider: 'ollama', model: 'qwen' }], tasks = ['debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'];
+  const models = [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks = ['debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'];
   try {
     await runSmoke({ models, tasks, execute });
     assert.deepEqual(waits.splice(0), [[5, 20], [6, 30], [6, 30], [7, 30], [7, 30]]);
@@ -379,8 +379,8 @@ test('routing ignores difficulty > 5: L6/L7 rows neither pool into nor lift a le
   assert.doesNotMatch(r.reason, /pooled|reserve/);
   const { createTask, cancelTask } = await import('../../core/tasks.mjs');
   const cwd = tmpDir('smoke-difficulty');
-  const smoke = createTask({ cwd, spec: 'x', provider: 'ollama', difficulty: 7, source: 'smoke' });
-  const live = createTask({ cwd, spec: 'x', provider: 'ollama', difficulty: 6 });
+  const smoke = createTask({ cwd, spec: 'x', provider: 'deepseek', difficulty: 7, source: 'smoke' });
+  const live = createTask({ cwd, spec: 'x', provider: 'deepseek', difficulty: 6 });
   assert.equal(smoke.difficulty, 7);
   assert.equal(live.difficulty, null);
   cancelTask(smoke.id); cancelTask(live.id);
@@ -425,27 +425,27 @@ test('runSmoke rates each run from its check and the rows reach the scorecard as
     recordRun(t);
     return t;
   };
-  const results = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen', effort: null }], tasks: ['read-1', 'edit-1', 'debug-3'], execute });
+  const results = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat', effort: null }], tasks: ['read-1', 'edit-1', 'debug-3'], execute });
   assert.deepEqual(results.map((r) => r.verdict), ['pass', 'fail', 'pass']);
   assert.equal(results[1].category, 'edit');
   const smoke = rootRuns({ source: 'smoke' });
   assert.equal(smoke.length, 3);
   assert.deepEqual(smoke.map((r) => r.verdict).sort(), ['fail', 'pass', 'pass']);
-  assert.match(formatSmoke(results), /ollama:qwen:default: 2\/3 passed/);
+  assert.match(formatSmoke(results), /deepseek:deepseek-chat:default: 2\/3 passed/);
   await assert.rejects(runSmoke({ models: [] }), { status: 400 });
-  await assert.rejects(runSmoke({ models: [{ provider: 'ollama' }], tasks: ['nope'], execute }), /no matching smoke tasks/);
+  await assert.rejects(runSmoke({ models: [{ provider: 'deepseek' }], tasks: ['nope'], execute }), /no matching smoke tasks/);
 });
 
 test('a task that did not finish is rated fail with the reason', async () => {
   const execute = async (spec) => ({ id: 'late', ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null });
-  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
+  const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'fail');
   assert.equal(r.notes, 'timeout');
 });
 
 test('a smoke task that never dispatched is skipped and not rated', async () => {
   const execute = async (spec) => ({ id: 'queued', ...spec, status: 'canceled', attempts: 0, error: 'skipped', result: null });
-  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
+  const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'skipped');
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'queued' && a.verdict)), 'never rateTask when attempts is 0');
 });
@@ -500,7 +500,7 @@ test('smoke timeouts are per invocation and bench probes never write config, eve
   saveConfig({ smoke: { timeoutMinutes: 17 } });
   const file = join(HOME, 'config.json');
   const before = readFileSync(file, 'utf8');
-  const models = [{ provider: 'ollama', model: 'timeout-probe' }];
+  const models = [{ provider: 'deepseek', model: 'timeout-probe' }];
   const waits = [];
   const execute = async (_spec, minutes) => { waits.push(minutes); return { status: 'canceled', timedOut: true }; };
   const reg = getModels(); const saved = { models: reg.models, providers: reg.providers };
@@ -524,7 +524,7 @@ test('smoke timeouts are per invocation and bench probes never write config, eve
 
 test('an environment failure is voided immediately, not left as a failed attempt', async () => {
   const execute = async (spec) => { const t = { id: 'envfail', ...spec, status: 'failed', attempts: 1, error: 'getaddrinfo ENOTFOUND api.example', result: null }; recordRun(t); return t; };
-  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1'], execute });
+  const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1'], execute });
   assert.equal(r.verdict, 'error');
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'envfail')), 'voided at detection time');
 });
@@ -572,7 +572,7 @@ test('timeouts immediately before a provider limit surfaces are voided as the sa
     const t = n <= 2 ? { id: `stall${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `lim${n}`, ...spec, status: 'canceled', error: 'canceled', limitHit: true, attempts: 1, result: null };
     recordRun(t); return t;
   };
-  const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
+  const rs = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
   assert.deepEqual(rs.map((r) => r.verdict), ['error', 'error', 'skipped']);
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => /^stall/.test(a.taskId) && a.verdict)), 'stalled timeouts do not count as failures');
 });
@@ -584,7 +584,7 @@ test('timeouts immediately before a dispatch-wait limit skip are voided as the s
     const t = n <= 2 ? { id: `stalldisp${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `parkdisp${n}`, ...spec, status: 'canceled', attempts: 0, error: 'skipped', parked: true, result: null };
     recordRun(t); return t;
   };
-  const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
+  const rs = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1', 'search-1', 'edit-1', 'implement-2'], execute });
   assert.deepEqual(rs.map((r) => r.verdict), ['error', 'error', 'skipped']);
   assert.ok(!rootRuns().some((c) => c.attempts.some((a) => /^stalldisp/.test(a.taskId) && a.verdict)), 'stalled timeouts do not count as failures');
 });
@@ -596,7 +596,7 @@ test('a user cancel before dispatch skips without voiding preceding timeouts', a
     const t = n <= 1 ? { id: `stalluser${n}`, ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null } : { id: `cancuser${n}`, ...spec, status: 'canceled', attempts: 0, error: 'canceled', result: null };
     recordRun(t); return t;
   };
-  const rs = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['read-1', 'search-1'], execute });
+  const rs = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1', 'search-1'], execute });
   assert.deepEqual(rs.map((r) => r.verdict), ['fail', 'skipped']);
   assert.ok(rootRuns().some((c) => c.attempts.some((a) => a.taskId === 'stalluser1' && a.verdict === 'fail')), 'preceding timeout remains a failure on user cancel');
 });
@@ -615,7 +615,7 @@ test('importing a worker module that process.exit does not kill the check', asyn
 test('L6/L7 smoke runs are recorded and listed in the scores table', async () => {
   const { formatScores } = await import('../../core/scorecard.mjs');
   const execute = async (spec) => { const t = { id: 'hard7', ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 5 } }; recordRun(t); return t; };
-  const [r] = await runSmoke({ models: [{ provider: 'ollama', model: 'qwen' }], tasks: ['debug-7'], execute });
+  const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['debug-7'], execute });
   assert.equal(r.verdict, 'fail');
   assert.match(formatScores({ source: 'smoke' }), /\| debug@7 \|/);
 });
@@ -632,7 +632,7 @@ test('environment failure classification includes old smoke patterns', async () 
 test('a second smoke run for a selection+task already in flight skips it instead of running it twice', async () => {
   const release = Promise.withResolvers(); let calls = 0;
   const execute = async (spec) => { calls++; await release.promise; return { id: `dup${calls}`, ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', durationMs: 1 } }; };
-  const sel = [{ provider: 'ollama', model: 'qwen' }];
+  const sel = [{ provider: 'deepseek', model: 'deepseek-chat' }];
   const first = runSmoke({ models: sel, tasks: ['read-1'], execute });
   await new Promise((r) => setImmediate(r));
   const [dup] = await runSmoke({ models: sel, tasks: ['read-1'], execute });

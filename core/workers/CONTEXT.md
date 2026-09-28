@@ -9,15 +9,15 @@ per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is
 **Prompt caching.** The OpenAI-compatible loop keeps request prefixes stable: old tool results are stubbed only when the
 full ones exceed the budget (roughly 25% of the model's context window tokens × 4 chars/token clamped to [32k, 400k] chars;
 fallback 120k), down to `worker.toolResultLowWater` of it (so requests are append-only between trims), and
-it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_cache_key` on api.openai.com).
+the loop keeps stable request prefixes between trims.
 
 **Entry points.**
-- `index.mjs` — `runWorker(task)` picks the runner by the provider's `kind` (codex, claude, ollama,
-  openai-compat, image, vendor-cli). Local Ollama-via-Claude-harness gets `worker.maxTurnsLocal`.
+- `index.mjs` — `runWorker(task)` picks the runner by the provider's `kind` (codex, claude,
+  openai-compat, vendor-cli).
 - `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin;
   a transient stream failure resumes the same thread once).
-- `claude.mjs` — the Claude Agent SDK harness (also runs local models via `ollama.claudeHarnessEnv()`).
-- `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Host execution is not limited
+- `claude.mjs` — the Claude Agent SDK harness.
+- `openai-compat.mjs` — the `/chat/completions` tool loop for DeepSeek. Host execution is not limited
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
   and `worker.codexSandboxByModel` can give a Codex model its own sandbox (empty by default). The `run` child env
   drops `*_API_KEY` / `*_TOKEN` / `*_SECRET`, and a command naming the state dir is refused. `fetch_url` has an SSRF guard.
@@ -26,7 +26,6 @@ it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_
   10-minute tool deadline when the run is unlimited), and on cancellation. The tool waits for termination before settling.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs
   (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
-- `image.mjs` — image generation.
 
 **Invariants.**
 - A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, authFailed, retryAfterMs?, threadId? }`.
@@ -35,7 +34,7 @@ it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_
   the task fails with `failKind: 'auth'` / `'env'`, unscored.
 - Limit and auth are decided from structured signals: Codex `codexFailure` (rollout `codex_error_info`, a JSON body's
   `status`, the "unexpected status NNN" prefix); grok `http_status` (402/429 limit, 401/403 auth); grok's own session
-  `events.jsonl` for plan-mode cancels. agy, kimi and qwen give no structured status: their text patterns are the
+  `events.jsonl` for plan-mode cancels. agy gives no structured status: text patterns are the
   fallback, and each use is logged to the improvement log.
 - `runWorker` redacts its result (keys a CLI echoes, e.g. OpenAI's 401) before anything records it; see `paths.mjs` `redact`.
 - `writableRoots` (delegate `writable_roots`): extra writable directories — Codex `--add-dir`, Claude

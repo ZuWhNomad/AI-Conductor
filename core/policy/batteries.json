@@ -15585,22 +15585,6 @@
       "avgDurationMs": 188005,
       "avgTokens": 381010,
       "lastRunDate": "2026-09-27"
-    },
-    {
-      "provider": "ollama",
-      "model": "qwen3.8:latest",
-      "effort": "medium",
-      "category": "read",
-      "difficulty": 1,
-      "rated": 1,
-      "pass": 1,
-      "fixable": 0,
-      "fail": 0,
-      "phantom": 0,
-      "avgUsd": 0,
-      "avgDurationMs": 272047,
-      "avgTokens": 2448,
-      "lastRunDate": "2026-09-09"
     }
   ]
 }

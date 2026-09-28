@@ -66,7 +66,7 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
         const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
         if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
-          // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with Kimi and
+          // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with
           // Claude on the Google plan): void them so they do not read as model failures.
           voidPrecedingTimeouts();
           push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: `provider limit: ${String(t.error).slice(0, 120)}` });

@@ -10,7 +10,7 @@ test('model windows honor override, learned ceiling, shipped data and fallback',
   recordLearnedContextWindow('test', 'learned', 7654);
   assert.equal(contextWindowFor('test', 'learned'), 7654);
   assert.equal(contextWindowFor('test', 'learned', { models: { contextWindows: { 'test:learned': 4000 } } }), 4000);
-  assert.equal(contextWindowFor('xai', 'grok-4.7'), 500000);
+  assert.equal(contextWindowFor('grok', 'grok-4.7'), 500000);
   assert.equal(contextWindowFor('unlisted', 'model'), 128000);
   assert.equal(contextWindowFor('unlisted', 'model', undefined, null), null);
   assert.equal(readJson(statePath('context-windows.json'))['test:learned'], 7654);
@@ -66,7 +66,7 @@ test('worker context-length error learns the attempted prompt size', async (t) =
 test('conductor mocked fetch requests append history between compaction points and emit digest on cut', async (t) => {
   const { createSession, sendMessage, deleteSession } = await import('../core/conductor.mjs');
   const before = loadConfig();
-  saveConfig({ providers: { xai: { apiKey: 'test-key', baseUrl: 'https://fixture.invalid/v1' } }, models: { contextWindows: { 'xai:fixture-model': 20000 } }, conductor: { compactAt: 0.7, compactTo: 0.4 } });
+  saveConfig({ providers: { deepseek: { apiKey: 'test-key', baseUrl: 'https://fixture.invalid/v1' } }, models: { contextWindows: { 'deepseek:fixture-model': 20000 } }, conductor: { compactAt: 0.7, compactTo: 0.4 } });
   t.after(() => saveConfig(before));
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
@@ -76,7 +76,7 @@ test('conductor mocked fetch requests append history between compaction points a
       usage: { prompt_tokens: 15000, completion_tokens: 1 },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   });
-  const session = createSession({ cwd: HOME, provider: 'xai', model: 'fixture-model' });
+  const session = createSession({ cwd: HOME, provider: 'deepseek', model: 'fixture-model' });
   t.after(() => deleteSession(session.id));
   const seq = bus.seq;
   const send = async (text) => {
@@ -102,10 +102,10 @@ test('conductor mocked fetch requests append history between compaction points a
 test('conductor compacts after a context-length error and records the error reason', async (t) => {
   const { createSession, sendMessage, deleteSession } = await import('../core/conductor.mjs');
   const before = loadConfig();
-  saveConfig({ providers: { xai: { apiKey: 'test-key', baseUrl: 'https://fixture.invalid/v1' } }, models: { contextWindows: { 'xai:error-model': 20000 } } });
+  saveConfig({ providers: { deepseek: { apiKey: 'test-key', baseUrl: 'https://fixture.invalid/v1' } }, models: { contextWindows: { 'deepseek:error-model': 20000 } } });
   t.after(() => saveConfig(before));
   t.mock.method(globalThis, 'fetch', async () => new Response('{"error":{"message":"context_length_exceeded"}}', { status: 400 }));
-  const session = createSession({ cwd: HOME, provider: 'xai', model: 'error-model' });
+  const session = createSession({ cwd: HOME, provider: 'deepseek', model: 'error-model' });
   t.after(() => deleteSession(session.id));
   writeJson(statePath('history', `${session.id}.loop.json`), [
     { role: 'system', content: 'system' },
@@ -119,22 +119,22 @@ test('conductor compacts after a context-length error and records the error reas
   });
   await sendMessage(session.id, 'failing turn');
   await done;
-  assert.ok(readJson(statePath('context-windows.json'))['xai:error-model'] > 0);
+  assert.ok(readJson(statePath('context-windows.json'))['deepseek:error-model'] > 0);
   assert.ok(bus.since(seq).some((e) => e.type === 'session' && e.sessionId === session.id && e.kind === 'compaction' && e.reason === 'error'));
 });
 
 test('buildPrompt keeps shared preamble first and puts resume and title after stable instructions', async () => {
   const { buildPrompt } = await import('../core/tasks.mjs');
-  const a = buildPrompt({ cwd: HOME, title: 'A', spec: 'SPEC', category: 'summarize', provider: 'ollama', resume: false });
-  const b = buildPrompt({ cwd: HOME, title: 'B', spec: 'SPEC', category: 'edit', provider: 'ollama', resume: true });
+  const a = buildPrompt({ cwd: HOME, title: 'A', spec: 'SPEC', category: 'summarize', provider: 'deepseek', resume: false });
+  const b = buildPrompt({ cwd: HOME, title: 'B', spec: 'SPEC', category: 'edit', provider: 'deepseek', resume: true });
   const stable = a.slice(0, a.indexOf('# Project context notes') >= 0 ? a.indexOf('# Project context notes') : a.indexOf('# Task'));
   assert.ok(b.startsWith(stable));
   assert.ok(a.indexOf('Remember to follow the MSW deletion rule') < a.indexOf('# Task'));
   assert.ok(b.indexOf('You were interrupted earlier') > b.indexOf('Remember to follow the MSW deletion rule'));
   assert.ok(b.indexOf('You were interrupted earlier') < b.indexOf('# Task'));
   assert.match(a, /# Task\n\nSPEC\n\nTitle: A/);
-  const voteA = buildPrompt({ cwd: HOME, title: 'review: thing [1/2]', spec: 'same vote spec', category: 'review', provider: 'ollama' });
-  const voteB = buildPrompt({ cwd: HOME, title: 'review: thing [2/2]', spec: 'same vote spec', category: 'review', provider: 'ollama' });
+  const voteA = buildPrompt({ cwd: HOME, title: 'review: thing [1/2]', spec: 'same vote spec', category: 'review', provider: 'deepseek' });
+  const voteB = buildPrompt({ cwd: HOME, title: 'review: thing [2/2]', spec: 'same vote spec', category: 'review', provider: 'deepseek' });
   assert.equal(voteA.slice(0, voteA.indexOf('Title: ')), voteB.slice(0, voteB.indexOf('Title: ')));
 });
 

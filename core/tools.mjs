@@ -1,6 +1,6 @@
 // Conductor tools, defined once and exposed three ways: Claude Agent SDK MCP server (Claude
 // conductors), streamable-HTTP MCP (Codex conductors, see server/index.mjs) and OpenAI function
-// tools (Ollama / API-model conductors).
+// tools (API-model conductors).
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { createTask, awaitTask, getTask, cancelChain, listTasks, describeTask, cleanupWorktree } from './tasks.mjs';
@@ -9,7 +9,6 @@ import { getLimits, refreshLimits } from './limits.mjs';
 import { logImprovement, resolveImprovement } from './improve.mjs';
 import { folderTree } from './context.mjs';
 import { PROVIDERS } from './providers/index.mjs';
-import * as ollama from './providers/ollama.mjs';
 import { loadConfig, saveConfig, DEFAULTS } from './config.mjs';
 import { CATEGORIES, VERDICTS, rateTask, recommend, formatScores, formatScoresShort, effortForTask, isArchived, setEligibility, selOf } from './scorecard.mjs';
 import { runSmoke, formatSmoke, SMOKE_TASKS } from './smoke/index.mjs';
@@ -120,7 +119,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         category: z.enum(CATEGORIES).optional().describe('Kind of work. With difficulty this selects the worker from the scorecard and trains it.'),
         difficulty: z.number().int().min(1).max(5).optional().describe('1 mechanical single-file edit/lookup · 2 small feature from a precise spec, one module · 3 multi-file or needs surrounding understanding · 4 ambiguous, debugging, cross-cutting · 5 design-heavy, high blast radius'),
         exclude: z.array(z.string()).optional().describe('provider:model[:effort] selections the auto-pick must skip'),
-        avoid_families: z.array(z.string()).optional().describe('Model families (claude, gpt, grok, gemini, deepseek, kimi, qwen) that the auto-pick, the default worker and a limit failover must not land on; a pinned model still runs. For a review: the finder\'s family and the reviewer\'s own.'),
+        avoid_families: z.array(z.string()).optional().describe('Model families (claude, gpt, grok, gemini, deepseek) that the auto-pick, the default worker and a limit failover must not land on; a pinned model still runs. For a review: the finder\'s family and the reviewer\'s own.'),
         retry_of: z.string().optional().describe('Task id of the failed attempt this replaces. Its model is excluded from the auto-pick, category/difficulty are inherited, and the cost of both attempts is scored as one chain (this is how ladders get measured).'),
         provider: z.string().optional().describe(`Provider id (${Object.keys(PROVIDERS).join(', ')}). Omit with model to auto-pick; fallback default: ${loadConfig().worker.provider}`),
         model: z.string().optional().describe('Model id for that provider; see list_models'),
@@ -133,7 +132,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         writable_roots: z.array(z.string()).optional().describe('Absolute paths of existing directories the worker may also write, e.g. a sibling git worktree (Codex --add-dir, Claude additionalDirectories, Antigravity --add-dir). The task still runs in the project directory.'),
         isolate: z.boolean().optional().describe('Run in a per-task git worktree (branch conductor/<task id>) so parallel editors do not overwrite each other. Ignored in a non-git cwd or when sandbox is read-only. Follow-ups reuse the same worktree; retry_of gets a fresh one.'),
         timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task/category run timeout when set, else 55 minutes)'),
-        sandbox: z.enum(SANDBOX_VALUES).optional().describe('Task sandbox (default from settings). Use read-only for reviews. Codex enforces it with an OS sandbox; API/Ollama workers disable write, edit and run tools; Claude disallows Bash, Edit, Write and NotebookEdit. Vendor CLIs use a disposable git snapshot when available, otherwise their plan-mode flags. Claude and vendor modes are best-effort, so also tell those reviewers "do not modify files" in the spec.'),
+        sandbox: z.enum(SANDBOX_VALUES).optional().describe('Task sandbox (default from settings). Use read-only for reviews. Codex enforces it with an OS sandbox; API workers disable write, edit and run tools; Claude disallows Bash, Edit, Write and NotebookEdit. Vendor CLIs use a disposable git snapshot when available, otherwise their plan-mode flags. Claude and vendor modes are best-effort, so also tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
         const cfg = loadConfig(); // L47: settings must not be captured once per Claude session
@@ -294,7 +293,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'allow_command',
-      description: 'Add a command to the worker.shell allow-list so API/Ollama (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad). Allowed programs are trusted: they run with the worker\'s privileges and are not sandboxed. Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
+      description: 'Add a command to the worker.shell allow-list so API (non-Codex/Claude) workers may run it. Use this when a worker reports "run blocked: X is not in worker.shell allow-list" and X is a legitimate build/verify tool (e.g. openscad). Allowed programs are trusted: they run with the worker\'s privileges and are not sandboxed. Bare command name only. Refused for shells/interpreters (bash, sh, cmd, powershell) since those re-enable arbitrary execution. Every addition is logged.',
       schema: z.object({ command: z.string().describe('Bare command name to allow, e.g. "openscad" (no path, no arguments, no shell operators)') }),
       handler: async (a) => {
         const raw = String(a.command || '').trim();
@@ -318,7 +317,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         if (list.some((x) => x.replace(/\.(exe|cmd|bat|com|ps1)$/i, '') === base)) return `"${base}" is already on the allow-list.`;
         saveConfig({ worker: { shell: [...list, base] } });
         logImprovement('idea', 'conductor', `added "${base}" to worker.shell allow-list`, {});
-        return `Added "${base}" to the worker.shell allow-list (now ${list.length + 1} commands). API/Ollama workers can run it.`;
+        return `Added "${base}" to the worker.shell allow-list (now ${list.length + 1} commands). API workers can run it.`;
       },
     },
     {
@@ -400,16 +399,6 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       name: 'context_tree', description: 'Folder tree of the project with existing context notes (CLAUDE.md / CONTEXT.md / AGENTS.md) marked. Use it to decide where notes are missing.',
       schema: z.object({ depth: z.number().optional() }),
       handler: async (a) => folderTree(cwd, { depth: Math.min(8, Math.max(1, Number(a.depth) || 3)) }),
-    },
-    {
-      name: 'install_model', description: 'Download a local model into Ollama (runs in the background; check list_models later).',
-      schema: z.object({ provider: z.literal('ollama'), model: z.string() }),
-      handler: async (a) => { ollama.pullModel(a.model).then(() => refreshModels({ only: ['ollama'] })).catch((e) => logImprovement('error', 'ollama', `pull ${a.model} failed: ${e.message}`)); return `Pulling ${a.model} in the background.`; },
-    },
-    {
-      name: 'generate_image', description: 'Generate image(s) into the project (openai-images needs an OpenAI key, stability a Stability key, sd a local A1111 server).',
-      schema: z.object({ prompt: z.string(), provider: z.enum(['openai-images', 'stability', 'sd']).optional(), size: z.string().optional(), n: z.number().optional(), out_dir: z.string().optional() }),
-      handler: async (a) => { const t = createTask({ sessionId, cwd, title: `image: ${a.prompt.slice(0, 40)}`, spec: a.prompt, provider: a.provider || 'openai-images', imageOptions: { size: a.size, n: a.n, outDir: a.out_dir } }); await awaitTask(t.id, 10 * 60_000); return describeTask(getTask(t.id)); },
     },
     {
       name: 'run_plan',

@@ -9,25 +9,25 @@ const { nextScheduledReset, prevScheduledReset } = await import('../core/scoreca
 const runAt = (provider, iso, inTok, outTok, cached = 0) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: iso, provider, model: 'm', tokens: { in: inTok, out: outTok, cached }, status: 'done' });
 
 test('windowTokens sums in+out since the last long gap (a new usage window), ignoring cached', () => {
-  runAt('xai', '2026-01-01T10:00:00Z', 100000, 0);   // old window
-  runAt('xai', '2026-01-03T10:00:00Z', 300000, 100000); // >6h gap -> new window starts here
-  runAt('xai', '2026-01-03T11:00:00Z', 200000, 0);
-  const w = windowTokens('xai', Date.parse('2026-01-03T12:00:00Z'));
+  runAt('grok', '2026-01-01T10:00:00Z', 100000, 0);   // old window
+  runAt('grok', '2026-01-03T10:00:00Z', 300000, 100000); // >6h gap -> new window starts here
+  runAt('grok', '2026-01-03T11:00:00Z', 200000, 0);
+  const w = windowTokens('grok', Date.parse('2026-01-03T12:00:00Z'));
   assert.equal(w.spent, 600000);   // 400k + 200k, old 100k excluded, cached ignored
 });
 
 test('one check-in anchors the bar but does NOT invent a burn rate', () => {
-  recordUsage('xai', 12, { at: Date.parse('2026-01-03T12:00:00Z') });
+  recordUsage('grok', 12, { at: Date.parse('2026-01-03T12:00:00Z') });
   // A single reading says where we are, not how fast we burn: dividing 12% by "tokens spent this window" would be a
   // rate built on the activity-gap guess (one small window would read 500%/M). Fall back to the advisory budget.
-  let est = estimateUsage('xai', { budgetTokens: 10_000_000 });
+  let est = estimateUsage('grok', { budgetTokens: 10_000_000 });
   assert.equal(est.pct, 12); assert.equal(est.rateBasis, 'fallback'); assert.equal(est.ratePctPerMToken, 10);
-  assert.equal(estimateUsage('xai').ratePctPerMToken, 0); // and with no budget or seed, it simply holds
-  runAt('xai', '2026-01-03T13:00:00Z', 300000, 0);
-  assert.equal(estimateUsage('xai', { budgetTokens: 10_000_000 }).pct, 15); // 12 + 300k x 10%/M
+  assert.equal(estimateUsage('grok').ratePctPerMToken, 0); // and with no budget or seed, it simply holds
+  runAt('grok', '2026-01-03T13:00:00Z', 300000, 0);
+  assert.equal(estimateUsage('grok', { budgetTokens: 10_000_000 }).pct, 15); // 12 + 300k x 10%/M
   // A second, higher check-in makes a real run: now the rate is measured, not assumed.
-  recordUsage('xai', 20, { at: Date.parse('2026-01-03T14:00:00Z') });
-  est = estimateUsage('xai', { budgetTokens: 10_000_000 });
+  recordUsage('grok', 20, { at: Date.parse('2026-01-03T14:00:00Z') });
+  est = estimateUsage('grok', { budgetTokens: 10_000_000 });
   assert.equal(est.rateBasis, 'runs'); assert.equal(est.runs, 1);
   assert.equal(est.ratePctPerMToken, 26.67); // (20-12) over the 300k spent between the two check-ins
   assert.equal(est.pct, 20);                 // anchored on the newest reading, nothing spent since

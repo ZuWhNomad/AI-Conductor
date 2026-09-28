@@ -154,7 +154,7 @@ test('task ID collisions regenerate without overwriting existing journals', asyn
 });
 
 test('awaitTask times out with a snapshot', async () => {
-  const t = createTask({ cwd: tmpDir('t2'), title: 'slow', spec: 'x', provider: 'ollama', model: 'qwen3.8' });
+  const t = createTask({ cwd: tmpDir('t2'), title: 'slow', spec: 'x', provider: 'deepseek', model: 'deepseek-chat' });
   const r = await awaitTask(t.id, 50);
   assert.equal(r.timedOut, true);
   assert.equal(r.status, 'queued');
@@ -373,11 +373,11 @@ test('abortRunning aborts every active worker', async (ctx) => {
 test('a provider limit mid-task fails over to the next qualified provider as a retry chain and is not scored', async (ctx) => {
   const { saveConfig } = await import('../core/config.mjs');
   const { recordRun, rateTask, rootRuns } = await import('../core/scorecard.mjs');
-  registryModels(ctx, [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }]);
-  saveConfig({ providers: { deepseek: { apiKey: 'test-key' } }, scorecard: { minSamples: 1 } });
-  for (let i = 0; i < 2; i++) { const id = `fo${i}`; recordRun({ id, title: 't', status: 'done', provider: 'ollama', model: 'qwen', effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }); rateTask(id, 'pass'); }
+  registryModels(ctx, [{ provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', cost: 'subscription', efforts: ['low'] }]);
+  saveConfig({ providers: { deepseek: { apiKey: 'test-key' } }, scorecard: { minSamples: 1, classes: { deepseek: 'free' } } });
+  for (let i = 0; i < 2; i++) { const id = `fo${i}`; recordRun({ id, title: 't', status: 'done', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }); rateTask(id, 'pass'); }
   mockCompletions(ctx, async () => {
-    // Verify the retry is queued, without dispatching its Ollama worker into live detection.
+    // Verify the retry is queued, without dispatching its DeepSeek worker into live detection.
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '60' } });
   });
@@ -392,8 +392,8 @@ test('a provider limit mid-task fails over to the next qualified provider as a r
     assert.match(done.error, /failed over to task/);
     const next = getTask(done.failedOverTo);
     assert.equal(next.status, 'queued');
-    assert.equal(next.provider, 'ollama');
-    assert.equal(next.model, 'qwen');
+    assert.equal(next.provider, 'codex');
+    assert.equal(next.model, 'gpt-5.6-luna');
     assert.equal(next.retryOf, originalId);
     assert.equal(next.reroutedFrom, t.id);
     assert.equal(t.failedOverTo, next.id);
@@ -417,9 +417,9 @@ test('efficiency mode keeps a mid-run limit task on the pinned model until the c
   const { recordRun, rateTask } = await import('../core/scorecard.mjs');
   const scorecard = loadConfig().scorecard;
   const reset = Date.now() + 60_000;
-  registryModels(ctx, [{ provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' }]);
-  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'] } });
-  recordRun({ id: 'efficiency-midrun-alt', status: 'done', provider: 'ollama', model: 'qwen', category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  registryModels(ctx, [{ provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api' }]);
+  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'], classes: { deepseek: 'free' } } });
+  recordRun({ id: 'efficiency-midrun-alt', status: 'done', provider: 'deepseek', model: 'deepseek-chat', category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask('efficiency-midrun-alt', 'pass');
   getLimits().providers.deepseek = { provider: 'deepseek', blocked: false, windows: [{ id: 'requests', usedPercent: 99, resetsAt: reset }] };
   const tk = await tasksWithWorker(ctx, async () => ({ ok: false, limitHit: true, error: 'usage limit' }));
@@ -502,11 +502,11 @@ test('a Claude five-hour group shared by all Claude models fails over to another
   const models = [
     { provider: 'claude', id: 'claude-opus-5-5', kind: 'agent', efforts: [] },
     { provider: 'claude', id: 'claude-sonnet-5', kind: 'agent', efforts: [] },
-    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local', efforts: [] },
+    { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api', efforts: [] },
   ];
   registryModels(ctx, models);
   const scorecard = loadConfig().scorecard;
-  saveConfig({ scorecard: { minSamples: 1, usePriors: false, classOrder: ['free', 'conductor'] } });
+  saveConfig({ scorecard: { minSamples: 1, usePriors: false, classOrder: ['free', 'conductor'], classes: { deepseek: 'free' } } });
   for (const m of models) {
     const id = `claude-group-seed-${m.provider}-${m.id}`;
     recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
@@ -531,8 +531,8 @@ test('a Claude five-hour group shared by all Claude models fails over to another
     const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
     const next = tk.getTask(done.failedOverTo);
     assert.equal(done.status, 'failed');
-    assert.equal(next?.provider, 'ollama');
-    assert.equal(next?.model, 'qwen');
+    assert.equal(next?.provider, 'deepseek');
+    assert.equal(next?.model, 'deepseek-chat');
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
     if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
@@ -655,7 +655,7 @@ for (const action of ['cancel', 'shutdown']) for (const noFailover of [false, tr
     const { getLimits } = await import('../core/limits.mjs');
     const { bus } = await import('../core/bus.mjs');
     const scorecard = loadConfig().scorecard;
-    saveConfig({ scorecard: { minSamples: 1 } });
+    saveConfig({ scorecard: { minSamples: 1, classes: { deepseek: 'free' } } });
     delete getLimits().providers.deepseek;
     const entered = Promise.withResolvers(), refresh = Promise.withResolvers(), finished = Promise.withResolvers();
     ctx.mock.method(PROVIDERS.deepseek, 'pollLimits', () => { entered.resolve(); return refresh.promise; });
@@ -994,29 +994,7 @@ test('non-repository task creation, dispatch and completion never invoke git', a
   }
 });
 
-test('image-kind tasks send the raw spec as the picture prompt, not the coding-worker preamble', async (ctx) => {
-  let prompt;
-  ctx.mock.method(globalThis, 'fetch', async (url, opts) => {
-    if (!String(url).includes('/sdapi/v1/txt2img')) return rejectIO(`fetch ${url}`);
-    prompt = JSON.parse(opts.body).prompt;
-    return new Response(JSON.stringify({ images: [Buffer.from('png').toString('base64')] }), { status: 200 });
-  });
-  const cwd = tmpDir('image-prompt');
-  const spec = 'a red cube on a table, studio lighting';
-  const t = createTask({ cwd, provider: 'sd', title: 'draw cube', spec });
-  delete process.env.CONDUCTOR_NO_SCHEDULE;
-  try {
-    schedule();
-    const done = await awaitTask(t.id, 15000);
-    assert.equal(done.status, 'done', done.error);
-    assert.equal(prompt, spec);
-    assert.doesNotMatch(prompt, /# Task:/);
-    assert.doesNotMatch(prompt, /MSW/);
-  } finally {
-    process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    cancelTask(t.id);
-  }
-});
+
 
 test('createTask clamps an unknown effort to the nearest listed effort even without effortIds', () => {
   const cwd = tmpDir('h3-effort');
@@ -1105,16 +1083,16 @@ test('failover passes the access-gate provider restriction intersected with the 
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
   const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
   registryModels(ctx, [
-    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+    { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api' },
     { provider: 'grok', id: 'grok-4.6', kind: 'agent' },
   ]);
   const scorecard = loadConfig().scorecard;
   const tools = loadConfig().tools;
   saveConfig({
-    scorecard: { minSamples: 1 },
+    scorecard: { minSamples: 1, classes: { deepseek: 'free' } },
     tools: { index: { og4_gate: { kind: 'access', match: ['og4-gate.test/'], providers: ['grok'] } } },
   });
-  for (const [id, provider, model] of [['og4o', 'ollama', 'qwen'], ['og4g', 'grok', 'grok-4.6']]) {
+  for (const [id, provider, model] of [['og4o', 'deepseek', 'deepseek-chat'], ['og4g', 'grok', 'grok-4.6']]) {
     recordRun({ id, title: 't', status: 'done', provider, model, effort: null, category: 'search', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
     rateTask(id, 'pass');
   }
@@ -1125,7 +1103,7 @@ test('failover passes the access-gate provider restriction intersected with the 
   const cwd = tmpDir('og4-failover');
   const t = createTask({ cwd, provider: 'deepseek', model: 'deepseek-flash', title: 'read', spec: 'fetch og4-gate.test/page', category: 'search', difficulty: 2, overflowApi: true });
   try {
-    assert.equal(recommend({ category: 'search', difficulty: 2, overflowApi: true }).provider, 'ollama', 'without the gate, free-local would win');
+    assert.equal(recommend({ category: 'search', difficulty: 2, overflowApi: true }).provider, 'deepseek', 'without the gate, free-local would win');
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     schedule();
     const done = await waitForTaskStatus(t.id, ['failed']);
@@ -1658,7 +1636,7 @@ test('RAM pressure arms one unrefed retry and starts queued work when headroom r
   const restoreMemory = setMemoryReader(() => ({ total: 100, free }));
   saveConfig({ resources: { maxRamPct: 85 } });
   const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'done' }));
-  const t = tk.createTask({ cwd: tmpDir('ram-task'), provider: 'ollama', model: 'qwen', spec: 'run when memory is available' }, { dispatch: false });
+  const t = tk.createTask({ cwd: tmpDir('ram-task'), provider: 'deepseek', model: 'deepseek-chat', spec: 'run when memory is available' }, { dispatch: false });
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   const retryTimers = [];
@@ -1849,9 +1827,9 @@ for (const scenario of [
   const { bus } = await import('../core/bus.mjs');
   const previous = loadConfig(), provider = 'l6-blocked', model = 'l6-alternative';
   const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
-  saveConfig({ worker: { efficiencyMode: scenario.global }, scorecard: { minSamples: 1, classOrder: ['free'] } });
-  registryModels(ctx, scenario.unavailable ? [] : [{ provider: 'ollama', id: model, kind: 'agent', cost: 'free-local' }]);
-  recordRun({ id: `l6-seed-${scenario.name}`, status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  saveConfig({ worker: { efficiencyMode: scenario.global }, scorecard: { minSamples: 1, classOrder: ['free'], classes: { deepseek: 'free' } } });
+  registryModels(ctx, scenario.unavailable ? [] : [{ provider: 'deepseek', id: model, kind: 'agent', cost: 'api' }]);
+  recordRun({ id: `l6-seed-${scenario.name}`, status: 'done', provider: 'deepseek', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask(`l6-seed-${scenario.name}`, 'pass');
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: now + scenario.remaining, windows: [] };
   const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'ok' }));
@@ -1874,7 +1852,7 @@ for (const scenario of [
       assert.deepEqual(replacements.map((t) => t.retryOf), [null, null]);
       assert.deepEqual(replacements.map((t) => t.reroutedFrom), batch.map((t) => t.id));
       assert.ok(replacements.every((t) => t.spec === 'x'), 'a never-started task adds no handoff note');
-      assert.ok(replacements.every((t) => t.provider === 'ollama' && t.model === model));
+      assert.ok(replacements.every((t) => t.provider === 'deepseek' && t.model === model));
       for (const done of await Promise.all(replacements.map((t) => tk.awaitTask(t.id)))) assert.equal(done.status, 'done');
     } else {
       assert.ok(batch.every((t) => !t.failedOverTo && t.resumeAt === now + scenario.remaining));
@@ -1924,12 +1902,12 @@ test('failover skips avoided families, carries avoidFamilies to the replacement,
   const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
   const { getLimits } = await import('../core/limits.mjs');
   registryModels(ctx, [
-    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
+    { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api' },
     { provider: 'grok', id: 'grok-4.6', kind: 'agent' },
   ]);
   const scorecard = loadConfig().scorecard;
-  saveConfig({ scorecard: { minSamples: 1 } });
-  for (const [id, provider, model] of [['avf-o', 'ollama', 'qwen'], ['avf-g', 'grok', 'grok-4.6']]) {
+  saveConfig({ scorecard: { minSamples: 1, classes: { deepseek: 'free' } } });
+  for (const [id, provider, model] of [['avf-o', 'deepseek', 'deepseek-chat'], ['avf-g', 'grok', 'grok-4.6']]) {
     recordRun({ id, title: 't', status: 'done', provider, model, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
     rateTask(id, 'pass');
   }
@@ -1946,16 +1924,16 @@ test('failover skips avoided families, carries avoidFamilies to the replacement,
   };
   const made = [];
   try {
-    assert.equal(recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'ollama', 'without avoidFamilies, the qwen model would win');
-    const a = await run([' Qwen', 'deepseek', 'qwen']); made.push(a.t);
-    assert.deepEqual(a.t.avoidFamilies, ['qwen', 'deepseek']);
+    assert.equal(recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'deepseek', 'without avoidFamilies, the deepseek-chat model would win');
+    const a = await run([' DeepSeek', 'deepseek', 'deepseek']); made.push(a.t);
+    assert.deepEqual(a.t.avoidFamilies, ['deepseek']);
     assert.equal(a.done.status, 'failed');
     const next = getTask(a.done.failedOverTo);
     assert.equal(next.provider, 'grok');
-    assert.deepEqual(next.avoidFamilies, ['qwen', 'deepseek'], 'a second failover respects it too');
-    assert.deepEqual(JSON.parse(readFileSync(join(HOME, 'tasks', `${next.id}.json`), 'utf8')).avoidFamilies, ['qwen', 'deepseek'], 'journaled, so a restart keeps it');
+    assert.deepEqual(next.avoidFamilies, ['deepseek'], 'a second failover respects it too');
+    assert.deepEqual(JSON.parse(readFileSync(join(HOME, 'tasks', `${next.id}.json`), 'utf8')).avoidFamilies, ['deepseek'], 'journaled, so a restart keeps it');
     cancelTask(next.id); // keep the replacement from dispatching during the next run
-    const b = await run(['qwen', 'grok']); made.push(b.t);
+    const b = await run(['deepseek', 'grok']); made.push(b.t);
     assert.equal(b.done.status, 'parked');
     assert.equal(b.done.limitHit, true, 'it ran into the limit, and failover found nothing outside the avoided families');
     assert.equal(getTask(b.t.id).failedOverTo, undefined);

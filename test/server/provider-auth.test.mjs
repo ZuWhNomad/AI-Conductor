@@ -50,18 +50,18 @@ test('stopping a watch (Quit) ends it', async (t) => {
 test('the slow sweep re-probes installed-but-signed-out providers only', () => {
   assert.deepEqual(staleAuthProviders({
     grok: { installed: true, loggedIn: false },      // signed out: a sign-in elsewhere is exactly what we watch for
-    kimi: { installed: true, loggedIn: true },       // fine
-    sd: { installed: false },                        // not installed: an install won't happen behind our back
-    xai: { installed: true, configured: false },     // missing API key: arrives through Settings, which refreshes
+    antigravity: { installed: true, loggedIn: true },       // fine
+    codex: { installed: false },                        // not installed: an install won't happen behind our back
+    deepseek: { installed: true, configured: false },     // missing API key: arrives through Settings, which refreshes
   }), ['grok']);
 });
 
 test('a re-auth watch waits for the sign-out before it accepts ok again', async (t) => {
-  const advance = watchClock(t, 'kimi');
+  const advance = watchClock(t, 'grok');
   // On relogin the provider is still signed in when the watch starts; stopping at the first ok would end it before
   // the CLI's logout had even run.
   let calls = 0; const seq = ['ok', 'unavailable', 'unavailable', 'ok'];
-  const w = watchSignIn('kimi', { intervalMs: 1, maxMs: 5000, awaitDrop: true, refresh: async () => { calls++; }, statusOf: () => seq[Math.min(calls, seq.length) - 1] });
+  const w = watchSignIn('grok', { intervalMs: 1, maxMs: 5000, awaitDrop: true, refresh: async () => { calls++; }, statusOf: () => seq[Math.min(calls, seq.length) - 1] });
   for (let probe = 0; probe < seq.length; probe++) {
     await advance(1);
     assert.equal(w.stopped, probe === seq.length - 1);

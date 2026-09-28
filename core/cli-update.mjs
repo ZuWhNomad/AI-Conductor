@@ -77,14 +77,6 @@ const cliVersion = (id) => async (x) => { const c = x.bin(id); return c ? parseV
 const binOf = (x, id) => { const c = x.bin(id); if (!c) throw new Error(`${id} CLI not found`); return c.command; };
 const npmLatest = (pkg) => async (x) => (await x.npm(['view', pkg, 'version'], { timeoutMs: 60_000 })).out.split('\n').map((l) => l.trim()).filter((l) => parseVersion(l) === l).pop() || null;
 const npmGlobal = (pkg) => (x, v) => x.npm(['i', '-g', `${pkg}@${v}`], { timeoutMs: 600_000 });
-/** kimi installs with `pip install --user` into a PythonXY Scripts folder; update with that same Python. */
-function kimiPip(x) {
-  const bin = x.bin('kimi')?.command || '';
-  if (!WIN) return { command: 'python3', args: ['-m', 'pip'] };
-  const m = /[\\/]Python3(\d+)[\\/]Scripts[\\/]/i.exec(bin); const py = findCli('py');
-  return m && py ? { command: py, args: [`-3.${m[1]}`, '-m', 'pip'] } : null;
-}
-const pipInstall = (x, v) => { const p = kimiPip(x); return p ? x.run(p.command, [...p.args, 'install', '--user', '--disable-pip-version-check', `kimi-cli==${v}`], { timeoutMs: 600_000 }) : { code: 1, out: 'no pip for kimi' }; };
 const agyPlatform = () => `${WIN ? 'windows' : process.platform}_${process.arch === 'arm64' ? 'arm64' : 'amd64'}`;
 
 export const RECIPES = {
@@ -94,7 +86,6 @@ export const RECIPES = {
     manual: (x) => { const c = x.bin('codex'); return c && ![c.command, ...c.args].some((s) => /node_modules[\\/]@openai[\\/]codex/.test(s)) ? 'this codex was not installed with npm: update it with the app that installed it' : null; },
     apply: npmGlobal('@openai/codex'),
   },
-  'qwen-code': { version: cliVersion('qwen-code'), latest: npmLatest('@qwen-code/qwen-code'), apply: npmGlobal('@qwen-code/qwen-code') },
   grok: {
     version: cliVersion('grok'),
     // `grok update --check --json` (grok 1.0.30): {"currentVersion","latestVersion","channel":"stable",...}; --version <v> installs an exact release.
@@ -107,12 +98,6 @@ export const RECIPES = {
     // `agy update` takes no version, so the previous binary is kept beside it and copied back on a failed verify.
     apply: async (x) => { const b = binOf(x, 'antigravity'); x.copy(b, `${b}.prev`); return x.run(b, ['update'], { timeoutMs: 600_000 }); },
     rollback: async (x) => { const b = binOf(x, 'antigravity'); x.copy(`${b}.prev`, b); return { code: 0, out: `restored ${b}.prev` }; },
-  },
-  kimi: {
-    version: cliVersion('kimi'),
-    latest: async (x) => (await x.fetchJson('https://pypi.org/pypi/kimi-cli/json'))?.info?.version || null,
-    manual: (x) => (kimiPip(x) ? null : 'kimi was not installed with pip --user under a PythonXY folder: update it the way it was installed'),
-    apply: pipInstall,
   },
   claude: {
     version: async (x) => parseVersion(x.sdkVersion()),
