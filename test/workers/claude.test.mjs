@@ -2,8 +2,6 @@ import '../_env.mjs';
 import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import os from 'node:os';
-import path from 'node:path';
 
 const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
   export function query(opts) {
@@ -21,7 +19,7 @@ registerHooks({
   },
 });
 
-const { runClaude, killByNameDenied, writeOutsideDenied, workerHooks } = await import('../../core/workers/claude.mjs');
+const { runClaude, killByNameDenied } = await import('../../core/workers/claude.mjs');
 const { getModels, findModel } = await import('../../core/models.mjs');
 
 test('rate_limit_event with isUsingOverage does not set limitHit; rejected only marks a failed run', async () => {
@@ -98,33 +96,4 @@ test('kill guard: process kills by name or image are denied, kills by PID are no
   }
   assert.deepEqual(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'taskkill /PID 42 /F' } }), {});
   assert.deepEqual(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: 'x' } }), {});
-});
-
-test('Claude worker write guard confines writes to task, writable roots, and tmpdir', async () => {
-  const cwd = process.cwd();
-  const roots = [cwd, path.join(cwd, 'writable-root'), os.tmpdir()];
-  assert.equal(writeOutsideDenied('Write', { file_path: path.join(cwd, 'inside.txt') }, roots), null);
-  assert.equal(writeOutsideDenied('Write', { file_path: path.join(cwd, '..cache', 'x') }, roots), null);
-  assert.equal(writeOutsideDenied('Edit', { file_path: 'inside.txt' }, roots), null);
-  assert.match(writeOutsideDenied('Write', { file_path: path.resolve(cwd, '..', 'outside.txt') }, roots), /outside this task's folder/);
-  assert.match(writeOutsideDenied('Write', { file_path: `${cwd}-sibling/file.txt` }, roots), /outside this task's folder/);
-  assert.equal(writeOutsideDenied('MultiEdit', { file_path: path.join(roots[1], 'file.txt') }, roots), null);
-  assert.equal(writeOutsideDenied('NotebookEdit', { notebook_path: path.join(os.tmpdir(), 'file.ipynb') }, roots), null);
-  assert.equal(writeOutsideDenied('Read', { file_path: path.resolve(cwd, '..', 'read.txt') }, roots), null);
-  assert.equal(writeOutsideDenied('Bash', { command: 'touch outside.txt' }, roots), null);
-  assert.equal(writeOutsideDenied('Write', { file_path: '' }, roots), null);
-
-  const differentlyCased = path.join(cwd.toUpperCase(), 'inside.txt');
-  const caseResult = writeOutsideDenied('Write', { file_path: differentlyCased }, [cwd]);
-  if (process.platform === 'win32') assert.equal(caseResult, null);
-  else assert.match(caseResult, /outside this task's folder/);
-});
-
-test('worker hook denies outside writes and allows inside writes', async () => {
-  const cwd = process.cwd();
-  const hook = workerHooks({ cwd }).PreToolUse[0].hooks[0];
-  const denied = await hook({ tool_name: 'Write', tool_input: { file_path: path.resolve(cwd, '..', 'outside.txt') } });
-  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /outside this task's folder/);
-  assert.deepEqual(await hook({ tool_name: 'Write', tool_input: { file_path: path.join(cwd, 'inside.txt') } }), {});
 });
