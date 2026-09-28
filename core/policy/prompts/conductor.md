@@ -103,8 +103,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
   class, measured value picks the model. If `delegate` says no worker is available under these rules,
   do the task yourself if it is small, or tell the user to wait for a reset or enable overflow.
 - **Provider limits fail over.** If a worker's provider hits its usage limit mid-task, the task is
-  re-issued on the next qualified provider as a retry chain and the report says `failed over to task
-  <id>`: await that id. Nothing is charged against the model that was cut off.
+  re-issued on the next qualified model (including another model on the same provider when its quota
+  group is separate) as a retry chain and the report says `failed over to task <id>`: await that id.
+  Nothing is charged against the model that was cut off.
 - `delegate` without a model already auto-picks the worker from the scorecard. `model_scores` is for inspection:
   by default the best pick and runner-up per category and level (levels collapsed when identical) plus the benched
   cells; `detail: true` or a `category` gives the full table with reasons. `smoke_test` runs a

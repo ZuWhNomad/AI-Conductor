@@ -52,6 +52,20 @@ const waitForTaskStatus = (id, statuses) => {
     onEvent({ type: 'task', task: getTask(id) });
   });
 };
+const waitForLocalTaskStatus = (tk, id, statuses) => {
+  const current = tk.getTask(id);
+  if (statuses.includes(current?.status)) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); bus.off('event', onEvent); };
+    const onEvent = (event) => {
+      if (event.type !== 'task' || event.task?.id !== id || !statuses.includes(event.task.status)) return;
+      cleanup(); resolve(tk.getTask(id));
+    };
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`task ${id} did not reach ${statuses.join('/')}`)); }, 15000);
+    bus.on('event', onEvent);
+    onEvent({ type: 'task', task: tk.getTask(id) });
+  });
+};
 const registryModels = (ctx, models) => {
   const reg = getModels(), previous = { models: reg.models, providers: reg.providers };
   // Selection reads the imported registry cache, not later writes to models.json.
@@ -427,46 +441,211 @@ test('efficiency mode keeps a mid-run limit task on the pinned model until the c
   }
 });
 
-test('failover excludes the whole current provider before choosing an eligible alternative', async (ctx) => {
+test('an auto-picked Antigravity Claude task fails over to Gemini, outside the exhausted quota group', async (ctx) => {
   const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits, save: saveLimits } = await import('../core/limits.mjs');
   const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
-  const { getLimits } = await import('../core/limits.mjs');
-  const { bus } = await import('../core/bus.mjs');
-  registryModels(ctx, [
-    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local' },
-    { provider: 'deepseek', id: 'deepseek-reasoner', kind: 'agent' },
-  ]);
+  const models = [
+    { provider: 'antigravity', id: 'claude-sonnet-4-6', kind: 'agent', efforts: [] },
+    { provider: 'antigravity', id: 'claude-opus-4-6', kind: 'agent', efforts: [] },
+    { provider: 'antigravity', id: 'gemini-3.8-flash', kind: 'agent', efforts: [] },
+  ];
+  registryModels(ctx, models);
   const scorecard = loadConfig().scorecard;
-  saveConfig({ scorecard: { minSamples: 1, classOrder: ['api', 'free'] } });
-  delete getLimits().providers.deepseek;
-  const id = 'same-provider-alternative';
-  recordRun({ id, title: 't', status: 'done', provider: 'deepseek', model: 'deepseek-reasoner', effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
-  rateTask(id, 'pass');
-  // A fresh model-scoped quota view permits the same-provider model again.
-  ctx.mock.method(PROVIDERS.deepseek, 'pollLimits', async () => ({ provider: 'deepseek', windows: [{ id: 'requests', usedPercent: 0 }], blocked: false }));
-  mockCompletions(ctx, async () => {
+  saveConfig({ scorecard: { minSamples: 1, usePriors: false, classOrder: ['included'] } });
+  for (const m of models) {
+    const id = `agy-seed-${m.id}`;
+    recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const reset = Date.now() + 60_000;
+  const windows = [
+    { id: 'claude-five-hour', label: '5-hour Claude', models: '^claude-', usedPercent: 10, resetsAt: reset },
+    { id: 'gemini-five-hour', label: '5-hour Gemini', models: '^gemini-', usedPercent: 10, resetsAt: reset },
+  ];
+  delete getLimits().providers.antigravity;
+  getLimits().providers.antigravity = { provider: 'antigravity', blocked: false, windows };
+  saveLimits(false);
+  ctx.mock.method(PROVIDERS.antigravity, 'pollLimits', async () => ({ provider: 'antigravity', blocked: false, windows }));
+  const picked = recommend({ category: 'review', difficulty: 2, providers: ['antigravity'], exclude: ['antigravity:gemini-3.8-flash'] });
+  assert.equal(picked?.provider, 'antigravity');
+  assert.ok(picked.model.startsWith('claude-'), 'initial auto-pick is Claude on Antigravity');
+  const tk = await tasksWithWorker(ctx, async () => {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    return new Response(JSON.stringify({ error: { message: 'rate limit exceeded' } }), { status: 429 });
+    return { ok: false, limitHit: true, error: 'usage limit' };
   });
-  const t = createTask({ cwd: tmpDir('failover-provider'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, overflowApi: true });
-  const finished = Promise.withResolvers();
-  const onEvent = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.finishedAt) finished.resolve(e.task); };
-  bus.on('event', onEvent);
+  const t = tk.createTask({ sessionId: 'agy-same-group', cwd: tmpDir('agy-same-group'), spec: 'x', provider: picked.provider, model: picked.model, effort: picked.effort, category: 'review', difficulty: 2, parallelOverride: true });
   try {
-    assert.equal(recommend({ category: 'review', difficulty: 2, exclude: ['deepseek:deepseek-flash'], overflowApi: true }).provider, 'deepseek', 'the same-provider model would win without provider filtering');
     delete process.env.CONDUCTOR_NO_SCHEDULE;
-    schedule();
-    const done = await finished.promise;
+    tk.schedule();
+    const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
+    const next = tk.getTask(done.failedOverTo);
     assert.equal(done.status, 'failed');
-    assert.equal(getTask(done.failedOverTo)?.provider, 'ollama');
-    assert.equal(getTask(done.failedOverTo)?.model, 'qwen');
+    assert.equal(next?.provider, 'antigravity');
+    assert.equal(next?.model, 'gemini-3.8-flash');
+    assert.ok(!models.filter((m) => m.id.startsWith('claude-')).some((m) => m.id === next.model), 'models in the failed Claude window group are excluded');
   } finally {
     process.env.CONDUCTOR_NO_SCHEDULE = '1';
-    bus.off('event', onEvent);
-    if (t.failedOverTo) cancelTask(t.failedOverTo);
-    cancelTask(t.id);
+    if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers.antigravity;
+    saveLimits(false);
     saveConfig({ scorecard });
-    delete getLimits().providers.deepseek;
+  }
+});
+
+test('a Claude five-hour group shared by all Claude models fails over to another provider', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits, save: saveLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask, recommend } = await import('../core/scorecard.mjs');
+  const models = [
+    { provider: 'claude', id: 'claude-opus-5-5', kind: 'agent', efforts: [] },
+    { provider: 'claude', id: 'claude-sonnet-5', kind: 'agent', efforts: [] },
+    { provider: 'ollama', id: 'qwen', kind: 'agent', cost: 'free-local', efforts: [] },
+  ];
+  registryModels(ctx, models);
+  const scorecard = loadConfig().scorecard;
+  saveConfig({ scorecard: { minSamples: 1, usePriors: false, classOrder: ['free', 'conductor'] } });
+  for (const m of models) {
+    const id = `claude-group-seed-${m.provider}-${m.id}`;
+    recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const reset = Date.now() + 60_000;
+  const windows = [{ id: 'five_hour', label: '5-hour', usedPercent: 10, resetsAt: reset }];
+  delete getLimits().providers.claude;
+  getLimits().providers.claude = { provider: 'claude', blocked: false, windows };
+  saveLimits(false);
+  ctx.mock.method(PROVIDERS.claude, 'pollLimits', async () => ({ provider: 'claude', blocked: false, windows }));
+  const picked = recommend({ category: 'review', difficulty: 2, providers: ['claude'] });
+  assert.equal(picked?.provider, 'claude');
+  const tk = await tasksWithWorker(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return { ok: false, limitHit: true, error: 'usage limit' };
+  });
+  const t = tk.createTask({ sessionId: 'claude-shared-group', cwd: tmpDir('claude-shared-group'), spec: 'x', provider: picked.provider, model: picked.model, category: 'review', difficulty: 2, parallelOverride: true });
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
+    const next = tk.getTask(done.failedOverTo);
+    assert.equal(done.status, 'failed');
+    assert.equal(next?.provider, 'ollama');
+    assert.equal(next?.model, 'qwen');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers.claude;
+    saveLimits(false);
+    saveConfig({ scorecard });
+  }
+});
+
+test('Codex failover to another model resolves that model’s configured sandbox', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits, save: saveLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const models = [
+    { provider: 'codex', id: 'gpt-5.6-sol', kind: 'agent', efforts: [] },
+    { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts: [] },
+  ];
+  registryModels(ctx, models);
+  const previous = loadConfig();
+  saveConfig({
+    scorecard: { minSamples: 1, usePriors: false, classOrder: ['subscription'] },
+    worker: { codexSandboxByModel: { 'gpt-5.6-sol': 'workspace-write', 'gpt-6-astra': 'danger-full-access' } },
+  });
+  for (const m of models) {
+    const id = `codex-sandbox-seed-${m.id}`;
+    recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const reset = Date.now() + 60_000;
+  const windows = [
+    { id: 'sol-quota', label: '5-hour sol', models: 'gpt-5[.]6-sol', usedPercent: 10, resetsAt: reset },
+    { id: 'astra-quota', label: '5-hour astra', models: 'gpt-6-astra', usedPercent: 10, resetsAt: reset },
+  ];
+  delete getLimits().providers.codex;
+  getLimits().providers.codex = { provider: 'codex', blocked: false, windows };
+  saveLimits(false);
+  ctx.mock.method(PROVIDERS.codex, 'pollLimits', async () => ({ provider: 'codex', blocked: false, windows }));
+  const tk = await tasksWithWorker(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return { ok: false, limitHit: true, error: 'usage limit' };
+  });
+  const t = tk.createTask({ sessionId: 'codex-sandbox', cwd: tmpDir('codex-sandbox'), spec: 'x', provider: 'codex', model: 'gpt-5.6-sol', category: 'review', difficulty: 2, parallelOverride: true });
+  assert.equal(t.sandbox, 'workspace-write');
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
+    const next = tk.getTask(done.failedOverTo);
+    assert.equal(done.status, 'failed');
+    assert.equal(next?.provider, 'codex');
+    assert.equal(next?.model, 'gpt-6-astra');
+    assert.equal(next?.sandbox, 'danger-full-access');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers.codex;
+    saveLimits(false);
+    saveConfig({ scorecard: previous.scorecard, worker: previous.worker });
+  }
+});
+
+test('a read-only task keeps its sandbox when it fails over to Codex', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { getLimits, save: saveLimits } = await import('../core/limits.mjs');
+  const { recordRun, rateTask } = await import('../core/scorecard.mjs');
+  const models = [
+    { provider: 'antigravity', id: 'claude-sonnet-4-6', kind: 'agent', efforts: [] },
+    { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts: [] },
+  ];
+  registryModels(ctx, models);
+  const previous = loadConfig();
+  saveConfig({
+    scorecard: { minSamples: 1, usePriors: false, classOrder: ['included', 'subscription'] },
+    worker: { codexSandboxByModel: { 'gpt-6-astra': 'danger-full-access' } },
+  });
+  for (const m of models) {
+    const id = `readonly-codex-seed-${m.provider}-${m.id}`;
+    recordRun({ id, title: 'seed', status: 'done', provider: m.provider, model: m.id, effort: null, category: 'review', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    rateTask(id, 'pass');
+  }
+  const reset = Date.now() + 60_000;
+  const windows = [{ id: 'claude-five-hour', label: '5-hour Claude', models: '^claude-', usedPercent: 10, resetsAt: reset }];
+  delete getLimits().providers.antigravity;
+  getLimits().providers.antigravity = { provider: 'antigravity', blocked: false, windows };
+  saveLimits(false);
+  ctx.mock.method(PROVIDERS.antigravity, 'pollLimits', async () => ({ provider: 'antigravity', blocked: false, windows }));
+  const tk = await tasksWithWorker(ctx, async () => {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    return { ok: false, limitHit: true, error: 'usage limit' };
+  });
+  const t = tk.createTask({ sessionId: 'readonly-codex', cwd: tmpDir('readonly-codex'), spec: 'review x', provider: 'antigravity', model: 'claude-sonnet-4-6', category: 'review', difficulty: 2, sandbox: 'read-only', parallelOverride: true });
+  try {
+    assert.equal(t.sandbox, 'read-only');
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    const done = await waitForLocalTaskStatus(tk, t.id, ['failed']);
+    const next = tk.getTask(done.failedOverTo);
+    assert.equal(done.status, 'failed');
+    assert.equal(next?.provider, 'codex');
+    assert.equal(next?.model, 'gpt-6-astra');
+    assert.equal(next?.sandbox, 'read-only');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    if (t.failedOverTo) tk.cancelTask(t.failedOverTo);
+    tk.cancelTask(t.id);
+    await tk.flushRecords();
+    delete getLimits().providers.antigravity;
+    saveLimits(false);
+    saveConfig({ scorecard: previous.scorecard, worker: previous.worker });
   }
 });
 
