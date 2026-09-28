@@ -71,6 +71,15 @@ test('defaults load, patches deep-merge, secrets redact', () => {
   assert.equal(publicConfig(c2).providers.xai.apiKey, null);
 });
 
+test('RAM guard defaults to 85 percent and preserves zero as disabled', () => {
+  const previous = loadConfig().resources;
+  try {
+    assert.equal(DEFAULTS.resources.maxRamPct, 85);
+    assert.equal(loadConfig().resources.maxRamPct, 85);
+    assert.equal(saveConfig({ resources: { maxRamPct: 0 } }).resources.maxRamPct, 0);
+  } finally { saveConfig({ resources: previous }); }
+});
+
 test('masked MCP URLs round-trip without replacing the real URLs', () => {
   const mcpServers = {
     query: { url: 'https://example.test/mcp?token=query-secret', env: { TOKEN: 'env-secret' } },

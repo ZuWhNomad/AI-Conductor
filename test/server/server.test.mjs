@@ -84,6 +84,9 @@ test('static UI and state endpoint', async () => {
   assert.equal(st.version, '2.0.0');
   assert.equal(st.pid, process.pid);
   assert.equal(typeof st.improvementCount, 'number');
+  assert.equal(typeof st.resources.ramPct, 'number');
+  assert.equal(st.resources.maxRamPct, 85);
+  assert.equal(typeof st.resources.held, 'boolean');
   assert.ok(Array.isArray(st.providers) && st.providers.some((p) => p.id === 'codex'));
   assert.equal(st.config.providers.deepseek.apiKey, null);
 });

@@ -5,11 +5,13 @@
 import { spawn, execFile } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { statePath, readJson, writeJson, shortId, nowIso, redact, readTail } from './paths.mjs';
+import { resourceStatus, resourceLine } from './resources.mjs';
 
 const WIN = process.platform === 'win32';
 const rec = (id) => statePath('jobs', `${id}.json`);
 const log = (id) => statePath('jobs', `${id}.log`);
 const validId = (id) => typeof id === 'string' && /^[a-z0-9]+$/.test(id);
+const startingGpuJobs = new Map(); // closes the short gap before the detached wrapper persists its PID
 
 // CommonJS on purpose (`node -e`): argv is [node, record, log, command, cwd]. The command travels in argv, not in the
 // record, because the record is redacted on disk. Record updates are read-merge-write with a rename.
@@ -26,15 +28,27 @@ c.on('error', (e) => { fs.writeSync(out, String(e.message) + '\\n'); save({ stat
 c.on('exit', (code, signal) => save({ status: code === 0 ? 'done' : 'failed', exitCode: code, signal: signal || null, finishedAt: new Date().toISOString() }));`;
 
 /** Start `command` (a shell command line) in `cwd`, detached. Returns the record. */
-export function startJob({ command, cwd }) {
+export function startJob({ command, cwd, gpu = false }) {
   if (typeof command !== 'string' || !command.trim()) throw Object.assign(new Error('command must be a non-empty string'), { status: 400 });
   let dir = false; try { dir = statSync(cwd).isDirectory(); } catch {}
   if (!dir) throw Object.assign(new Error(`cwd must be an existing directory: ${cwd}`), { status: 400 });
+  const resources = resourceStatus();
+  if (resources.held) throw Object.assign(new Error(`${resourceLine(resources)}; start refused`), { status: 409 });
+  if (gpu === true) {
+    const activeGpu = listJobs().find((j) => j.gpu && j.status === 'running' && j.pid && alive(j.pid))
+      || [...startingGpuJobs].map(([id, pid]) => ({ id, pid })).find((j) => alive(j.pid));
+    if (activeGpu) throw Object.assign(new Error(`one GPU job at a time; wait for ${activeGpu.id} or cancel it`), { status: 409 });
+  }
   const id = shortId((x) => existsSync(rec(x)));
-  const r = { id, command, cwd, status: 'running', startedAt: nowIso(), pid: null, exitCode: null, finishedAt: null };
+  const isGpu = gpu === true;
+  const r = { id, command, cwd, gpu: isGpu, status: 'running', startedAt: nowIso(), pid: null, exitCode: null, finishedAt: null };
   writeJson(rec(id), r);
   const child = spawn(process.execPath, ['-e', WRAPPER, rec(id), log(id), command, cwd], { cwd, detached: true, stdio: 'ignore', windowsHide: true });
   child.on('error', () => {});
+  if (isGpu && child.pid) {
+    startingGpuJobs.set(id, child.pid);
+    child.once('exit', () => startingGpuJobs.delete(id));
+  }
   child.unref();
   return { ...readJson(rec(id)), pid: child.pid || null };
 }

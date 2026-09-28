@@ -21,6 +21,7 @@ import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { capabilityLines, accessProviders } from './capabilities.mjs';
 import { mcpServersFor } from './mcp.mjs';
+import { resourceStatus } from './resources.mjs';
 
 const DIR = () => statePath('tasks');
 const INDEX = () => statePath('tasks-index.json');
@@ -504,6 +505,7 @@ export function schedule() {
 function scheduleOnce() {
   if (shuttingDown || draining) return;
   const cfg = loadConfig();
+  if (resourceStatus(cfg).held) return; // keep queued work untouched until a later scheduler pass has RAM headroom
   const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
   const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));

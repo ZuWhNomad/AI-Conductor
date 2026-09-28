@@ -28,6 +28,7 @@ import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
 import { startBenchQueue, stopBenchQueue, wakeBenchQueue, dueForBench, formatBench } from '../core/bench.mjs';
 import { jobStatus, startJob, cancelJob, listJobs } from '../core/jobs.mjs';
 import { createWatchdog } from '../core/watchdog.mjs';
+import { resourceStatus } from '../core/resources.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -202,6 +203,7 @@ async function route(req, res, url) {
   if (seg[0] !== 'api') return false;
 
   if (m === 'GET' && p === '/api/state') {
+    const resources = resourceStatus();
     const imps = listImprovements();
     const open = openTasks();
     const active = open.map(taskSummary);
@@ -210,7 +212,7 @@ async function route(req, res, url) {
     for (const t of listTasks({ limit: Infinity })) if (t.status === 'stale') visible.set(t.id, t);
     for (const t of listTasks({ limit: 50 })) if (!activeIds.has(t.id)) visible.set(t.id, t);
     const tasks = [...visible.values()];
-    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), sessions: conductor.listSessions(), tasks, improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
+    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), resources, sessions: conductor.listSessions(), tasks, improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
   }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
@@ -233,7 +235,7 @@ async function route(req, res, url) {
 
   if (seg[1] === 'jobs') { // detached long jobs (core/jobs.mjs); `conductor job` calls these from a worker's shell
     if (m === 'GET' && !seg[2]) return json(res, 200, listJobs());
-    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, startJob({ command: b.command, cwd: b.cwd })); }
+    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, startJob({ command: b.command, cwd: b.cwd, gpu: b.gpu })); }
     const j = m === 'POST' && seg[3] === 'cancel' ? cancelJob(seg[2]) : m === 'GET' && !seg[3] ? jobStatus(seg[2], { tailChars: Number(url.searchParams.get('tail')) || 4000 }) : undefined;
     if (j === undefined) return false;
     return j ? json(res, 200, j) : json(res, 404, { error: `unknown job ${seg[2]}` });

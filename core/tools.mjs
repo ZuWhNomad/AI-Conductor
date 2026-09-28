@@ -20,6 +20,7 @@ import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearc
 import { variantsOf, checkVariant } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 import { registerWatch } from './watchdog.mjs';
+import { resourceStatus, resourceLine } from './resources.mjs';
 
 export { selOf };
 
@@ -77,6 +78,7 @@ export function formatLimits(reg = getLimits()) {
     const bal = p.balance ? `balance ${p.balance.amount} ${p.balance.currency}${p.balance.granted > 0 ? ` (${p.balance.granted} granted/free)` : ''}${p.balance.available ? '' : ' (exhausted)'}` : '';
     lines.push(`- ${id}${p.plan ? ` (plan ${p.plan})` : ''}${p.blocked ? ` BLOCKED until ${fmtWhen(p.blockedUntil)} (${p.blockedReason || 'limit'})` : ''}: ${[bal, w].filter(Boolean).join(', ') || (p.available === false ? 'no plan limits available (not logged in?)' : p.error ? `error: ${p.error}` : 'no windows reported')}${w && p.error ? ` (stale: ${p.error.slice(0, 80)})` : ''}`);
   }
+  lines.push(resourceLine(resourceStatus()));
   return lines.join('\n');
 }
 
@@ -259,9 +261,9 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'job_start',
-      description: 'Start a long shell command as a detached job (a backtest, scrape or build that outlives a worker turn and a server restart). The watchdog registers it and wakes this chat once all of its background work is finished. Returns a job id at once; poll it with job_status. Workers start the same jobs with: node <conductor>/bin/conductor.mjs job start --cwd <dir> -- <command>.',
-      schema: z.object({ command: z.string().describe('Shell command line'), cwd: z.string().optional().describe('Directory to run in (default: the project directory)'), note: z.string().optional().describe('What to review when the watchdog wakes this chat') }),
-      handler: async (a) => { const j = startJob({ command: a.command, cwd: a.cwd || cwd }); registerWatch({ sessionId, jobId: j.id, note: a.note || '', cwd }); return `Job ${j.id} started (pid ${j.pid ?? '?'}). The watchdog will wake this chat after all background work finishes; poll with job_status ${j.id}.`; },
+      description: 'Start a long shell command as a detached job (a backtest, scrape or build that outlives a worker turn and a server restart). Set gpu: true for GPU-heavy work such as Whisper, local model inference, or training; only one GPU job can run at a time. New work is held when RAM reaches the configured cap. The watchdog registers the job and wakes this chat once all of its background work is finished. Returns a job id at once; poll it with job_status. Workers start the same jobs with: node <conductor>/bin/conductor.mjs job start --cwd <dir> -- <command>.',
+      schema: z.object({ command: z.string().describe('Shell command line'), cwd: z.string().optional().describe('Directory to run in (default: the project directory)'), gpu: z.boolean().optional().describe('Set true for GPU-heavy work such as Whisper, local model inference, or training'), note: z.string().optional().describe('What to review when the watchdog wakes this chat') }),
+      handler: async (a) => { const j = startJob({ command: a.command, cwd: a.cwd || cwd, gpu: a.gpu }); registerWatch({ sessionId, jobId: j.id, note: a.note || '', cwd }); return `Job ${j.id} started (pid ${j.pid ?? '?'}). The watchdog will wake this chat after all background work finishes; poll with job_status ${j.id}.`; },
     },
     {
       name: 'job_status',

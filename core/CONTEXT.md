@@ -8,7 +8,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 
 **Entry points.**
 - `tasks.mjs` — the worker-task journal + scheduler. `schedule()` is the framework budget gate: it admits queued
-  tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); a real
+  tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); it also
+  holds queued work while system RAM meets `resources.maxRamPct` and retries on the next scheduler pass; a real
   provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
   probe exclusion until a post-completion limits poll and scoring settle, without holding worker concurrency slots.
   Import only loads the journal; server-owned `recoverTasks()` staggers crash/graceful resumes, keeps future parks,
@@ -33,7 +34,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
-  that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID.
+  that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID. GPU-marked jobs are
+  exclusive; starts also obey the shared RAM guard in `resources.mjs`.
+- `resources.mjs` — system RAM headroom for task/job starts and `/api/state` / limits output; transitions are logged
+  once through the improvement log. `setMemoryReader()` injects readings for tests.
 - `watchdog.mjs` — the server-owned liveness loop. It combines bus activity, bounded file walks and one shared OS
   process/CPU snapshot into deterministic verdicts; journals task `aliveAt` without a `task` event; applies graduated
   stuck/runaway actions; persists detached-job/output watches; and wakes an idle chat once after its whole background
