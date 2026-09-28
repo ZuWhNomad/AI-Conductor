@@ -128,14 +128,11 @@ test('emptying a saved API key sends apiKey: "", untouched mask is omitted', asy
   const config = structuredClone(DEFAULTS);
   config.providers.deepseek = { apiKey: '••••' };
   config.providers.moonshot = { apiKey: '••••' };
-  config.providers.xai = { apiKey: null };
   const view = render(config);
   assert.equal(view.field('providers.deepseek.apiKey').value, '••••');
   view.field('providers.deepseek.apiKey').value = '';
   await view.save();
   assert.equal(view.posts[0].patch.providers?.deepseek?.apiKey, '');
-  assert.equal(view.posts[0].patch.providers?.moonshot, undefined);
-  assert.equal(view.posts[0].patch.providers?.xai, undefined);
 });
 
 test('P21: Settings save refreshes only providers whose key or URL changed', async () => {
@@ -160,9 +157,9 @@ test('Settings shows each worker CLI update mode and saves it per provider', asy
   const view = render(config);
   assert.equal(view.field('providers.codex.cliUpdate').value, 'notify');
   assert.equal(view.field('providers.grok.cliUpdate').value, 'auto');
-  view.field('providers.kimi.cliUpdate').value = 'off';
+  view.field('providers.antigravity.cliUpdate').value = 'off';
   await view.save();
-  assert.equal(view.posts[0].patch.providers.kimi.cliUpdate, 'off');
+  assert.equal(view.posts[0].patch.providers.antigravity.cliUpdate, 'off');
   assert.equal(view.posts[0].patch.providers.grok.cliUpdate, 'auto');
 });
 

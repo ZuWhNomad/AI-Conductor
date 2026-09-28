@@ -201,7 +201,7 @@ export function publicTask(t) {
 /** Fleet/list payload; detail endpoints and scoring keep the full record. */
 export function taskSummary(t) {
   if (!t) return null;
-  const { paths, imageOptions, diffStat, result, ...summary } = publicTask(t);
+  const { paths, diffStat, result, ...summary } = publicTask(t);
   summary.specPreview = summary.specPreview.slice(0, 120);
   if (result) {
     const { items, files, tools, finalMessage, ...small } = result;
@@ -229,7 +229,7 @@ export function listTasks({ sessionId = null, limit = 200 } = {}) {
 }
 
 /**
- * @param {object} i { sessionId, cwd, title, spec, provider, model, effort, paths, followUpOf, imageOptions }
+ * @param {object} i { sessionId, cwd, title, spec, provider, model, effort, paths, followUpOf }
  */
 export function createTask(i, { dispatch = true } = {}) {
   if (!i.followUpOf) {
@@ -244,7 +244,7 @@ export function createTask(i, { dispatch = true } = {}) {
   const t = {
     id: shortId(), sessionId: typeof i.sessionId === 'string' ? i.sessionId : null, cwd: i.cwd, title: String(i.title || 'task').slice(0, 200), spec: String(i.spec ?? ''),
     provider: i.provider || cfg.worker.provider, model: i.model || null, effort: i.effort || cfg.worker.effort,
-    paths: Array.isArray(i.paths) ? i.paths.filter((p) => typeof p === 'string') : [], followUpOf: i.followUpOf || null, imageOptions: i.imageOptions || null, sandbox: i.sandbox || null,
+    paths: Array.isArray(i.paths) ? i.paths.filter((p) => typeof p === 'string') : [], followUpOf: i.followUpOf || null, sandbox: i.sandbox || null,
     threadId: null, rounds: 0, status: 'queued', createdAt: nowIso(), updatedAt: nowIso(), attempts: 0,
     result: null, error: null, resumeAt: null, changedFiles: [], diffStat: '',
     // Scorecard tags: what kind of work this is and how hard; `source` separates smoke runs from real ones.
@@ -288,7 +288,7 @@ export function createTask(i, { dispatch = true } = {}) {
     else t.isolate = true;
   }
   // Guard (Method C / D): never record or dispatch an effort a model can't honor. A model with NO effort dimension
-  // (agy passthrough, kimi / qwen-code / codex-spark) must carry none. An effort-in-id family (agy: it has an
+  // (agy passthrough and codex-spark) must carry none. An effort-in-id family (agy: it has an
   // effortIds map) given a level it doesn't offer (a hand-routed xhigh/max/ultra on a flash family) is clamped to
   // its top real level, so neither a nonsensical sel like `…-flash-low:high` nor a bare-family dispatch can land.
   if (t.effort && t.model) {
@@ -666,8 +666,7 @@ async function run(t) {
     const before = await gitStatus(runCwd); // async: N tasks starting together must not serialize the event loop on git
     Object.assign(t, await repoSize(runCwd)); // repoFiles / repoBytes on the run row: the project-size signal for later tool scoring
     const wcfg = loadConfig().worker;
-    const providerKind = PROVIDERS[t.provider]?.kind;
-    const prompt = providerKind === 'image' ? t.spec : buildPrompt(t); // OF4: image APIs take the raw spec as the picture prompt, not the coding-worker preamble
+    const prompt = buildPrompt(t);
     const timeoutMs = runTimeoutMs(wcfg.timeoutByCategory[t.category] ?? wcfg.timeoutMinutes);
     const r = await runWorker({ ...t, cwd: runCwd, prompt, ...(timeoutMs ? { timeoutMs } : {}) }, { signal: ac.signal });
     live.delete(t.id); delete t.progress; // the result replaces the snapshot
@@ -730,7 +729,7 @@ async function run(t) {
       t.status = 'failed'; t.failKind = 'phantom';
       t.error = `phantom completion: worker reported file write(s) (${claimed.slice(0, 3).join(', ')}${claimed.length > 3 ? ', …' : ''}) but none landed on disk (git shows no change). Recorded as a phantom-failure verdict.`;
       logImprovement('error', `worker:${t.provider}`, `phantom completion: claimed ${claimed.length} write(s), 0 landed`, { taskId: t.id, model: t.model, title: t.title });
-    } else if (!String(r.finalMessage || '').trim() && before !== null && !observed.length && !r.files?.length && !t.imageOptions) { // git-visible only: outside a repo a change can't be seen
+    } else if (!String(r.finalMessage || '').trim() && before !== null && !observed.length && !r.files?.length) { // git-visible only: outside a repo a change can't be seen
       // Seen from agy Gemini Flash on read-only tasks: "done" after one tool call with no report and no change.
       t.status = 'failed'; t.failKind = 'empty';
       t.error = 'empty report: the worker ended without a final message or any file change';

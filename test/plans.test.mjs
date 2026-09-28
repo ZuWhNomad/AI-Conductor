@@ -347,10 +347,10 @@ test('completed voters retain the full electorate for majority and all decisions
 
 test('stages expand with templates, per-item votes and lenses, and inherited defaults', () => {
   const ctx = { goal: 'audit', defaults: { provider: 'codex', effort: 'low' }, seen: [{ title: 'old one' }], results: { find: { findings: [{ id: 'f1', title: 'Bug A', file: 'a.js' }, { id: 'f2', title: 'Bug B' }], summary: 'two findings' } } };
-  const finders = expandStage({ id: 'find', tasks: [{ spec: 'Goal: {{goal}}. Already known:\n{{seen}}' }, { spec: 'x', provider: 'ollama', model: 'qwen3.8:latest' }] }, ctx);
+  const finders = expandStage({ id: 'find', tasks: [{ spec: 'Goal: {{goal}}. Already known:\n{{seen}}' }, { spec: 'x', provider: 'deepseek', model: 'deepseek-chat:latest' }] }, ctx);
   assert.equal(finders.length, 2);
   assert.match(finders[0].spec, /Goal: audit/); assert.match(finders[0].spec, /- old one/);
-  assert.equal(finders[0].provider, 'codex'); assert.equal(finders[1].provider, 'ollama');
+  assert.equal(finders[0].provider, 'codex'); assert.equal(finders[1].provider, 'deepseek');
   const refuters = expandStage({ id: 'verify', for_each: 'find', votes: 2, lenses: ['read', 'reproduce'], task: { spec: 'Refute {{item}} via {{lens}}' } }, ctx);
   assert.equal(refuters.length, 4);
   assert.match(refuters[0].spec, /Bug A/); assert.match(refuters[0].spec, /via read/); assert.match(refuters[1].spec, /via reproduce/);
@@ -1081,10 +1081,10 @@ test('GP: abortPlans cancels a real failover replacement and stops later stages'
   const previous = loadConfig(), reg = getModels(), saved = { models: reg.models, providers: reg.providers };
   for (const task of openTasks()) cancelChain(task.id);
   const provider = 'gp-abort-blocked', model = 'gp-abort-alternative', sessionId = 'gp-abort';
-  reg.models = [{ provider: 'ollama', id: model, kind: 'agent', cost: 'free-local' }];
-  reg.providers = { ollama: { status: 'ok' } };
-  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'] } });
-  recordRun({ id: 'gp-abort-seed', status: 'done', provider: 'ollama', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
+  reg.models = [{ provider: 'deepseek', id: model, kind: 'agent', cost: 'api' }];
+  reg.providers = { deepseek: { status: 'ok' } };
+  saveConfig({ scorecard: { minSamples: 1, classOrder: ['free'], classes: { deepseek: 'free' } } });
+  recordRun({ id: 'gp-abort-seed', status: 'done', provider: 'deepseek', model, category: 'review', difficulty: 2, result: { usage: { input_tokens: 1, output_tokens: 1 } } });
   rateTask('gp-abort-seed', 'pass');
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + 60_000, windows: [] };
   let planId;

@@ -7,7 +7,7 @@ working notes belong in the user's notes location, **never in this repo** — a 
 not `core/*.mjs`.
 
 - `prompts/` — the system prompts: `conductor.md` (Claude Code harness), `conductor-codex.md`, `conductor-loop.md`
-  (Ollama / API tool loop), `orchestration.md` (the `run_plan` playbook), `worker.md` (every worker's preamble),
+  (API tool loop), `orchestration.md` (the `run_plan` playbook), `worker.md` (every worker's preamble),
   `msw.md` (the MSW kernel appended to it when `worker.msw` is on). Loaded by `core/conductor.mjs` and `core/tasks.mjs`.
 - `recipes/` — per-category instruction sets appended to a worker's spec (see `recipes/CONTEXT.md`). Loaded by
   `core/recipes.mjs`; a new recipe is registered there.

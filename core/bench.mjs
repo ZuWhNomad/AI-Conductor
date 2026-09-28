@@ -10,7 +10,6 @@ import { modelBlockedUntil } from './limits.mjs';
 import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
 
 const FILE = () => statePath('bench.json');
-const EXCLUDED_PROVIDERS = new Set(['ollama', 'qwen-code', 'kimi']);
 // The scorecard plan's coverage battery is the original eleven L1-L5 tasks. Newer fixtures do not silently move
 // this bar; changing it is a scorecard-policy decision.
 export const BENCH_TASK_IDS = ['read-1', 'search-1', 'edit-1', 'implement-2', 'test-2', 'refactor-3', 'debug-3', 'debug-4', 'implement-4', 'test-4', 'debug-5'];
@@ -79,7 +78,7 @@ function registrySelections(reg = getModels()) {
 }
 
 function allowed(s, cfg = loadConfig()) {
-  return !EXCLUDED_PROVIDERS.has(s.provider) && s.cost !== 'free-local' && !isArchived(s.provider, s.model, cfg.scorecard);
+  return !isArchived(s.provider, s.model, cfg.scorecard);
 }
 
 function coverageFor(selection, offeredEfforts, runs) {

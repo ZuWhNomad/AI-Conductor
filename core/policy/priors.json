@@ -39,16 +39,11 @@
     { "match": "^antigravity:claude-opus-4-6", "default": { "tier": "B" } },
     { "match": "^antigravity:claude-sonnet-4-6", "default": { "tier": "C" } },
     { "match": "^antigravity:gpt-oss", "default": { "tier": "D" } },
-    { "match": "^kimi:kimi-k3", "default": { "tier": "A" }, "kind": { "read": { "tier": "B" }, "reason": { "tier": "B" } } },
-    { "match": "^kimi:kimi-k2$", "default": { "tier": "D" } },
-    { "match": "^(grok|xai):grok-4\\.7-build-fast", "default": { "tier": null } },
-    { "match": "^(grok|xai):grok-4\\.7", "default": { "tier": null } },
-    { "match": "^(grok|xai):grok-4\\.5", "default": { "tier": null } },
+    { "match": "^grok:grok-4\\.7-build-fast", "default": { "tier": null } },
+    { "match": "^grok:grok-4\\.7", "default": { "tier": null } },
+    { "match": "^grok:grok-4\\.5", "default": { "tier": null } },
     { "match": "^grok:grok-4\\.6", "default": { "tier": "D" }, "kind": { "read": { "tier": "B" }, "reason": { "tier": "B" } } },
     { "match": "^deepseek:(deepseek-flash|.*v4(.1)?-flash|deepseek-chat)", "default": { "tier": "B" } },
     { "match": "^deepseek:.*v4-pro|^deepseek:deepseek-reasoner", "default": { "tier": "A" } },
-    { "match": "^(qwen|qwen-code):qwen3-coder-plus", "default": { "tier": "D" } },
-    { "match": "^(qwen|qwen-code):", "default": { "tier": "D" } },
-    { "match": "^ollama:", "default": { "tier": "D" } }
   ]
 }

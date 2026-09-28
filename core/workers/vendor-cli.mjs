@@ -1,5 +1,5 @@
 // Generic runner for vendor agent CLIs that run on a consumer subscription (Antigravity `agy`,
-// xAI `grok`, Qwen Code, Kimi CLI, ...). Each vendor is a spec in core/providers/vendors.mjs that
+// xAI `grok`). Each vendor is a spec in core/providers/vendors.mjs that
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
 import { killTree, onLines, spawnCli, findCli, registerProc } from '../proc.mjs';
 import { bus } from '../bus.mjs';
@@ -14,8 +14,6 @@ import { randomUUID } from 'node:crypto';
 const execFileP = promisify(execFile);
 const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)|balance exhausted|payment required/i; // grok: 402 "Grok Build usage balance exhausted"
 const AUTH_RE = /not (?:signed in|authenticated|logged in)|please (?:sign|log) in|\bunauthorized\b|authentication (?:required|failed)/i; // \b: UnauthorizedAccessException is a sandbox denial, not a sign-in
-// Recorded Kimi 1.50 stdout refusal (see vendor-cli.test.mjs). Quota phrases alone can be successful narration.
-const KIMI_QUOTA_STDOUT = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
 
 /**
  * @param {object} spec  vendor spec (see vendors.mjs): { id, bin(), headlessArgs(t) → { args, threadId?, cleanup?, stdinPrompt? }, stdinPrompt?, parse(obj, st, emit), parseText?(line, st, emit), env?, readOnlyViaSnapshot? }
@@ -165,7 +163,7 @@ function runVendorCliOnce(spec, t) {
         if (obj) {
           const before = [st.error, st.items.length, st.text.length];
           spec.parse(obj, st, emit);
-          // Unrecognised JSON (e.g. a kimi echoed prompt with an `error` key) is text, not a run failure.
+          // Unrecognised JSON can be text rather than a run failure.
           if (spec.parseText && st.error === before[0] && st.items.length === before[1] && st.text.length === before[2]) spec.parseText(line, st, emit);
         } else spec.parseText?.(line, st, emit);
       } catch (e) { st.unknown++; }
@@ -189,18 +187,11 @@ function runVendorCliOnce(spec, t) {
       res.items = st.items.slice(-60);
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;
-      // Kimi sometimes exits 0 on refusal. Recognize the recorded whole report, not a quota phrase or a length cutoff.
-      const quotaText = (st.text || '').trim();
-      const quotaOnly = !st.items.length && quotaText === KIMI_QUOTA_STDOUT;
-      if (quotaOnly && !res.error) res.error = quotaText;
-      // st.text joins the haystack only for quota-only stdout — a failed run whose narration mentions "429" is not a limit hit.
-      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}${quotaOnly ? `\n${st.text || ''}` : ''}`;
-      // Deterministic first: a structured HTTP status the parser found (grok: http_status in result.errors[]), or the recorded
-      // whole Kimi refusal. Text patterns only when a CLI gives neither (agy, kimi, qwen today), and that use is logged.
+      const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}`;
+      // Prefer a structured HTTP status; use text patterns when the CLI gives none.
       const s = st.httpStatus;
       if (!res.error) { res.limitHit = false; res.authFailed = false; }
       else if (s) { res.limitHit = s === 402 || s === 429; res.authFailed = s === 401 || s === 403; }
-      else if (quotaOnly) { res.limitHit = true; res.authFailed = false; }
       else {
         res.limitHit = LIMIT_RE.test(haystack);
         res.authFailed = !res.limitHit && AUTH_RE.test(haystack);

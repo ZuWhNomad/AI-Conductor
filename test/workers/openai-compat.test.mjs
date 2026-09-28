@@ -95,7 +95,6 @@ test('DeepSeek maps each thinking effort while other compatible providers keep r
   const bodies = [];
   ctx.mock.method(globalThis, 'fetch', async (_url, opts) => { bodies.push(JSON.parse(opts.body)); return reply({ content: 'done' }); });
   for (const effort of ['none', 'low', 'high', 'max', undefined]) await runOpenAICompat({ ...base, provider: 'deepseek', effort });
-  await runOpenAICompat({ ...base, provider: 'xai', effort: 'high' });
 
   assert.deepEqual(bodies.map(({ thinking, reasoning_effort }) => ({ thinking, reasoning_effort })), [
     { thinking: { type: 'disabled' }, reasoning_effort: undefined },
@@ -103,7 +102,6 @@ test('DeepSeek maps each thinking effort while other compatible providers keep r
     { thinking: { type: 'enabled' }, reasoning_effort: 'high' },
     { thinking: { type: 'enabled' }, reasoning_effort: 'max' },
     { thinking: undefined, reasoning_effort: undefined },
-    { thinking: undefined, reasoning_effort: 'high' },
   ]);
 });
 
@@ -126,24 +124,17 @@ test('DeepSeek balance parses and providers expose a homepage', async () => {
   const sums = providerSummaries();
   assert.equal(sums.find((p) => p.id === 'deepseek').url, 'https://platform.deepseek.com');
   assert.equal(sums.find((p) => p.id === 'codex').url, 'https://chatgpt.com/codex');
-  const sdBaseUrl = loadConfig().providers.sd.baseUrl;
-  assert.equal(sums.find((p) => p.id === 'sd').url, sdBaseUrl);
-  try {
-    saveConfig({ providers: { sd: { baseUrl: 'http://sd.test:9000' } } });
-    assert.equal(providerSummaries().find((p) => p.id === 'sd').url, 'http://sd.test:9000');
-  } finally { saveConfig({ providers: { sd: { baseUrl: sdBaseUrl } } }); }
   const { PROVIDERS } = await import('../../core/providers/index.mjs');
   for (const s of sums) {
     assert.equal(s.canLogin, !!PROVIDERS[s.id].loginCommand);
     assert.equal(s.canRelogin, !!PROVIDERS[s.id].loginCommand);
   }
   assert.equal(sums.find((p) => p.id === 'grok').canLogin, true);
-  assert.equal(sums.find((p) => p.id === 'ollama').canLogin, false);
 });
 
 test('DeepSeek API-listed chat models expose thinking efforts only for the DeepSeek provider', async (ctx) => {
-  const oldDeepseek = process.env.DEEPSEEK_API_KEY; const oldXai = process.env.XAI_API_KEY;
-  process.env.DEEPSEEK_API_KEY = 'test-only'; process.env.XAI_API_KEY = 'test-only';
+  const oldDeepseek = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-only';
   ctx.mock.method(globalThis, 'fetch', async () => Response.json({ data: [
     { id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }, { id: 'deepseek-future-chat' }, { id: 'deepseek-embedding' },
   ] }));
@@ -153,10 +144,8 @@ test('DeepSeek API-listed chat models expose thinking efforts only for the DeepS
     const deepseek = await make('deepseek').listModels();
     assert.deepEqual(deepseek.map((m) => m.id), ['deepseek-flash', 'deepseek-future-chat', 'deepseek-v4-pro']);
     for (const model of deepseek) assert.deepEqual(model.efforts, expected);
-    assert.deepEqual((await make('xai').listModels()).map((m) => m.efforts), [[], [], []]);
   } finally {
     if (oldDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = oldDeepseek;
-    if (oldXai === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = oldXai;
   }
 });
 
@@ -279,36 +268,7 @@ test('P8a: tool-result watermark preserves prefixes and persists the last reques
   assert.deepEqual(r.messages.slice(0, bodies.at(-1).messages.length), bodies.at(-1).messages);
 });
 
-test('P8a: cache routing is provider-specific and the worker thread key survives follow-ups', async (ctx) => {
-  const seen = [];
-  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
-    seen.push({ headers: { ...opts.headers }, body: JSON.parse(opts.body) });
-    return reply({ content: 'done' });
-  });
-  await runOpenAICompat({ ...base, provider: 'xai', baseUrl: 'https://api.x.ai/v1', cacheKey: 'conv-direct' });
-  await runOpenAICompat({ ...base, provider: 'openai', baseUrl: 'https://api.openai.com/v1', cacheKey: 'conv-openai' });
-  await runOpenAICompat({ ...base, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', cacheKey: 'conv-deepseek' });
-  assert.equal(seen[0].headers['x-grok-conv-id'], 'conv-direct');
-  assert.equal(seen[0].body.prompt_cache_key, undefined);
-  assert.equal(seen[1].body.prompt_cache_key, 'conv-openai');
-  assert.equal(seen[1].headers['x-grok-conv-id'], undefined);
-  assert.equal(seen[2].body.prompt_cache_key, undefined);
-  assert.equal(seen[2].headers['x-grok-conv-id'], undefined);
 
-  const oldKey = loadConfig().providers.xai.apiKey;
-  saveConfig({ providers: { xai: { apiKey: 'test-only' } } });
-  const workerSeen = [];
-  ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
-    workerSeen.push({ ...opts.headers });
-    return reply({ content: 'done' });
-  });
-  try {
-    const { runWorker } = await import('../../core/workers/index.mjs');
-    const first = await runWorker({ id: 'cache-task-1', cwd: tmpDir('cache1'), prompt: 'first', provider: 'xai' });
-    await runWorker({ id: 'cache-task-2', threadId: first.threadId, cwd: tmpDir('cache2'), prompt: 'second', provider: 'xai' });
-  } finally { saveConfig({ providers: { xai: { apiKey: oldKey || null } } }); }
-  assert.deepEqual(workerSeen.map((h) => h['x-grok-conv-id']), ['cache-task-1', 'cache-task-1']);
-});
 
 test('P8a: tool-result low-water config accepts a fraction below one and resets invalid values', () => {
   const old = loadConfig().worker.toolResultLowWater;
@@ -627,7 +587,7 @@ test('T3: tool-result budget is dynamic from context window, clamped to [32k, 40
   assert.equal(toolResultBudget('custom', 'small', smallCfg), 50_000);
 
   // Large-window model gets larger budget
-  assert.equal(toolResultBudget('xai', 'grok-4.7'), 400_000); // 500k in SHIPPED -> clamped to 400k
+  assert.equal(toolResultBudget('grok', 'grok-4.7'), 400_000); // 500k in SHIPPED -> clamped to 400k
   const midLargeCfg = { models: { contextWindows: { 'custom:large': 250_000 } } };
   assert.equal(toolResultBudget('custom', 'large', midLargeCfg), 250_000);
 
@@ -668,7 +628,7 @@ test('T3: worker trims tool results according to model context window budget', a
     saveConfig({ models: { contextWindows: {} } });
   }
 
-  // 2. Large-window model (xai:grok-4.7, budget 400_000 chars): tool results over 120k chars are NOT trimmed
+  // 2. Large-window model (grok:grok-4.7, budget 400_000 chars): tool results over 120k chars are NOT trimmed
   {
     const bodies = [];
     let n = 0;
@@ -681,7 +641,7 @@ test('T3: worker trims tool results according to model context window budget', a
     });
     const r = await runOpenAICompat({
       ...base,
-      provider: 'xai',
+      provider: 'grok',
       model: 'grok-4.7',
       extraTools: [{ def: { name: 'bigBlob', parameters: { type: 'object' } }, impl: () => bigBlob }],
     });

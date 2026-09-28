@@ -13,7 +13,7 @@ export const DEFAULTS = {
   // the app is noticed without pressing Refresh.
   ui: { autoRefresh: false, detectMinutes: 5 },
   conductor: {                        // selection format everywhere: provider:model:effort
-    provider: 'claude',               // default conductor; Codex and API/Ollama can conduct too
+    provider: 'claude',               // default conductor; Codex and API can conduct too
     model: 'claude-opus-5-5[1m]',     // exact id, never an alias (aliases move when the CLI updates): move it to a new Opus on purpose
     effort: 'high',
     permissionMode: 'acceptEdits',    // 'acceptEdits' (ask for the rest) | 'bypassPermissions'
@@ -21,14 +21,14 @@ export const DEFAULTS = {
     maxWorkerConcurrency: 100,        // effectively uncapped: provider limits and the budget gate are the real budget,
                                       // and a low cap silently starves a fan-out (a cap of 3 left a queued model never run)
     budgetGate: true,                 // admit against per-window targets (session 95% / weekly 100%); over target, sequential per provider — not park-until-reset. A real provider limit fails over or parks. parallelOverride skips the gate. Windowless providers are not gated.
-    maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API/Ollama loop); a big project needs many
-    turnTimeoutMinutes: 0,            // hard cap on a single conductor chat turn (Codex and API/Ollama conductors); 0 = off
+    maxTurns: 9999,                   // tool turns per chat turn (Claude harness and the API loop); a big project needs many
+    turnTimeoutMinutes: 0,            // hard cap on a single conductor chat turn (Codex and API conductors); 0 = off
     compactAt: 0.7,
     compactTo: 0.4,
     cacheLifetimes: {},               // provider -> minutes (or "never") before prompt cache is considered cold
     autoUpdate: 'auto',               // GitHub update policy: 'auto' (pull + npm install AND self-restart into the new version, on startup + every updateCheckHours) | 'ask' (flash the Update button, apply on click) | 'off' (never check). The button flashes on 'ask' and 'auto'.
     updateCheckHours: 19,             // how often to check GitHub for updates (0 disables the periodic check; startup still checks unless autoUpdate is 'off')
-    loopToolsSkip: [],                // tool names a LOOP conductor (Ollama / API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
+    loopToolsSkip: [],                // tool names a LOOP conductor (API) does not get; ~3k tokens of schemas go to every request, and a small model may truncate
     updateQuietMinutes: 15,           // an auto-update restart needs this long without any API write or task change: an external driver between two passes is not idle
   },
   worker: {                           // default grunt worker
@@ -46,21 +46,20 @@ export const DEFAULTS = {
     // read access to pip-installed site-packages folders). An explicit sandbox on a task always wins.
     codexSandboxByModel: {},
     codexNetwork: true,               // allow network inside workspace-write (npm install etc.)
-    // API / Ollama (openai-compat) workers have no OS sandbox. `run` is disabled by default.
+    // API (openai-compat) workers have no OS sandbox. `run` is disabled by default.
     // Explicit true permits any host shell command; an array permits command names (exact basename, no shell
     // operators). Either opt-in trusts host execution: interpreters, package managers and other allowed programs
     // can access files outside the workspace. The allow-list is a command filter, not a filesystem sandbox.
     // File-tool containment checks do not constrain commands. Codex sandbox settings above are independent.
     shell: false,
     fetchAllowPrivate: false,         // the worker fetch_url tool blocks private/loopback/metadata IPs (SSRF); set true only if your workers must reach an internal docs server on the LAN
-    claudePermissionMode: 'bypassPermissions', // Claude/Ollama workers run autonomously; the conductor reviews
+    claudePermissionMode: 'bypassPermissions', // Claude workers run autonomously; the conductor reviews
     maxRounds: 3,                     // review -> follow_up rounds on the SAME worker before escalating to a stronger model
     escalationRounds: 2,              // after maxRounds fail: attempts on the best AVAILABLE model (scorecard top-quality, filtered by limits) before the conductor does the task itself. 0 = skip escalation (straight to the conductor)
     msw: true,                        // append the MSW kernel (core/policy/prompts/msw.md) to every worker preamble
-    maxIterations: 150,               // tool-loop turns for API/Ollama workers (each turn re-sends the conversation)
+    maxIterations: 150,               // tool-loop turns for API workers (each turn re-sends the conversation)
     toolResultLowWater: 0.5,          // after tool-result trimming, leave this fraction of the char budget full
     maxTurns: 500,                    // tool turns per Claude-harness worker task
-    maxTurnsLocal: 60,                // tool turns for a local (Ollama-via-Claude-harness) worker task — smaller models loop more, so cap lower
     timeoutMinutes: 0,                // per worker run; 0 = off
     timeoutByCategory: {},            // optional per-category hard caps; 0 = off
     longRunMinutes: 60,               // a run past this logs a friction entry so long runs stay visible
@@ -71,23 +70,13 @@ export const DEFAULTS = {
   bench: { newModels: 'off', offPeak: { start: '00:00', end: '07:00', weekends: true } }, // local wall-clock window; null/empty disables it
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
-    ollama: { enabled: false, baseUrl: 'http://localhost:11434', autoStart: false, harness: 'openai-compat' }, // local models OFF by default (owner 2026-09-25): enabled = use Ollama at all, autoStart = spawn `ollama serve`; harness 'openai-compat' or 'claude'
     deepseek: { apiKey: null },
-    moonshot: { apiKey: null },       // Kimi
-    xai: { apiKey: null },            // Grok
-    qwen: { apiKey: null },           // DashScope (OpenAI-compatible)
-    gemini: { apiKey: null },         // Gemini OpenAI-compatible endpoint
-    openai: { apiKey: null },         // DALL-E / gpt-image (API key, optional)
-    stability: { apiKey: null },
-    sd: { baseUrl: 'http://127.0.0.1:7860' }, // local Stable Diffusion (A1111 API)
     // Worker CLI updates (core/cli-update.mjs): 'off' never checks, 'notify' shows "update available X → Y", 'auto' also
     // installs it once the provider is idle (verified, rolled back on failure). Claude is the Agent SDK in package.json:
     // only `conductor cli-update claude` in a dev checkout bumps it, so its 'auto' acts as 'notify'.
     codex: { cliUpdate: 'notify' },
     antigravity: { cliUpdate: 'notify', promptFileThreshold: 8000 },
     grok: { cliUpdate: 'notify', promptFileThreshold: 8000 },
-    'qwen-code': { cliUpdate: 'notify', promptFileThreshold: 8000 },
-    kimi: { cliUpdate: 'notify', promptFileThreshold: 8000 },
     claude: { cliUpdate: 'notify' },
   },
   review: { everyDays: 0 },           // 0 = manual only
@@ -114,7 +103,7 @@ export const DEFAULTS = {
     // Subscriptions run to 100% (exhaustion = blocked -> failover/park). Only the conductor's own plan keeps headroom: 95% of its
     // *session* window (5-hour); its weekly windows (Fable weekly included) may go to 100%.
     classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 },
-    providerWeight: { ollama: 0, antigravity: 0.1, grok: 0.1, kimi: 0.1, 'qwen-code': 0.1, deepseek: 0.3, moonshot: 0.3, xai: 0.3, qwen: 0.3, gemini: 0.3, openai: 0.3, codex: 0.6, claude: 1 }, // within-class value scaling
+    providerWeight: { antigravity: 0.1, grok: 0.1, deepseek: 0.3, codex: 0.6, claude: 1 }, // within-class value scaling
     usageBudgets: { grok: 10000000 }, // flat token budget for providers whose CLI reports no window (Grok): 100% at N in+out tokens. Advisory only — never gates dispatch.
     usageOvershootPct: 110,           // when an estimate runs this far past its projected 100% without the provider failing, prompt the user to re-verify the limit/reset (it likely reset early, or the budget is low)
     usageGapHours: { default: 6 },    // a gap this long in a provider's own activity starts a fresh usage window; per-provider override, e.g. { grok: 24 } for a daily reset
@@ -171,6 +160,7 @@ function deepMerge(a, b, path = '') {
 // path. Callers still get a fresh merged object each time, so mutating it never leaks.
 let fileCache = { key: null, value: {} };
 let notedBrokenKey = null;
+const warnedProviderConfigs = new WeakSet();
 function noteBrokenConfig() {
   const src = FILE();
   try { copyFileSync(src, `${src}.bad`); } catch {}
@@ -212,9 +202,15 @@ export function loadConfig() {
 
 function normalize(cfg, raw = {}) {
   if (!plain(cfg)) cfg = structuredClone(DEFAULTS);
+  const unknownProviders = Object.keys(plain(raw?.providers) ? raw.providers : {}).filter((id) => !Object.hasOwn(DEFAULTS.providers, id));
+  if (unknownProviders.length && plain(raw) && !warnedProviderConfigs.has(raw)) {
+    console.warn('Ignoring unknown provider config: ' + unknownProviders.join(', '));
+    warnedProviderConfigs.add(raw);
+  }
   for (const [key, value] of Object.entries(DEFAULTS)) {
     if (plain(value) && !plain(cfg[key])) cfg[key] = structuredClone(value);
   }
+  for (const id of Object.keys(cfg.providers)) if (!Object.hasOwn(DEFAULTS.providers, id)) delete cfg.providers[id];
   if (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535) cfg.port = DEFAULTS.port;
   for (const [name, value] of Object.entries(cfg.providers)) {
     const p = cfg.providers[name] = plain(value) ? value : structuredClone(DEFAULTS.providers[name] || {});
@@ -255,7 +251,7 @@ function normalize(cfg, raw = {}) {
   for (const [obj, defaults, key] of [
     [cfg, DEFAULTS, 'pollMinutes'],
     ...['maxWorkerConcurrency', 'maxTurns', 'updateQuietMinutes'].map((key) => [cfg.conductor, DEFAULTS.conductor, key]),
-    ...['maxTurns', 'maxRounds', 'maxIterations', 'maxTurnsLocal', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
+    ...['maxTurns', 'maxRounds', 'maxIterations', 'longRunMinutes', 'recipeChars', 'toolLineChars'].map((key) => [cfg.worker, DEFAULTS.worker, key]),
     ...['minSamples', 'benchMinSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
     [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.smoke, DEFAULTS.smoke, 'hardTimeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],

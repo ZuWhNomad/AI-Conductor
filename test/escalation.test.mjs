@@ -42,7 +42,7 @@ test('a quality failure after a limit handoff counts toward retry escalation dep
   const dir = tmpDir('limit-handoff-depth');
   const previous = loadConfig().worker.escalationRounds;
   const original = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'codex', model: 'gpt-5.6-luna' }, { dispatch: false });
-  const replacement = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'ollama', model: 'qwen', reroutedFrom: original.id }, { dispatch: false });
+  const replacement = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'deepseek', model: 'deepseek-chat', reroutedFrom: original.id }, { dispatch: false });
   const retry = createTask({ cwd: dir, category: 'edit', difficulty: 2, provider: 'codex', model: 'gpt-5.6-terra', retryOf: replacement.id }, { dispatch: false });
   Object.assign(original, { status: 'failed', attempts: 1, limitHit: true, failedOverTo: replacement.id });
   Object.assign(replacement, { status: 'failed', attempts: 1 });
@@ -101,10 +101,10 @@ test('OB8: rate_task follows failedOverTo so the rating reaches the replacement 
   const sc = await import('../core/scorecard.mjs');
   const cwd = tmpDir('ob8');
   const t1 = createTask({ cwd, title: 'T1', spec: 'x', provider: 'codex', model: 'gpt-5.6-luna' });
-  const t2 = createTask({ cwd, title: 'T2', spec: 'x', provider: 'ollama', model: 'qwen' });
+  const t2 = createTask({ cwd, title: 'T2', spec: 'x', provider: 'deepseek', model: 'deepseek-chat' });
   try {
     t1.failedOverTo = t2.id;
-    sc.recordRun({ id: t2.id, title: 'T2', status: 'done', provider: 'ollama', model: 'qwen', category: 'edit', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
+    sc.recordRun({ id: t2.id, title: 'T2', status: 'done', provider: 'deepseek', model: 'deepseek-chat', category: 'edit', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } });
     const rate = conductorToolDefs({ sessionId: 'ob8', cwd }).find((d) => d.name === 'rate_task').handler;
     const msg = await rate({ task_id: t1.id, verdict: 'pass' });
     assert.equal(msg, `rated ${t2.id} (followed failedOverTo from ${t1.id}): pass`);

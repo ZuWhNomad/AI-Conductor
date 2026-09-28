@@ -59,7 +59,7 @@ Model list also at `GET /api/models` (`POST /api/models/refresh` to re-poll). Ea
 | field | meaning |
 |---|---|
 | `cwd` | **required** — an existing directory the conductor works in (the project). Get candidates from `/api/state.home` / `.repoRoot`, or ask the user. |
-| `provider` | `claude` \| `codex` \| `ollama` \| … (from `.providers`). Omit to use the configured default. |
+| `provider` | `claude` \| `codex` \| `antigravity` \| … (from `.providers`). Omit to use the configured default. |
 | `model` | a model id from `/api/models`, or omit / `default`. |
 | `effort` | one of the model's `efforts` (e.g. `low`,`medium`,`high`,`xhigh`,`max`), or omit. |
 | `permissionMode` | `default` \| `acceptEdits` \| `bypassPermissions` \| `plan` \| `dontAsk` \| `auto`. **`bypassPermissions` = full autonomy** (the UI's "auto-approve"). |
@@ -159,8 +159,7 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
    - Verify the diff yourself; `follow_up` for fix rounds; to escalate, `delegate` with `retry_of` set to the **last
      follow-up task's id** (its spent rounds trip the escalation); `rate_task` the original task id.
    - `await_task` follows `failedOverTo` automatically when a task fails over to another provider.
-   - `avoid_families` takes model families — `claude`, `gpt` (Codex/OpenAI), `grok`, `gemini`, `deepseek`, `kimi`,
-     `qwen` — not provider ids; an unknown name is silently ignored.
+   - `avoid_families` takes model families — `claude`, `gpt` (Codex/Antigravity), `grok`, `gemini`, `deepseek` — not provider ids; an unknown name is silently ignored.
    - Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.
    - Report workbench faults with `log_improvement`.
 4. **Wait cheaply.** `delegate` and `follow_up` (without `background: true`) and `await_task` block until the task

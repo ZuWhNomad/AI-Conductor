@@ -42,7 +42,7 @@ const installs = (calls) => calls.filter((c) => (c[0] === 'npm' && c[1] === 'i')
 test('versions: every CLI format parses; the compare is numeric; pre-releases never count as an update', () => {
   assert.equal(cu.parseVersion('codex-cli 0.157.1'), '0.157.1');
   assert.equal(cu.parseVersion('grok 1.0.30 (04b7ffed98c6) [stable]'), '1.0.30');
-  assert.equal(cu.parseVersion('kimi, version 1.50.0'), '1.50.0');
+  assert.equal(cu.parseVersion('agy, version 1.50.0'), '1.50.0');
   assert.equal(cu.parseVersion('1.2.11\n'), '1.2.11');
   assert.equal(cu.parseVersion('0.159.0-alpha.3-linux-arm64'), '0.159.0-alpha.3-linux-arm64');
   assert.ok(cu.cmpVersion('1.0.10', '1.0.9') > 0);
@@ -68,25 +68,25 @@ test('a check reports "update available" for a newer stable release and ignores 
 
 test('mode off skips the release lookup unless the check is manual', async () => {
   cu.resetCliUpdateState();
-  saveConfig({ providers: { kimi: { cliUpdate: 'off' } } });
+  saveConfig({ providers: { grok: { cliUpdate: 'off' } } });
   try {
-    const { x, calls } = stubExec({ versions: ['kimi, version 1.50.0'], latest: '1.52.0' });
-    const off = await cu.checkCliUpdate('kimi', { x });
-    assert.equal(off.current, '1.50.0'); assert.equal(off.latest, null); assert.equal(calls.length, 1);
-    assert.equal((await cu.checkCliUpdate('kimi', { x, manual: true })).available, true);
-  } finally { saveConfig({ providers: { kimi: { cliUpdate: 'notify' } } }); }
+    const { x, calls } = stubExec({ versions: ['grok, version 1.0.30'], latest: '1.0.41' });
+    const off = await cu.checkCliUpdate('grok', { x });
+    assert.equal(off.current, '1.0.30'); assert.equal(off.latest, null); assert.equal(calls.length, 1);
+    assert.equal((await cu.checkCliUpdate('grok', { x, manual: true })).available, true);
+  } finally { saveConfig({ providers: { grok: { cliUpdate: 'notify' } } }); }
 });
 
 test('the idle gate: no install while the provider has an open task', async () => {
   cu.resetCliUpdateState();
   const { createTask, cancelTask } = await import('../core/tasks.mjs');
-  const t = createTask({ cwd: tmpDir('cli-busy'), title: 't', spec: 's', provider: 'qwen-code' }); // CONDUCTOR_NO_SCHEDULE: stays queued
+  const t = createTask({ cwd: tmpDir('cli-busy'), title: 't', spec: 's', provider: 'grok' }); // CONDUCTOR_NO_SCHEDULE: stays queued
   try {
-    assert.match(await cu.providerBusy('qwen-code'), /1 open task/);
-    assert.equal(await cu.providerBusy('grok'), null);
-    const { x, calls } = stubExec({ versions: ['0.23.1'], latest: '0.24.6' });
+    assert.match(await cu.providerBusy('grok'), /1 open task/);
+    assert.equal(await cu.providerBusy('antigravity'), null);
+    const { x, calls } = stubExec({ versions: ['1.0.30'], latest: '1.0.41' });
     x.busy = cu.providerBusy;
-    const r = await cu.applyCliUpdate('qwen-code', { x });
+    const r = await cu.applyCliUpdate('grok', { x });
     assert.equal(r.applied, false); assert.match(r.reason, /waiting: 1 open task/);
     assert.deepEqual(installs(calls), []);
   } finally { cancelTask?.(t.id); }
@@ -154,7 +154,7 @@ test('the daily check installs only for auto providers, once idle, and never ret
     const busy = stubExec({ versions: ['codex-cli 0.153.4'], busy: '1 open task(s), 0 chat(s) mid-turn' });
     await cu.dailyCheck({ x: busy.x, now: Date.now() });
     assert.deepEqual(installs(busy.calls), []);
-    assert.equal(cu.cliUpdateStatus().providers['qwen-code'].available, true); // notify: shown, not installed
+    assert.equal(cu.cliUpdateStatus().providers.grok.available, true); // notify: shown, not installed
     const idle = stubExec({ versions: ['codex-cli 0.153.4', 'codex-cli 0.157.1'] });
     await cu.dailyCheck({ x: idle.x, now: Date.now() }); // same day: no re-check, but the pending auto install runs now
     assert.deepEqual(installs(idle.calls), [['npm', 'i', '-g', '@openai/codex@0.157.1']]); // claude stays notify-only
@@ -168,15 +168,14 @@ test('the daily check installs only for auto providers, once idle, and never ret
 
 test('settings: providers.<id>.cliUpdate defaults to notify and normalizes garbage', () => {
   for (const id of cu.CLI_UPDATE_IDS) assert.equal(DEFAULTS.providers[id].cliUpdate, 'notify');
-  assert.equal(DEFAULTS.providers.ollama.cliUpdate, undefined); // local and opt-in: not updated here
-  saveConfig({ providers: { grok: { cliUpdate: 'auto' }, kimi: { cliUpdate: 'sometimes' }, antigravity: 'nonsense' } });
+  saveConfig({ providers: { grok: { cliUpdate: 'auto' }, codex: { cliUpdate: 'sometimes' }, antigravity: 'nonsense' } });
   try {
     const c = loadConfig();
     assert.equal(c.providers.grok.cliUpdate, 'auto');
-    assert.equal(c.providers.kimi.cliUpdate, 'notify');
+    assert.equal(c.providers.codex.cliUpdate, 'notify');
     assert.equal(c.providers.antigravity.cliUpdate, 'notify');
     assert.equal(c.providers.codex.cliUpdate, 'notify');
-  } finally { saveConfig({ providers: { grok: { cliUpdate: 'notify' }, kimi: { cliUpdate: 'notify' }, antigravity: { cliUpdate: 'notify' } } }); }
+  } finally { saveConfig({ providers: { grok: { cliUpdate: 'notify' }, codex: { cliUpdate: 'notify' }, antigravity: { cliUpdate: 'notify' } } }); }
 });
 
 test('run rows carry the cached CLI version and the served model', async () => {
@@ -184,11 +183,11 @@ test('run rows carry the cached CLI version and the served model', async () => {
   cu.resetCliUpdateState({ checkedAt: 0, providers: { codex: { current: '0.157.1' } } });
   const row = sc.recordRun({ id: 'cv1', title: 't', status: 'done', provider: 'codex', model: 'gpt-6-sol', category: 'read', difficulty: 1, result: { servedModel: 'gpt-6-sol', usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 } });
   assert.equal(row.cliVersion, '0.157.1'); assert.equal(row.servedModel, 'gpt-6-sol');
-  const other = sc.recordRun({ id: 'cv2', title: 't', status: 'done', provider: 'kimi', model: 'kimi-k3', result: { usage: null } });
+  const other = sc.recordRun({ id: 'cv2', title: 't', status: 'done', provider: 'deepseek', model: 'deepseek-chat', result: { usage: null } });
   assert.equal(other.cliVersion, null); assert.equal(other.servedModel, null);
 });
 
-test('served model: agy init, grok/qwen system init, the Codex rollout turn_context', async () => {
+test('served model: agy init, grok system init, the Codex rollout turn_context', async () => {
   const { VENDORS } = await import('../core/providers/vendors.mjs');
   const st = () => ({ threadId: null, text: '', finalText: null, usage: null, error: null, items: [], spec: {} });
   const a = st(); VENDORS.antigravity.parse({ event: 'init', conversation_id: 'c-1', init: { model: 'gemini-3.8-flash-low' } }, a, () => {});

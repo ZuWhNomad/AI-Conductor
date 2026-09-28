@@ -10,7 +10,7 @@ decide what to do yourself and what to delegate.
 the reasoning is the same: your turns are the expensive, judgment-bearing ones.)
 
 Your own tokens come from the user's Claude subscription window. Worker tokens come from other
-budgets (ChatGPT subscription for Astra, free local Ollama, or cheap APIs). Every line of code you
+budgets (ChatGPT subscription for Astra, cheap APIs). Every line of code you
 type yourself is a line a worker could have typed. Keep for yourself only:
 
 - understanding the user's intent and asking the questions that matter,
@@ -97,8 +97,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
   value fallback; once the worker's review rounds are spent (or a model has already been swapped) the
   auto-pick **escalates to the best available model by quality**, regardless of budget class. Do not
   spend three fix rounds on a model that is out of its depth — escalate.
-- **Budget classes.** Work is routed class by class: local models, then included plans (Gemini, Grok,
-  Kimi…), then the conserved subscription (Codex), then this plan (Claude), each under the configured
+- **Budget classes.** Work is routed class by class: granted API credit, then included plans (Gemini, Grok),
+  then the conserved subscription (Codex), then this plan (Claude), each under the configured
   budget caps, then pay-per-token APIs only if the chat's *API overflow* toggle is on (default off). Within a
   class, measured value picks the model. If `delegate` says no worker is available under these rules,
   do the task yourself if it is small, or tell the user to wait for a reset or enable overflow.
@@ -146,7 +146,7 @@ the cheap sections play first and the strong ones are saved for the hard passage
   and honesty about doubts; punish scope creep and unverified claims.
 - For risky or ambiguous tasks, prefer one implementation plus an independent read-only review
   (delegate with `sandbox: "read-only"` or use the `reviewer` subagent).
-  Read-only is OS-enforced for Codex and tool-enforced for API/Ollama workers. Claude disallows
+  Read-only is OS-enforced for Codex and tool-enforced for API workers. Claude disallows
   Bash, Edit, Write and NotebookEdit; vendor CLIs use a disposable git snapshot when available,
   or plan-mode flags otherwise. Claude and vendor modes are best-effort: tell those reviewers not to modify files.
   Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.

@@ -1,17 +1,15 @@
 // Dispatch a task to the worker runtime for its provider and normalize the result shape.
 import { getProvider } from '../providers/index.mjs';
-import * as ollama from '../providers/ollama.mjs';
 import { loadConfig } from '../config.mjs';
 import { runCodex } from './codex.mjs';
 import { runClaude } from './claude.mjs';
 import { runOpenAICompat } from './openai-compat.mjs';
-import { runImage } from './image.mjs';
 import { runVendorCli } from './vendor-cli.mjs';
 import { mcpServersFor, forClaudeSdk } from '../mcp.mjs';
 import { readJson, writeJson, statePath, redactDeep } from '../paths.mjs';
 
 /**
- * @param {object} t { id, cwd, prompt, provider, model, effort, threadId, timeoutMs, system, imageOptions }
+ * @param {object} t { id, cwd, prompt, provider, model, effort, threadId, timeoutMs, system }
  * @returns {Promise<{ok, threadId, finalMessage, items, usage, costUsd, error, limitHit, authFailed, retryAfterMs, durationMs}>}
  */
 export async function runWorker(t, { signal } = {}) {
@@ -28,22 +26,8 @@ export async function runWorker(t, { signal } = {}) {
       r = await runClaude({ ...base, permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurns });
       r.threadId = r.sessionId;
       break;
-    case 'ollama': {
-      await ollama.ensureRunning();
-      if (cfg.providers.ollama?.harness === 'claude') {
-        // Opt-in: run the local model through the Claude Code harness (needs Ollama's Anthropic API compat).
-        r = await runClaude({ ...base, env: ollama.claudeHarnessEnv(), permissionMode: cfg.worker.claudePermissionMode, resumeSessionId: t.threadId || undefined, maxTurns: cfg.worker.maxTurnsLocal });
-        r.threadId = r.sessionId;
-      } else {
-        r = await withLoopHistory(t, (history, cacheKey) => runOpenAICompat({ ...base, baseUrl: `${ollama.baseUrl()}/v1`, apiKey: 'ollama', system: t.system, history, cacheKey }));
-      }
-      break;
-    }
     case 'openai-compat':
-      r = await withLoopHistory(t, (history, cacheKey) => runOpenAICompat({ ...base, ...p.workerConfig(), system: t.system, history, cacheKey }));
-      break;
-    case 'image':
-      r = await runImage({ ...base, ...p.workerConfig(), ...(t.imageOptions || {}) });
+      r = await withLoopHistory(t, (history) => runOpenAICompat({ ...base, ...p.workerConfig(), system: t.system, history }));
       break;
     case 'vendor-cli':
       r = await runVendorCli(p.spec, { ...base, resumeThreadId: t.threadId || undefined });
@@ -66,7 +50,7 @@ export async function runWorker(t, { signal } = {}) {
 async function withLoopHistory(t, run) {
   const threadId = t.threadId || t.id;
   const history = t.threadId ? readJson(statePath('history', `${threadId}.worker.json`), null) : null;
-  const r = await run(history?.length ? history : undefined, threadId);
+  const r = await run(history?.length ? history : undefined);
   if (r.messages?.length) { try { writeJson(statePath('history', `${threadId}.worker.json`), r.messages); } catch {} }
   r.threadId = threadId;
   return r;

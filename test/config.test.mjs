@@ -1,4 +1,4 @@
-import { tmpDir } from './_env.mjs';
+import { tmpDir, HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -66,9 +66,29 @@ test('defaults load, patches deep-merge, secrets redact', () => {
   assert.equal(c2.providers.deepseek.apiKey, 'sk-test');
   assert.equal(c2.worker.effort, 'high');
   assert.equal(c2.worker.provider, 'codex', 'untouched keys keep defaults');
-  assert.equal(c2.providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
+  assert.equal(c2.providers.ollama, undefined);
   assert.equal(publicConfig(c2).providers.deepseek.apiKey, '••••');
-  assert.equal(publicConfig(c2).providers.xai.apiKey, null);
+  assert.equal(publicConfig(c2).providers.deepseek.apiKey, '••••');
+});
+
+test('removed provider blocks in config.json are ignored with one warning', (t) => {
+  const file = join(HOME, 'config.json');
+  const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  const warnings = [];
+  t.mock.method(console, 'warn', (line) => warnings.push(line));
+  try {
+    writeFileSync(file, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434' }, kimi: { cliUpdate: 'auto' }, deepseek: { apiKey: 'test-key' } } }));
+    const cfg = loadConfig();
+    assert.equal(cfg.providers.ollama, undefined);
+    assert.equal(cfg.providers.kimi, undefined);
+    assert.equal(cfg.providers.deepseek.apiKey, 'test-key');
+    loadConfig();
+    assert.deepEqual(warnings, ['Ignoring unknown provider config: ollama, kimi']);
+  } finally {
+    if (before === null) writeFileSync(file, '{}');
+    else writeFileSync(file, before);
+    loadConfig();
+  }
 });
 
 test('RAM guard defaults to 85 percent and preserves zero as disabled', () => {
@@ -229,7 +249,7 @@ test('turn budgets default high and reject non-positive values', () => {
 test('timer and loop settings accept positive finite numbers and otherwise use DEFAULTS', () => {
   const keys = {
     conductor: ['updateQuietMinutes'], // run timeouts, updateCheckHours and detectMinutes: 0 means off, tested below
-    worker: ['maxIterations', 'maxTurnsLocal', 'longRunMinutes'],
+    worker: ['maxIterations', 'longRunMinutes'],
     scorecard: ['blockedMinutes'], server: ['lagWarnMs'],
   };
   for (const value of [0, -1, '3', null, Infinity, -Infinity, NaN, 1.5]) {
@@ -367,14 +387,11 @@ test('config validates ports, provider endpoints and malformed MCP entries', () 
   for (const value of [-1, 65536, 1.5, '47474', null, NaN]) assert.equal(saveConfig({ port: value }).port, DEFAULTS.port);
   for (const port of [0, 65535]) assert.equal(saveConfig({ port }).port, port);
   const cfg = saveConfig({
-    providers: { ollama: { baseUrl: 42 }, sd: false, deepseek: { baseUrl: [] } },
+    providers: { deepseek: { baseUrl: [] } },
     mcpServers: { bad: 'x', list: [], disabled: false, malformed: { command: 42, url: {}, args: 'abc', env: 'token' },
       typed: { command: 'node', args: ['ok', null, {}], env: { KEEP: 'value', BAD: {} } } },
   });
-  assert.equal(cfg.providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
-  assert.equal(saveConfig({ providers: { ollama: { baseUrl: '  ' }, sd: { baseUrl: '' } } }).providers.ollama.baseUrl, DEFAULTS.providers.ollama.baseUrl);
-  assert.equal(loadConfig().providers.sd.baseUrl, DEFAULTS.providers.sd.baseUrl);
-  assert.deepEqual(cfg.providers.sd, DEFAULTS.providers.sd);
+  assert.equal(saveConfig({ providers: { deepseek: { baseUrl: '  ' } } }).providers.deepseek.baseUrl, undefined);
   assert.equal(cfg.providers.deepseek.baseUrl, undefined);
   assert.equal(cfg.mcpServers.bad, undefined);
   assert.equal(cfg.mcpServers.list, undefined);

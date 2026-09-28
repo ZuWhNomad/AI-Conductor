@@ -14,8 +14,7 @@ Claude ultracode;
 Same but more words:
 A Claude Code clone with upgrades: the Claude model you pick is the CONDUCTOR (plans, delegates,
 reviews), and the grunt coding goes to cheaper workers: GPT-6 Astra through the Codex CLI on your
-ChatGPT subscription, free local Ollama models, or any OpenAI-compatible API (DeepSeek, Kimi, Grok,
-Qwen, Gemini). Browser UI with a speech-to-text button. Live model and limit polling, task
+ChatGPT subscription, Antigravity and Grok subscription CLIs, or the DeepSeek API. Browser UI with a speech-to-text button. Live model and limit polling, task
 journaling with auto-resume at limits, an improvement log that the workbench can review and fix
 itself, and a one-script installer to share with friends.
 
@@ -46,8 +45,8 @@ USING IT
    with the provider dropdown. Your last choice becomes the default. Model switches live; effort
    applies from the next message. Any agent model can conduct: Claude models run in the Claude Code
    harness (built-in tools, subagents, skills); Codex models run through "codex exec" with the
-   workbench tools attached as an MCP server; Ollama/API models run through the tool loop
-   (read/write/edit/search/run + the workbench tools). Image providers are workers only.
+   workbench tools attached as an MCP server; DeepSeek runs through the API tool loop
+   (read/write/edit/search/run + the workbench tools).
 2. Say what you want. The conductor writes specs, delegates to workers, verifies their diffs, sends
    review comments back to the same worker thread, and reports.
 3. Watch worker tasks in the Fleet panel (click a card for spec, actions, diff stat, worker
@@ -58,7 +57,6 @@ Shortcuts in the composer:
 
   /worker <spec>            send a task straight to the default worker (zero conductor tokens)
   /astra <spec>
-  /ollama <model> <spec>
   /claude <model> <spec>    pick the worker explicitly
 
 Command line:
@@ -107,7 +105,7 @@ default (ui.autoRefresh: false); when enabled, it runs every pollMinutes (defaul
     5-hour / weekly windows come from the SDK's control channel plus live rate-limit events. Any
     picker also has "Other..." for a model id that is not listed yet.
   - Codex: "codex app-server" (account/rateLimits/read, model/list): plan, windows, resets.
-  - Ollama: /api/tags. API-key providers: /models, with 429 / retry-after learned on the fly.
+  - DeepSeek: /models, with 429 / retry-after learned on the fly.
 
 A worker that hits a limit is PARKED and resumed automatically on the same thread when the window
 resets; the conductor session itself resumes by session id after a restart.
@@ -169,13 +167,12 @@ Settings has the same provider : model : effort pickers for the DEFAULT WORKER (
 for composer shortcuts like /worker and untagged tasks; tagged delegates auto-pick from the
 scorecard and are refused when no qualified plan exists until explicitly pinned) and the CONDUCTOR
 DEFAULT. The conductor can still send lesser tasks anywhere: a haiku swarm for reading, a free
-Ollama model for boilerplate, Astra for real coding, per task.
+DeepSeek or Astra per task.
 
 ~/.conductor2/config.json (see core/config.mjs for every default): port, poll interval, conductor
 defaults, default worker (codex / gpt-6-astra / medium), Codex sandbox, worker concurrency,
 timeouts, review rounds, provider URLs and API keys (also read from
-DEEPSEEK_API_KEY, MOONSHOT_API_KEY, XAI_API_KEY, DASHSCOPE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY,
-STABILITY_API_KEY).
+DEEPSEEK_API_KEY).
 
 The default worker gpt-6-astra uses danger-full-access via worker.codexSandboxByModel.
 Override that model's entry to change it; worker.codexSandbox is the fallback (workspace-write),
@@ -188,13 +185,11 @@ TROUBLESHOOTING
   - "Failed to authenticate: OAuth session expired"  ->  claude auth login
   - "'gpt-6-astra' requires a newer version of Codex"  ->  npm i -g @openai/codex@latest
   - Microphone button disabled  ->  use Chrome/Edge; allow mic access for 127.0.0.1
-  - Ollama models missing  ->  "ollama serve" (auto-started when installed) and
-    "ollama pull <model>"
   - Codex models missing right after "npm i -g @openai/codex"  ->  the app also looks in npm's
     global folder, but a freshly installed CLI may need a new terminal/Explorer session for PATH.
     Settings -> Run doctor shows what the running app can see.
 
-See docs/ARCHITECTURE.md for the design, and AGENTS.md before changing code.
+See docs/ARCHITECTURE.md for the design, docs/ADD-A-PROVIDER.md to add a provider, and AGENTS.md before changing code.
 
 
 QUICKSTART FROM A TERMINAL (if you're sadistic and would prefer one)
@@ -206,7 +201,7 @@ QUICKSTART FROM A TERMINAL (if you're sadistic and would prefer one)
 2. Or, from a terminal on any OS:
 
      npm install
-     node bin/conductor.mjs doctor        (checks Node, Claude login, Codex login, Ollama)
+     node bin/conductor.mjs doctor        (checks Node, Claude login, Codex login)
      node bin/conductor.mjs               (starts http://127.0.0.1:47474 and opens your browser)
 
 3. One-time logins (in a terminal, not in the app):
@@ -227,16 +222,8 @@ QUICKSTART FROM A TERMINAL (if you're sadistic and would prefer one)
        irm https://x.ai/cli/install.ps1 | iex
        grok login
 
-   Qwen (free OAuth tier, Qwen Code)
-       npm i -g @qwen-code/qwen-code
-       then run "qwen" and pick Qwen OAuth
 
-   Kimi account (Kimi CLI)
-       pip install --user kimi-cli
-       kimi login
 
-   Local models (free)
-       install Ollama (https://ollama.com), then: ollama pull qwen3.8
 
    API-key providers (optional)
        paste keys in Settings

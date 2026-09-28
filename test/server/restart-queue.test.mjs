@@ -95,7 +95,7 @@ test('two server processes preserve the queue, stagger resumes, and require reru
     conductor: { maxWorkerConcurrency: 1, budgetGate: false, autoUpdate: 'off' },
   }));
   const fixture = (id, extra) => ({
-    id, title: id, cwd: HOME, provider: 'ollama', model: 'fixture', spec: 'Read only fixture',
+    id, title: id, cwd: HOME, provider: 'deepseek', model: 'fixture', spec: 'Read only fixture',
     createdAt: new Date(0).toISOString(), updatedAt: new Date().toISOString(), attempts: 1, ...extra,
   });
   const resumeAt = Date.now() + 2 * 60 * 60 * 1000;
@@ -105,9 +105,9 @@ test('two server processes preserve the queue, stagger resumes, and require reru
   try {
     const first = launch(); children.push(first);
     await until(() => first.url, 'first server ready', first);
-    const b = await api(first, 'tasks', { cwd: HOME, title: 'B', spec: 'Block until aborted', provider: 'ollama', model: 'fixture' });
+    const b = await api(first, 'tasks', { cwd: HOME, title: 'B', spec: 'Block until aborted', provider: 'deepseek', model: 'fixture' });
     await until(() => first.runs.some(run => run.id === b.id), 'B worker started', first);
-    const c = await api(first, 'tasks', { cwd: HOME, title: 'C', spec: 'Queued work', provider: 'ollama', model: 'fixture' });
+    const c = await api(first, 'tasks', { cwd: HOME, title: 'C', spec: 'Queued work', provider: 'deepseek', model: 'fixture' });
     assert.equal(c.status, 'queued');
     await api(first, 'shutdown', {});
     await until(() => first.closed, 'first server shutdown');

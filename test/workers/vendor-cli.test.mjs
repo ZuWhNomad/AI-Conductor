@@ -95,61 +95,18 @@ test('grok: streaming-messages-json shapes recorded 2026-09-10 parse to text, us
   assert.equal(spec.usageInputExclusive, true);
 });
 
-const KIMI_QUOTA = `Error code: 403 - {'error': {'message': "You've reached your monthly usage limit for this billing cycle.", 'type': 'access_terminated_error'}}`;
 
-test('a quota error printed on stdout (kimi 1.50, 403 access_terminated_error) counts as a limit hit', async () => {
-  const { VENDORS } = await import('../../core/providers/vendors.mjs');
-  const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0 };
-  VENDORS.kimi.parseText(KIMI_QUOTA, st);
-  const LIMIT_RE = /rate[_ -]?limit|quota (?:exceeded|exhausted|reached)|usage limit|too many requests|\b429\b|resource[_ ]exhausted|plan limit|insufficient (?:credits|quota|balance)/i;
-  assert.match(st.text, LIMIT_RE);
-});
 
-test('kimi monthly usage limit on stdout is a limit hit at exit 1 and at exit 0 with only that line', async () => {
-  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText };
-  const failed = await runVendorCli(fakeSpec([KIMI_QUOTA], { ...opts, exitCode: 1 }), { id: 't', cwd: tmpDir('kimi-lim1'), prompt: 'x' });
-  assert.equal(failed.ok, false);
-  assert.equal(failed.limitHit, true);
-  const zero = await runVendorCli(fakeSpec([KIMI_QUOTA], { ...opts, exitCode: 0 }), { id: 't', cwd: tmpDir('kimi-lim0'), prompt: 'x' });
-  assert.equal(zero.ok, false);
-  assert.equal(zero.limitHit, true);
-});
 
-test('a 2000-char kimi report containing rate limit at exit 0 is not a quota failure', async () => {
-  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText };
-  const needle = 'rate limit';
-  const report = needle + ' ' + 'a'.repeat(2000 - needle.length - 1);
-  assert.equal(report.length, 2000);
-  const r = await runVendorCli(fakeSpec([report], { ...opts, exitCode: 0 }), { id: 't', cwd: tmpDir('kimi-long'), prompt: 'x' });
-  assert.equal(r.ok, true, r.error);
-  assert.equal(r.limitHit, false);
-});
 
 test('a failed run whose narration mentions 429 is not a limit hit', async () => {
-  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 1 };
+  const opts = { parse: () => {}, parseText: (line, st) => { st.text += line; }, exitCode: 1 };
   const narration = 'Implementing retry on 429 rate limit as specified.\n' + 'x'.repeat(400);
   const r = await runVendorCli(fakeSpec([narration], opts), { id: 't', cwd: tmpDir('fail-429-narr'), prompt: 'x' });
   assert.equal(r.ok, false);
   assert.equal(r.limitHit, false);
 });
 
-test('short kimi successes mentioning quota handling are not quota failures', async () => {
-  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 0 };
-  for (const line of [
-    'no 429 today',
-    'Added 429 retry with backoff; tests pass.',
-    'Handled the too many requests response; tests passed.',
-    'Handled the monthly usage limit error; tests passed.',
-    'Added tests for quota exceeded and insufficient balance.',
-    'Fixed the rate limit reached response.',
-    `Handled this response: ${KIMI_QUOTA}`,
-    `${KIMI_QUOTA}\nHandled the error; tests passed.`,
-  ]) {
-    const r = await runVendorCli(fakeSpec([line], opts), { id: 't', cwd: tmpDir('kimi-429-ok'), prompt: 'x' });
-    assert.equal(r.ok, true, `${line}: ${r.error}`);
-    assert.equal(r.limitHit, false, line);
-  }
-});
 
 test('antigravity: `agy -p /usage --output-format json` (1.2.1, recorded 2026-09-11) parses into model-group windows', async () => {
   const { parseAgyUsage } = await import('../../core/providers/vendors.mjs');
@@ -240,17 +197,6 @@ test('grok headlessArgs: a large prompt goes to --prompt-file (outside cwd), a s
   assert.equal((await import('node:fs')).readFileSync(pf, 'utf8').length, 20000);
 });
 
-test('antigravity, qwen-code and kimi: a 40k prompt is not passed as a long argv argument', () => {
-  const prompt = 'x'.repeat(40_000);
-  const t = { prompt, cwd: 'F:/ws', timeoutMs: 60_000 };
-  for (const id of ['antigravity', 'qwen-code', 'kimi']) {
-    const { args, cleanup } = VENDORS[id].headlessArgs(t);
-    try {
-      const long = (args || []).filter((a) => typeof a === 'string' && a.length > 8000);
-      assert.equal(long.length, 0, `${id} put a ${long[0]?.length} char argument on argv`);
-    } finally { try { cleanup?.(); } catch {} }
-  }
-});
 
 test('antigravity: a 40k prompt uses --input-format text and does not pass -p; short prompts still pass -p', () => {
   const long = VENDORS.antigravity.headlessArgs({ prompt: 'x'.repeat(40_000), cwd: 'F:/ws', timeoutMs: 60_000 });
@@ -297,66 +243,12 @@ test('vendor runner sends the prompt on stdin when headlessArgs sets stdinPrompt
   assert.equal(r.finalMessage, 'hello-stdin');
 });
 
-test('qwen-code resumes the requested thread id', () => {
-  const { args } = VENDORS['qwen-code'].headlessArgs({ prompt: 'x', cwd: 'F:/ws', resumeThreadId: 'session-123' });
-  assert.ok(args.includes('--resume'));
-  assert.equal(args[args.indexOf('--resume') + 1], 'session-123');
-  assert.ok(!args.includes('--continue'));
-});
 
-// Qwen 0.23 Claude-style frames (same Anthropic Messages wire format grok uses; qwen has no usageInputExclusive).
-const QWEN_FRAMES = [
-  { type: 'system', subtype: 'init', session_id: 'qwen-sess-1', model: 'qwen3-coder-plus' },
-  { type: 'assistant', message: { id: 'msg_0', role: 'assistant', content: [{ type: 'text', text: 'created hi.txt' }], stop_reason: 'end_turn' } },
-  { type: 'result', subtype: 'success', is_error: false, result: 'created hi.txt', usage: { input_tokens: 40, output_tokens: 8, cache_read_input_tokens: 2 } },
-];
 
-test('qwen-code: Claude-style stream-json frames parse to text, usage and session', async () => {
-  const spec = VENDORS['qwen-code'];
-  const st = { threadId: null, text: '', finalText: null, usage: null, error: null, items: [], unknown: 0, spec };
-  for (const obj of QWEN_FRAMES) spec.parse(obj, st, () => {});
-  assert.equal(st.finalText, 'created hi.txt');
-  assert.equal(st.error, null);
-  assert.equal(st.threadId, 'qwen-sess-1');
-  assert.equal(st.items.filter((i) => i.type === 'agent_message').length, 1);
-  assert.equal(st.usage.input_tokens, 40);
-  assert.equal(st.usage.output_tokens, 8);
-  assert.equal(st.usage.exclusive, undefined);
-});
 
-test('qwen-code: exit 0 with [API Error: 429 ...] assistant text is a limit hit', async () => {
-  const text = '[API Error: 429 {"error":{"message":"quota exceeded"}}]';
-  const lines = [
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } },
-    { type: 'result', subtype: 'success', is_error: false, result: text },
-  ];
-  const r = await runVendorCli(fakeSpec(lines, { parse: VENDORS['qwen-code'].parse, onClose: VENDORS['qwen-code'].onClose }), { id: 't', cwd: tmpDir('qwen-api-err'), prompt: 'x' });
-  assert.equal(r.ok, false);
-  assert.equal(r.limitHit, true);
-  assert.match(r.error, /API Error: 429/);
-});
 
-test('kimi spec sets PYTHONUTF8 and the runner merges spec.env() into the child', async () => {
-  assert.deepEqual(VENDORS.kimi.env(), { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' });
-  const script = `console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:process.env.PYTHONUTF8+'|'+process.env.PYTHONIOENCODING}}))`;
-  const spec = { id: 'fake', bin: () => process.execPath, headlessArgs: () => ({ args: ['-e', script] }), parse: VENDORS.antigravity.parse, env: VENDORS.kimi.env };
-  const r = await runVendorCli(spec, { id: 't', cwd: tmpDir('kimi-env'), prompt: 'x' });
-  assert.equal(r.ok, true, r.error);
-  assert.equal(r.finalMessage, '1|utf-8');
-});
 
-test('kimi unrecognised JSON objects fall back to parseText instead of failing the run', async () => {
-  const opts = { parse: VENDORS.kimi.parse, parseText: VENDORS.kimi.parseText, exitCode: 0 };
-  const echoed = { error: 'Heads up: not a run failure', message: 'echoed prompt' };
-  const r = await runVendorCli(fakeSpec([echoed, 'done'], opts), { id: 't', cwd: tmpDir('kimi-unrec'), prompt: 'x' });
-  assert.equal(r.ok, true, r.error);
-  assert.match(r.finalMessage, /done/);
-});
 
-test('kimi headlessArgs uses --output-format stream-json (confirmed on kimi --help 1.50)', () => {
-  const { args } = VENDORS.kimi.headlessArgs({ prompt: 'hi', cwd: 'F:/ws' });
-  assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
-});
 
 test('auto-continue sums usage from the interrupted first run', async () => {
   let n = 0;
@@ -422,8 +314,6 @@ console.log('  * grok-4.6 (default)');
 test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help', () => {
   assert.equal(VENDORS.antigravity.readOnlyViaSnapshot, true);
   assert.equal(VENDORS.grok.readOnlyViaSnapshot, true);
-  assert.equal(VENDORS['qwen-code'].readOnlyViaSnapshot, true);
-  assert.equal(VENDORS.kimi.readOnlyViaSnapshot, true);
   const t = { prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000, sandbox: 'read-only' };
   const agy = VENDORS.antigravity.headlessArgs(t);
   assert.equal(agy.args[agy.args.indexOf('--mode') + 1], 'plan');
@@ -431,16 +321,9 @@ test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help',
   const grok = VENDORS.grok.headlessArgs(t);
   assert.equal(grok.args[grok.args.indexOf('--permission-mode') + 1], 'plan');
   assert.ok(!grok.args.includes('--always-approve'));
-  const qwen = VENDORS['qwen-code'].headlessArgs(t);
-  assert.equal(qwen.args[qwen.args.indexOf('--approval-mode') + 1], 'plan');
-  const kimi = VENDORS.kimi.headlessArgs(t);
-  assert.ok(kimi.args.includes('--plan'));
-  assert.ok(!kimi.args.includes('--yolo'));
   const open = { prompt: 'hi', cwd: 'F:/ws', timeoutMs: 60_000 };
   assert.ok(VENDORS.antigravity.headlessArgs(open).args.includes('--dangerously-skip-permissions'));
   assert.ok(VENDORS.grok.headlessArgs(open).args.includes('--always-approve'));
-  assert.equal(VENDORS['qwen-code'].headlessArgs(open).args[VENDORS['qwen-code'].headlessArgs(open).args.indexOf('--approval-mode') + 1], 'yolo');
-  assert.ok(VENDORS.kimi.headlessArgs(open).args.includes('--yolo'));
 });
 
 test('grok: a 402 exhausted balance (recorded 2026-09-25, reason only in errors[]) is a limit hit with the reason, not error_during_execution', async () => {

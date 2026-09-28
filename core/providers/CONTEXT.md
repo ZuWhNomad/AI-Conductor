@@ -8,9 +8,9 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
 
 **Entry points.**
 - `index.mjs` — the registry. Every provider is `{ id, label, kind, auth, detect(), listModels(), pollLimits() }`;
-  register a new one here. Also holds the image providers and wires the subscription-CLI vendors.
-- `anthropic.mjs`, `codex.mjs`, `ollama.mjs`, `openai-compat.mjs` — first-party / API providers.
-- `vendors.mjs` — subscription **agent CLIs** (Antigravity `agy`, xAI `grok`, Qwen Code, Kimi). Each is a spec
+  register a new one here. See [ADD-A-PROVIDER](../../docs/ADD-A-PROVIDER.md) for the full checklist.
+- `anthropic.mjs`, `codex.mjs`, `openai-compat.mjs` — native / API providers.
+- `vendors.mjs` — subscription **agent CLIs** (Antigravity `agy`, xAI `grok`). Each is a spec
   (`bin`, `login`, `probe`, `parseModels`, `pollLimits`, `headlessArgs`, `parse`); `providerFor(spec)` turns a spec
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.
 
@@ -22,7 +22,7 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
 - Secrets live only in `~/.conductor2/config.json`; never log them. `publicConfig()` redacts keys and MCP env/url.
 - Windows-first: never spawn a CLI through a shell (`core/proc.mjs` `spawnCli` unwraps npm `.cmd` shims). Long
   prompts (over `providers.<id>.promptFileThreshold`, default 8000 chars) stay off argv: grok `--prompt-file`; antigravity `--input-format text` on
-  stdin; qwen-code stdin (no positional query); kimi `--print` stdin (no `-p`).
+  stdin.
 - Model-list overrides: a CLI that can't self-list reads `providers.<id>.models` from config.
 - Effort-in-id (Antigravity, "Method C"): agy bakes effort into the model id (`gemini-*-low/-medium/-high`) and rejects
   a `--effort` flag. A spec with `collapseEfforts: true` has `collapseEffortFamilies()` fold those variants into ONE

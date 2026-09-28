@@ -116,7 +116,7 @@ test('a category recipe is registered for modeling and reaches the worker spec',
   assert.equal(recipeFor('debug'), null);
   assert.ok(listRecipes().find((r) => r.category === 'modeling')?.present);
   const tk = await import('../core/tasks.mjs');
-  const t = tk.createTask({ cwd: HOME, title: 'cutter', spec: 'make it', provider: 'ollama', model: 'x', category: 'modeling', difficulty: 4 });
+  const t = tk.createTask({ cwd: HOME, title: 'cutter', spec: 'make it', provider: 'deepseek', model: 'x', category: 'modeling', difficulty: 4 });
   assert.equal(tk.getTask(t.id).category, 'modeling');
   tk.cancelTask(t.id);
 });

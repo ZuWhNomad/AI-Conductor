@@ -6,7 +6,7 @@ import { bus } from './bus.mjs';
 
 const FILE = () => statePath('models.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {}, models: [] });
-const inflightByScope = new Map(); // coalesce concurrent refreshes per scope so an ollama-only refresh isn't returned to a full one
+const inflightByScope = new Map(); // coalesce concurrent refreshes per scope
 let refreshGeneration = 0;
 const committedByProvider = new Map(); // request order, not completion order, determines freshness
 const unavailable = new Map(); // runtime SDK incompatibilities clear on that provider's next successful refresh
@@ -25,7 +25,7 @@ export function markUnavailable(provider, model, reason) {
   return true;
 }
 
-const ORDER = ['claude', 'codex', 'ollama'];
+const ORDER = ['claude', 'codex'];
 const sortModels = (ms) => ms.sort((a, b) => (ORDER.indexOf(a.provider) + 1 || 99) - (ORDER.indexOf(b.provider) + 1 || 99) || a.id.localeCompare(b.id));
 
 /** Re-detect providers and re-list their models. Concurrent calls share one run. */
@@ -58,8 +58,8 @@ export function refreshModels({ only = null } = {}) {
     }
     for (const id of Object.keys(lists)) for (const key of unavailable.keys()) if (key.startsWith(`${id}:`)) unavailable.delete(key);
     const before = cache;
-    const providers = { ...cache.providers, ...fresh };
-    const models = cache.models.filter((m) => !Object.hasOwn(lists, m.provider)).concat(...Object.values(lists));
+    const providers = Object.fromEntries(Object.entries({ ...cache.providers, ...fresh }).filter(([id]) => Object.hasOwn(PROVIDERS, id)));
+    const models = cache.models.filter((m) => Object.hasOwn(PROVIDERS, m.provider) && !Object.hasOwn(lists, m.provider)).concat(...Object.values(lists));
     cache = { updatedAt: nowIso(), providers, models: sortModels(models) };
     writeJson(FILE(), cache);
     try { const { noteNewModels } = await import('./bench.mjs'); noteNewModels(before, cache); } catch {}
@@ -87,8 +87,8 @@ export function stopModelPolling() {
 
 // Model family, whichever provider serves it (antigravity serves several, so the id decides). Reviews use it to keep
 // failover off a family already on the review (task option avoidFamilies).
-const FAMILIES = [['claude', /^(?:claude|opus|sonnet|haiku|fable)\b/], ['gpt', /^(?:gpt|codex|o\d|astra|luna|sol|terra)\b/], ['grok', /^grok/], ['gemini', /^gemini/], ['deepseek', /^deepseek/], ['kimi', /^(?:kimi|moonshot)/], ['qwen', /^qwen/]];
-const PROVIDER_FAMILY = { claude: 'claude', anthropic: 'claude', codex: 'gpt', openai: 'gpt', grok: 'grok', xai: 'grok', deepseek: 'deepseek', moonshot: 'kimi', kimi: 'kimi', gemini: 'gemini', qwen: 'qwen', 'qwen-code': 'qwen' };
+const FAMILIES = [['claude', /^(?:claude|opus|sonnet|haiku|fable)\b/], ['gpt', /^(?:gpt|codex|o\d|astra|luna|sol|terra)\b/], ['grok', /^grok/], ['gemini', /^gemini/], ['deepseek', /^deepseek/]];
+const PROVIDER_FAMILY = { claude: 'claude', codex: 'gpt', grok: 'grok', deepseek: 'deepseek' };
 export function familyOf(provider, model) {
   const id = String(model || '').toLowerCase().split('/').at(-1);
   if (id && id !== 'default') for (const [f, re] of FAMILIES) if (re.test(id)) return f;

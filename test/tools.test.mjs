@@ -19,7 +19,7 @@ test('L9: maxBlockMs caps blocking waits and run_plan; plan_status reads the liv
   const waits = [];
   t.mock.method(globalThis, 'setTimeout', (fn, ms) => { waits.push(ms); queueMicrotask(fn); return {}; });
   const tools = defs({ sessionId: 'l9', cwd: dir, maxBlockMs: 1234 });
-  const task = createTask({ cwd: dir, spec: 'hang', provider: 'ollama', model: 'qwen' });
+  const task = createTask({ cwd: dir, spec: 'hang', provider: 'deepseek', model: 'deepseek-chat' });
   try {
     const waiting = tools.find((d) => d.name === 'await_task').handler({ task_id: task.id });
     assert.deepEqual(waitingTasks('l9'), [task.id]);
@@ -27,11 +27,11 @@ test('L9: maxBlockMs caps blocking waits and run_plan; plan_status reads the liv
     assert.deepEqual(waitingTasks('l9'), []);
     assert.match(awaitMsg, /still running — call await_task/);
     assert.equal(waits.pop(), 1234);
-    const del = await tools.find((d) => d.name === 'delegate').handler({ title: 'hang', spec: 'hang', provider: 'ollama', model: 'qwen' });
+    const del = await tools.find((d) => d.name === 'delegate').handler({ title: 'hang', spec: 'hang', provider: 'deepseek', model: 'deepseek-chat' });
     assert.match(del, /still running — call await_task/);
     assert.equal(waits.pop(), 1234);
     const planMsg = await tools.find((d) => d.name === 'run_plan').handler({
-      goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'hang', provider: 'ollama', model: 'qwen' }] }],
+      goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'hang', provider: 'deepseek', model: 'deepseek-chat' }] }],
     });
     assert.match(planMsg, /still running — call plan_status/);
     const planId = /Plan (\S+)/.exec(planMsg)[1];
@@ -63,7 +63,7 @@ test('L32: run_plan category is z.enum(CATEGORIES) and difficulty is int 1-5 in 
 
 test('delegate retry_of excludes only started, non-limit selections', async () => {
   const dir = cwd();
-  const make = (props) => createTask({ cwd: dir, provider: 'ollama', model: 'qwen', ...props });
+  const make = (props) => createTask({ cwd: dir, provider: 'deepseek', model: 'deepseek-chat', ...props });
   const cutoff = make({}); Object.assign(cutoff, { status: 'failed', attempts: 1, limitHit: true });
   const neverStarted = make({ retryOf: cutoff.id }); Object.assign(neverStarted, { status: 'failed', attempts: 0 });
   const judged = make({}); Object.assign(judged, { status: 'failed', attempts: 1 });
@@ -72,13 +72,13 @@ test('delegate retry_of excludes only started, non-limit selections', async () =
   const made = [];
   try {
     for (const prior of [cutoff, neverStarted]) {
-      const reply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: prior.id, background: true });
+      const reply = await del({ title: 'retry', spec: 'x', provider: 'deepseek', model: 'deepseek-chat', retry_of: prior.id, background: true });
       const id = /^Task (\S+)/.exec(reply)?.[1];
       assert.ok(id, `${prior.id} was not excluded: ${reply}`); made.push(id);
     }
-    const reply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: judged.id, background: true });
+    const reply = await del({ title: 'retry', spec: 'x', provider: 'deepseek', model: 'deepseek-chat', retry_of: judged.id, background: true });
     assert.match(reply, /already in the chain/, 'a started, judged selection remains excluded');
-    const canceledReply = await del({ title: 'retry', spec: 'x', provider: 'ollama', model: 'qwen', retry_of: canceled.id, background: true });
+    const canceledReply = await del({ title: 'retry', spec: 'x', provider: 'deepseek', model: 'deepseek-chat', retry_of: canceled.id, background: true });
     assert.match(canceledReply, /already in the chain/, 'a canceled task that started remains excluded');
   } finally {
     for (const id of made) cancelTask(id);
@@ -90,7 +90,7 @@ test('L25: delegate and run_plan accept a known variant and reject an unknown on
   const dir = cwd();
   const delBad = await handler('delegate', { cwd: dir })({ title: 't', spec: 's', category: 'modeling', variant: 'not-a-variant', background: true });
   assert.match(delBad, /unknown variant/);
-  const delOk = await handler('delegate', { cwd: dir })({ title: 't', spec: 's', category: 'modeling', variant: 'recipe-c', provider: 'ollama', model: 'qwen', background: true });
+  const delOk = await handler('delegate', { cwd: dir })({ title: 't', spec: 's', category: 'modeling', variant: 'recipe-c', provider: 'deepseek', model: 'deepseek-chat', background: true });
   const id = /^Task (\S+)/.exec(delOk)?.[1];
   assert.equal(getTask(id).variant, 'recipe-c');
   const planBad = await handler('run_plan', { cwd: dir })({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', category: 'summarize', variant: 'nope' }] }] });
@@ -108,7 +108,7 @@ test('background delegate reports the task status and resume time when parked', 
   };
   bus.on('event', onTask);
   try {
-    const reply = await handler('delegate', { sessionId, cwd: cwd() })({ title: 'park me', spec: 'wait', provider: 'ollama', model: 'qwen3.8', background: true });
+    const reply = await handler('delegate', { sessionId, cwd: cwd() })({ title: 'park me', spec: 'wait', provider: 'deepseek', model: 'deepseek-chat', background: true });
     assert.match(reply, new RegExp(`Task ${taskId} parked until ${new Date(until).toISOString()}`));
   } finally {
     bus.off('event', onTask);
@@ -139,7 +139,7 @@ test('GP: run_plan validates variants after merging plan, stage and task or temp
   bus.on('event', onTask);
   try {
     const run = handler('run_plan', { sessionId });
-    const report = await run({ goal: 'variants', defaults: { provider: 'ollama', model: 'qwen', category: 'summarize' }, stages: [
+    const report = await run({ goal: 'variants', defaults: { provider: 'deepseek', model: 'deepseek-chat', category: 'summarize' }, stages: [
       { id: 'find', defaults: { category: 'modeling' }, tasks: [{ spec: 'find', variant: 'recipe-c' }] },
       { id: 'inherit', defaults: { category: 'modeling', variant: 'recipe-c' }, tasks: [{ spec: 'find' }] },
       { id: 'vote', for_each: 'find', defaults: { category: 'summarize', variant: 'video-general' }, task: { spec: 'vote', category: 'modeling', variant: 'recipe-c' } },
@@ -207,11 +207,11 @@ test('L47: delegate reads loadConfig() inside the handler, not once at tool-tabl
   const dir = cwd();
   const tools = conductorToolDefs({ sessionId: 'l47', cwd: dir });
   const previous = loadConfig().worker;
-  saveConfig({ worker: { provider: 'ollama', model: 'qwen3.8' } });
+  saveConfig({ worker: { provider: 'deepseek', model: 'deepseek-chat' } });
   try {
     const msg = await tools.find((d) => d.name === 'delegate').handler({ title: 't', spec: 's', background: true });
     const id = /^Task (\S+)/.exec(msg)[1];
-    assert.equal(getTask(id).provider, 'ollama');
+    assert.equal(getTask(id).provider, 'deepseek');
     cancelTask(id);
   } finally { saveConfig({ worker: previous }); }
 });
@@ -227,8 +227,8 @@ test('L19: auto-picked delegate persists difficulty 2', async () => {
 
 test('L23: cancel_task follows a failover to the live replacement and reports an already-finished task', async () => {
   const dir = cwd();
-  const original = createTask({ cwd: dir, spec: 'x', provider: 'ollama', model: 'qwen' });
-  const replacement = createTask({ cwd: dir, spec: 'x', provider: 'ollama', model: 'qwen', retryOf: original.id });
+  const original = createTask({ cwd: dir, spec: 'x', provider: 'deepseek', model: 'deepseek-chat' });
+  const replacement = createTask({ cwd: dir, spec: 'x', provider: 'deepseek', model: 'deepseek-chat', retryOf: original.id });
   Object.assign(getTask(original.id), { status: 'failed', failedOverTo: replacement.id });
   const msg = await handler('cancel_task')({ task_id: original.id });
   assert.match(msg, new RegExp(`Canceled ${replacement.id}`));
@@ -270,7 +270,7 @@ test('run_plan passes avoid_families through from a task or the defaults', async
   bus.on('event', onTask);
   try {
     const tool = defs({ sessionId }).find((d) => d.name === 'run_plan');
-    await tool.handler(tool.schema.parse({ goal: 'g', defaults: { provider: 'ollama', model: 'qwen', avoid_families: ['gpt'] }, stages: [{ id: 'a', tasks: [{ spec: 'x', avoid_families: ['Claude', 'claude', 'grok'] }, { spec: 'y' }] }] }));
+    await tool.handler(tool.schema.parse({ goal: 'g', defaults: { provider: 'deepseek', model: 'deepseek-chat', avoid_families: ['gpt'] }, stages: [{ id: 'a', tasks: [{ spec: 'x', avoid_families: ['Claude', 'claude', 'grok'] }, { spec: 'y' }] }] }));
     assert.deepEqual(created.map((t) => t.avoidFamilies), [['claude', 'grok'], ['gpt']]);
   } finally {
     bus.off('event', onTask);
@@ -286,13 +286,13 @@ test('delegate efficiency_mode overrides the global switch for explicit pins', a
   saveConfig({ worker: { efficiencyMode: true } });
   try {
     for (const [input, expected] of [[{}, true], [{ efficiency_mode: false }, false], [{ efficiency_mode: true }, true], [{ no_failover: false }, false]]) {
-      const msg = await delegate.handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, ...input });
+      const msg = await delegate.handler({ title: 't', spec: 's', provider: 'deepseek', model: 'deepseek-chat', background: true, ...input });
       const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
       assert.equal(getTask(id).efficiencyMode, expected);
     }
     // The deprecated no_failover knob still parses and means "wait", so older callers keep working.
     saveConfig({ worker: { efficiencyMode: false } });
-    const msg = await delegate.handler({ title: 't', spec: 's', provider: 'ollama', model: 'qwen3.8', background: true, no_failover: true });
+    const msg = await delegate.handler({ title: 't', spec: 's', provider: 'deepseek', model: 'deepseek-chat', background: true, no_failover: true });
     const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
     assert.equal(getTask(id).efficiencyMode, true, 'no_failover is an alias of efficiency_mode: true');
   } finally {
@@ -307,7 +307,7 @@ test('delegate pins wait by default while auto-picks keep the global setting', a
   const delegate = defs({ sessionId: 'pin-default', cwd: cwd() }).find((d) => d.name === 'delegate');
   const ids = [];
   try {
-    for (const input of [{ provider: 'ollama', model: 'qwen3.8' }, { provider: 'ollama' }, { efficiency_mode: false, provider: 'ollama', model: 'qwen3.8' }]) {
+    for (const input of [{ provider: 'deepseek', model: 'deepseek-chat' }, { provider: 'deepseek' }, { efficiency_mode: false, provider: 'deepseek', model: 'deepseek-chat' }]) {
       const msg = await delegate.handler({ title: 't', spec: 's', background: true, ...input });
       const id = /^Task (\S+)/.exec(msg)[1]; ids.push(id);
       assert.equal(getTask(id).efficiencyMode, input.efficiency_mode ?? (!!input.provider && !!input.model));
@@ -325,7 +325,7 @@ test('run_plan pins wait by default and an explicit false allows failover', asyn
   bus.on('event', onTask);
   try {
     const run = handler('run_plan', { sessionId });
-    await run({ goal: 'pin semantics', defaults: { provider: 'ollama', model: 'qwen3.8' }, stages: [{ id: 'a', tasks: [{ spec: 'pinned' }, { spec: 'override', efficiency_mode: false }] }] });
+    await run({ goal: 'pin semantics', defaults: { provider: 'deepseek', model: 'deepseek-chat' }, stages: [{ id: 'a', tasks: [{ spec: 'pinned' }, { spec: 'override', efficiency_mode: false }] }] });
     assert.deepEqual(created.map((t) => t.efficiencyMode), [true, false]);
   } finally {
     bus.off('event', onTask);
