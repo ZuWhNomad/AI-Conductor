@@ -1052,7 +1052,6 @@ function openSettings() {
   field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. One global liveness sample per interval.');
   field('Kill after stuck checks', 'watchdog.killAfterStuckChecks', c.watchdog.killAfterStuckChecks, 'number', '0 = flag only; otherwise at least 2. Default 3.');
   field('Loop repeat threshold', 'watchdog.loopRepeat', c.watchdog.loopRepeat, 'number', 'Repeated identical calls or tool-less progress turns before a runaway alert.');
-  field('Loop tokens per tick', 'watchdog.loopTokens', c.watchdog.loopTokens, 'number', 'Token burn without file progress before a runaway alert.');
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
   field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
   field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');

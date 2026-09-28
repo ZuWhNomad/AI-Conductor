@@ -38,7 +38,7 @@ const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding w
 const watchdog = createWatchdog({
   listSessions: conductor.listSessions, listTasks, touchTaskAlive, markTaskWakeReported,
   recordSessionCheckIn: conductor.recordWatchdogCheckIn, sendMessage: conductor.sendMessage, jobStatus,
-  waitingTasks, resurfacePermissions: conductor.resurfacePermissions, nudgeRunaway: conductor.nudgeRunaway,
+  waitingTasks, resurfacePermissions: conductor.resurfacePermissions, canNudge: conductor.canNudge, nudgeRunaway: conductor.nudgeRunaway,
   interrupt: conductor.interrupt, failHungTask,
 });
 

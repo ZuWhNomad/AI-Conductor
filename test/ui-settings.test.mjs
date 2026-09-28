@@ -55,7 +55,7 @@ test('Settings shows the configured update policy and no guessed Grok hour', asy
   assert.equal(view.field('worker.efficiencyMode').checked, false);
   assert.equal(view.field('watchdog.killAfterStuckChecks').value, String(DEFAULTS.watchdog.killAfterStuckChecks));
   assert.equal(view.field('watchdog.loopRepeat').value, String(DEFAULTS.watchdog.loopRepeat));
-  assert.equal(view.field('watchdog.loopTokens').value, String(DEFAULTS.watchdog.loopTokens));
+  assert.equal(view.field('watchdog.loopTokens'), undefined);
   assert.equal(view.field('grok-reset-day').value, '-1');
   assert.equal(view.field('grok-reset-hour').value, '');
   await view.save();

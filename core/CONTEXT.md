@@ -40,8 +40,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   once through the improvement log. `setMemoryReader()` injects readings for tests.
 - `watchdog.mjs` — the server-owned liveness loop. It combines bus activity, bounded file walks and one shared OS
   process/CPU snapshot into deterministic verdicts; journals task `aliveAt` without a `task` event; applies graduated
-  stuck/runaway actions; persists detached-job/output watches; and wakes an idle chat once after its whole background
-  batch is terminal. It never restarts the server.
+  stuck kills and one nudge per looping Claude chat episode (other runtimes are alert-only); persists detached-job/output
+  watches; and wakes an idle chat once after its whole background batch is terminal. It never restarts the server.
 - `config.mjs` — DEFAULTS + load/save. `recipes.mjs`, `capabilities.mjs` (the capability index: programs per
   category, detected not assumed; access gates; research on a miss), `feedback.mjs`, `bench.mjs`, `update.mjs`,
   `mcp.mjs`, `context.mjs`, `improve.mjs`, `session-flags.mjs`.
