@@ -655,12 +655,11 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const costOf = (g) => {
     const costs = g.stepCosts || [g];
     if (costs.some((c) => c.avgUsd == null)) return null;
-    const stepsUsd = costs.reduce((sum, c) => {
+    return costs.reduce((sum, c) => {
       const { provider, model } = parseSel(c.sel.split('>').at(-1));
       const scale = weight(provider, model) * reserve(provider, model) * waste(provider, model);
       return sum + c.avgUsd * scale + hourly * (c.avgDurationMs || 0) / 3.6e6;
     }, 0);
-    return stepsUsd + (g.avgRounds || 0) * cfg.reviewUsdPerRound;
   };
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
