@@ -96,3 +96,34 @@ test('recipe listing includes configured categories and reports overridden files
     assert.equal(recipeFor('modeling'), recipeFor('modeling', 'recipe-a'));
   } finally { saveConfig({ recipes: null }); }
 });
+
+test('financial video briefing recipe enforces extraction checks, dated prices, and predictions table', async () => {
+  const { recipeFor } = await import('../core/recipes.mjs');
+  const recipe = recipeFor('summarize', 'video-finance');
+  assert.ok(recipe, 'video-finance recipe exists');
+
+  // 1. R62 extraction check
+  assert.match(recipe, /Reject a bad extraction before grading/);
+  assert.match(recipe, /model refusal or apology/);
+  assert.match(recipe, /timestamps `\[MM:SS\]`/);
+  assert.match(recipe, /sections the operator prompt produces/);
+
+  // 2. Mandatory video date header
+  assert.match(recipe, /Video published <date> \(source: front matter \/ inferred from N tickers\)/);
+
+  // 3. R64 dated prices and stale checks
+  assert.match(recipe, /Date every price \(R64\)/);
+  assert.match(recipe, /stale \(last row <date>\)/);
+
+  // 4. Predictions table and statuses
+  assert.match(recipe, /### Predictions table/);
+  assert.match(recipe, /\|\s*Prediction\s*\|\s*`\[MM:SS\]`\s*\|\s*Call\s*\|\s*Timeframe \(ends\)\s*\|\s*At video date\s*\|\s*Latest \(date\)\s*\|\s*Status\s*\|/);
+  assert.match(recipe, /`on track` \/ `against`/);
+  assert.match(recipe, /`hit` \/ `missed`/);
+  assert.match(recipe, /`no timeframe`/);
+  assert.match(recipe, /`not checkable`/);
+
+  // 5. Updated picture leads with predictions summary
+  assert.match(recipe, /lead with the predictions' status summary/);
+});
+
