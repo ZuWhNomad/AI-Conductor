@@ -80,7 +80,7 @@ const openSrc = app.slice(app.indexOf('async function openSession(id)'), app.ind
 const onSrc = app.slice(app.indexOf('function onSessionEvent(ev)'), app.indexOf('// ---------- modals ----------'));
 function openingClient() {
   const el = { textContent: '', checked: false, focus() {}, classList: { remove() {} } };
-  const pending = [], deltas = [], permissions = [], renders = [];
+  const pending = [], deltas = [], permissions = [], renders = [], users = [], dropped = [], removed = [];
   const S = { opening: null, bufferedEvents: null, current: null, sessions: [] };
   const context = {
     S, pending, deltas,
@@ -90,12 +90,12 @@ function openingClient() {
     $: () => el,
     refreshHeaderPicker() {}, renderChip() {}, renderBudget() {}, setStatus() {},
     renderHistory() {}, addPermission(req) { permissions.push(req); }, renderSessions() { renders.push('sessions'); }, renderTasks() {},
-    refreshSessions() { throw new Error('session list refetched'); }, clearCurrent() {}, addUser() {},
+    refreshSessions() { throw new Error('session list refetched'); }, clearCurrent() {}, addUser(...args) { users.push(args); }, dropQueueTag(id) { dropped.push(id); }, removeQueuedBubble(id) { removed.push(id); },
     addDelta(block, text) { deltas.push({ block, text }); },
     addAssistant() {}, addToolResult() {}, addResult() {}, addSys() {}, resolvePermission() {},
   };
   runInNewContext(openSrc + '\n' + app.slice(app.indexOf('function upsertSession(s)'), app.indexOf('async function refreshSessions()')) + '\n' + onSrc, context);
-  return { S, pending, deltas, permissions, renders, openSession: (...a) => context.openSession(...a), onSessionEvent: (...a) => context.onSessionEvent(...a) };
+  return { S, pending, deltas, permissions, renders, users, dropped, removed, openSession: (...a) => context.openSession(...a), onSessionEvent: (...a) => context.onSessionEvent(...a) };
 }
 
 test('session events upsert and remove locally in updated order', () => {
@@ -106,6 +106,70 @@ test('session events upsert and remove locally in updated order', () => {
   c.onSessionEvent({ kind: 'deleted', sessionId: 'new' });
   assert.equal(c.S.sessions.map((s) => s.id).join(','), 'third,old');
   assert.equal(c.renders.length, 3);
+});
+
+test('queued and dequeued events draw follow-ups once and remove queued controls', () => {
+  const c = openingClient();
+  c.S.current = { id: 's1', queue: [] };
+  c.onSessionEvent({ sessionId: 's1', kind: 'queued', id: 'q1', text: 'follow-up' });
+  assert.deepEqual(c.users[0].slice(0, 1), ['follow-up']);
+  assert.equal(c.users[0][2].id, 'q1');
+  assert.deepEqual(Array.from(c.S.current.queue, (q) => q.id), ['q1']);
+  c.onSessionEvent({ sessionId: 's1', kind: 'dequeued', ids: ['q1'] });
+  assert.deepEqual(c.dropped, ['q1']);
+  assert.equal(c.S.current.queue.length, 0);
+  c.onSessionEvent({ sessionId: 's1', kind: 'queue_removed', ids: ['q1'] });
+  assert.deepEqual(c.removed, ['q1']);
+});
+
+test('renderHistory restores queued user bubbles with their cancel id', () => {
+  const src = app.slice(app.indexOf('function renderHistory(messages)'), app.indexOf('// ---------- fleet dock ----------'));
+  const fragment = { append() {} }; const calls = [];
+  const context = {
+    clearTranscript() {}, document: { createDocumentFragment: () => fragment },
+    addUser(...args) { calls.push(args); }, addAssistant() {}, addToolResult() {}, addResult() {}, addSys() {},
+    el: (...args) => args, T: () => ({ append() {} }), scrollBottom() {},
+  };
+  runInNewContext(src, context);
+  context.renderHistory([{ role: 'user', text: 'pending', queued: true, id: 'q-reload' }]);
+  assert.equal(calls[0][0], 'pending');
+  assert.equal(calls[0][1], fragment);
+  assert.equal(calls[0][2].id, 'q-reload');
+});
+
+test('running Codex and loop chats show the queue composer placeholder', () => {
+  const src = app.slice(app.indexOf('function setStatus(st)'), app.indexOf('async function newSession()'));
+  const nodes = new Map([
+    ['#status', { className: '', textContent: '' }], ['#input', { placeholder: '' }],
+    ['#btn-stop', { disabled: true }],
+  ]);
+  const context = {
+    S: { current: { runtime: 'codex' } }, $: (selector) => nodes.get(selector), stopSpinners() {},
+  };
+  runInNewContext("const COMPOSER_PLACEHOLDER = 'Tell the conductor what to do…  (Enter to send, Shift+Enter for newline, / for commands, Ctrl+M to dictate)';\n" + src, context);
+  context.setStatus('running');
+  assert.equal(nodes.get('#input').placeholder, 'Queue a follow-up…');
+  context.S.current.runtime = 'loop';
+  context.setStatus('running');
+  assert.equal(nodes.get('#input').placeholder, 'Queue a follow-up…');
+  context.setStatus('idle');
+  assert.match(nodes.get('#input').placeholder, /^Tell the conductor/);
+});
+
+test('Stop restores returned queued text below current composer text', async () => {
+  const src = app.slice(app.indexOf("$('#btn-stop').onclick"), app.indexOf("$('#btn-refresh').onclick"));
+  const button = {}, dispatched = [], paths = [];
+  const input = { value: 'already typed', dispatchEvent: (event) => dispatched.push(event) };
+  const context = {
+    S: { current: { id: 's1' } }, $: (selector) => selector === '#btn-stop' ? button : input,
+    act: (fn) => fn(), api: { post: async (path) => { paths.push(path); return { ok: true, returned: ['queued one', 'queued two'] }; } },
+    Event: class { constructor(type, options) { this.type = type; this.bubbles = options.bubbles; } },
+  };
+  runInNewContext(src, context);
+  await button.onclick();
+  assert.deepEqual(paths, ['/api/sessions/s1/interrupt']);
+  assert.equal(input.value, 'already typed\n\nqueued one\n\nqueued two');
+  assert.equal(dispatched[0].type, 'input');
 });
 
 test('new chat uses the POST response and restores its button state', async () => {

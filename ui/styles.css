@@ -119,6 +119,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .transcript .empty { margin: auto; text-align: center; color: var(--fg); line-height: 1.8; }
 .msg { max-width: 900px; padding: 8px 12px; border-radius: var(--radius); white-space: pre-wrap; word-wrap: break-word; }
 .msg.user { align-self: flex-end; background: var(--accent2); }
+.msg.user.queued { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 8px; align-items: center; }
+.queue-tag { color: var(--muted); font-size: 10px; }
+.queue-cancel { padding: 0 4px; background: transparent; border: 0; font-size: 15px; line-height: 1; }
 .msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--line); }
 .msg.assistant.streaming::after { content: "▍"; animation: blink 1s infinite; color: var(--accent); }
 .msg.sub { opacity: .75; border-left: 3px solid var(--purple); margin-left: 16px; }

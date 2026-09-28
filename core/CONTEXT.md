@@ -29,7 +29,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   `migrateScorecard` (one-time void of pre-Method-C polluted antigravity rows, run at server boot).
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
   windowless providers (never gates dispatch).
-- `conductor.mjs` — chat sessions (Agent SDK / Codex / API). `tools.mjs` — the tools a conductor session gets.
+- `conductor.mjs` — chat sessions (Agent SDK / Codex / API); busy Codex and loop chats persist follow-ups and drain them together after the current turn. `tools.mjs` — the tools a conductor session gets.
 - `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
@@ -79,6 +79,7 @@ worker/MSW instructions before MCP and project context, then the resume note, ta
 
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.
+- Non-Claude chat follow-ups live in the session queue and transcript together; a turn drains the whole queue only while it still owns the session. Claude continues to use its SDK inbox.
 - State lives in the state dir via `paths.mjs` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that
   folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
 - `config.json` holds only the user's overrides; `loadConfig()` folds `DEFAULTS` in at read time, so a new default

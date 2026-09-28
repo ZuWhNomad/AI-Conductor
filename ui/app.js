@@ -2,6 +2,7 @@ import { createSTT, insertAtCaret } from './stt.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const COMPOSER_PLACEHOLDER = 'Tell the conductor what to do…  (Enter to send, Shift+Enter for newline, / for commands, Ctrl+M to dictate)';
 const api = {
   get: (p) => fetch(p).then(ok),
   post: (p, b) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then(ok),
@@ -367,7 +368,34 @@ function endStream(parent) { const st = streamFor(parent); if (st) { st.el.class
 function endAllStreams() { for (const st of (S.streams || new Map()).values()) st.el.classList.remove('streaming'); S.streams = new Map(); }
 function stopSpinners(root = T()) { for (const s of root.querySelectorAll('.tool .st.spin')) s.replaceWith(el('span', 'st', '–')); }
 
-function addUser(text, container) { const m = el('div', 'msg user'); m.textContent = text; (container || T()).append(m); if (!container) scrollBottom(); }
+function addUser(text, container, queued = null) {
+  const m = el('div', 'msg user');
+  if (queued?.id) {
+    m.dataset.queueId = queued.id;
+    m.classList.add('queued');
+    m.append(el('span', 'user-text', text));
+    m.append(el('span', 'queue-tag', 'queued'));
+    const cancel = el('button', 'queue-cancel', '×');
+    cancel.type = 'button'; cancel.title = 'Cancel queued message'; cancel.setAttribute('aria-label', 'Cancel queued message');
+    cancel.onclick = () => act(async () => {
+      cancel.disabled = true;
+      try {
+        const r = await api.del(`/api/sessions/${S.current.id}/queue/${encodeURIComponent(queued.id)}`);
+        if (r.ok) removeQueuedBubble(queued.id);
+      } finally { cancel.disabled = false; }
+    });
+    m.append(cancel);
+  } else m.textContent = text;
+  (container || T()).append(m); if (!container) scrollBottom();
+}
+function queuedBubble(id) { return [...T().querySelectorAll('.msg.user.queued')].find((m) => m.dataset.queueId === id); }
+function dropQueueTag(id) {
+  const m = queuedBubble(id); if (!m) return;
+  m.classList.remove('queued');
+  m.querySelector('.queue-tag')?.remove(); m.querySelector('.queue-cancel')?.remove();
+  delete m.dataset.queueId;
+}
+function removeQueuedBubble(id) { queuedBubble(id)?.remove(); }
 function addSys(text, cls = '', container) { const m = el('div', 'sysline ' + cls, text); (container || T()).append(m); if (!container) scrollBottom(); return m; }
 function ensureStream(parent, container) {
   const have = streamFor(parent);
@@ -485,7 +513,7 @@ function renderHistory(messages) {
   clearTranscript();
   const frag = document.createDocumentFragment();
   for (const m of messages) {
-    if (m.role === 'user') addUser(m.text, frag);
+    if (m.role === 'user') addUser(m.text, frag, m.queued ? { id: m.id } : null);
     else if (m.role === 'assistant') addAssistant(m, frag);
     else if (m.role === 'tool_result') addToolResult(m);
     else if (m.role === 'result') addResult(m, frag);
@@ -677,6 +705,7 @@ function clearCurrent() {
 }
 function setStatus(st) {
   const p = $('#status'); p.textContent = st; p.className = 'pill' + (st === 'running' ? ' running' : st === 'error' ? ' error' : '');
+  $('#input').placeholder = st === 'running' && ['codex', 'loop'].includes(S.current?.runtime) ? 'Queue a follow-up…' : COMPOSER_PLACEHOLDER;
   $('#btn-stop').disabled = st !== 'running';
   if (st === 'idle' || st === 'error') stopSpinners();
 }
@@ -910,6 +939,18 @@ function onSessionEvent(ev) {
   if (ev.sessionId !== S.current?.id) return;
   switch (ev.kind) {
     case 'user': addUser(ev.text); $('#chat-title').textContent = S.current.title = (S.current.title === 'New chat' ? ev.text.slice(0, 60) : S.current.title); break;
+    case 'queued':
+      S.current.queue = [...(S.current.queue || []), { id: ev.id, text: ev.text }];
+      addUser(ev.text, null, { id: ev.id });
+      break;
+    case 'dequeued':
+      S.current.queue = (S.current.queue || []).filter((q) => !ev.ids.includes(q.id));
+      for (const id of ev.ids) dropQueueTag(id);
+      break;
+    case 'queue_removed':
+      S.current.queue = (S.current.queue || []).filter((q) => !ev.ids.includes(q.id));
+      for (const id of ev.ids) removeQueuedBubble(id);
+      break;
     case 'delta': addDelta(ev.block, ev.text, ev.parent || null); break;
     case 'assistant': addAssistant(ev); break;
     case 'tool_result': addToolResult(ev); break;
@@ -1220,7 +1261,14 @@ async function boot() {
   $('#btn-new').onclick = newSession;
   $('#btn-browse').onclick = () => act(() => browse($('#cwd').value));
   $('#btn-send').onclick = send;
-  $('#btn-stop').onclick = () => S.current && act(() => api.post(`/api/sessions/${S.current.id}/interrupt`));
+  $('#btn-stop').onclick = () => S.current && act(async () => {
+    const input = $('#input');
+    const r = await api.post(`/api/sessions/${S.current.id}/interrupt`);
+    if (r.returned?.length) {
+      input.value = [input.value, ...r.returned].filter(Boolean).join('\n\n');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
   $('#btn-refresh').onclick = (e) => act(async () => { e.target.disabled = true; try { await Promise.all([api.post('/api/models/refresh'), api.post('/api/limits/refresh')]); } finally { e.target.disabled = false; } });
   $('#auto-refresh').onchange = (e) => act(async () => { S.config = await api.post('/api/settings', { ui: { autoRefresh: e.target.checked } }); applyAutoRefresh(); }, e.target);
   $('#btn-settings').onclick = openSettings;
