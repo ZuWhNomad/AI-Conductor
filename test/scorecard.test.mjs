@@ -1467,7 +1467,7 @@ test('B4 deterministic ledger replay changes H2 escalation and M4 estimated-ladd
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('B5 deterministic replay: benchmarks stay at their level, live quality wins, and 45-day weights retire evidence', (t) => {
+test('B5 deterministic replay: lower benchmarks extrapolate, live quality wins, and 45-day weights retire evidence', (t) => {
   const cfg = loadConfig().scorecard;
   const models = ['b5-bench', 'b5-override', 'b5-aging'];
   registryModels(t, models.map((model) => ['codex', model]));
@@ -1492,7 +1492,9 @@ test('B5 deterministic replay: benchmarks stay at their level, live quality wins
     const ownLevel = sc.summarize({ source: 'smoke' }).filter((g) => g.model === 'b5-bench');
     assert.equal(sc.recommend({ category: 'read', difficulty: 2, summary: ownLevel }).model, 'b5-bench');
     assert.equal(sc.recommend({ category: 'read', difficulty: 1, summary: ownLevel }), null, 'benchmark evidence does not flow down a level');
-    assert.equal(sc.recommend({ category: 'read', difficulty: 3, summary: ownLevel }), null, 'benchmark evidence does not extrapolate up a level');
+    const extrapolated = sc.recommend({ category: 'read', difficulty: 3, summary: ownLevel });
+    assert.equal(extrapolated.model, 'b5-bench');
+    assert.match(extrapolated.reason, /extrapolated from level 2 \(benchmark evidence\)/);
 
     for (let i = 0; i < 3; i++) replay({ id: `b5-smoke-pass-${i}`, model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'pass', source: 'smoke', ts: new Date(now).toISOString() });
     replay({ id: 'b5-live-fail', model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'fail', ts: new Date(now).toISOString() });
@@ -1517,6 +1519,49 @@ test('B5 deterministic replay: benchmarks stay at their level, live quality wins
       const shipped = sc.summarize({ source: 'smoke' }).find((g) => g.shipped);
       assert.ok(shipped && shipped.smokeRated === shipped.rated && shipped.smokeWeightedRated > 0, 'shipped cells are benchmark evidence');
     } finally { process.env.CONDUCTOR_NO_SHIPPED = noShipped; }
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('F1: extrapolation can use the nearest lower benchmark cell while preserving live and visual rules', (t) => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { usePriors: false, minSamples: 3, benchMinSamples: 3, quality: 0.75, reservePct: 0, hourlyUsd: 0, wasteStrength: 0,
+      providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const cell = ({ model, category = 'refactor', difficulty = 3, source = 'smoke', effort = 'medium', rated = 3, quality = 1, avgUsd = 0 }) => ({
+      sel: `codex:${model}:${effort}`, steps: 1, provider: 'codex', model, effort, category, difficulty,
+      n: rated, rated, weightedRated: rated,
+      liveN: source === 'live' ? rated : 0, liveRated: source === 'live' ? rated : 0, liveWeightedRated: source === 'live' ? rated : 0,
+      smokeN: source === 'smoke' ? rated : 0, smokeRated: source === 'smoke' ? rated : 0, smokeWeightedRated: source === 'smoke' ? rated : 0,
+      quality, liveQuality: source === 'live' ? quality : null, accept: quality, avgUsd, avgDurationMs: 0,
+    });
+    const benchmark = cell({ model: 'gpt-5.6-terra', effort: 'high' });
+    const extrapolated = sc.recommend({ category: 'refactor', difficulty: 4, summary: [benchmark] });
+    assert.deepEqual(extrapolated.plan.steps, [benchmark.sel]);
+    assert.equal(extrapolated.evidence.source, 'bench');
+    assert.match(extrapolated.reason, /extrapolated from level 3 \(benchmark evidence\)/);
+
+    const live = cell({ model: 'gpt-5.6-terra', source: 'live', effort: 'medium', avgUsd: 10 });
+    const livePreferred = sc.recommend({ category: 'refactor', difficulty: 4, summary: [benchmark, live] });
+    assert.equal(livePreferred.effort, live.effort, 'qualified live evidence wins even when the cheaper benchmark has a higher effort');
+    assert.equal(livePreferred.evidence.source, 'live');
+    assert.doesNotMatch(livePreferred.reason, /benchmark evidence/);
+
+    const tooThin = cell({ model: 'gpt-5.6-terra', rated: 2 });
+    assert.equal(sc.recommend({ category: 'refactor', difficulty: 4, summary: [tooThin] }), null, 'lower benchmark cells keep the minSamples floor');
+    const belowBar = cell({ model: 'gpt-5.6-terra', quality: 0.5 });
+    assert.equal(sc.recommend({ category: 'refactor', difficulty: 4, summary: [belowBar] }), null, 'lower benchmark cells keep the quality bar');
+
+    const astraReg = { models: [{ provider: 'codex', id: 'gpt-6-astra', kind: 'agent', efforts: ['ultra'] }], providers: { codex: { status: 'ok' } } };
+    const visualBench = cell({ model: 'gpt-6-astra', category: 'modeling', effort: 'ultra' });
+    const modeling = sc.recommend({ category: 'modeling', difficulty: 4, summary: [visualBench], reg: astraReg });
+    assert.equal(modeling.plan, null, 'lower benchmark evidence does not create a visual measured plan');
+    assert.match(modeling.reason, /hand-picked prior only/);
+
+    const proven = cell({ model: 'gpt-6-astra', difficulty: 4, source: 'live', avgUsd: 1 });
+    const levelFour = sc.recommend({ category: 'refactor', difficulty: 4, summary: [benchmark, proven] });
+    assert.equal(levelFour.model, proven.model);
+    assert.equal(levelFour.evidence.source, 'live');
+    assert.doesNotMatch(levelFour.reason, /extrapolated from level/);
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
