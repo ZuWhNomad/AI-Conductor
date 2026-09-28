@@ -145,8 +145,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
   and honesty about doubts; punish scope creep and unverified claims.
 - For risky or ambiguous tasks, prefer one implementation plus an independent read-only review
   (delegate with `sandbox: "read-only"` or use the `reviewer` subagent).
-  Read-only is OS-enforced for Codex, tool-enforced for API/Ollama workers, and mapped to plan/read-only
-  modes for Claude and vendor CLIs where supported; otherwise tell those reviewers not to modify files.
+  Read-only is OS-enforced for Codex and tool-enforced for API/Ollama workers. Claude disallows
+  Bash, Edit, Write and NotebookEdit; vendor CLIs use a disposable git snapshot when available,
+  or plan-mode flags otherwise. Claude and vendor modes are best-effort: tell those reviewers not to modify files.
   Parallel editing tasks can pass `isolate: true`; each gets its own git worktree and branch to review and merge.
 - Every handoff carries "how to verify". No hidden state: what a worker needs is in its spec.
 - When a worker reports a doubt or a question, answer it in the follow-up instead of ignoring it.

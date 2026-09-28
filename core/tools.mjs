@@ -131,7 +131,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         writable_roots: z.array(z.string()).optional().describe('Absolute paths of existing directories the worker may also write, e.g. a sibling git worktree (Codex --add-dir, Claude additionalDirectories, Antigravity --add-dir). The task still runs in the project directory.'),
         isolate: z.boolean().optional().describe('Run in a per-task git worktree (branch conductor/<task id>) so parallel editors do not overwrite each other. Ignored in a non-git cwd or when sandbox is read-only. Follow-ups reuse the same worktree; retry_of gets a fresh one.'),
         timeout_minutes: z.number().max(1440).optional().describe('Max wait when blocking (default: the task/category run timeout when set, else 55 minutes)'),
-        sandbox: z.enum(SANDBOX_VALUES).optional().describe('Codex sandbox for this task (default from settings). Use read-only for reviews. Honoured by Codex (OS sandbox) and by API/Ollama workers (no write, edit or run tool at all); Claude and vendor-CLI workers ignore it, so tell those reviewers "do not modify files" in the spec.'),
+        sandbox: z.enum(SANDBOX_VALUES).optional().describe('Task sandbox (default from settings). Use read-only for reviews. Codex enforces it with an OS sandbox; API/Ollama workers disable write, edit and run tools; Claude disallows Bash, Edit, Write and NotebookEdit. Vendor CLIs use a disposable git snapshot when available, otherwise their plan-mode flags. Claude and vendor modes are best-effort, so also tell those reviewers "do not modify files" in the spec.'),
       }),
       handler: async (a) => {
         const cfg = loadConfig(); // L47: settings must not be captured once per Claude session

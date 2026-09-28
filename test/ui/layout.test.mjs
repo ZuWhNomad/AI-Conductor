@@ -64,9 +64,59 @@ test('icon buttons have aria-labels, modal has dialog role, and favicon link is 
   assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,[^"]*🎼[^"]*">/);
   assert.match(html, /<button id="btn-settings"[^>]*aria-label="Settings"/);
   assert.match(html, /<button id="btn-browse"[^>]*aria-label="Browse folders"/);
+  const mic = html.match(/<button\b[^>]*id="btn-mic"[^>]*>[\s\S]*?<\/button>/)?.[0];
+  assert.match(mic, /aria-label="Speech to text"/);
+  assert.match(mic, /<svg\b[^>]*aria-hidden="true"[^>]*>[\s\S]*<path\b/);
   assert.match(html, /<button id="fleet-collapse"[^>]*aria-label="Collapse \/ expand fleet"/);
   assert.match(html, /<button id="modal-close"[^>]*aria-label="Close dialog"/);
   assert.match(html, /<div id="modal"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="modal-title"/);
+});
+
+test('chat actions are native buttons and do not select the chat', () => {
+  const code = app.slice(app.indexOf('function renderSessions()'), app.indexOf('async function renameSession('));
+  const box = { children: [], append(node) { this.children.push(node); } };
+  const selected = [], renamed = [], deleted = [];
+  const el = (tag, cls, text) => ({ tag, className: cls, textContent: text, children: [],
+    setAttribute(key, value) { this[key] = value; }, append(...nodes) { this.children.push(...nodes); } });
+  runInNewContext(code + '\nrenderSessions();', {
+    S: { sessions: [{ id: 'chat-1', title: 'Chat', cwd: '/project' }], tasks: [], current: null },
+    $: () => box, el,
+    asBtn: (node, action) => { node.onclick = action; node.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') action(e); }; },
+    renameSession: (session) => renamed.push(session.id), openSession: (id) => selected.push(id),
+    confirm: () => true, act: (fn) => fn(), api: { del: (path) => deleted.push(path) },
+  });
+  const row = box.children[0];
+  const [rename, remove] = row.children.slice(-2);
+  assert.deepEqual([rename.tag, remove.tag], ['button', 'button']);
+  assert.deepEqual([rename.type, remove.type], ['button', 'button']);
+  assert.deepEqual([rename['aria-label'], remove['aria-label']], ['Rename chat', 'Delete chat']);
+  for (const button of [rename, remove]) {
+    let stopped = false;
+    button.onclick({ stopPropagation() { stopped = true; } });
+    assert.equal(stopped, true);
+    button.onkeydown({ key: 'Enter', stopPropagation() { stopped = true; } });
+    assert.equal(stopped, true);
+  }
+  assert.deepEqual(selected, []);
+  assert.deepEqual(renamed, ['chat-1']);
+  assert.deepEqual(deleted, ['/api/sessions/chat-1']);
+});
+
+test('folder picker shows a browse error and disables folder selection', async () => {
+  const code = app.slice(app.indexOf('async function browse(path)'), app.indexOf('function openSettings()'));
+  let modal;
+  const el = (tag, cls, text) => ({ tag, className: cls, textContent: text, children: [],
+    setAttribute(key, value) { this[key] = value; }, append(...nodes) { this.children.push(...nodes); } });
+  await runInNewContext(code + '\nbrowse("/missing")', {
+    api: { get: async () => { throw new Error('Folder does not exist'); } },
+    localStorage: { getItem: () => '', setItem() {} }, el, $: () => ({}),
+    openModal: (_title, body) => { modal = body; }, closeModal() {}, act() {}, asBtn() {},
+    encodeURIComponent,
+  });
+  const [input, , use] = modal.children[0].children;
+  assert.equal(input.value, '/missing');
+  assert.equal(use.disabled, true);
+  assert.equal(modal.children[1].textContent, 'Cannot open folder: Folder does not exist');
 });
 
 test('new-chat toggles wrap inside the sidebar', () => {

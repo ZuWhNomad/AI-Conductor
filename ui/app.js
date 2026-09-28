@@ -68,12 +68,12 @@ function renderSessions() {
     if (checked) st.title = s.watchdog.summary;
     const appPill = (s.pendingCount > 0) ? el('span', 'pill warn', `approve ${s.pendingCount}`) : null;
     if (appPill) appPill.title = `${s.pendingCount} pending permission prompt(s)`;
-    const ren = el('span', 'x', '✎'); ren.title = 'Rename chat'; ren.tabIndex = 0; ren.setAttribute('aria-label', 'Rename chat');
+    const ren = el('button', 'x', '✎'); ren.type = 'button'; ren.title = 'Rename chat'; ren.setAttribute('aria-label', 'Rename chat');
     ren.onclick = (e) => { e.stopPropagation(); renameSession(s); };
-    ren.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); renameSession(s); } };
-    const x = el('span', 'x', '✕'); x.title = 'Delete chat'; x.tabIndex = 0; x.setAttribute('aria-label', 'Delete chat');
+    ren.onkeydown = (e) => e.stopPropagation();
+    const x = el('button', 'x', '✕'); x.type = 'button'; x.title = 'Delete chat'; x.setAttribute('aria-label', 'Delete chat');
     x.onclick = (e) => { e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); };
-    x.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (confirm('Delete this chat?')) act(() => api.del(`/api/sessions/${s.id}`)); } };
+    x.onkeydown = (e) => e.stopPropagation();
     if (appPill) it.append(t, appPill, st, ren, x);
     else it.append(t, st, ren, x);
     asBtn(it, () => openSession(s.id));
@@ -944,7 +944,10 @@ function closeModal() {
   }
 }
 async function browse(path) {
-  const r = await api.get(`/api/browse?path=${encodeURIComponent(path || localStorage.getItem('cwd') || '')}`);
+  const requested = path || localStorage.getItem('cwd') || '';
+  let r;
+  try { r = await api.get(`/api/browse?path=${encodeURIComponent(requested)}`); }
+  catch (e) { r = { path: requested, error: e.message }; }
   const body = el('div', 'dirs');
   const head = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.value = r.path || ''; inp.setAttribute('aria-label', 'Folder path');
   const go = el('button', 'sm', 'Go'); go.onclick = () => act(() => browse(inp.value)); inp.onkeydown = (e) => { if (e.key === 'Enter') act(() => browse(inp.value)); };
@@ -1302,7 +1305,7 @@ async function boot() {
   const stt = createSTT({
     onFinal: (t) => insertAtCaret(ta, t),
     onInterim: (t) => { const i = $('#interim'); i.hidden = !t; i.textContent = t; },
-    onState: ({ active, error }) => { $('#btn-mic').classList.toggle('on', !!active); $('#stt-hint').textContent = error ? `mic: ${error}${error === 'not-allowed' ? ' — allow microphone access for this site' : ''}` : active ? 'listening… click 🎤 or Ctrl+M to stop' : ''; },
+    onState: ({ active, error }) => { $('#btn-mic').classList.toggle('on', !!active); $('#stt-hint').textContent = error ? `mic: ${error}${error === 'not-allowed' ? ' — allow microphone access for this site' : ''}` : active ? 'listening… click the mic button or Ctrl+M to stop' : ''; },
   });
   if (!stt.supported) { $('#btn-mic').disabled = true; $('#stt-hint').textContent = 'Speech to text needs Chrome or Edge (Web Speech API).'; }
   $('#btn-mic').onclick = () => stt.toggle();
