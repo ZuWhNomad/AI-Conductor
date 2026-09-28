@@ -10,52 +10,10 @@ import { loadConfig, saveConfig } from '../../core/config.mjs';
 const { runOpenAICompat, fetchUrlText, toolResultBudget, TOOL_RESULT_CHARS } = await import('../../core/workers/openai-compat.mjs');
 const base = { cwd: tmpDir('compat'), prompt: 'x', baseUrl: 'http://unused.test', model: 'test' };
 
-function oldStub(messages, budget = 120_000) {
-  const idxs = [];
-  const out = messages.map((m, i) => { if (m.role === 'tool') idxs.push(i); return m; });
-  let used = 0;
-  for (let k = idxs.length - 1; k >= 0; k--) {
-    const i = idxs[k], content = String(out[i].content ?? '');
-    if (used + content.length <= budget) { used += content.length; continue; }
-    out[i] = { ...out[i], content: content.startsWith('[output trimmed:') ? content : `[output trimmed: ${content.length} chars]` };
-    used += out[i].content.length;
-  }
-  return out;
-}
-
 function prefixChars(a, b) {
   let i = 0;
   while (i < a.length && i < b.length && JSON.stringify(a[i]) === JSON.stringify(b[i])) i++;
   return { count: i, chars: JSON.stringify(a.slice(0, i)).length };
-}
-
-// Cacheable chars are the predecessor request's chars; watermark-advance pairs are the stated exception.
-function prefixRatio(bodies, { ignoreAdvances = false } = {}) {
-  let preserved = 0, total = 0;
-  for (let i = 0; i + 1 < bodies.length; i++) {
-    const prefix = prefixChars(bodies[i].messages, bodies[i + 1].messages);
-    if (ignoreAdvances && prefix.count < bodies[i].messages.length) continue;
-    preserved += prefix.chars;
-    total += JSON.stringify(bodies[i].messages).length;
-  }
-  return preserved / total;
-}
-
-function oldFixtureBodies(calls = 12, resultChars = 40_000) {
-  const messages = [{ role: 'system', content: 'system' }, { role: 'user', content: 'x' }];
-  const bodies = [];
-  for (let i = 0; i <= calls; i++) {
-    bodies.push({ messages: oldStub(messages) });
-    if (i < calls) {
-      messages.push({ role: 'assistant', tool_calls: [{ id: `c${i + 1}`, function: { name: 'blob', arguments: JSON.stringify({ n: i + 1 }) } }] });
-      messages.push({ role: 'tool', tool_call_id: `c${i + 1}`, content: 'Z'.repeat(resultChars) });
-    } else messages.push({ role: 'assistant', content: 'done' });
-  }
-  return bodies;
-}
-
-function printPrefixRatios(before, after) {
-  process.stdout.write(`P8a prefix ratio before=${before.toFixed(4)} after=${after.toFixed(4)}\n`);
 }
 
 test('cancellation between tool calls prevents the next tool from running', async (ctx) => {
@@ -236,10 +194,12 @@ test('runWorker persists and replays conversation history for API worker follow-
   ]);
 });
 
-test('P8a: tool-result watermark preserves prefixes and persists the last request plus final batch', async (ctx) => {
+test('tool-result watermark preserves prefixes between whole-message budget trims', async (ctx) => {
   const bodies = [];
   let n = 0;
-  const big = 'Z'.repeat(40_000);
+  const resultChars = 40_000, big = 'Z'.repeat(resultChars);
+  const budget = toolResultBudget(base.provider, base.model, loadConfig());
+  const lowWater = loadConfig().worker.toolResultLowWater;
   ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {
     bodies.push(JSON.parse(opts.body));
     n++;
@@ -249,22 +209,34 @@ test('P8a: tool-result watermark preserves prefixes and persists the last reques
   assert.equal(r.ok, true);
   assert.equal(bodies.length, 13);
 
-  let advances = 0;
+  let advances = 0, charsSinceTrim = 0;
   for (let i = 0; i + 1 < bodies.length; i++) {
     const prev = bodies[i].messages, next = bodies[i + 1].messages;
     const prefix = prefixChars(prev, next);
-    if (prefix.count < prev.length) {
-      advances++;
-      assert.equal(next[prefix.count].role, 'tool');
-      assert.match(next[prefix.count].content, /^\[output trimmed: 40000 chars\]$/);
+    charsSinceTrim += next.slice(prev.length)
+      .filter((m) => m.role === 'tool' && !String(m.content ?? '').startsWith('[output trimmed:'))
+      .reduce((sum, m) => sum + String(m.content ?? '').length, 0);
+    if (prefix.count === prev.length) {
+      assert.deepEqual(next.slice(0, prev.length), prev, `request ${i + 2} must append without changing sent history`);
+      continue;
     }
+    advances++;
+    assert.ok(charsSinceTrim > budget * (1 - lowWater), 'another trim requires a full low-water gap of new tool output');
+    charsSinceTrim = 0;
+    assert.equal(next[prefix.count].role, 'tool', 'only a whole tool-result message begins a trim step');
+    assert.match(next[prefix.count].content, /^\[output trimmed: \d+ chars\]$/);
+    for (let j = prefix.count; j < prev.length; j++) {
+      if (JSON.stringify(prev[j]) === JSON.stringify(next[j])) continue;
+      assert.equal(prev[j].role, 'tool');
+      assert.match(next[j].content, /^\[output trimmed: \d+ chars\]$/);
+    }
+    const sentToolChars = next
+      .filter((m) => m.role === 'tool' && !String(m.content ?? '').startsWith('[output trimmed:'))
+      .reduce((sum, m) => sum + String(m.content ?? '').length, 0);
+    assert.ok(sentToolChars <= lowWater * budget, 'a trim step returns full tool results to the low-water target');
   }
-  assert.ok(advances <= Math.ceil((12 * big.length) / ((1 - 0.5) * 120_000)));
-  const before = prefixRatio(oldFixtureBodies());
-  const after = prefixRatio(bodies, { ignoreAdvances: true });
-  printPrefixRatios(before, after);
-  assert.ok(after >= 0.9);
-  assert.ok(after > before);
+  assert.ok(advances > 0, 'the fixture crosses the model-sized result budget');
+  assert.ok(advances <= Math.ceil((12 * resultChars) / ((1 - lowWater) * budget)), 'trim steps are separated by the low-water gap');
   assert.deepEqual(r.messages.slice(0, bodies.at(-1).messages.length), bodies.at(-1).messages);
 });
 
