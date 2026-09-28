@@ -245,9 +245,13 @@ async function route(req, res, url) {
     const id = seg[2];
     if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, { ...s, seq: bus.seq }) : json(res, 404, { error: 'not found' }); }
     if (m === 'DELETE' && !seg[3]) return json(res, 200, { ok: conductor.deleteSession(id) });
+    if (m === 'DELETE' && seg[3] === 'queue' && seg[4]) return json(res, 200, { ok: conductor.cancelQueuedMessage(id, seg[4]) });
     const b = m === 'POST' ? await readBody(req) : {};
     if (m === 'POST' && seg[3] === 'messages') return json(res, 200, await conductor.sendMessage(id, String(b.text || '')));
-    if (m === 'POST' && seg[3] === 'interrupt') return json(res, 200, { ok: await conductor.interrupt(id) });
+    if (m === 'POST' && seg[3] === 'interrupt') {
+      const result = await conductor.interrupt(id);
+      return json(res, 200, typeof result === 'boolean' ? { ok: result, returned: [] } : result);
+    }
     if (m === 'POST' && seg[3] === 'stop') return json(res, 200, { ok: conductor.stopSession(id) });
     if (m === 'POST' && seg[3] === 'permission') return json(res, 200, { ok: conductor.answerPermission(id, b.requestId, { allow: !!b.allow, message: b.message }) });
     if (m === 'POST' && seg[3] === 'title') return json(res, 200, conductor.setTitle(id, b.title));

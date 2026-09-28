@@ -73,6 +73,7 @@ const sdkUrl = 'data:text/javascript,' + encodeURIComponent(`
 const codexUrl = 'data:text/javascript,' + encodeURIComponent(`
   export async function runCodex(t) {
     globalThis.__lastCodexInput = t;
+    (globalThis.__codexInputs ||= []).push(t);
     globalThis.__codexStarted?.resolve?.();
     if (globalThis.__codexOnEventError) t.onEvent?.('error', { error: globalThis.__codexOnEventError });
     if (globalThis.__codexHold) await globalThis.__codexHold.promise;
@@ -88,7 +89,7 @@ registerHooks({
   },
 });
 
-const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
+const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, cancelQueuedMessage, stopSession, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels, findModel } = await import('../core/models.mjs');
 const { listImprovements } = await import('../core/improve.mjs');
@@ -122,6 +123,7 @@ afterEach(() => {
   globalThis.__codexHold = null;
   globalThis.__codexOnEventError = null;
   globalThis.__lastCodexInput = null;
+  globalThis.__codexInputs = [];
 });
 
 test('a Codex conductor turn with timeout zero receives no timeoutMs', async () => {
@@ -130,6 +132,91 @@ test('a Codex conductor turn with timeout zero receives no timeoutMs', async () 
   await sendMessage(s.id, 'keep working');
   await done;
   assert.equal(Object.hasOwn(globalThis.__lastCodexInput, 'timeoutMs'), false);
+});
+
+test('a busy Codex chat queues follow-ups and drains them together in order', async () => {
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  const s = createSession({ cwd: tmpDir('chat-queue'), provider: 'codex', model: 'gpt-6-astra' });
+  const finished = Promise.withResolvers(); const events = [];
+  const h = (e) => {
+    if (e.type !== 'session' || e.sessionId !== s.id) return;
+    events.push(e);
+    if (e.kind === 'result' && events.filter((x) => x.kind === 'result').length === 2) finished.resolve();
+  };
+  bus.on('event', h);
+  await sendMessage(s.id, 'initial');
+  await globalThis.__codexStarted.promise;
+  const response = await sendMessage(s.id, 'follow-up one');
+  assert.equal(response.queue.length, 1);
+  await sendMessage(s.id, 'follow-up two');
+  const queued = await getSession(s.id);
+  assert.deepEqual(queued.queue.map((q) => q.text), ['follow-up one', 'follow-up two']);
+  assert.ok(queued.messages.filter((m) => m.queued).every((m) => m.role === 'user'));
+  assert.deepEqual(events.filter((e) => e.kind === 'queued').map((e) => e.depth), [1, 2]);
+  assert.equal(events.filter((e) => e.kind === 'user').length, 1);
+  assert.deepEqual(readJson(join(HOME, 'sessions.json')).find((x) => x.id === s.id).queue.map((q) => q.text), ['follow-up one', 'follow-up two']);
+
+  globalThis.__codexHold.resolve();
+  await finished.promise;
+  bus.off('event', h);
+  assert.equal(globalThis.__codexInputs.length, 2);
+  assert.equal(globalThis.__codexInputs[1].prompt, 'follow-up one\n\nfollow-up two');
+  assert.deepEqual(events.find((e) => e.kind === 'dequeued').ids, queued.queue.map((q) => q.id));
+  const live = await getSession(s.id);
+  assert.deepEqual(live.queue, []);
+  assert.ok(live.messages.filter((m) => m.id && queued.queue.some((q) => q.id === m.id)).every((m) => !m.queued));
+});
+
+test('interrupt returns queued text, removes queued transcript lines, and starts no follow-up', async () => {
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  const s = createSession({ cwd: tmpDir('chat-interrupt-queue'), provider: 'codex', model: 'gpt-6-astra' });
+  const first = onceSession(s.id, 'result');
+  await sendMessage(s.id, 'active');
+  await globalThis.__codexStarted.promise;
+  await sendMessage(s.id, 'return one');
+  await sendMessage(s.id, 'return two');
+  const before = await getSession(s.id);
+  assert.deepEqual(await interrupt(s.id), { ok: true, returned: ['return one', 'return two'] });
+  const after = await getSession(s.id);
+  assert.deepEqual(after.queue, []);
+  assert.ok(!after.messages.some((m) => m.queued));
+  globalThis.__codexHold.resolve();
+  await first;
+  assert.equal(globalThis.__codexInputs.length, 1);
+  assert.equal(after.messages.filter((m) => m.role === 'user').length, before.messages.filter((m) => m.role === 'user').length - 2);
+});
+
+test('queued messages cancel by id, while stop and delete clear their queues', async () => {
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  const s = createSession({ cwd: tmpDir('chat-cancel-queue'), provider: 'codex', model: 'gpt-6-astra' });
+  await sendMessage(s.id, 'active');
+  await globalThis.__codexStarted.promise;
+  await sendMessage(s.id, 'cancel me');
+  await sendMessage(s.id, 'keep me');
+  let live = await getSession(s.id);
+  assert.equal(cancelQueuedMessage(s.id, live.queue[0].id), true);
+  assert.equal(cancelQueuedMessage(s.id, live.queue[0].id), false);
+  live = await getSession(s.id);
+  assert.deepEqual(live.queue.map((q) => q.text), ['keep me']);
+  assert.ok(!live.messages.some((m) => m.text === 'cancel me'));
+  stopSession(s.id);
+  live = await getSession(s.id);
+  assert.deepEqual(live.queue, []);
+  assert.ok(!live.messages.some((m) => m.queued));
+  globalThis.__codexHold.resolve();
+
+  const deleted = createSession({ cwd: tmpDir('chat-delete-queue'), provider: 'codex', model: 'gpt-6-astra' });
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  await sendMessage(deleted.id, 'active');
+  await globalThis.__codexStarted.promise;
+  await sendMessage(deleted.id, 'discard with session');
+  assert.equal(deleteSession(deleted.id), true);
+  assert.ok(!readJson(join(HOME, 'sessions.json')).some((x) => x.id === deleted.id));
+  globalThis.__codexHold.resolve();
 });
 
 test('an interrupted persisted Codex turn resumes its thread once and records the restart note', async () => {
@@ -142,6 +229,24 @@ test('an interrupted persisted Codex turn resumes its thread once and records th
   assert.equal(live.turn, null);
   assert.ok(live.messages.some((m) => m.role === 'watchdog' && /do not redo finished work/.test(m.text)));
   assert.deepEqual(await resumeInterruptedTurns(), [], 'the persisted marker is cleared before resuming');
+});
+
+test('an idle persisted queue drains once after restart', async () => {
+  const id = 'restored-queued';
+  const queueId = 'restart-q1';
+  const record = { id, cwd: HOME, title: 'queued restart', provider: 'codex', runtime: 'codex', model: 'gpt-6-astra', effort: 'low', permissionMode: 'acceptEdits', status: 'idle', queue: [{ id: queueId, text: 'queued before restart', queuedAt: '2026-09-27T12:00:00.000Z' }], createdAt: '2026-09-27T12:00:00.000Z', updatedAt: '2026-09-27T12:00:00.000Z' };
+  writeJson(join(HOME, 'sessions.json'), [...readJson(join(HOME, 'sessions.json'), []), record]);
+  writeJson(join(HOME, 'history', `${id}.messages.json`), [{ role: 'user', text: 'queued before restart', queued: true, id: queueId }]);
+  reloadSessions();
+  const done = onceSession(id, 'result');
+  assert.deepEqual(await resumeInterruptedTurns(), []);
+  await done;
+  assert.match(globalThis.__lastCodexInput.prompt, /queued before restart$/);
+  const live = await getSession(id);
+  assert.deepEqual(live.queue, []);
+  assert.equal(live.messages.find((m) => m.id === queueId).queued, undefined);
+  assert.deepEqual(await resumeInterruptedTurns(), []);
+  assert.equal(globalThis.__codexInputs.length, 1);
 });
 
 test('task restart note is recorded and prepended once to the affected chat next turn only', async () => {

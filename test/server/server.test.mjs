@@ -37,7 +37,7 @@ for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'exe
 }
 syncBuiltinESMExports();
 
-const { statePath, writeJson } = await import('../../core/paths.mjs');
+const { statePath, readJson, writeJson } = await import('../../core/paths.mjs');
 const bootRecoveryId = 'server-boot-recovery';
 writeJson(join(statePath('tasks'), `${bootRecoveryId}.json`), {
   id: bootRecoveryId, cwd: tmpDir('server-boot'), title: 'boot recovery', spec: 'resume safely', provider: 'codex', attempts: 1,
@@ -126,6 +126,29 @@ test('sessions, tasks, browse and SSE replay', async () => {
   await post(`/api/tasks/${t.id}/cancel`);
   assert.equal((await fetch(url + `/api/sessions/${s.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await get('/api/sessions')).length, 0);
+});
+
+test('session interrupt and queue cancellation routes return their result shapes', async () => {
+  assert.deepEqual(await post('/api/sessions/missing/interrupt'), { ok: false, returned: [] });
+  const canceled = await fetch(url + '/api/sessions/missing/queue/q1', { method: 'DELETE' }).then((r) => r.json());
+  assert.deepEqual(canceled, { ok: false });
+
+  const id = 'api-queued-session';
+  const queue = [
+    { id: 'api-q1', text: 'cancel through route', queuedAt: new Date().toISOString() },
+    { id: 'api-q2', text: 'return through route', queuedAt: new Date().toISOString() },
+  ];
+  const record = { id, cwd: tmpDir('api-queued'), title: 'queue route', provider: 'codex', runtime: 'codex', model: 'test-codex', status: 'idle', queue, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  writeJson(statePath('sessions.json'), [...readJson(statePath('sessions.json'), []), record]);
+  writeJson(statePath('history', `${id}.messages.json`), queue.map((q) => ({ role: 'user', text: q.text, queued: true, id: q.id })));
+  const { reloadSessions } = await import('../../core/conductor.mjs');
+  reloadSessions();
+  const canceledLive = await fetch(url + `/api/sessions/${id}/queue/api-q1`, { method: 'DELETE' }).then((r) => r.json());
+  assert.deepEqual(canceledLive, { ok: true });
+  const returned = await post(`/api/sessions/${id}/interrupt`);
+  assert.deepEqual(returned, { ok: false, returned: ['return through route'] });
+  assert.deepEqual((await get(`/api/sessions/${id}`)).queue, []);
+  await fetch(url + `/api/sessions/${id}`, { method: 'DELETE' });
 });
 
 test('task follow-ups inherit cwd without requiring it in the request', async () => {

@@ -41,7 +41,7 @@ let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
 
 function hydrateSession(rec) {
-  return { ...rec, runtime: rec.runtime || runtimeFor(rec.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null, historyLoaded: false };
+  return { ...rec, queue: Array.isArray(rec.queue) ? rec.queue : [], runtime: rec.runtime || runtimeFor(rec.provider || 'claude'), status: 'idle', query: null, inbox: null, pending: new Map(), messages: [], turnAbort: null, history: null, historyLoad: null, historyLoaded: false };
 }
 for (const rec of readJson(FILE(), [])) sessions.set(rec.id, hydrateSession(rec));
 // The routing flags the delegate tools read live in a side map (no import cycle). Seed it from every session, not only
@@ -64,7 +64,7 @@ function persistAll() {
 }
 
 export function publicSession(s) {
-  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null, pendingNote: s.pendingNote || null, lastPromptTokens: s.lastPromptTokens || null, lastRequestAt: s.lastRequestAt || null };
+  return { id: s.id, cwd: s.cwd, title: s.title, provider: s.provider || 'claude', runtime: s.runtime, model: s.model, effort: s.effort, selection: `${s.provider || 'claude'}:${s.model || 'default'}:${s.effort || 'default'}`, permissionMode: s.permissionMode, overflowApi: !!s.overflowApi, parallelOverride: !!s.parallelOverride, sdkSessionId: s.sdkSessionId || null, threadId: s.threadId || null, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt, costUsd: s.costUsd || 0, pendingCount: s.pending?.size ?? s.pendingCount ?? 0, watchdog: s.watchdog || null, turn: s.turn || null, queue: (s.queue || []).map((q) => ({ ...q })), pendingNote: s.pendingNote || null, lastPromptTokens: s.lastPromptTokens || null, lastRequestAt: s.lastRequestAt || null };
 }
 
 const EFFORT_WORDS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'none', 'default']);
@@ -157,7 +157,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
     id: shortId((id) => sessions.has(id)), cwd: cwd || process.cwd(), title: String(title ?? 'New chat').slice(0, 120), provider: sel.provider, runtime, model: sel.model,
     effort: runtime === 'claude' ? clampClaudeEffort(sel.provider, sel.model, hon) : hon, // U13: the SDK has no 'ultra'
     permissionMode: permissionMode ?? cfg.conductor.permissionMode, overflowApi: overflowApi ?? !!cfg.conductor.overflowApi, parallelOverride: !!parallelOverride, sdkSessionId: null, threadId: null, status: 'idle', createdAt: nowIso(), updatedAt: nowIso(),
-    costUsd: 0, watchdog: null, pendingNote: null, query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
+    costUsd: 0, watchdog: null, pendingNote: null, queue: [], query: null, inbox: null, pending: new Map(), messages: [], abort: null, restartPending: false, turnAbort: null, history: null, historyLoad: null, historyLoaded: false,
   };
   sessions.set(s.id, s); syncFlags(s);
   persistAll();
@@ -168,6 +168,7 @@ export function createSession({ cwd, provider = null, model = null, effort = nul
 export function deleteSession(id) {
   const s = sessions.get(id); if (!s) return false;
   abortPlans(id); // X3: a deleted chat's plans stop dispatching
+  s.queue = [];
   stop(s);
   sessions.delete(id); persistAll();
   for (const kind of ['messages', 'loop']) { try { rmSync(HIST(id, kind), { force: true }); } catch {} }
@@ -182,6 +183,38 @@ function emit(s, kind, data = {}) {
 function pushMessage(s, m) {
   s.messages.push({ ts: Date.now(), ...m });
   if (s.messages.length > 2000) s.messages.splice(0, s.messages.length - 2000);
+}
+
+function removeQueuedMessages(s, queued = s.queue) {
+  const ids = queued.map((q) => q.id);
+  if (!ids.length) return [];
+  const removed = new Set(ids);
+  if (!s.historyLoaded) { s.messages = readJson(HIST(s.id, 'messages'), []); s.historyLoaded = true; }
+  s.queue = s.queue.filter((q) => !removed.has(q.id));
+  s.messages = s.messages.filter((m) => !(m.role === 'user' && m.queued && removed.has(m.id)));
+  s.updatedAt = nowIso();
+  persistAll();
+  if (s.historyLoaded) writeJson(HIST(s.id, 'messages'), s.messages);
+  emit(s, 'queue_removed', { ids });
+  return queued;
+}
+
+function drainQueuedTurn(s) {
+  if (!sessions.has(s.id) || s.runtime === 'claude' || s.status !== 'idle' || !s.queue?.length) return false;
+  const queued = s.queue.splice(0);
+  const ids = queued.map((q) => q.id);
+  const queuedIds = new Set(ids);
+  for (const message of s.messages) if (queuedIds.has(message.id)) delete message.queued;
+  const text = queued.map((q) => q.text).join('\n\n');
+  s.turn = { startedAt: nowIso(), text };
+  s.status = 'running';
+  s.updatedAt = nowIso();
+  persistAll();
+  if (s.historyLoaded) writeJson(HIST(s.id, 'messages'), s.messages);
+  emit(s, 'dequeued', { ids });
+  emit(s, 'status', { status: 'running' });
+  void runTurn(s, text);
+  return true;
 }
 
 /** Record a basic watchdog transcript line without starting or interrupting a model turn. */
@@ -229,15 +262,20 @@ export function nudgeRunaway(sessionId, text) {
 export async function resumeInterruptedTurns() {
   const resumed = [];
   for (const s of sessions.values()) {
-    if (!s.turn) continue;
-    await ensureHistory(s);
-    const turn = s.turn; s.turn = null;
-    const note = `Conductor restarted during your turn (started ${turn.startedAt}). Continue from the current state of the files; do not redo finished work.`;
-    pushMessage(s, { role: 'watchdog', text: note });
-    const resumable = s.runtime === 'claude' ? !!s.sdkSessionId : s.runtime === 'codex' ? !!s.threadId : false;
-    persistAll();
-    writeJson(HIST(s.id, 'messages'), s.messages);
-    if (resumable) { await sendMessage(s.id, note); resumed.push(s.id); }
+    if (s.turn) {
+      await ensureHistory(s);
+      const turn = s.turn; s.turn = null;
+      const note = `Conductor restarted during your turn (started ${turn.startedAt}). Continue from the current state of the files; do not redo finished work.`;
+      pushMessage(s, { role: 'watchdog', text: note });
+      const resumable = s.runtime === 'claude' ? !!s.sdkSessionId : s.runtime === 'codex' ? !!s.threadId : false;
+      persistAll();
+      writeJson(HIST(s.id, 'messages'), s.messages);
+      if (resumable) { await sendMessage(s.id, note); resumed.push(s.id); }
+    }
+    if (s.status === 'idle' && s.queue?.length) {
+      await ensureHistory(s);
+      drainQueuedTurn(s);
+    }
   }
   return resumed;
 }
@@ -488,7 +526,9 @@ async function runTurn(s, text) {
   } finally {
     // E9: if the session was deleted mid-turn (mine() is false because stop() cleared turnAbort),
     // do not rewrite history files or emit events for the deleted id.
-    if (mine()) { s.turnAbort = null; s.turn = null; s.status = 'idle'; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' }); }
+    const current = mine();
+    if (current) { s.turnAbort = null; s.turn = null; s.status = 'idle'; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' }); }
+    if (current) drainQueuedTurn(s);
     if (sessions.has(s.id)) writeJson(HIST(s.id, 'messages'), s.messages);
   }
 }
@@ -497,7 +537,16 @@ async function runTurn(s, text) {
 export async function sendMessage(sessionId, text) {
   const s = sessions.get(sessionId); if (!s) throw Object.assign(new Error('unknown session'), { status: 404 });
   await ensureHistory(s);
-  if (s.status === 'running' && s.runtime !== 'claude') throw Object.assign(new Error('the conductor is still working on the previous message; wait or press Stop'), { status: 409 });
+  if (s.status === 'running' && s.runtime !== 'claude') {
+    const queued = { id: shortId(), text: String(text), queuedAt: nowIso() };
+    s.queue.push(queued);
+    s.updatedAt = nowIso();
+    pushMessage(s, { role: 'user', text: queued.text, queued: true, id: queued.id });
+    persistAll();
+    writeJson(HIST(s.id, 'messages'), s.messages);
+    emit(s, 'queued', { id: queued.id, text: queued.text, depth: s.queue.length });
+    return publicSession(s);
+  }
   const turnText = s.pendingNote ? `${s.pendingNote}\n\n${text}` : text;
   if (s.pendingNote) { s.pendingNote = null; persistAll(); }
   if (s.runtime === 'claude' && !s.query) start(s);
@@ -517,10 +566,23 @@ export async function sendMessage(sessionId, text) {
 export async function interrupt(sessionId, reason = 'interrupted by user') {
   const s = sessions.get(sessionId); if (!s) return false;
   abortPlans(sessionId); // X3: Stop also stops the chat's run_plan stages
-  if (s.runtime !== 'claude') { s.interrupted = reason; s.turnAbort?.abort(); return !!s.turnAbort; }
+  if (s.runtime !== 'claude') {
+    const returned = removeQueuedMessages(s).map((q) => q.text);
+    const active = s.turnAbort;
+    if (active) { s.interrupted = reason; active.abort(); }
+    return { ok: !!active, returned };
+  }
   if (!s.query || s.status !== 'running') return false;
   s.interrupted = reason; // the SDK reports an interrupt as an error result; label it instead of logging it
   try { await s.query.interrupt(); } catch (e) { s.interrupted = false; emit(s, 'error', { message: `interrupt failed: ${e.message}` }); }
+  return true;
+}
+
+export function cancelQueuedMessage(sessionId, queueId) {
+  const s = sessions.get(sessionId); if (!s) return false;
+  const queued = s.queue.find((q) => q.id === queueId);
+  if (!queued) return false;
+  removeQueuedMessages(s, [queued]);
   return true;
 }
 
@@ -586,7 +648,8 @@ export async function setPermissionMode(sessionId, mode) {
 export function stopSession(sessionId) {
   const s = sessions.get(sessionId); if (!s) return false;
   abortPlans(sessionId);
-  stop(s); s.status = 'idle'; emit(s, 'status', { status: 'idle' });
+  removeQueuedMessages(s);
+  stop(s); s.status = 'idle'; s.turn = null; s.updatedAt = nowIso(); persistAll(); emit(s, 'status', { status: 'idle' });
   return true;
 }
 

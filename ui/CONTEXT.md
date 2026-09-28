@@ -20,9 +20,9 @@ banner and read only that section.
 | `budget headline` | the Budget block: which window applies to the selected conductor (`windowScope`, `planWindow`, `renderBudget`) |
 | `model chip (header)` | `renderChip`: the header chip showing the conductor model |
 | `conductor picker: provider : model : effort` | the three linked selects, for New chat and for the header popover (`fillPicker`, `refreshNewPicker`, `refreshHeaderPicker`, `savedSelection`) |
-| `rendering: transcript` | chat messages: streaming deltas, tool calls/results, permission prompts, history replay |
+| `rendering: transcript` | chat messages: streaming deltas, tool calls/results, permission prompts, queued-message controls, history replay |
 | `fleet dock` | worker task cards on the right (`renderTasks`, `taskCard`, `updateTask`, `openTask`) |
-| `sessions` | open / create a chat, status pill, `send` (also the `/worker …` direct-to-worker shortcut) |
+| `sessions` | open / create a chat, status pill, `send` (also the `/worker …` direct-to-worker shortcut), queue-aware composer and Stop recovery |
 | `update affordance` | `renderUpdate`: the flashing **⬇ Update** button |
 | `SSE` | `resync` (full refetch of `/api/state`), `connect` (EventSource, one handler per event type), `onSessionEvent` |
 | `modals` | `openModal`, folder browser, Settings, Improvements log, run review |
@@ -38,6 +38,8 @@ banner and read only that section.
   Bursts of `models` / `limits` / `settings` / `improvement` events are coalesced into one refetch.
 - Build DOM with `el()` and `textContent`; model/worker text goes through `md()` (which escapes first). Never assign
   unescaped text to `innerHTML`.
+- Queued user bubbles come from `queued` events or `m.queued` history records; `dequeued` drops their controls, while queue
+  removal deletes the bubble.
 - Files stay `.js`: the server's MIME map has no `.mjs`.
 - Every `id` that `app.js` looks up with `$('#…')` must exist in `index.html`.
 
