@@ -35,7 +35,7 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
   return respond(url, options);
 });
 
-const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords, setDraining } = await import('../core/tasks.mjs');
+const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords, setDraining, reviewParked } = await import('../core/tasks.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels } = await import('../core/models.mjs');
 const waitForTaskStatus = (id, statuses) => {
@@ -1495,32 +1495,75 @@ test('GP: awaitTask keeps a 30 s park inside longer waits and resolves parks pas
   } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; cancelTask(t.id); delete getLimits().providers[provider]; }
 });
 
-test('L14: park timer re-polls before requeueing and preserves an indefinite provider block', async (ctx) => {
+test('one wake timer releases due tasks in creation order with one refresh per provider', async (ctx) => {
   const { getLimits, modelBlockedUntil } = await import('../core/limits.mjs');
   const { bus } = await import('../core/bus.mjs');
-  const provider = 'w1-park-poll', timers = [];
-  getLimits().providers[provider] = { provider, blocked: true, windows: [] };
-  ctx.mock.method(globalThis, 'setTimeout', (fn) => { timers.push(fn); return { unref() {} }; });
+  const provider = 'w1-park-poll', timers = new Map(); let nextTimer = 0;
+  getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + 5000, windows: [] };
+  let now = Date.now();
+  ctx.mock.method(Date, 'now', () => now);
+  ctx.mock.method(globalThis, 'setTimeout', (fn) => { const id = ++nextTimer; timers.set(id, fn); return { id, unref() {} }; });
+  ctx.mock.method(globalThis, 'clearTimeout', (handle) => timers.delete(handle?.id));
   const poll = Promise.withResolvers();
   const polls = [];
   PROVIDERS[provider] = { id: provider, pollLimits: () => { polls.push(provider); return poll.promise; } };
-  const t = createTask({ cwd: tmpDir('park-poll'), provider });
+  const batch = ['later', 'first', 'middle'].map((id) => createTask({ cwd: tmpDir(`park-poll-${id}`), provider, title: id, noFailover: true }, { dispatch: false }));
+  batch[0].createdAt = '2026-01-03'; batch[1].createdAt = '2026-01-01'; batch[2].createdAt = '2026-01-02';
   const events = [];
-  const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id) events.push(e.task.status); };
+  const onTask = (e) => { if (e.type === 'task' && batch.some((t) => t.id === e.task.id) && e.task.status === 'queued') events.push(e.task.title); };
   bus.on('event', onTask);
   try {
     delete process.env.CONDUCTOR_NO_SCHEDULE;
     schedule();
-    assert.equal(t.status, 'parked');
-    const checking = timers.shift()();
+    assert.ok(batch.every((t) => t.status === 'parked'));
+    assert.ok(batch.every((t) => t.park?.kind === 'limit' && t.park.provider === provider));
+    assert.equal(timers.size, 1, 'parked tasks share one wake timer');
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    now = Math.max(...batch.map((t) => t.resumeAt));
+    const wake = [...timers.values()][0]();
     assert.deepEqual(polls, [provider]);
-    assert.equal(t.status, 'parked', 'must await the refresh');
+    assert.ok(batch.every((t) => t.status === 'parked'), 'the due batch waits for the refresh');
     poll.resolve({ provider, blocked: true, windows: [] });
-    await checking;
-    assert.deepEqual(events, ['parked', 'queued', 'parked']);
-    assert.ok(modelBlockedUntil(provider) > Date.now());
-    assert.equal(getLimits().providers[provider].blockedUntil, null, 'no invented expiration for an indefinite block');
-  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; poll.resolve({ provider, blocked: true, windows: [] }); cancelTask(t.id); delete PROVIDERS[provider]; delete getLimits().providers[provider]; bus.off('event', onTask); }
+    await wake;
+    assert.deepEqual(events, ['first', 'middle', 'later']);
+    assert.equal(polls.length, 1, 'one refresh for the shared provider');
+    assert.ok(batch.every((t) => t.status === 'queued'));
+    assert.ok(batch.every((t) => t.park === undefined), 'leaving parked clears the park record');
+    assert.equal(modelBlockedUntil(provider), now + 30 * 60_000);
+  } finally { process.env.CONDUCTOR_NO_SCHEDULE = '1'; poll.resolve({ provider, blocked: true, windows: [] }); batch.forEach((t) => cancelTask(t.id)); delete PROVIDERS[provider]; delete getLimits().providers[provider]; bus.off('event', onTask); }
+});
+
+test('reviewParked uses provider evidence, migrates old parks, refines reported resets, and ignores replay parks', async () => {
+  const { getLimits } = await import('../core/limits.mjs');
+  const prior = process.env.CONDUCTOR_NO_SCHEDULE; process.env.CONDUCTOR_NO_SCHEDULE = '1';
+  const makePark = (name, provider, model = 'm') => {
+    const t = createTask({ cwd: tmpDir(`review-park-${name}`), provider, model, title: name }, { dispatch: false });
+    t.status = 'parked'; t.resumeAt = Date.now() + 60 * 60_000; return t;
+  };
+  const roomProvider = 'review-park-room', emptyProvider = 'review-park-empty', resetProvider = 'review-park-reset', guessProvider = 'review-park-guess';
+  const room = makePark('room', roomProvider), empty = makePark('empty', emptyProvider), extend = makePark('extend', resetProvider), keepGuess = makePark('keep-guess', guessProvider), replay = makePark('replay', emptyProvider);
+  empty.resumeAt -= 60_000; extend.park = { kind: 'limit', until: extend.resumeAt, source: 'guess', provider: resetProvider };
+  keepGuess.park = { kind: 'limit', until: keepGuess.resumeAt, source: 'guess', provider: guessProvider };
+  replay.park = { kind: 'replay', until: replay.resumeAt, source: 'guess', provider: emptyProvider };
+  getLimits().providers[roomProvider] = { provider: roomProvider, blocked: false, windows: [{ id: 'room', usedPercent: 20 }] };
+  getLimits().providers[resetProvider] = { provider: resetProvider, blocked: false, windows: [{ id: 'reset', usedPercent: 100, resetsAt: Date.now() + 2 * 60 * 60_000 }] };
+  getLimits().providers[guessProvider] = { provider: guessProvider, blocked: false, windows: [{ id: 'unknown-reset', usedPercent: 100 }] };
+  try {
+    reviewParked();
+    assert.equal(room.status, 'queued', 'an applicable window reporting room releases the park');
+    assert.equal(room.park, undefined);
+    assert.equal(empty.status, 'parked', 'windowless provider stays parked');
+    assert.equal(empty.park.source, 'guess', 'legacy park migrates on review');
+    assert.ok(extend.resumeAt > Date.now() + 60 * 60_000, 'reported reset extends a guess');
+    assert.equal(extend.park.source, 'window');
+    assert.equal(keepGuess.park.until, keepGuess.resumeAt, 'a new guess does not shorten a park');
+    assert.equal(replay.status, 'parked');
+    assert.equal(replay.park.kind, 'replay');
+  } finally {
+    for (const t of [room, empty, extend, keepGuess, replay]) cancelTask(t.id);
+    for (const id of [roomProvider, emptyProvider, resetProvider, guessProvider]) delete getLimits().providers[id];
+    if (prior === undefined) delete process.env.CONDUCTOR_NO_SCHEDULE; else process.env.CONDUCTOR_NO_SCHEDULE = prior;
+  }
 });
 
 test('L52: describeTask uses all counted actions including MCP calls beyond the journal tail', async () => {

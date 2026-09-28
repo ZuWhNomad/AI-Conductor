@@ -11,7 +11,7 @@ import { loadConfig, DEFAULTS, codexSandboxFor, runTimeoutMs } from './config.mj
 import { bus } from './bus.mjs';
 import { runWorker } from './workers/index.mjs';
 import { contextBlock } from './context.mjs';
-import { modelBlockedUntil, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
+import { modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, runRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
@@ -120,9 +120,9 @@ export function recoverTasks() {
         summary.parkedKept++;
         earliestParkedMs = Math.min(earliestParkedMs, until);
         noteOutcome(t, 'parked', until);
-        armParkTimer(t, until);
+        t.park ||= { kind: 'limit', until, source: 'guess', provider: t.provider };
       } else {
-        t.status = 'queued'; t.resumeAt = null; t.resume = t.attempts > 0;
+        t.status = 'queued'; t.resumeAt = null; delete t.park; t.resume = t.attempts > 0;
         summary.resumed++; noteOutcome(t, 'resumed'); persist(t);
       }
     }
@@ -132,9 +132,10 @@ export function recoverTasks() {
   const staggerMs = loadConfig().worker.resumeStaggerSeconds * 1000, startedAt = Date.now();
   for (let i = 0; i < recovered.length; i++) {
     const t = recovered[i];
-    if (staggerMs > 0 && i > 0) park(t, startedAt + i * staggerMs, 'restart stagger');
+    if (staggerMs > 0 && i > 0) park(t, startedAt + i * staggerMs, 'restart stagger', { kind: 'replay', source: 'guess' });
     else persist(t);
   }
+  armWake();
   return summary;
 }
 
@@ -159,6 +160,7 @@ bus.on('event', (e) => {
 });
 
 function persist(t) {
+  if (t.status !== 'parked' && t.park) { delete t.park; armWake(); }
   t.updatedAt = nowIso();
   writeJson(join(DIR(), `${t.id}.json`), t);
   indexTask(t); saveIndexSoon(); trimTasks();
@@ -322,6 +324,7 @@ export function cancelTask(id, reason) {
   const t = getTask(id); if (!t) return null;
   if (TERMINAL.has(t.status)) return t;
   t.status = 'canceled'; t.error = reason || 'canceled';
+  delete t.park; t.resumeAt = null; armWake();
   running.get(id)?.abort();
   persist(t); wake(t);
   return t;
@@ -530,13 +533,13 @@ function scheduleOnce() {
     if (t.status !== 'queued') continue; // a synchronous setup failure can schedule the next task immediately
     if (heldProviders.has(t.provider) && t.sessionId !== 'cli-update') continue;
     if (running.size >= max) break;
-    const until = modelBlockedUntil(t.provider, t.model);
-    if (until) {
+    const block = modelBlock(t.provider, t.model);
+    if (block) {
       const next = t.efficiencyMode ? null : failover(t);
       if (next) {
         t.limitHit = true; t.finishedAt = nowIso(); persist(t); wake(t);
         failovers.push(next);
-      } else park(t, until, `provider ${t.provider} is at its usage limit`);
+      } else park(t, block.until, `provider ${t.provider} is at its usage limit`, { source: block.source });
       continue;
     }
     if (budget && !t.parallelOverride) { // a task from a chat with the parallel override skips the gate entirely
@@ -562,26 +565,60 @@ function scheduleOnce() {
   if (failovers.length) schedule();
 }
 
-function park(t, until, reason) {
+function park(t, until, reason, { kind = 'limit', source = 'guess' } = {}) {
   t.status = 'parked'; t.resumeAt = until; t.error = reason; t.resume = t.attempts > 0; // only a run that started can be resumed
+  t.park = { kind, until, source, provider: t.provider };
   persist(t);
   wake(t);
-  armParkTimer(t, until);
+  armWake();
 }
 
-function armParkTimer(t, until) {
-  setTimeout(async () => {
-    if (t.status !== 'parked' || shuttingDown) return;
-    await refreshLimits({ only: [t.provider] }).catch(() => {});
-    if (t.status === 'parked' && !shuttingDown) { t.status = 'queued'; t.resumeAt = null; persist(t); if (!draining) schedule(); }
-  }, Math.min(2 ** 31 - 1, Math.max(1000, until - Date.now()))).unref();
+let wakeTimer = null;
+function armWake() {
+  if (wakeTimer) clearTimeout(wakeTimer);
+  wakeTimer = null;
+  const earliest = [...tasks.values()].filter((t) => t.status === 'parked').reduce((at, t) => Math.min(at, resumeAtMs(t.park?.until ?? t.resumeAt)), Infinity);
+  if (!Number.isFinite(earliest) || shuttingDown) return;
+  wakeTimer = setTimeout(wakeDue, Math.min(2 ** 31 - 1, Math.max(1000, earliest - Date.now())));
+  wakeTimer.unref();
 }
+async function wakeDue() {
+  wakeTimer = null;
+  if (shuttingDown) return;
+  const due = [...tasks.values()].filter((t) => t.status === 'parked' && resumeAtMs(t.park?.until ?? t.resumeAt) <= Date.now())
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')) || String(a.id).localeCompare(String(b.id)));
+  const providers = [...new Set(due.filter((t) => (t.park?.kind || 'limit') === 'limit').map((t) => t.park?.provider || t.provider))];
+  for (const provider of providers) await refreshLimits({ only: [provider] }).catch(() => {});
+  for (const t of due) if (t.status === 'parked' && !shuttingDown) { t.status = 'queued'; t.resumeAt = null; delete t.park; persist(t); }
+  if (due.length && !draining && !shuttingDown) schedule();
+  armWake();
+}
+
+export function reviewParked() {
+  let released = false, changed = false;
+  for (const t of tasks.values()) {
+    if (t.status !== 'parked' || (t.park?.kind || 'limit') !== 'limit') continue;
+    const migrated = !t.park;
+    const park = t.park ||= { kind: 'limit', until: t.resumeAt, source: 'guess', provider: t.provider };
+    const block = modelBlock(t.provider, t.model);
+    if (!block) {
+      if (providerWindows(t.provider, t.model).length) {
+        t.status = 'queued'; t.resumeAt = null; delete t.park; persist(t); released = changed = true;
+      } else if (migrated) { persist(t); changed = true; }
+    } else if (block.source !== 'guess' && block.until !== resumeAtMs(park.until ?? t.resumeAt)) {
+      park.until = t.resumeAt = block.until; park.source = block.source; park.provider ||= t.provider; persist(t); changed = true;
+    } else if (migrated) { persist(t); changed = true; }
+  }
+  if (changed) armWake();
+  if (released && !draining && !shuttingDown) schedule();
+}
+bus.on('event', (e) => { if (e.type === 'limits') reviewParked(); });
 
 async function run(t) {
   try {
     const ac = new AbortController();
     running.set(t.id, ac);
-    t.status = 'running'; t.startedAt = nowIso(); t.attempts += 1; t.error = null; t.limitHit = false; t.authFailed = false; t.envFailed = false;
+    t.status = 'running'; t.resumeAt = null; delete t.park; t.startedAt = nowIso(); t.attempts += 1; t.error = null; t.limitHit = false; t.authFailed = false; t.envFailed = false;
     persist(t);
     const limitsBefore = snapshotWindows(t.provider);
     // Each window needs its own divisor: Opus and Sonnet share global windows, but only Sonnet consumes its
@@ -643,8 +680,10 @@ async function run(t) {
     else if (r.limitHit && !r.ok) {
       const next = t.efficiencyMode ? null : failover(t);
       if (!next) {
-        const until = modelBlockedUntil(t.provider, t.model) || confirmedLimitUntil;
-        park(t, until, r.error || 'usage limit');
+        const block = modelBlock(t.provider, t.model);
+        const until = block?.until || confirmedLimitUntil;
+        const source = block?.source || (r.retryAfterMs || nextScheduledReset(t.provider) ? 'retry-after' : 'guess');
+        park(t, until, r.error || 'usage limit', { source });
         logImprovement('friction', `worker:${t.provider}`, 'usage limit hit; task parked until the provider window resets', { taskId: t.id, model: t.model, resumeAt: new Date(until).toISOString() });
       }
     } else if ((r.authFailed || r.envFailed) && !r.ok) {
@@ -1066,9 +1105,13 @@ export function describeTask(t) {
   if (t.status === 'stale') lines.push('Stale: interrupted by 2 restarts in a row. Ask the user to Re-run or Discard it.');
   else if (t.error) lines.push(`Error: ${t.error}`);
   if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
-  if (t.status === 'parked') lines.push(t.efficiencyMode
-    ? `waiting for ${t.provider} reset at ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (efficiency mode)`
-    : `Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (auto-resumes)`);
+  if (t.status === 'parked') {
+    const source = t.park?.source || 'guess';
+    const detail = source === 'window' ? 'reset reported' : source === 'retry-after' ? 'retry-after' : 'estimated; refined when limits refresh';
+    lines.push(t.efficiencyMode
+      ? `waiting for ${t.provider} reset at ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (efficiency mode)`
+      : `Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (${detail}; auto-resumes)`);
+  }
   if (t.status === 'running') {
     const p = t.progress, mins = (ms) => `${Math.round(ms / 60_000)} min`;
     lines.push(`Progress: running ${mins(Date.now() - (Date.parse(t.startedAt) || Date.now()))}${p?.activity ? `; last: ${p.activity}` : ''}${p?.tokens ? `; ${p.tokens} tokens so far` : ''}${p ? ` (as of ${mins(Date.now() - p.at)} ago)` : '; no worker activity yet'}`);

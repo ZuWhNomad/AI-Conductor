@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readJson } from '../core/paths.mjs';
 
-const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlockedUntil, providerWindows, windowModels } = await import('../core/limits.mjs');
+const { noteHttp, noteLimitAvailable, noteLimitHit, noteRateLimitEvent, blockedUntil, getLimits, groupOf, mergePoll, modelBlock, modelBlockedUntil, providerWindows, windowModels } = await import('../core/limits.mjs');
 const { normalizeUsage, windowFromEvent, familyRe } = await import('../core/providers/anthropic.mjs');
 const { PROVIDERS } = await import('../core/providers/index.mjs');
 
@@ -32,6 +32,32 @@ test('quota groups are derived from the windows that meter each model', () => {
     getLimits().providers[id].windows = [];
     assert.deepEqual(groupOf(id, 'anything').ids, [id]);
   } finally { delete getLimits().providers[id]; }
+});
+
+test('modelBlock reports window, retry-after, and guess sources without changing timestamps', (ctx) => {
+  const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
+  const resetProvider = 'model-block-window', retryProvider = 'model-block-retry', guessProvider = 'model-block-guess';
+  const reset = now + 60_000;
+  try {
+    for (const id of [resetProvider, retryProvider, guessProvider]) PROVIDERS[id] = { id, pollLimits: async () => ({ provider: id, windows: [], blocked: false }) };
+    getLimits().providers[resetProvider] = { provider: resetProvider, blocked: false, windows: [{ id: 'weekly', usedPercent: 100, resetsAt: reset }] };
+    assert.deepEqual(modelBlock(resetProvider), { until: reset, source: 'window' });
+    assert.equal(modelBlockedUntil(resetProvider), reset);
+
+    getLimits().providers[retryProvider] = { provider: retryProvider, blocked: false, windows: [] };
+    const retryUntil = noteLimitHit(retryProvider, { retryAfterMs: 45_000 });
+    assert.deepEqual(modelBlock(retryProvider), { until: retryUntil, source: 'retry-after' });
+    assert.equal(modelBlockedUntil(retryProvider), retryUntil);
+
+    getLimits().providers[guessProvider] = { provider: guessProvider, blocked: true, windows: [] };
+    const legacy = blockedUntil(guessProvider);
+    const guessed = modelBlock(guessProvider);
+    assert.deepEqual(guessed, { until: legacy, source: 'guess' });
+    assert.equal(modelBlockedUntil(guessProvider), legacy);
+  } finally {
+    delete getLimits().providers[resetProvider]; delete getLimits().providers[retryProvider]; delete getLimits().providers[guessProvider];
+    for (const id of [resetProvider, retryProvider, guessProvider]) delete PROVIDERS[id];
+  }
 });
 
 test('P11: refresh metadata distinguishes joined polls without changing promise identity or result', async () => {

@@ -303,7 +303,7 @@ export function noteLimitHit(providerId, { model = null, retryAfterMs = null, re
   const ids = new Set(marked.map((w) => w.id));
   p.windows = (p.windows || []).map((w) => ids.has(w.id) ? { ...w, usedPercent: 100 } : w);
   const global = !scoped.length || !!likelyGlobals.length;
-  p.confirmedLimit = { hitAt: now, model, global, blockedUntil: until, windows: marked };
+  p.confirmedLimit = { hitAt: now, model, global, blockedUntil: until, retryAfter: !!retryUntil, windows: marked };
   if (global && (!p.blockedReason || p.blockedReason === 'limit_hit')) {
     p.blocked = true; p.blockedUntil = until; p.blockedReason = 'limit_hit'; observe(providerId, BLOCK);
   }
@@ -454,13 +454,22 @@ export function groupOf(provider, model = null) {
 
 /** Actual limits apply independently of soft policy caps and parallel pacing overrides. */
 export function modelBlockedUntil(provider, model = null) {
+  return modelBlock(provider, model)?.until ?? null;
+}
+
+export function modelBlock(provider, model = null) {
   const global = blockedUntil(provider);
-  if (global) return global;
+  if (global) {
+    const p = getLimits().providers[provider];
+    return { until: global, source: p?.blockedUntil ? (p.confirmedLimit?.retryAfter ? 'retry-after' : 'window') : 'guess' };
+  }
   const now = Date.now();
   const hit = getLimits().providers[provider]?.confirmedLimit;
-  if (hit && hit.blockedUntil > now && (hit.global || (model && (model === hit.model || (hit.windows || []).some((w) => modelScoped(w) && windowApplies(w, model)))))) return hit.blockedUntil;
+  if (hit && hit.blockedUntil > now && (hit.global || (model && (model === hit.model || (hit.windows || []).some((w) => modelScoped(w) && windowApplies(w, model)))))) return { until: hit.blockedUntil, source: hit.retryAfter ? 'retry-after' : 'window' };
   const full = providerWindows(provider, model).filter((w) => (model != null || !modelScoped(w)) && (!w.resetsAt || w.resetsAt > now) && (w.status === 'rejected' || w.usedPercent >= 100));
-  return full.length ? Math.min(...full.map((w) => w.resetsAt || now + blockedMs())) : null;
+  if (!full.length) return null;
+  const candidates = full.map((w) => ({ until: w.resetsAt || now + blockedMs(), source: w.resetsAt ? 'window' : 'guess' }));
+  return candidates.reduce((best, item) => item.until < best.until ? item : best);
 }
 
 bus.on('event', (e) => {

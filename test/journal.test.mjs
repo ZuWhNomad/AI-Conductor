@@ -134,8 +134,7 @@ test('restart transitions stagger running work, keep future parks, cancel smoke 
     assert.equal(summary.parkedKept, 1);
     assert.ok(summary.earliestParked);
     assert.equal(summary.smokeCanceled, 2);
-    assert.ok(timers.some((ms) => ms > 50_000), 'future parked work gets a wake timer');
-    assert.ok(timers.some((ms) => ms >= 1000 && ms < 1500), 'staggered work uses the park timer');
+    assert.ok(timers.some((ms) => ms >= 1000 && ms < 1500), 'the shared timer targets the earliest staggered park');
 
     const old = first.getTask('run-old');
     fs.writeFileSync(join(dir, 'run-old.json'), JSON.stringify({ ...old, status: 'running' }));
@@ -191,11 +190,12 @@ test('graceful requeues share crash recovery staggering and notes without increm
       assert.equal(getTask(id).status, 'parked');
       assert.equal(getTask(id).error, 'restart stagger');
       assert.equal(getTask(id).resume, true);
+      assert.equal(getTask(id).park.kind, 'replay');
     }
     assert.equal(getTask('a-graceful-new').resumeAt - getTask('m-crash').resumeAt, 1000);
     assert.equal(getTask('fresh').status, 'queued');
     assert.equal(getTask('fresh').resume, false);
-    for (const { id } of records) assert.deepEqual(JSON.parse(readFileSync(join(dir, id + '.json'), 'utf8')), getTask(id));
+    for (const { id } of records) assert.deepEqual(JSON.parse(readFileSync(join(dir, id + '.json'), 'utf8')), JSON.parse(JSON.stringify(getTask(id))));
   `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
