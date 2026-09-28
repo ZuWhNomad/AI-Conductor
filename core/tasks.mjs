@@ -33,6 +33,7 @@ const TERMINAL = new Set(['done', 'failed', 'canceled']);
 
 const tasks = new Map();
 const running = new Map();   // id -> AbortController
+const runningSettle = new Map(); // id -> Promise
 const settling = new Set(); // completed tasks retain budget reservations until polling and scoring settle
 const waiters = new Map();   // id -> { deadline, done }[]
 let journalIndex = new Map(); // small metadata only; journal files remain authoritative
@@ -380,6 +381,16 @@ export function abortRunning({ requeue = false } = {}) {
   if (journalError) throw journalError;
 }
 
+/** Await in-flight task settle promises, bounded by timeoutMs. */
+export async function awaitRunning(timeoutMs = 1200) {
+  const pending = [...runningSettle.values()];
+  if (!pending.length) return;
+  await Promise.race([
+    Promise.allSettled(pending),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 function consumeWake(t) {
   if (t?.wakeEligible && TERMINAL.has(t.status) && !t.wakeConsumedAt) {
     t.wakeConsumedAt = nowIso();
@@ -615,6 +626,8 @@ export function reviewParked() {
 bus.on('event', (e) => { if (e.type === 'limits') reviewParked(); });
 
 async function run(t) {
+  let settleResolve;
+  runningSettle.set(t.id, new Promise((resolve) => { settleResolve = resolve; }));
   try {
     const ac = new AbortController();
     running.set(t.id, ac);
@@ -719,9 +732,18 @@ async function run(t) {
     if (!alreadyDecided) { t.status = 'failed'; t.error = String(e?.message || e); t.finishedAt = nowIso(); }
     else { try { logImprovement('error', `worker:${t.provider}`, `journal persist failed after ${t.status}: ${e?.message || e}`, { taskId: t.id }); } catch {} }
     if (TERMINAL.has(t.status)) t.recoveries = 0;
-    try { persist(t); } catch {} // A broken journal must not hold a worker slot or reject run().
+    try {
+      persist(t);
+    } catch (err2) {
+      if (alreadyDecided) {
+        try { logImprovement('error', `worker:${t.provider}`, `retry persist failed after ${t.status}: ${err2?.message || err2}`, { taskId: t.id }); } catch {}
+        setTimeout(() => { try { persist(t); } catch {} }, 50).unref?.();
+      }
+    }
   } finally {
     running.delete(t.id); live.delete(t.id); delete t.progress;
+    runningSettle.delete(t.id);
+    settleResolve?.();
     trimTasks();
     try { if (TERMINAL.has(t.status) || t.status === 'parked') wake(t); } catch {}
     try { if (!shuttingDown) schedule(); } catch {}

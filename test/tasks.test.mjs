@@ -35,7 +35,7 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
   return respond(url, options);
 });
 
-const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, flushRecords, setDraining, reviewParked } = await import('../core/tasks.mjs');
+const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, awaitRunning, flushRecords, setDraining, reviewParked } = await import('../core/tasks.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels } = await import('../core/models.mjs');
 const waitForTaskStatus = (id, statuses) => {
@@ -2042,3 +2042,68 @@ test('isolate: an unignored isolateLinks dir is kept out of the commit via info/
     assert.equal(readFileSync(join(cwd, 'vendor', 'x.js'), 'utf8'), 'FROM-VENDOR\n');
   } finally { saveConfig({ worker: previous }); }
 });
+
+test('R24: a persist that fails once then succeeds ends with the terminal status on disk', async (ctx) => {
+  const cwd = tmpDir('r24-retry');
+  let firstPersistFailed = false;
+  const originalWriteFileSync = fs.writeFileSync;
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'done' }));
+  const t = tk.createTask({ cwd, provider: 'codex', title: 'r24-persist-retry', spec: 'x' }, { dispatch: false });
+  const taskFile = join(HOME, 'tasks', `${t.id}.json`);
+
+  ctx.mock.method(fs, 'writeFileSync', (file, data, ...args) => {
+    if (typeof file === 'string' && file.startsWith(taskFile) && !firstPersistFailed) {
+      const parsed = JSON.parse(typeof data === 'string' ? data : data.toString());
+      if (parsed.status === 'done') {
+        firstPersistFailed = true;
+        throw new Error('disk transient failure');
+      }
+    }
+    return originalWriteFileSync(file, data, ...args);
+  });
+  syncBuiltinESMExports();
+
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    tk.schedule();
+    const done = await tk.awaitTask(t.id, 5000);
+    assert.equal(done.status, 'done');
+    assert.equal(firstPersistFailed, true, 'first terminal persist attempt threw');
+
+    // Wait for the scheduled retry (50ms) to land on disk
+    for (let i = 0; i < 20; i++) {
+      const onDisk = JSON.parse(readFileSync(taskFile, 'utf8'));
+      if (onDisk.status === 'done') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const finalDisk = JSON.parse(readFileSync(taskFile, 'utf8'));
+    assert.equal(finalDisk.status, 'done');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.cancelTask(t.id);
+  }
+});
+
+test('R25: shutdown drain awaits a task that settles quickly instead of exiting before it', async (ctx) => {
+  const cwd = tmpDir('r25-drain');
+  let workerFinished = false;
+  const tk = await tasksWithWorker(ctx, async () => {
+    await new Promise((r) => setTimeout(r, 50));
+    workerFinished = true;
+    return { ok: true, finalMessage: 'fast worker' };
+  });
+  const t = tk.createTask({ cwd, provider: 'codex', title: 'r25-quick-settle', spec: 'x' });
+  delete process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    tk.schedule();
+    // Worker starts, then shutdown begins: signal abort and awaitRunning
+    await new Promise((r) => setTimeout(r, 10));
+    tk.abortRunning({ requeue: true });
+    await tk.awaitRunning(1200);
+    assert.equal(workerFinished, true, 'fast task settled before drain finished');
+  } finally {
+    process.env.CONDUCTOR_NO_SCHEDULE = '1';
+    tk.cancelTask(t.id);
+  }
+});
+

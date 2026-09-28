@@ -30,7 +30,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
   windowless providers (never gates dispatch).
 - `conductor.mjs` — chat sessions (Agent SDK / Codex / API). `tools.mjs` — the tools a conductor session gets.
-- `bus.mjs` — the event bus (2000-entry ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
+- `bus.mjs` — the event bus (2000-entry / 8MB byte-bound ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
   that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID.
