@@ -1,3 +1,11 @@
+---
+id: image-to-3d-c-build
+types: [modeling]
+audience: worker
+variant: recipe-c
+purpose: Build a printable STL from labelled paths
+status: curated
+---
 # Recipe C, stage 2 (build): labelled paths → printable STL
 
 You are the **build stage** of a two-model pipeline. A cheaper model has already traced the reference into

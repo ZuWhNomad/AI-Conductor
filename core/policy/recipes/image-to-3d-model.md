@@ -1,3 +1,11 @@
+---
+id: image-to-3d-a
+types: [modeling]
+audience: worker
+variant: recipe-a
+purpose: Image to 3D model, recipe A
+status: curated
+---
 # Recipe: image → 3D model (printable STL from reference photos or artwork)
 
 Distilled from the run that passed the cookie-cutter benchmark (GPT-6 Astra, ultra, 2026-09-12) and the

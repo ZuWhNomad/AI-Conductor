@@ -1,3 +1,11 @@
+---
+id: image-to-3d-b
+types: [drafting, modeling]
+audience: worker
+variant: recipe-b
+purpose: Image to 3D model, recipe B (default for drafting and modeling)
+status: curated
+---
 # Recipe B: image → 3D model (research-updated variant, A/B test 2026-09-12)
 
 Same goal and rules as recipe A (trace the reference; never draw from the description alone; one coordinate

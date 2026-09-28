@@ -16,7 +16,7 @@ import { runPlan, getPlan, noWorkerReason, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
-import { variantsOf, checkVariant } from './recipes.mjs';
+import { variantsOf, checkVariant, frameworkFor } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 import { registerWatch } from './watchdog.mjs';
 import { resourceStatus, resourceLine } from './resources.mjs';
@@ -359,8 +359,17 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
         return `${row.action === 'block' ? 'blocked' : 'allowed'} ${row.sel} for ${row.category}: ${row.reason}`;
       },
     },
-    {
-      name: 'smoke_test',
+      {
+        name: 'framework',
+        description: 'Fetch an optional starting framework for a scorecard category.',
+        schema: z.object({ type: z.string().describe('Scorecard category, such as research or review.') }),
+        handler: async ({ type }) => {
+          const f = frameworkFor(type);
+          return f ? `framework: ${f.id}\n${f.text}` : '(none)';
+        },
+      },
+      {
+        name: 'smoke_test',
       description: `Run the smoke battery against a model to seed its scorecard (runs in the background, one task at a time; results appear in model_scores). Tasks: ${SMOKE_TASKS.map((t) => t.id).join(', ')}. Run it before trusting a new or cheap model with real work.`,
       schema: z.object({ provider: z.string(), model: z.string().optional(), effort: z.string().optional(), tasks: z.array(z.string()).optional().describe('Battery ids; default all') }),
       handler: async (a) => {

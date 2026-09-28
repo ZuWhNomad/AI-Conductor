@@ -1,3 +1,11 @@
+---
+id: video-general
+types: [summarize]
+audience: worker
+variant: video-general
+purpose: General video briefing
+status: curated
+---
 # Recipe: general video briefing (non-financial)
 
 **Applies only when the task is to summarize or analyse a video.** For any other `summarize` work
