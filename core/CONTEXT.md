@@ -28,6 +28,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
   walk to return the best-*available* single model by quality, for the review→escalation ladder). `wasteDiscount`
   (use-it-or-lose-it), `providerWindows` (model-group scoping), `nextScheduledReset` (windowless resets),
   `migrateScorecard` (one-time void of pre-Method-C polluted antigravity rows, run at server boot).
+  When extrapolating nonvisual work, the nearest lower benchmark-only cell can qualify; eligible live evidence wins,
+  and modeling/drafting keep their recorded-pass gate.
 - `limits.mjs` — per-provider window registry (polled, scope-keyed refresh). `usage-estimate.mjs` — advisory % for
   windowless providers (never gates dispatch).
 - `conductor.mjs` — chat sessions (Agent SDK / Codex / API); busy Codex and loop chats persist follow-ups and drain them together after the current turn. `tools.mjs` — the tools a conductor session gets.

@@ -602,7 +602,7 @@ export function recommend(opts = {}) {
   return { pick: null, explain: { status: 'no-match', reason: `no qualified selection for ${opts.category}@${opts.difficulty ?? 2}`, capped: [], manualEligibility } };
 }
 
-function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _failedBelow = null, _taskDifficulty = null, _explain = null, _eligibility = new Map() } = {}) {
+function recommendPlan({ category, difficulty = 2, exclude = [], source = null, summary = null, escalate = false, overflowApi = false, providers = null, reg = getModels(), _noExtrap = false, _allowLowerBenchmark = false, _failedBelow = null, _taskDifficulty = null, _explain = null, _eligibility = new Map() } = {}) {
   const cfg = loadConfig().scorecard;
   const archive = archivedSet(cfg);
   const taskDifficulty = _taskDifficulty ?? difficulty;
@@ -639,11 +639,12 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const cellLiveWeightedRated = (g) => g.liveWeightedRated ?? cellLiveRated(g);
   const cellSmokeWeightedRated = (g) => g.smokeWeightedRated ?? cellSmokeRated(g);
   const benchmarkOnly = (g) => cellLiveRated(g) <= 0 && (cellSmokeRated(g) > 0 || g.shipped);
+  const benchmarkAllowed = (g) => !benchmarkOnly(g) || g.difficulty === taskDifficulty || (_allowLowerBenchmark && KIND[category] !== 'visual' && g.difficulty === difficulty);
   const allowed = (sel) => !providers || sel.split('>').every((s) => providers.includes(s.split(':')[0])); // access gate: only these providers may take the task
   const decision = (sel) => _eligibility.get(eligibilityKey(sel, category));
   const manuallyBlocked = (sel) => sel.split('>').some((s) => decision(s)?.action === 'block');
   const gate = passGate(category, reg);
-  const rows = all.filter((g) => g.category === category && evidenceRated(g) > 0 && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && !excluded(g.sel) && !manuallyBlocked(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
+  const rows = all.filter((g) => g.category === category && evidenceRated(g) > 0 && benchmarkAllowed(g) && !excluded(g.sel) && !manuallyBlocked(g.sel) && !blockedSel(g.sel) && allowed(g.sel) && gate(g.sel));
   // Reservation capacity is live-only and shared only by models metered by the same quota/window group.
   const quotaGroup = (provider, model) => `${provider}|${groupOf(provider, model).ids.join(',')}`;
   const ceiling = new Map();
@@ -665,7 +666,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   // Evidence per selection: the cell nearest the requested level (not below), pooling harder cells only until
   // the sample floor is met. A well-sampled failing cell at or below the level disqualifies it as a final step.
   // Keep the original request's disqualifications when extrapolating; priors cannot override them either.
-  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && evidenceRated(g) >= cfg.benchMinSamples && g.quality < cfg.quality && decision(g.sel)?.action !== 'allow').map((g) => g.sel));
+  const failedBelow = _failedBelow || new Set(all.filter((g) => g.category === category && g.difficulty <= difficulty && benchmarkAllowed(g) && evidenceRated(g) >= cfg.benchMinSamples && g.quality < cfg.quality && decision(g.sel)?.action !== 'allow').map((g) => g.sel));
   const bySel = new Map();
   for (const g of rows) {
     const m = bySel.get(g.sel) || { sel: g.sel, steps: g.steps, cells: [] };
@@ -713,6 +714,10 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     if (p.usd == null) { p.utility = lambda * p.quality; p.costUnknown = true; }
     else { p.utility = lambda * p.quality - p.usd; }
   }
+  if (_allowLowerBenchmark) {
+    const livePlans = plans.filter((p) => p.utility > -Infinity && cellLiveRated(p.ref) > 0);
+    if (livePlans.length) plans.splice(0, plans.length, ...livePlans);
+  }
   // Effort dominance: a higher effort of the same model that costs within effortSlackUsd and is at least as good
   // makes the lower effort pointless (Luna's efforts differ by fractions of a cent; the higher one held up on real work).
   const slackOf = (usd) => Math.max(cfg.effortSlackUsd, usd * (cfg.effortSlackPct / 100)); // absolute floor for cheap models, relative for dear ones
@@ -758,7 +763,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     // waits for a reset) rather than extrapolating to a weaker class. Extrapolate only when nothing at all is proven here.
     // B5: also require allowed(g.sel) so a blocked but disallowed provider does not prevent extrapolation.
     // B2: ignore cells whose model is not a registered agent — an old removed model must not prevent extrapolation.
-    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && (!benchmarkOnly(g) || g.difficulty === taskDifficulty) && evidenceRated(g) >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && !manuallyBlocked(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
+    const capped = all.filter((g) => g.category === category && g.steps === 1 && g.difficulty >= difficulty && benchmarkAllowed(g) && evidenceRated(g) >= cfg.minSamples && g.quality >= cfg.quality && !excluded(g.sel) && !manuallyBlocked(g.sel) && allowed(g.sel) && gate(g.sel) && modelInRegistry(reg, g.provider, g.model)?.kind === 'agent' && blockedSel(g.sel));
     if (capped.length) {
       if (_explain) {
         const bySel = new Map(capped.map((g) => [g.sel, unavailable(g)]));
@@ -770,9 +775,9 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     }
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain, _eligibility });
+      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _allowLowerBenchmark: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain, _eligibility });
       if (lower?.capped) return null;
-      if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d} — nothing measured at level ${difficulty}+ yet` };
+      if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d}${lower.evidence?.source === 'bench' ? ' (benchmark evidence)' : ''} — nothing measured at level ${difficulty}+ yet` };
     }
     return priorFallback({ category, difficulty, exclude, cfg, overflowApi, providers, reg, failedBelow, escalate, eligibility: _eligibility });
   }
