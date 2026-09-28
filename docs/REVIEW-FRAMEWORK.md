@@ -170,8 +170,9 @@ Finder labels are input: the verifier sets severity after reproducing, recorded 
 - Choose from `list_models`, `limits` and `model_scores`; no fixed picks. Families have different blind spots and
   between them the reviewers cover most errors, so finders, verifiers and general passes mix families. Name every
   model by exact `provider:model:effort`.
-- **Failover stays off the review's families.** Failover (tasks with `category` and `difficulty`) replaces a pinned
-  model at a provider limit with another provider's. Reviewers and verifiers pass `avoid_families` (on `delegate`
+- **Failover stays off the review's families.** Failover (tasks with `category` and `difficulty`) replaces an
+  auto-picked model at a provider limit with another provider's; a pinned provider + model parks instead unless the
+  task passes `efficiency_mode: false`. Reviewers and verifiers pass `avoid_families` (on `delegate`
   and on `run_plan` tasks): the finder's family and their own, so failover never lands on a family already on the
   review; when nothing outside them qualifies, the task parks until the reset.
 - **Check what ran** anyway. Plan report stage lines read `<id> -> <failoverId>[status] provider:model:effort`;

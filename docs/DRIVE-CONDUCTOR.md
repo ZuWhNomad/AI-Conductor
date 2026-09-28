@@ -154,7 +154,8 @@ are spent, and every task still goes through the scorecard auto-pick, limit fail
    protocol, fix-round → escalation ladder, rating) and `core/policy/prompts/orchestration.md` (fan-out, refuters,
    judge panels, until-dry, critic — one `run_plan` per job, the shapes as its stages). In short:
    - `delegate` with `title`, `spec`, `category` and `difficulty`, and **no** provider/model: the scorecard picks.
-     Pin a model only with a reason.
+     Pin a model only with a reason: a pinned provider + model parks at that model's limit instead of failing over
+     (`efficiency_mode: false` allows the failover).
    - Verify the diff yourself; `follow_up` for fix rounds; to escalate, `delegate` with `retry_of` set to the **last
      follow-up task's id** (its spent rounds trip the escalation); `rate_task` the original task id.
    - `await_task` follows `failedOverTo` automatically when a task fails over to another provider.

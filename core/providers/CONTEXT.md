@@ -21,7 +21,7 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   windows, so a maxed per-model window blocks just that model.
 - Secrets live only in `~/.conductor2/config.json`; never log them. `publicConfig()` redacts keys and MCP env/url.
 - Windows-first: never spawn a CLI through a shell (`core/proc.mjs` `spawnCli` unwraps npm `.cmd` shims). Long
-  prompts (>8000 chars, grok's threshold) stay off argv: grok `--prompt-file`; antigravity `--input-format text` on
+  prompts (over `providers.<id>.promptFileThreshold`, default 8000 chars) stay off argv: grok `--prompt-file`; antigravity `--input-format text` on
   stdin; qwen-code stdin (no positional query); kimi `--print` stdin (no `-p`).
 - Model-list overrides: a CLI that can't self-list reads `providers.<id>.models` from config.
 - Effort-in-id (Antigravity, "Method C"): agy bakes effort into the model id (`gemini-*-low/-medium/-high`) and rejects

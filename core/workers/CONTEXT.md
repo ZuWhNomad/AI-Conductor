@@ -18,7 +18,8 @@ it sends a per-thread cache-routing hint (`x-grok-conv-id` on api.x.ai, `prompt_
 - `claude.mjs` — the Claude Agent SDK harness (also runs local models via `ollama.claudeHarnessEnv()`).
 - `openai-compat.mjs` — the `/chat/completions` tool loop for API + Ollama models. Host execution is not limited
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
-  and `gpt-6-astra` defaults to `danger-full-access`. `fetch_url` has an SSRF guard.
+  and `worker.codexSandboxByModel` can give a Codex model its own sandbox (empty by default). The `run` child env
+  drops `*_API_KEY` / `*_TOKEN` / `*_SECRET`, and a command naming the state dir is refused. `fetch_url` has an SSRF guard.
 - `openai-compat-files.mjs` — async canonical-path checks and bounded file reads; the disposable search worker
   runs the entire traversal and regex off the server thread. Search terminates at the task deadline (or a fixed
   10-minute tool deadline when the run is unlimited), and on cancellation. The tool waits for termination before settling.

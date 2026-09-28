@@ -188,7 +188,8 @@ Reservation is derived from data: a provider's cost on a task is multiplied by
 level 4–5 is held back for level 4–5 work and the cheap tiers do the grunt work — no model names
 are hard-coded; a cheap provider that proves a high level earns the same reservation. When a provider hits its limit mid-task the scheduler *fails over*: the same spec is re-issued
 on the next qualified provider as a `retryOf` chain, the original reports `failed over to task <id>`,
-and the cut-off attempt is never scored.
+and the cut-off attempt is never scored. A task whose caller named both provider and model parks for that model's reset
+instead (`efficiency_mode: false` on `delegate`/`run_plan` allows the failover).
 
 `recommend(category, difficulty)` maximizes utility = `scorecard.qualityValueUsd` × expected quality
 − expected $ (+ `hourlyUsd` × wall clock). Plans: a single model whose quality ≥ `scorecard.quality`
@@ -270,7 +271,8 @@ Setting `worker.shell` to `true` allows any host shell command; an array of comm
 filter that rejects shell control operators. Either opt-in trusts host execution: allowed interpreters and package
 managers can access arbitrary host files. The filter does not sandbox those programs. File tools separately check
 canonical workspace containment, including symlinks/junctions and new-file ancestors, but cannot prevent concurrent
-link swaps. Codex uses its own task/config sandbox selection, including per-model defaults; `worker.shell` does not
+link swaps. The `run` child gets an env without `*_API_KEY` / `*_TOKEN` / `*_SECRET`, and a command that names the state
+dir is refused. Codex uses its own task/config sandbox selection, including per-model defaults; `worker.shell` does not
 change it. Existing explicit `true` and array settings remain effective.
 
 - `CLAUDE.md` at a project root is loaded by the SDK. Subfolders may carry `CONTEXT.md`.
