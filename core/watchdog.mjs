@@ -1,5 +1,5 @@
 // Server-owned liveness watchdog: one process snapshot and bounded file walk per tick, deterministic verdicts,
-// graduated hang handling, persisted detached-job watches, and one batched wake for completed background work.
+// stuck handling, persisted detached-job watches, and one batched wake for completed background work.
 import { readdirSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { bus } from './bus.mjs';
@@ -16,16 +16,6 @@ const FILE = () => statePath('watches.json');
 const activity = new Map();
 const eventKey = (kind, id) => `${kind}:${id}`;
 
-function usageTokens(usage) {
-  if (!usage || typeof usage !== 'object') return 0;
-  let total = 0;
-  for (const [key, value] of Object.entries(usage)) {
-    if (value && typeof value === 'object') total += usageTokens(value);
-    else if (/^(?:input|output|prompt|completion)(?:_tokens|Tokens)$/.test(key)) total += Number(value) || 0;
-  }
-  return total;
-}
-
 function stable(value) {
   if (value == null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
@@ -41,11 +31,9 @@ function noteTool(a, key) {
 }
 
 function noteEvent(key, event) {
-  const a = activity.get(key) || { count: 0, lastAt: 0, tokens: 0, lastToolKey: null, toolRepeat: 0, toolLessTurns: 0 };
+  const a = activity.get(key) || { count: 0, lastAt: 0, lastToolKey: null, toolRepeat: 0, toolLessTurns: 0 };
   a.count++;
   a.lastAt = Number(event.ts) || Date.now();
-  const tokens = usageTokens(event.usage);
-  if (tokens) a.tokens = Math.max(a.tokens, tokens);
 
   if (event.type === 'session') {
     if (event.kind === 'user') { a.lastToolKey = null; a.toolRepeat = 0; a.toolLessTurns = 0; }
@@ -71,14 +59,13 @@ bus.on('event', (event) => {
   const taskId = event.taskId || event.task?.id;
   if (taskId) {
     if (String(taskId).startsWith('conductor:')) keys.add(eventKey('session', String(taskId).slice('conductor:'.length)));
-    else keys.add(eventKey('task', taskId)); // worker tasks keep toolRepeat/toolLessTurns for the runaway guard
+    else keys.add(eventKey('task', taskId)); // worker tasks keep toolRepeat/toolLessTurns for loop classification
   }
   for (const key of keys) {
     // Conductor worker events are translated into session events; parse tools from the latter so they count once.
     if (event.type === 'worker' && String(taskId || '').startsWith('conductor:')) {
-      const a = activity.get(key) || { count: 0, lastAt: 0, tokens: 0, lastToolKey: null, toolRepeat: 0, toolLessTurns: 0 };
+      const a = activity.get(key) || { count: 0, lastAt: 0, lastToolKey: null, toolRepeat: 0, toolLessTurns: 0 };
       a.count++; a.lastAt = Number(event.ts) || Date.now();
-      const tokens = usageTokens(event.usage); if (tokens) a.tokens = Math.max(a.tokens, tokens);
       activity.set(key, a);
     } else noteEvent(key, event);
   }
@@ -143,8 +130,7 @@ export function classify(prev = null, sample = {}, settings = {}) {
   if (sample.waitingTasks?.length) return { ...base, verdict: 'waiting-task', waitingOnVerdict: sample.waitingOnVerdict || 'stuck' };
   if (sample.late) return { ...base, verdict: sample.eventDelta > 0 || sample.fileChanged ? 'progressing' : 'quiet-alive' };
   const repeatAt = Number(settings.loopRepeat) || 5;
-  const tokenAt = Number(settings.loopTokens) || 2_000_000;
-  const looping = !sample.fileChanged && (sample.toolRepeat >= repeatAt || sample.toolLessTurns >= repeatAt || sample.tokenDelta >= tokenAt);
+  const looping = !sample.fileChanged && (sample.toolRepeat >= repeatAt || sample.toolLessTurns >= repeatAt);
   if (looping) return { ...base, verdict: 'looping', loopChecks: (prev?.verdict === 'looping' ? prev.loopChecks : 0) + 1 };
   if (sample.eventDelta > 0 || sample.fileChanged) return { ...base, verdict: 'progressing' };
   if (!sample.process?.available || (sample.process.alive && (sample.cpuDelta == null || sample.cpuDelta >= 1))) return { ...base, verdict: 'quiet-alive' };
@@ -210,7 +196,7 @@ const bestTaskVerdict = (ids, verdicts, tasks) => {
 /** Build an independently testable, non-overlapping watchdog around the supplied task/session adapters. */
 export function createWatchdog({
   listSessions, listTasks, touchTaskAlive, markTaskWakeReported, recordSessionCheckIn, sendMessage,
-  jobStatus, waitingTasks = () => [], resurfacePermissions = () => false, nudgeRunaway = () => false,
+  jobStatus, waitingTasks = () => [], resurfacePermissions = () => false, canNudge = () => false, nudgeRunaway = () => false,
   interrupt = async () => false, failHungTask = () => null,
   processSnapshot = snapshotProcesses, processSample = ownerProcessSample, fileSample = recentFileActivity,
   publish = (data) => bus.publish('watchdog', data),
@@ -238,14 +224,13 @@ export function createWatchdog({
       const inspect = (kind, item, waiting = []) => {
         const key = eventKey(kind, item.id); activeKeys.add(key);
         const prev = states.get(key);
-        const a = activity.get(key) || { count: 0, lastAt: 0, tokens: 0, toolRepeat: 0, toolLessTurns: 0 };
+        const a = activity.get(key) || { count: 0, lastAt: 0, toolRepeat: 0, toolLessTurns: 0 };
         const proc = processSample(kind === 'session' ? `conductor:${item.id}` : item.id, snapshot);
         const file = fileSample(item.cwd, since ?? (Date.parse(item.startedAt || item.updatedAt || item.createdAt || '') || at));
         const sample = {
           late, waitingOwner: (item.pendingCount || 0) > 0, parked: item.status === 'parked', waitingTasks: waiting,
           waitingOnVerdict: waiting.length ? bestTaskVerdict(waiting, taskVerdicts, taskById) : null,
           eventDelta: prev && !late ? Math.max(0, a.count - prev.eventCount) : a.count,
-          tokenDelta: prev && !late ? Math.max(0, a.tokens - prev.tokens) : a.tokens,
           toolRepeat: a.toolRepeat || 0, toolLessTurns: a.toolLessTurns || 0,
           fileChanged: !!file.changed, process: proc,
           cpuDelta: prev && !late && proc.available && prev.cpuSeconds != null && proc.cpuSeconds >= prev.cpuSeconds ? proc.cpuSeconds - prev.cpuSeconds : null,
@@ -253,7 +238,8 @@ export function createWatchdog({
         };
         const state = { ...classify(prev, sample, cfg.watchdog), checkedAt: new Date(at).toISOString(), lastEventAt: new Date(sample.lastEventAt).toISOString(), late };
         state.summary = summaryFor(item, state, sample, at);
-        Object.assign(state, { eventCount: a.count, tokens: a.tokens, cpuSeconds: proc.cpuSeconds, runawayStopped: prev?.runawayStopped || false });
+        if (state.verdict === 'looping' && prev?.verdict === 'looping') state.loopAction = prev.loopAction || null;
+        Object.assign(state, { eventCount: a.count, cpuSeconds: proc.cpuSeconds });
         states.set(key, state);
         return { state, sample };
       };
@@ -275,16 +261,18 @@ export function createWatchdog({
       for (const session of sessions.filter((s) => s.status === 'running')) {
         const waits = waitingTasks(session.id);
         const { state } = inspect('session', session, waits);
+        if (state.verdict === 'looping') {
+          if (!state.loopAction) {
+            state.loopAction = canNudge(session.id) && nudgeRunaway(session.id)
+              ? 'nudged'
+              : 'alert only (runtime cannot take mid-turn input)';
+          }
+          state.summary = `${state.summary} | ${state.loopAction}`;
+          logFriction('watchdog', `chat ${session.id} appears to be looping`, { sessionId: session.id, summary: state.summary });
+        }
         if (recordSessionCheckIn(session.id, state)) publish({ itemKind: 'session', sessionId: session.id, ...state });
         if (state.verdict === 'waiting-owner') resurfacePermissions(session.id);
-        if (state.verdict === 'looping') {
-          logFriction('watchdog', `chat ${session.id} appears to be looping`, { sessionId: session.id, summary: state.summary });
-          if (state.loopChecks === 1) nudgeRunaway(session.id);
-          else if (!state.runawayStopped) {
-            state.runawayStopped = true;
-            await interrupt(session.id, 'watchdog: runaway loop continued after a nudge');
-          }
-        } else if (state.verdict === 'stuck') {
+        if (state.verdict === 'stuck') {
           logFriction('watchdog', `chat ${session.id} is stuck (${state.stuckChecks}/${cfg.watchdog.killAfterStuckChecks || 'never kill'})`, { sessionId: session.id, summary: state.summary });
           if (cfg.watchdog.killAfterStuckChecks > 0 && state.stuckChecks >= cfg.watchdog.killAfterStuckChecks) {
             await interrupt(session.id, `watchdog: no output, no files, no CPU for ${state.stuckChecks} checks (${Math.round(state.stuckChecks * intervalMs / 60_000)} min)`);

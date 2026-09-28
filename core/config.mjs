@@ -132,7 +132,6 @@ export const DEFAULTS = {
     intervalMinutes: 30,              // basic running-item check-in cadence
     killAfterStuckChecks: 3,          // phase 2 consumes this; 0 = never kill, otherwise at least 2
     loopRepeat: 5,                    // phase 2 looping alert threshold
-    loopTokens: 2_000_000,            // phase 2 token-burn alert threshold per tick
   },
   smoke: { timeoutMinutes: 20, hardTimeoutMinutes: 30 }, // per smoke-battery task; hardTimeoutMinutes for difficulty 6+ (L6/L7)
   tools: {                            // capability index (core/capabilities.mjs): programs, MCP servers, access rules a worker can use, by category
@@ -236,6 +235,7 @@ function normalize(cfg, raw = {}) {
     if ('args' in s) s.args = Array.isArray(s.args) ? s.args.filter((a) => typeof a === 'string') : [];
     if ('env' in s) s.env = plain(s.env) ? Object.fromEntries(Object.entries(s.env).filter(([, v]) => typeof v === 'string')) : {};
   }
+  delete cfg.watchdog.loopTokens;
   if (!plain(cfg.ui)) cfg.ui = { ...DEFAULTS.ui };
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
   if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
@@ -255,7 +255,7 @@ function normalize(cfg, raw = {}) {
     ...['minSamples', 'benchMinSamples', 'quality', 'qualityValueUsd', 'blockedMinutes'].map((key) => [cfg.scorecard, DEFAULTS.scorecard, key]),
     ...Object.keys(DEFAULTS.scorecard.windowTargets).map((key) => [cfg.scorecard.windowTargets, DEFAULTS.scorecard.windowTargets, key]),
     [cfg.smoke, DEFAULTS.smoke, 'timeoutMinutes'], [cfg.smoke, DEFAULTS.smoke, 'hardTimeoutMinutes'], [cfg.server, DEFAULTS.server, 'lagWarnMs'],
-    [cfg.watchdog, DEFAULTS.watchdog, 'loopRepeat'], [cfg.watchdog, DEFAULTS.watchdog, 'loopTokens'],
+    [cfg.watchdog, DEFAULTS.watchdog, 'loopRepeat'],
   ]) {
     if (!Number.isFinite(obj[key]) || obj[key] <= 0) obj[key] = defaults[key];
   }

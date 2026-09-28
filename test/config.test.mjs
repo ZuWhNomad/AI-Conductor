@@ -282,11 +282,12 @@ test('run timeouts default off and preserve explicit zero globally and by catego
 });
 
 test('watchdog settings use the planned safe defaults and validate their bounds', () => {
-  assert.deepEqual(DEFAULTS.watchdog, { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5, loopTokens: 2_000_000 });
+  assert.deepEqual(DEFAULTS.watchdog, { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5 });
   let cfg = saveConfig({ watchdog: { intervalMinutes: 4, killAfterStuckChecks: 1, loopRepeat: 0, loopTokens: -1 } });
   assert.deepEqual(cfg.watchdog, DEFAULTS.watchdog);
+  assert.equal(Object.hasOwn(cfg.watchdog, 'loopTokens'), false, 'legacy token setting is discarded');
   cfg = saveConfig({ watchdog: { intervalMinutes: 5, killAfterStuckChecks: 0, loopRepeat: 6, loopTokens: 100 } });
-  assert.deepEqual(cfg.watchdog, { intervalMinutes: 5, killAfterStuckChecks: 0, loopRepeat: 6, loopTokens: 100 });
+  assert.deepEqual(cfg.watchdog, { intervalMinutes: 5, killAfterStuckChecks: 0, loopRepeat: 6 });
 });
 
 test('the live prompt budgets are settings; the retired shared budget is absent', () => {

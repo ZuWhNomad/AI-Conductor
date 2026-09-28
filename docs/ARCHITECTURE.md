@@ -245,7 +245,7 @@ into a refactor (`mcpServersFor` in `core/mcp.mjs`).
 
 One server-owned watchdog samples every running chat and worker at `watchdog.intervalMinutes` (30 by default). A
 single portable process snapshot supplies parentage, CPU time and working set; each item's project directory gets a
-bounded recent-file walk, while the event bus supplies output, tool-repeat and usage signals. Verdicts distinguish
+bounded recent-file walk, while the event bus supplies output and tool-repeat signals. Verdicts distinguish
 progress, owner/task waits, CPU-active quiet work, repeated loops and silence. Every sample is shown through the
 `watchdog` event and saved on the item. Worker `aliveAt` writes are quiet, so they do not make auto-update activity
 look newer.
@@ -253,8 +253,9 @@ look newer.
 Silence is graduated: stuck checks are logged and badged before `watchdog.killAfterStuckChecks` (3 by default) uses
 the normal PID-scoped Stop/cancel path and records a worker as an unscored `failKind: "hung"`; zero disables that last
 resort. Pending permissions, parked tasks, late ticks and unavailable OS samples are never treated as proven hangs.
-Repeated identical tools, tool-less progress turns or configured token burn raise a looping verdict. A chat gets one
-corrective nudge, then a still-repeating runaway turn is stopped; worker count caps remain their independent guard.
+Repeated identical tools or tool-less progress turns raise a looping verdict. A Claude chat with a live inbox gets one
+nudge per looping episode; other runtimes report `alert only (runtime cannot take mid-turn input)`. Looping never
+interrupts a chat; worker count caps remain their independent guard.
 
 A chat turn is persisted while it is active. After a server restart, a Claude/Codex thread resumes once with a note
 to continue from the files; a non-resumable runtime records the interruption and waits for the user. Worker recovery

@@ -8,7 +8,7 @@ import { classify, createWatchdog, recentFileActivity, registerWatch, listWatche
 import { createTask, getTask, touchTaskAlive, cancelTask } from '../core/tasks.mjs';
 import { statePath, writeJson } from '../core/paths.mjs';
 
-const cfg = () => ({ watchdog: { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5, loopTokens: 2_000_000 } });
+const cfg = () => ({ watchdog: { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5 } });
 const noSnapshot = async () => ({ ok: false, processes: new Map() });
 const noProcess = () => ({ available: false, alive: false, cpuSeconds: null, rssBytes: null, names: [] });
 const noFiles = () => ({ changed: false });
@@ -21,7 +21,8 @@ test('classify covers waits, loops, progress, quiet CPU work, stuck counters and
   assert.deepEqual(classify(null, { waitingTasks: ['t'], waitingOnVerdict: 'quiet-alive' }, settings), { verdict: 'waiting-task', stuckChecks: 0, loopChecks: 0, waitingOnVerdict: 'quiet-alive' });
   assert.equal(classify(null, { parked: true }, settings).verdict, 'waiting-owner');
   assert.equal(classify(null, { eventDelta: 5, toolRepeat: 5, fileChanged: false }, settings).verdict, 'looping', 'specific repeat signal outranks generic events');
-  assert.equal(classify(null, { tokenDelta: 2_000_000, fileChanged: false }, settings).verdict, 'looping');
+  assert.notEqual(classify(null, { tokenDelta: 20_000_000, fileChanged: false }, settings).verdict, 'looping', 'tokens alone never signal a loop');
+  assert.equal(classify(null, { toolLessTurns: 5, fileChanged: false }, settings).verdict, 'looping', 'repeated tool-less turns signal a loop');
   assert.equal(classify(null, { toolRepeat: 5, fileChanged: true }, settings).verdict, 'progressing', 'a written file is concrete progress');
   assert.equal(classify(null, { eventDelta: 1, process: dead }, settings).verdict, 'progressing');
   assert.equal(classify(null, { process: live, cpuDelta: 1 }, settings).verdict, 'quiet-alive');
@@ -178,33 +179,60 @@ test('a worker task repeating the same tool call is classified looping (task eve
   for (let i = 0; i < 5; i++) bus.publish('worker', { taskId: id, event: 'item', phase: 'started', item: { type: 'command_execution', command: 'npm test' } });
   const now = Date.parse('2026-09-27T12:00:00.000Z');
   const tasks = [{ id, status: 'running', cwd: HOME, startedAt: new Date(now - 60_000).toISOString() }];
-  const checks = [];
+  const checks = [], friction = [], nudges = [], interrupts = [];
   const watchdog = createWatchdog({
     listSessions: () => [], listTasks: () => tasks, touchTaskAlive: (_id, state) => { checks.push(state.verdict); return true; },
     markTaskWakeReported() {}, recordSessionCheckIn: () => false, sendMessage: async () => {}, jobStatus: () => null,
+    nudgeRunaway: (sid) => nudges.push(sid), interrupt: async (sid) => interrupts.push(sid),
     processSnapshot: noSnapshot, processSample: noProcess, fileSample: noFiles,
-    publish: () => {}, logFriction: () => {}, config: cfg, clock: () => now,
+    publish: () => {}, logFriction: (...entry) => friction.push(entry), config: cfg, clock: () => now,
   });
   await watchdog.tick();
   assert.deepEqual(checks, ['looping']);
+  assert.equal(friction.length, 1);
+  assert.deepEqual(nudges, []);
+  assert.deepEqual(interrupts, []);
 });
 
-test('five tool-less progress turns nudge once, then a still-repeating runaway chat turn is stopped', async () => {
+test('a looping Claude chat is nudged once and never interrupted across checks', async () => {
   writeJson(statePath('watches.json'), []);
   const id = 'runaway-chat';
   for (let i = 0; i < 5; i++) bus.publish('session', { sessionId: id, kind: 'assistant', blocks: [{ type: 'text', text: 'still running' }] });
   let now = Date.parse('2026-09-27T12:00:00.000Z');
   const sessions = [{ id, status: 'running', cwd: HOME, startedAt: new Date(now - 60_000).toISOString() }];
-  const checks = [], nudges = [], stops = [];
+  const checks = [], nudges = [], stops = [], events = [];
   const watchdog = createWatchdog({
     listSessions: () => sessions, listTasks: () => [], touchTaskAlive: () => false, markTaskWakeReported() {},
     recordSessionCheckIn: (_id, state) => { checks.push(state); return true; }, sendMessage: async () => {}, jobStatus: () => null,
-    nudgeRunaway: (sid) => { nudges.push(sid); return false; }, interrupt: async (sid, reason) => { stops.push([sid, reason]); sessions[0].status = 'idle'; return true; },
+    canNudge: () => true, nudgeRunaway: (sid) => { nudges.push(sid); return true; },
+    interrupt: async (sid, reason) => { stops.push([sid, reason]); return true; },
     processSnapshot: noSnapshot, processSample: noProcess, fileSample: noFiles,
-    publish: () => {}, logFriction: () => {}, config: cfg, clock: () => now,
+    publish: (event) => events.push(event), logFriction: () => {}, config: cfg, clock: () => now,
   });
-  await watchdog.tick(); now += 30 * 60_000; await watchdog.tick();
-  assert.deepEqual(checks.map((x) => [x.verdict, x.loopChecks]), [['looping', 1], ['looping', 2]]);
+  for (let i = 0; i < 4; i++) { await watchdog.tick(); now += 30 * 60_000; }
+  assert.deepEqual(checks.map((x) => [x.verdict, x.loopChecks]), [['looping', 1], ['looping', 2], ['looping', 3], ['looping', 4]]);
   assert.deepEqual(nudges, [id]);
-  assert.equal(stops.length, 1); assert.match(stops[0][1], /continued after a nudge/);
+  assert.deepEqual(stops, []);
+  assert.ok(checks.every((x) => x.loopAction === 'nudged' && x.summary.includes('nudged')));
+  assert.ok(events.every((event) => event.summary.includes('nudged')));
+});
+
+test('a looping Codex chat is alert-only and is never nudged or interrupted', async () => {
+  writeJson(statePath('watches.json'), []);
+  const id = 'looping-codex';
+  for (let i = 0; i < 5; i++) bus.publish('session', { sessionId: id, kind: 'assistant', blocks: [{ type: 'text', text: 'still running' }] });
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  const sessions = [{ id, runtime: 'codex', status: 'running', cwd: HOME, startedAt: new Date(now - 60_000).toISOString() }];
+  const nudges = [], interrupts = [], events = [];
+  const watchdog = createWatchdog({
+    listSessions: () => sessions, listTasks: () => [], touchTaskAlive: () => false, markTaskWakeReported() {},
+    recordSessionCheckIn: () => true, sendMessage: async () => {}, jobStatus: () => null,
+    canNudge: () => false, nudgeRunaway: (sid) => nudges.push(sid), interrupt: async (sid) => interrupts.push(sid),
+    processSnapshot: noSnapshot, processSample: noProcess, fileSample: noFiles,
+    publish: (event) => events.push(event), logFriction: () => {}, config: cfg, clock: () => now,
+  });
+  await watchdog.tick();
+  assert.deepEqual(nudges, []);
+  assert.deepEqual(interrupts, []);
+  assert.match(events[0].summary, /alert only \(runtime cannot take mid-turn input\)/);
 });

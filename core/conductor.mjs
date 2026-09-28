@@ -247,10 +247,16 @@ export function resurfacePermissions(sessionId) {
   return true;
 }
 
+/** Whether this running Claude turn has an inbox that can accept mid-turn input. */
+export function canNudge(sessionId) {
+  const s = sessions.get(sessionId);
+  return !!s && s.status === 'running' && s.runtime === 'claude' && !!s.inbox;
+}
+
 /** A single corrective message for a repeated Claude loop; other runtimes cannot accept mid-turn input. */
 export function nudgeRunaway(sessionId, text) {
+  if (!canNudge(sessionId)) return false;
   const s = sessions.get(sessionId);
-  if (!s || s.status !== 'running' || s.runtime !== 'claude' || !s.inbox) return false;
   const message = String(text || '[watchdog] Repeated progress without a tool call was detected. Call the necessary tool now or finish with a concrete result.');
   pushMessage(s, { role: 'watchdog', text: message });
   s.inbox.push({ type: 'user', message: { role: 'user', content: message }, parent_tool_use_id: null, session_id: s.sdkSessionId || undefined });

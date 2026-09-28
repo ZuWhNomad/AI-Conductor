@@ -89,7 +89,7 @@ registerHooks({
   },
 });
 
-const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, cancelQueuedMessage, stopSession, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
+const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, cancelQueuedMessage, stopSession, canNudge, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
 const { bus } = await import('../core/bus.mjs');
 const { getModels, findModel } = await import('../core/models.mjs');
 const { listImprovements } = await import('../core/improve.mjs');
@@ -205,6 +205,7 @@ test('watchdog-style interrupt preserves the queue and it drains when the aborte
   await sendMessage(s.id, 'keep one after watchdog');
   await sendMessage(s.id, 'keep two after watchdog');
 
+  assert.equal(canNudge(s.id), false, 'Codex cannot take mid-turn input');
   assert.deepEqual(await interrupt(s.id, 'watchdog: test'), { ok: true, returned: [] });
   const interrupted = await getSession(s.id);
   assert.deepEqual(interrupted.queue.map((q) => q.text), ['keep one after watchdog', 'keep two after watchdog']);
@@ -327,10 +328,12 @@ test('a runaway nudge is queued once into a live Claude session', async () => {
   const s = createSession({ cwd: tmpDir('runaway-nudge') });
   const first = onceSession(s.id, 'result');
   await sendMessage(s.id, 'work');
+  assert.equal(canNudge(s.id), true, 'running Claude query has a live inbox');
   assert.equal(nudgeRunaway(s.id, 'use a tool or finish'), true);
   g1.resolve(); await first;
   const second = onceSession(s.id, 'result');
   g2.resolve(); await second;
+  assert.equal(canNudge(s.id), false, 'idle Claude session has no live inbox');
   assert.equal(globalThis.__claudeInbox.length, 2);
   assert.equal(globalThis.__claudeInbox[1].message.content, 'use a tool or finish');
 });
