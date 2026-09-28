@@ -15,7 +15,7 @@ import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
 import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
 import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask, setDraining } from '../core/tasks.mjs';
+import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask, setDraining, awaitRunning } from '../core/tasks.mjs';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
@@ -32,6 +32,7 @@ import { createWatchdog } from '../core/watchdog.mjs';
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
 let boundPort = null;              // the port this server actually bound — the self-restart relauncher reuses it
+let activeServer = null;
 const RELAUNCH_WAIT_MS = 20_000;  // how long a relaunch child retries binding while the outgoing process releases the port
 const watchdog = createWatchdog({
   listSessions: conductor.listSessions, listTasks, touchTaskAlive, markTaskWakeReported,
@@ -213,20 +214,46 @@ async function route(req, res, url) {
   }
   if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
     json(res, 200, { ok: true, stopping: true });
-    setTimeout(() => { try { stopBackgroundWork(); } catch {} try { abortRunning({ requeue: true }); } catch {} try { unlinkSync(statePath('server.pid')); } catch {} setTimeout(() => process.exit(0), 1200); }, 50);
+    setDraining(true);
+    setTimeout(async () => {
+      try { activeServer?.close(); } catch {}
+      try { stopBackgroundWork(); } catch {}
+      try { abortRunning({ requeue: true }); } catch {}
+      try { await awaitRunning(1200); } catch {}
+      try { unlinkSync(statePath('server.pid')); } catch {}
+      process.exit(0);
+    }, 50);
     return true;
   }
 
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
-    res.write(`event: hello\ndata: ${JSON.stringify({ boot: BOOT, oldest: bus.oldest })}\n\n`);
-    const send = (ev) => res.write(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+    let closed = false;
+    let hb = null;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      bus.off('event', h);
+      if (hb) clearInterval(hb);
+      try { res.end(); } catch {}
+    };
+    const safeWrite = (data) => {
+      if (closed) return false;
+      const ok = res.write(data);
+      if (ok === false) { cleanup(); return false; }
+      return true;
+    };
+    const h = (ev) => safeWrite(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+    if (!safeWrite(`event: hello\ndata: ${JSON.stringify({ boot: BOOT, oldest: bus.oldest })}\n\n`)) return true;
     const since = Number(url.searchParams.get('since') || 0);
-    if (!(bus.oldest > since + 1)) for (const ev of bus.since(since)) send(ev); // gap: client resyncs from /api/state
-    const h = (ev) => send(ev);
+    if (!(bus.oldest > since + 1)) {
+      for (const ev of bus.since(since)) {
+        if (!h(ev)) return true;
+      }
+    }
     bus.on('event', h);
-    const hb = setInterval(() => res.write(': hb\n\n'), 15000);
-    req.on('close', () => { bus.off('event', h); clearInterval(hb); });
+    hb = setInterval(() => safeWrite(': hb\n\n'), 15000);
+    req.on('close', cleanup);
     return true;
   }
 
@@ -494,14 +521,16 @@ export function scheduleRelaunch({ port = boundPort, spawnFn = spawn, exit = () 
   relaunchPending = child;
   const release = () => { if (relaunchPending === child) relaunchPending = null; };
   let settled = false;
-  const handoff = () => {
+  const handoff = async () => {
     if (settled) return; settled = true;
     try { child.unref?.(); } catch {}
+    try { activeServer?.close(); } catch {}
     try { conductor.shutdownSessions?.(); } catch {}
     try { stopBackgroundWork(); } catch {}
     try { abortRunning({ requeue: true }); } catch {} // in-flight worker tasks resume in the new process
+    try { await awaitRunning(300); } catch {}
     try { unlinkSync(statePath('server.pid')); } catch {}
-    setTimeout(() => { try { exit(); } finally { release(); } }, 300); // let the HTTP response flush before we drop the port
+    setTimeout(() => { try { exit(); } finally { release(); } }, 50); // let the HTTP response flush before we drop the port
   };
   // A child that dies on import (missing dependency, syntax error) must not take the running server down with it:
   // the previous version stays up, says so, and the user restarts by hand once it is fixed.
@@ -658,6 +687,7 @@ export function startServer({ port = null } = {}) {
     let settled = false;
     const onListen = () => {
       settled = true;
+      activeServer = server;
       boundPort = server.address().port;
       // The outgoing process could finish tasks after our import, before releasing the port.
       const recovered = recoverTasks();

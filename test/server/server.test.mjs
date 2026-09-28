@@ -199,6 +199,29 @@ test('SSE hello exposes the oldest retained event when the replay cursor has fal
   } finally { await reader.cancel(); }
 });
 
+test('R47: large events evict older ones once the byte cap is passed', async () => {
+  const { bus } = await import('../../core/bus.mjs');
+  // Create a bus instance with a small byte limit (e.g. 5000 bytes) to test byte eviction
+  const capped = new bus.constructor({ max: 2000, maxBytes: 5000 });
+  // Publish 3 events with 2000 bytes each
+  const payload1 = 'a'.repeat(2000);
+  const ev1 = capped.publish('test-1', { data: payload1 });
+  assert.equal(capped.oldest, ev1.seq);
+  const ev2 = capped.publish('test-2', { data: payload1 });
+  assert.equal(capped.oldest, ev1.seq);
+
+  // The 3rd event exceeds 5000 bytes total, evicting the oldest event (ev1)
+  const ev3 = capped.publish('test-3', { data: payload1 });
+  assert.equal(capped.oldest, ev2.seq, 'ev1 was evicted by byte limit');
+  assert.ok(capped.bytes <= 5000, 'total retained bytes stays within cap');
+  const replayed = capped.since(0);
+  assert.equal(replayed.length, 2);
+  assert.equal(Object.hasOwn(ev1, '__bytes'), false, 'published event has no __bytes property');
+  assert.equal(Object.hasOwn(ev2, '__bytes'), false, 'retained event has no __bytes property');
+  assert.ok(replayed.every((e) => !Object.hasOwn(e, '__bytes')), 'replayed events have no __bytes property');
+});
+
+
 test('resolving an improvement over HTTP publishes exactly one event', async () => {
   const { bus } = await import('../../core/bus.mjs');
   const entry = await post('/api/improvements', { kind: 'idea', message: 'resolution route fixture' });
@@ -697,3 +720,47 @@ test('stale tasks rerun with a cleared crash guard and can be discarded through 
   await post(`/api/tasks/${rerun.task.id}/cancel`);
   await post(`/api/tasks/${live.id}/cancel`);
 });
+
+test('R82: a stub response whose write returns false gets closed and unsubscribes', async () => {
+  const { bus } = await import('../../core/bus.mjs');
+  const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
+  let closed = false;
+  let writeCount = 0;
+  const stubRes = {
+    writeHead() {},
+    write() {
+      writeCount++;
+      return false; // backpressure / buffer full
+    },
+    end() {
+      closed = true;
+    },
+  };
+  const stubReq = {
+    method: 'GET',
+    headers: {},
+    on() {},
+  };
+  const listenersBefore = bus.listenerCount('event');
+  const routeStart = src.indexOf("if (m === 'GET' && p === '/api/events') {");
+  const routeEnd = src.indexOf("\n  if (seg[1] === 'jobs') {");
+  const routeSnippet = src.slice(routeStart, routeEnd);
+
+  const context = {
+    m: 'GET',
+    p: '/api/events',
+    url: new URL('http://127.0.0.1/api/events'),
+    req: stubReq,
+    res: stubRes,
+    BOOT: Date.now(),
+    bus,
+    setInterval: () => ({ unref() {} }),
+    clearInterval: () => {},
+  };
+  runInNewContext(`(() => { ${routeSnippet} })()`, context);
+
+  assert.equal(closed, true, 'res.end() was called when write returned false');
+  assert.equal(bus.listenerCount('event'), listenersBefore, 'bus listener was cleaned up');
+});
+
+
