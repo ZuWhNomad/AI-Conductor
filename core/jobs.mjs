@@ -15,7 +15,10 @@ const validId = (id) => typeof id === 'string' && /^[a-z0-9]+$/.test(id);
 // record, because the record is redacted on disk. Record updates are read-merge-write with a rename.
 const WRAPPER = `const { spawn } = require('node:child_process'); const fs = require('node:fs');
 const [file, logFile, command, cwd] = process.argv.slice(1);
-const save = (patch) => { const cur = JSON.parse(fs.readFileSync(file, 'utf8')); if (cur.status === 'canceled') return; fs.writeFileSync(file + '.tmp', JSON.stringify({ ...cur, ...patch }, null, 2)); fs.renameSync(file + '.tmp', file); };
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Windows refuses a rename over a file another process has open (a jobStatus read): retry ~2 s instead of dying 'lost'.
+const rename = (a, b) => { for (let i = 0; ; i++) { try { return fs.renameSync(a, b); } catch (e) { if (i >= 100 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; nap(20); } } };
+const save = (patch) => { const cur = JSON.parse(fs.readFileSync(file, 'utf8')); if (cur.status === 'canceled') return; fs.writeFileSync(file + '.tmp', JSON.stringify({ ...cur, ...patch }, null, 2)); rename(file + '.tmp', file); };
 const out = fs.openSync(logFile, 'a');
 const c = spawn(command, { cwd, shell: true, stdio: ['ignore', out, out], windowsHide: true });
 save({ pid: process.pid, childPid: c.pid || null });

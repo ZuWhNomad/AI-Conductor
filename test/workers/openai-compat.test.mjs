@@ -75,7 +75,7 @@ test('a hung fetch is aborted by the task deadline without a caller signal', asy
   }));
   const keepAlive = setTimeout(() => {}, 3000); // AbortSignal.timeout itself is unref'ed.
   try {
-    const r = await runOpenAICompat({ ...base, timeoutMs: 10 });
+    const r = await runOpenAICompat({ ...base, timeoutMs: 500 }); // > setup time: a 10 ms deadline could expire before fetch was reached (flaky: signal undefined)
     assert.equal(r.ok, false);
     assert.equal(signal.aborted, true);
     assert.match(r.error, /timeout/i);
