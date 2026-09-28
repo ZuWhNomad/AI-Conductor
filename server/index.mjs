@@ -163,8 +163,7 @@ async function listDirs(p) {
   if (isUncPath(dir)) return { path: dir, parent: null, dirs: [], error: 'UNC' };
   let entries;
   try {
-    if (!(await existsAsync(dir))) entries = [];
-    else entries = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules').map((e) => e.name).sort((a, b) => a.localeCompare(b));
+    entries = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules').map((e) => e.name).sort((a, b) => a.localeCompare(b));
   } catch (e) { return { path: dir, parent: dirname(dir) !== dir ? dirname(dir) : null, dirs: [], error: e.code }; }
   return { path: dir, parent: dirname(dir) !== dir ? dirname(dir) : null, dirs: entries, hasGit: await existsAsync(join(dir, '.git')), hasClaudeMd: await existsAsync(join(dir, 'CLAUDE.md')) };
 }
@@ -351,7 +350,9 @@ async function route(req, res, url) {
   if (p === '/api/browse' && m === 'GET') {
     const browsePath = url.searchParams.get('path');
     if (browsePath && isUncPath(browsePath)) return json(res, 400, { error: 'unc paths are not allowed' });
-    return json(res, 200, await listDirs(browsePath));
+    const listing = await listDirs(browsePath);
+    if (listing.error === 'ENOENT' || listing.error === 'ENOTDIR') return json(res, 404, { error: listing.error === 'ENOENT' ? 'Folder does not exist' : 'Path is not a folder' });
+    return json(res, 200, listing);
   }
   if (seg[1] === 'providers' && seg[2] && ['login', 'relogin', 'install'].includes(seg[3]) && m === 'POST') {
     const prov = PROVIDERS[seg[2]];

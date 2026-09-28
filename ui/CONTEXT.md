@@ -16,7 +16,7 @@ banner and read only that section.
 |---|---|
 | (top, no banner) | `$`, `el`, the `api` fetch helper, the single state object `S` |
 | `markdown-lite` | `esc`, `md`: the tiny markdown renderer for assistant text |
-| `rendering: sidebar` | chat list (`renderSessions`, rename), **Providers & limits** panel (`renderProviders`, meters) |
+| `rendering: sidebar` | chat list (`renderSessions`, accessible rename/delete buttons), **Providers & limits** panel (`renderProviders`, meters) |
 | `budget headline` | the Budget block: which window applies to the selected conductor (`windowScope`, `planWindow`, `renderBudget`) |
 | `model chip (header)` | `renderChip`: the header chip showing the conductor model |
 | `conductor picker: provider : model : effort` | the three linked selects, for New chat and for the header popover (`fillPicker`, `refreshNewPicker`, `refreshHeaderPicker`, `savedSelection`) |
@@ -25,7 +25,7 @@ banner and read only that section.
 | `sessions` | open / create a chat, status pill, `send` (also the `/worker …` direct-to-worker shortcut) |
 | `update affordance` | `renderUpdate`: the flashing **⬇ Update** button |
 | `SSE` | `resync` (full refetch of `/api/state`), `connect` (EventSource, one handler per event type), `onSessionEvent` |
-| `modals` | `openModal`, folder browser, Settings, Improvements log, run review |
+| `modals` | `openModal`, folder browser (errors disable folder selection), Settings, Improvements log, run review |
 | `quit / misc` | Quit button, model popover, SYSTEM drawer, scores modal |
 | `boot` | wires every DOM event handler, then `resync()` + `connect()` |
 

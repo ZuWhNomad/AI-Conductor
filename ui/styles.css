@@ -92,12 +92,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .list .item:hover { background: var(--bg3); }
 .list .item.active { background: var(--bg3); outline: 1px solid var(--line); }
 .list .item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.list .item .x { visibility: hidden; color: var(--muted); }
+.list .item .x { visibility: hidden; color: var(--muted); background: none; border: 0; padding: 0; }
 .list .item:hover .x, .list .item:focus-within .x { visibility: visible; }
 @media (hover: none) {
   .list .item .x { visibility: visible; }
 }
-.list .item:focus-visible, .task:focus-visible, .cmd-item:focus-visible, .dirs .d:focus-visible { outline: 1px solid var(--accent); }
+.list .item:focus-visible, .list .item .x:focus-visible, .task:focus-visible, .cmd-item:focus-visible, .dirs .d:focus-visible { outline: 1px solid var(--accent); }
 .providers .prov { padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .providers .prov:last-child { border-bottom: none; }
 .providers .name { display: flex; justify-content: space-between; font-size: 12px; }
@@ -180,7 +180,7 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 .cmd-item.on, .cmd-item:hover { background: var(--bg3); }
 .composer .row { min-width: 0; }
 .composer textarea { flex: 1; min-width: 0; resize: vertical; min-height: 44px; max-height: 40vh; }
-.composer .mic { font-size: 18px; padding: 4px 10px; }
+.composer .mic { display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; }
 .composer .mic.on { background: #3a1d1d; border-color: var(--bad); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(239,107,107,.15); } }
 /* update available: flash the header Update button so a waiting update can't be missed */

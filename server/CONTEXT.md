@@ -29,7 +29,7 @@ The update gate counts running chats and running/queued tasks, excluding parked 
 | `GET /api/scores`, `GET /api/bench` | scorecard table; models due a re-benchmark | `scorecard`, `bench` |
 | `GET\|POST /api/settings` | config (redacted by `publicConfig`); a save re-applies polling, update checks + `schedule()` | `config` |
 | `/api/improvements[/<id>/resolve]`, `POST /api/review` | improvement log; open a self-review session | `improve` |
-| `GET /api/browse` | folder picker (async; UNC refused) | — |
+| `GET /api/browse` | folder picker (async; UNC refused; 404 for missing paths or files) | — |
 | `GET\|POST /api/update` | update status; pull + self-restart | `update` |
 | `GET /api/doctor`, `POST /api/shutdown` | environment check; the UI Quit button | — |
 | `POST /mcp/<session>` | MCP (JSON-RPC over HTTP) exposing the conductor tools to a Codex conductor | `tools` |

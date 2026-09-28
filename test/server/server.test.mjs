@@ -233,7 +233,14 @@ test('bad requests are client errors and leave state usable', async () => {
   assert.equal((await send('/api/settings', {}, { Origin: url })).status, 200);
   const file = join(cwd, 'file.txt'); writeFileSync(file, 'test');
   const browse = await fetch(url + '/api/browse?path=' + encodeURIComponent(file));
-  assert.equal(browse.status, 200); const b = await browse.json(); assert.deepEqual(b.dirs, []); assert.equal(b.error, 'ENOTDIR');
+  assert.equal(browse.status, 404); assert.deepEqual(await browse.json(), { error: 'Path is not a folder' });
+});
+
+test('browse returns 404 for a missing folder', async () => {
+  const missing = join(tmpDir('browse-missing'), 'absent');
+  const response = await fetch(url + '/api/browse?path=' + encodeURIComponent(missing));
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: 'Folder does not exist' });
 });
 
 test('event-loop lag: sampled live for doctor; a friction verdict only above the threshold', async (ctx) => {
