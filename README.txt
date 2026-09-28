@@ -9,7 +9,7 @@ Claude ultracode;
   - Output ranked model+effort selection
   - Use the best worker, at the most economical rate, to complete the task (efficiency
     optimization, with some quality prioritization as pipelines are built out)
-  - Drive it with a regular codex or claude session to make things easier
+  - Drive it with a regular codex or claude session to make things easier (how: docs/DRIVE-CONDUCTOR.md)
 
 Same but more words:
 A Claude Code clone with upgrades: the Claude model you pick is the CONDUCTOR (plans, delegates,
