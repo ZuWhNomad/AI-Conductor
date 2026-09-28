@@ -28,6 +28,15 @@ test('openBrowser uses rundll32 FileProtocolHandler on Windows', () => {
   assert.doesNotMatch(src, /cmd.*\/c.*start/);
 });
 
+test('job CLI documents --gpu and passes it to POST /api/jobs', () => {
+  const help = runCli(['help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /job start \[--cwd DIR\] \[--gpu\]/);
+  const src = readFileSync(join(REPO_ROOT, 'bin', 'conductor.mjs'), 'utf8');
+  assert.match(src, /gpu:\s*\{\s*type:\s*'boolean'\s*\}/);
+  assert.match(src, /call\('POST',\s*'\/api\/jobs',\s*\{\s*command:[\s\S]*?gpu:\s*!!flags\.gpu\s*\}\)/);
+});
+
 test('share falls back when Desktop does not exist', () => {
   const home = tmpDir('nodesktop');
   const share = runCli(['share'], { USERPROFILE: home, HOME: home, ONEDRIVE: '' });

@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 
 const { startJob, jobStatus, cancelJob, formatJob } = await import('../core/jobs.mjs');
 const { statePath, writeJson } = await import('../core/paths.mjs');
+const { loadConfig, saveConfig } = await import('../core/config.mjs');
+const { setMemoryReader } = await import('../core/resources.mjs');
 const node = JSON.stringify(process.execPath);
 const until = async (fn, ms = 15_000) => { const end = Date.now() + ms; for (;;) { const v = fn(); if (v || Date.now() > end) return v; await new Promise((r) => setTimeout(r, 50)); } };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -49,4 +51,40 @@ test('a job outlives the process that started it', async () => {
   const done = await until(() => { const s = jobStatus(id); return s && s.status !== 'running' && s; });
   assert.equal(done.status, 'done');
   assert.match(done.tail, /still here/);
+});
+
+test('only one live GPU job is allowed, and another starts after it exits', async () => {
+  const resources = loadConfig().resources;
+  const restoreMemory = setMemoryReader(() => ({ total: 100, free: 80 }));
+  saveConfig({ resources: { maxRamPct: 85 } });
+  try {
+    const first = startJob({ command: `${node} -e "setTimeout(() => {}, 500)"`, cwd: tmpDir('gpu-job'), gpu: true });
+    assert.equal(JSON.parse(readFileSync(statePath('jobs', `${first.id}.json`), 'utf8')).gpu, true);
+    assert.throws(() => startJob({ command: 'echo blocked', cwd: tmpDir('gpu-job'), gpu: true }), new RegExp(`one GPU job at a time; wait for ${first.id} or cancel it`));
+    const firstDone = await until(() => { const s = jobStatus(first.id); return s.status !== 'running' && s; });
+    assert.equal(firstDone.status, 'done');
+
+    const next = startJob({ command: 'echo gpu available', cwd: tmpDir('gpu-job'), gpu: true });
+    assert.equal(next.gpu, true);
+    assert.equal((await until(() => { const s = jobStatus(next.id); return s.status !== 'running' && s; })).status, 'done');
+  } finally {
+    restoreMemory();
+    saveConfig({ resources });
+  }
+});
+
+test('RAM at the configured cap refuses a job, while maxRamPct zero disables the guard', async () => {
+  const resources = loadConfig().resources;
+  const restoreMemory = setMemoryReader(() => ({ total: 100, free: 10 }));
+  try {
+    saveConfig({ resources: { maxRamPct: 85 } });
+    assert.throws(() => startJob({ command: 'echo blocked', cwd: tmpDir('ram-job') }), { status: 409, message: /RAM 90% ≥ 85%: new work held/ });
+
+    saveConfig({ resources: { maxRamPct: 0 } });
+    const allowed = startJob({ command: `${node} -e "console.log('guard disabled')"`, cwd: tmpDir('ram-job') });
+    assert.equal((await until(() => { const s = jobStatus(allowed.id); return s.status !== 'running' && s; })).status, 'done');
+  } finally {
+    restoreMemory();
+    saveConfig({ resources });
+  }
 });

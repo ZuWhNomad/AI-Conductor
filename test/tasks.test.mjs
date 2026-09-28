@@ -1650,6 +1650,55 @@ test('draining leaves queued work undispatched and scheduling resumes when drain
   }
 });
 
+test('RAM pressure arms one unrefed retry and starts queued work when headroom returns', async (ctx) => {
+  const { loadConfig, saveConfig } = await import('../core/config.mjs');
+  const { setMemoryReader } = await import('../core/resources.mjs');
+  const resources = loadConfig().resources;
+  let free = 10;
+  const restoreMemory = setMemoryReader(() => ({ total: 100, free }));
+  saveConfig({ resources: { maxRamPct: 85 } });
+  const tk = await tasksWithWorker(ctx, async () => ({ ok: true, finalMessage: 'done' }));
+  const t = tk.createTask({ cwd: tmpDir('ram-task'), provider: 'ollama', model: 'qwen', spec: 'run when memory is available' }, { dispatch: false });
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const retryTimers = [];
+  ctx.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 30_000) {
+      const timer = { unrefCalled: false, unref() { this.unrefCalled = true; } };
+      retryTimers.push({ callback: () => callback(...args), timer });
+      return timer;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  });
+  ctx.mock.method(globalThis, 'clearTimeout', (timer) => {
+    if (retryTimers.some((retry) => retry.timer === timer)) { timer.cleared = true; return; }
+    return originalClearTimeout(timer);
+  });
+  const previous = process.env.CONDUCTOR_NO_SCHEDULE;
+  try {
+    delete process.env.CONDUCTOR_NO_SCHEDULE;
+    tk.schedule();
+    assert.equal(tk.getTask(t.id).status, 'queued');
+    assert.equal(tk.getTask(t.id).attempts, 0);
+    tk.schedule();
+    assert.equal(tk.getTask(t.id).status, 'queued', 'a held queue remains untouched on repeated passes');
+    assert.equal(retryTimers.length, 1, 'held passes share one pending retry timer');
+    assert.equal(retryTimers[0].timer.unrefCalled, true, 'the retry timer does not hold the process open');
+
+    free = 90;
+    retryTimers[0].callback();
+    const done = await tk.awaitTask(t.id, 5000);
+    assert.equal(done.status, 'done');
+    assert.equal(done.attempts, 1);
+  } finally {
+    if (previous === undefined) process.env.CONDUCTOR_NO_SCHEDULE = '1'; else process.env.CONDUCTOR_NO_SCHEDULE = previous;
+    tk.abortRunning();
+    tk.cancelTask(t.id);
+    restoreMemory();
+    saveConfig({ resources });
+  }
+});
+
 test('GP: awaitTask keeps a 30 s park inside longer waits and resolves parks past each deadline', async (ctx) => {
   const { getLimits } = await import('../core/limits.mjs');
   const now = Date.now(); ctx.mock.method(Date, 'now', () => now);

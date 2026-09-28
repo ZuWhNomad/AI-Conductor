@@ -21,6 +21,7 @@ import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { recipeFor } from './recipes.mjs';
 import { capabilityLines, accessProviders } from './capabilities.mjs';
 import { mcpServersFor } from './mcp.mjs';
+import { resourceStatus } from './resources.mjs';
 
 const DIR = () => statePath('tasks');
 const INDEX = () => statePath('tasks-index.json');
@@ -36,6 +37,7 @@ const running = new Map();   // id -> AbortController
 const runningSettle = new Map(); // id -> Promise
 const settling = new Set(); // completed tasks retain budget reservations until polling and scoring settle
 const waiters = new Map();   // id -> { deadline, done }[]
+let ramRetryTimer = null;
 let journalIndex = new Map(); // small metadata only; journal files remain authoritative
 const validId = (id) => typeof id === 'string' && /^[a-z0-9_-]+$/i.test(id);
 const newestFirst = (a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id));
@@ -515,10 +517,14 @@ export function schedule() {
 function scheduleOnce() {
   if (shuttingDown || draining) return;
   const cfg = loadConfig();
+  const ramHeld = resourceStatus(cfg).held;
+  const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  if (!queued.length) { clearRamRetry(); return; }
+  if (ramHeld) { armRamRetry(); return; } // keep work queued and check again after the retry delay
+  clearRamRetry();
   const max = cfg.conductor.maxWorkerConcurrency;
   const budget = cfg.conductor.budgetGate !== false; // framework budget gate: on unless explicitly disabled
-  const queued = openTasks().filter((t) => t.status === 'queued').sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-  if (!queued.length || running.size >= max) return;
+  if (running.size >= max) return;
   const rows = budget ? activeRunRows() : null;
   const costCache = new Map();
   const costByWindow = (t) => {
@@ -574,6 +580,18 @@ function scheduleOnce() {
     void run(t);
   }
   if (failovers.length) schedule();
+}
+
+function armRamRetry() {
+  if (ramRetryTimer) return;
+  ramRetryTimer = setTimeout(() => { ramRetryTimer = null; schedule(); }, 30_000);
+  ramRetryTimer.unref();
+}
+
+function clearRamRetry() {
+  if (!ramRetryTimer) return;
+  clearTimeout(ramRetryTimer);
+  ramRetryTimer = null;
 }
 
 function park(t, until, reason, { kind = 'limit', source = 'guess' } = {}) {

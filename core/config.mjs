@@ -7,6 +7,7 @@ export const DEFAULTS = {
   port: 47474,
   openBrowser: true,
   pollMinutes: 15,                    // model + limit registry refresh cadence
+  resources: { maxRamPct: 85 },       // hold new work at this used-memory percentage; 0 disables the RAM guard
   // `autoRefresh` turns on the server's model/limit poll (every pollMinutes; tabs follow its events). `detectMinutes` is a
   // much cheaper thing: how often an INSTALLED BUT SIGNED-OUT provider is re-probed so a sign-in done outside
   // the app is noticed without pressing Refresh.
@@ -242,6 +243,7 @@ function normalize(cfg, raw = {}) {
   if (!plain(cfg.ui)) cfg.ui = { ...DEFAULTS.ui };
   cfg.ui.autoRefresh = !!cfg.ui.autoRefresh;
   if (!plain(cfg.server)) cfg.server = { ...DEFAULTS.server };
+  if (!Number.isFinite(cfg.resources.maxRamPct) || cfg.resources.maxRamPct < 0 || cfg.resources.maxRamPct > 100) cfg.resources.maxRamPct = DEFAULTS.resources.maxRamPct;
   if (!plain(cfg.scorecard.windowTargets)) cfg.scorecard.windowTargets = { ...DEFAULTS.scorecard.windowTargets };
   // 0 is a documented OFF switch for these values, so it must survive: only garbage (negative, NaN) resets.
   for (const [obj, defaults, key] of [
