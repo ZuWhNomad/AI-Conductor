@@ -14,6 +14,7 @@ import { conductorTools, conductorToolDefs, toolsAsFunctions, CONDUCTOR_AGENTS }
 import { abortPlans } from './plans.mjs';
 import { logImprovement } from './improve.mjs';
 import { PROVIDERS } from './providers/index.mjs';
+import { frameworkIndex } from './recipes.mjs';
 import { runCodex } from './workers/codex.mjs';
 import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { spawnTracked } from './proc.mjs';
@@ -30,7 +31,7 @@ function noteRequiredVersion(s, message) {
   return true;
 }
 // Policy + the structural playbook (model-agnostic). {{CONDUCTOR_DOCS}} is this install's docs/, whatever the chat's cwd.
-export const PROMPT = (prompt('conductor.md') + '\n\n' + prompt('orchestration.md')).replaceAll('{{CONDUCTOR_DOCS}}', () => join(REPO_ROOT, 'docs'));
+export const PROMPT = (prompt('conductor.md') + `\n\n${frameworkIndex()}\nFrameworks are optional starting methods; fetch one with the framework tool when it fits, deviate when the task gives a reason.` + '\n\n' + prompt('orchestration.md')).replaceAll('{{CONDUCTOR_DOCS}}', () => join(REPO_ROOT, 'docs'));
 const PROMPT_CODEX = prompt('conductor-codex.md');
 const PROMPT_LOOP = prompt('conductor-loop.md');
 const FILE = () => statePath('sessions.json');

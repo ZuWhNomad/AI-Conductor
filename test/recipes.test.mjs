@@ -127,3 +127,42 @@ test('financial video briefing recipe enforces extraction checks, dated prices, 
   assert.match(recipe, /lead with the predictions' status summary/);
 });
 
+test('front matter registry scans frameworks and exposes category metadata', async () => {
+  const { listFrameworks, parseFront } = await import('../core/recipes.mjs');
+  const parsed = parseFront('---\nid: sample\ntypes: [research, review]\naudience: conductor\npurpose: Test\nstatus: draft\n---\nBody text');
+  assert.deepEqual(parsed.meta, { id: 'sample', types: ['research', 'review'], audience: 'conductor', purpose: 'Test', status: 'draft' });
+  assert.equal(parsed.body, 'Body text');
+  const frameworks = listFrameworks();
+  assert.ok(frameworks.some((f) => f.id === 'image-to-3d-b' && f.types.includes('modeling')));
+  assert.ok(frameworks.some((f) => f.id === 'research' && f.audience === 'conductor'));
+});
+
+test('worker gets matching framework through recipe route; conductor index omits bodies', async () => {
+  const { saveConfig } = await import('../core/config.mjs');
+  const { createTask, buildPrompt, cancelTask } = await import('../core/tasks.mjs');
+  const { tmpDir } = await import('./_env.mjs');
+  const { frameworkIndex } = await import('../core/recipes.mjs');
+  const { PROMPT } = await import('../core/conductor.mjs');
+  const t = createTask({ cwd: tmpDir('framework-worker'), spec: 'spec', category: 'modeling' }, { dispatch: false });
+  try {
+    const { statePath, writeJson } = await import('../core/paths.mjs');
+    writeJson(statePath('config.json'), {});
+    assert.ok(buildPrompt(t).includes('Same goal and rules as recipe A'));
+  } finally { cancelTask(t.id); }
+  const lines = frameworkIndex().split('\n');
+  assert.ok(lines.some((line) => line.startsWith('research (')));
+  assert.ok(lines.some((line) => line.startsWith('planning (')));
+  assert.ok(lines.some((line) => line.startsWith('code-review (')));
+  assert.ok(lines.some((line) => line.startsWith('general (')));
+  assert.ok(lines.length <= 12);
+  assert.ok(PROMPT.includes(frameworkIndex()));
+  assert.ok(PROMPT.includes('Frameworks are optional starting methods; fetch one with the framework tool when it fits, deviate when the task gives a reason.'));
+  assert.ok(!PROMPT.includes('Restate the goal and what done means'));
+});
+
+test('framework tool fetches research and falls back to general for unknown categories', async () => {
+  const { conductorToolDefs } = await import('../core/tools.mjs');
+  const tool = conductorToolDefs({ sessionId: 'framework-tool', cwd: process.cwd() }).find((d) => d.name === 'framework');
+  assert.match(await tool.handler({ type: 'research' }), /^framework: research\n/);
+  assert.match(await tool.handler({ type: 'unknown-category' }), /^framework: general\n/);
+});

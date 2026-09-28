@@ -1,3 +1,11 @@
+---
+id: video-finance
+types: [summarize]
+audience: worker
+variant: video-finance
+purpose: Financial video briefing
+status: curated
+---
 # Recipe: financial video briefing — the Conductor half
 
 **Applies when the task is to verify or enrich a briefing of a FINANCIAL video** (markets,

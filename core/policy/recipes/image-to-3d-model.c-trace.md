@@ -1,3 +1,11 @@
+---
+id: image-to-3d-c-trace
+types: [modeling]
+audience: worker
+variant: recipe-c-trace
+purpose: Trace reference image to labelled vector paths
+status: curated
+---
 # Recipe C, stage 1 (trace): reference image → labelled vector paths
 
 You are the **tracing stage** of a two-model pipeline. A stronger model will take your output and build the 3D

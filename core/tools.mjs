@@ -16,7 +16,7 @@ import { runPlan, getPlan, noWorkerReason, SANDBOX_VALUES } from './plans.mjs';
 import { statePath } from './paths.mjs';
 import { sessionFlags } from './session-flags.mjs';
 import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from './capabilities.mjs';
-import { variantsOf, checkVariant } from './recipes.mjs';
+import { variantsOf, checkVariant, frameworkFor } from './recipes.mjs';
 import { startJob, jobStatus, cancelJob, formatJob } from './jobs.mjs';
 import { registerWatch } from './watchdog.mjs';
 import { resourceStatus, resourceLine } from './resources.mjs';
@@ -357,6 +357,15 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
       handler: async (a) => {
         const row = setEligibility(a.sel, a.category, a.action, a.reason);
         return `${row.action === 'block' ? 'blocked' : 'allowed'} ${row.sel} for ${row.category}: ${row.reason}`;
+      },
+    },
+    {
+      name: 'framework',
+      description: 'Fetch an optional starting framework for a scorecard category.',
+      schema: z.object({ type: z.string().describe('Scorecard category, such as research or review.') }),
+      handler: async ({ type }) => {
+        const f = frameworkFor(type);
+        return f ? `framework: ${f.id}\n${f.text}` : '(none)';
       },
     },
     {
