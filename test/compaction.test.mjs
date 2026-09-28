@@ -12,6 +12,7 @@ test('model windows honor override, learned ceiling, shipped data and fallback',
   assert.equal(contextWindowFor('test', 'learned', { models: { contextWindows: { 'test:learned': 4000 } } }), 4000);
   assert.equal(contextWindowFor('xai', 'grok-4.7'), 500000);
   assert.equal(contextWindowFor('unlisted', 'model'), 128000);
+  assert.equal(contextWindowFor('unlisted', 'model', undefined, null), null);
   assert.equal(readJson(statePath('context-windows.json'))['test:learned'], 7654);
 });
 

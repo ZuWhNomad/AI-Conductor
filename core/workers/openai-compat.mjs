@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
 import { bus } from '../bus.mjs';
-import { estimateTokens, recordLearnedContextWindow } from '../compaction.mjs';
+import { estimateTokens, recordLearnedContextWindow, contextWindowFor } from '../compaction.mjs';
 import { killTree, registerProc } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
 import { stateDir } from '../paths.mjs';
@@ -88,7 +88,22 @@ async function assertPublicHost(hostname) {
 }
 
 const FETCH_BODY_BYTES = 2 * 1024 * 1024; // P4 spec: stream-and-cancel cap (2 MB)
-const TOOL_RESULT_CHARS = 120_000; // X6 spec: keep latest tool results in full up to ~120k chars
+export const TOOL_RESULT_CHARS = 120_000; // Fallback tool-result trimming budget when context window is unknown
+const TOOL_RESULT_MIN = 32_000;
+const TOOL_RESULT_MAX = 400_000;
+
+/** Tool-result trimming budget: roughly 25% of window tokens × 4 chars/token, clamped to [32k, 400k] chars (fallback 120k). */
+export function toolResultBudget(provider, model, config = loadConfig()) {
+  let p = provider;
+  let m = model;
+  if (!p && typeof m === 'string' && m.includes(':')) {
+    [p, m] = m.split(':', 2);
+  }
+  const window = contextWindowFor(p || 'openai-compat', m, config, null);
+  if (!Number.isFinite(window) || window <= 0) return TOOL_RESULT_CHARS;
+  const chars = Math.round(window * 0.25 * 4);
+  return Math.min(TOOL_RESULT_MAX, Math.max(TOOL_RESULT_MIN, chars));
+}
 const HTTP_ATTEMPTS = 3; // I1 spec
 const SETTIMEOUT_MAX_MS = 2 ** 31 - 1; // Node/DOM setTimeout 32-bit signed limit
 
@@ -413,7 +428,9 @@ export async function runOpenAICompat(t) {
   const messages = t.history?.length ? [...t.history] : [{ role: 'system', content: t.system || 'You are a careful software engineer working in the project directory. Use the tools to inspect and change files, run the verification commands, then finish with a short report.' }];
   if (t.prompt) messages.push({ role: 'user', content: t.prompt });
   res.messages = messages;
-  const lowWater = loadConfig().worker.toolResultLowWater;
+  const cfg = loadConfig();
+  const lowWater = cfg.worker.toolResultLowWater;
+  const budget = toolResultBudget(t.provider || res.provider, t.model, cfg);
   let watermark = stubWatermark(messages);
   let sentMessages = null;
   let sentSourceLength = 0;
@@ -421,7 +438,7 @@ export async function runOpenAICompat(t) {
     for (let i = 0; i < (t.maxIterations || 150); i++) {
       if (t.signal?.aborted) throw new Error('aborted');
       if (Date.now() > deadline) throw new Error('timeout');
-      const advanced = advanceStubWatermark(messages, watermark, TOOL_RESULT_CHARS, lowWater);
+      const advanced = advanceStubWatermark(messages, watermark, budget, lowWater);
       watermark = advanced.watermark;
       if (!sentMessages || advanced.advanced) sentMessages = stubOldToolResults(messages, watermark);
       else sentMessages = [...sentMessages, ...messages.slice(sentSourceLength)];
