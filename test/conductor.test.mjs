@@ -178,7 +178,7 @@ test('interrupt returns queued text, removes queued transcript lines, and starts
   await sendMessage(s.id, 'return one');
   await sendMessage(s.id, 'return two');
   const before = await getSession(s.id);
-  assert.deepEqual(await interrupt(s.id), { ok: true, returned: ['return one', 'return two'] });
+  assert.deepEqual(await interrupt(s.id, 'interrupted by user', { returnQueued: true }), { ok: true, returned: ['return one', 'return two'] });
   const after = await getSession(s.id);
   assert.deepEqual(after.queue, []);
   assert.ok(!after.messages.some((m) => m.queued));
@@ -186,6 +186,41 @@ test('interrupt returns queued text, removes queued transcript lines, and starts
   await first;
   assert.equal(globalThis.__codexInputs.length, 1);
   assert.equal(after.messages.filter((m) => m.role === 'user').length, before.messages.filter((m) => m.role === 'user').length - 2);
+});
+
+test('watchdog-style interrupt preserves the queue and it drains when the aborted turn ends', async () => {
+  globalThis.__codexHold = Promise.withResolvers();
+  globalThis.__codexStarted = Promise.withResolvers();
+  const s = createSession({ cwd: tmpDir('chat-watchdog-interrupt-queue'), provider: 'codex', model: 'gpt-6-astra' });
+  const events = [];
+  const finished = Promise.withResolvers();
+  const h = (e) => {
+    if (e.type !== 'session' || e.sessionId !== s.id) return;
+    events.push(e);
+    if (e.kind === 'result' && events.filter((x) => x.kind === 'result').length === 2) finished.resolve();
+  };
+  bus.on('event', h);
+  await sendMessage(s.id, 'active');
+  await globalThis.__codexStarted.promise;
+  await sendMessage(s.id, 'keep one after watchdog');
+  await sendMessage(s.id, 'keep two after watchdog');
+
+  assert.deepEqual(await interrupt(s.id, 'watchdog: test'), { ok: true, returned: [] });
+  const interrupted = await getSession(s.id);
+  assert.deepEqual(interrupted.queue.map((q) => q.text), ['keep one after watchdog', 'keep two after watchdog']);
+  assert.ok(interrupted.messages.some((m) => m.text === 'keep one after watchdog' && m.queued));
+  assert.ok(interrupted.messages.some((m) => m.text === 'keep two after watchdog' && m.queued));
+
+  globalThis.__codexHold.resolve();
+  await finished.promise;
+  bus.off('event', h);
+  assert.equal(globalThis.__codexInputs.length, 2);
+  assert.ok(globalThis.__codexInputs[1].prompt.endsWith('keep one after watchdog\n\nkeep two after watchdog'));
+  assert.deepEqual(events.find((e) => e.kind === 'dequeued').ids, interrupted.queue.map((q) => q.id));
+  const live = await getSession(s.id);
+  assert.deepEqual(live.queue, []);
+  assert.ok(live.messages.some((m) => m.text === 'keep one after watchdog' && !m.queued));
+  assert.ok(live.messages.some((m) => m.text === 'keep two after watchdog' && !m.queued));
 });
 
 test('queued messages cancel by id, while stop and delete clear their queues', async () => {
@@ -469,13 +504,13 @@ test('GP: reloadSessions refreshes idle records and removes disk deletions while
   await finished;
 });
 
-test('L35: interrupt while idle returns false and does not label the next turn interrupted', async () => {
+test('L35: interrupt while idle returns ok:false and does not label the next turn interrupted', async () => {
   const s = createSession({ cwd: tmpDir('l35') });
   const first = onceSession(s.id, 'result');
   await sendMessage(s.id, 'first');
   await first;
   assert.equal((await getSession(s.id)).status, 'idle');
-  assert.equal(await interrupt(s.id), false);
+  assert.deepEqual(await interrupt(s.id), { ok: false, returned: [] });
   const second = onceSession(s.id, 'result');
   await sendMessage(s.id, 'second');
   const ev = await second;

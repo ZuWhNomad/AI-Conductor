@@ -563,19 +563,19 @@ export async function sendMessage(sessionId, text) {
   return publicSession(s);
 }
 
-export async function interrupt(sessionId, reason = 'interrupted by user') {
-  const s = sessions.get(sessionId); if (!s) return false;
+export async function interrupt(sessionId, reason = 'interrupted by user', { returnQueued = false } = {}) {
+  const s = sessions.get(sessionId); if (!s) return { ok: false, returned: [] };
   abortPlans(sessionId); // X3: Stop also stops the chat's run_plan stages
   if (s.runtime !== 'claude') {
-    const returned = removeQueuedMessages(s).map((q) => q.text);
+    const returned = returnQueued ? removeQueuedMessages(s).map((q) => q.text) : [];
     const active = s.turnAbort;
     if (active) { s.interrupted = reason; active.abort(); }
     return { ok: !!active, returned };
   }
-  if (!s.query || s.status !== 'running') return false;
+  if (!s.query || s.status !== 'running') return { ok: false, returned: [] };
   s.interrupted = reason; // the SDK reports an interrupt as an error result; label it instead of logging it
   try { await s.query.interrupt(); } catch (e) { s.interrupted = false; emit(s, 'error', { message: `interrupt failed: ${e.message}` }); }
-  return true;
+  return { ok: true, returned: [] };
 }
 
 export function cancelQueuedMessage(sessionId, queueId) {

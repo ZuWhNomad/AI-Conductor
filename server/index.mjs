@@ -249,8 +249,7 @@ async function route(req, res, url) {
     const b = m === 'POST' ? await readBody(req) : {};
     if (m === 'POST' && seg[3] === 'messages') return json(res, 200, await conductor.sendMessage(id, String(b.text || '')));
     if (m === 'POST' && seg[3] === 'interrupt') {
-      const result = await conductor.interrupt(id);
-      return json(res, 200, typeof result === 'boolean' ? { ok: result, returned: [] } : result);
+      return json(res, 200, await conductor.interrupt(id, undefined, { returnQueued: true }));
     }
     if (m === 'POST' && seg[3] === 'stop') return json(res, 200, { ok: conductor.stopSession(id) });
     if (m === 'POST' && seg[3] === 'permission') return json(res, 200, { ok: conductor.answerPermission(id, b.requestId, { allow: !!b.allow, message: b.message }) });
