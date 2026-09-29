@@ -940,8 +940,8 @@ test('B6: observed mixed-provider costs are weighted per step, including paid th
   const { getLimits } = await import('../core/limits.mjs');
   const limits = getLimits();
   const previous = { ...limits.providers };
-  const now = Date.now();
-  t.mock.method(Date, 'now', () => now);
+  const now = Date.parse('2026-09-28T16:20:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
   try {
     saveConfig({ scorecard: { minSamples: 3, classOrder: ['conductor', 'subscription', 'free'], providerWeight: { claude: 0.5, codex: 0.2, deepseek: 0 }, reservePct: 0.5, hourlyUsd: 3.6, wasteStrength: 0.9, wasteHorizonHours: 48, prices: { 'claude:paid': { in: 1, out: 0, cached: 0 }, 'codex:fallback': { in: 1, out: 0, cached: 0 }, 'deepseek:local:latest': { in: 1, out: 0, cached: 0 } } } });
     limits.providers.claude = { windows: [] };
