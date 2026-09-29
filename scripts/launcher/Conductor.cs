@@ -102,13 +102,13 @@ static class Launcher
             Thread.Sleep(400);
             string t; lock (tail) t = tail.ToString();
             MessageBox.Show("Conductor did not start.\n\n" + Last(t, 1500) + "\n\nFull log: " + logPath, Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            KillTree(proc);
+            KillProcess(proc);
             return 1;
         }
 
         Application.EnableVisualStyles();
         Application.Run(new StatusForm(foundUrl, proc, tail, logPath, stateDir));
-        KillTree(proc);
+        KillProcess(proc);
         log.WriteLine("---- " + DateTime.Now.ToString("s") + " stopped");
         return 0;
     }
@@ -186,15 +186,9 @@ static class Launcher
         try { Process.Start(new ProcessStartInfo("cmd.exe", "/c start \"\" \"" + url + "\"") { UseShellExecute = false, CreateNoWindow = true }); } catch { }
     }
 
-    public static void KillTree(Process p)
+    public static void KillProcess(Process p)
     {
-        try
-        {
-            if (p == null || p.HasExited) return;
-            var k = new ProcessStartInfo("taskkill", "/pid " + p.Id + " /T /F") { UseShellExecute = false, CreateNoWindow = true };
-            using (Process kp = Process.Start(k)) kp.WaitForExit(5000);
-        }
-        catch { }
+        try { if (p != null && !p.HasExited) p.Kill(); } catch { }
     }
 
     public static string Last(string s, int n) { return s.Length <= n ? s : s.Substring(s.Length - n); }
@@ -284,7 +278,7 @@ class StatusForm : Form
         }
         catch { }
         try { if (proc != null && !proc.HasExited) proc.WaitForExit(5000); } catch { }
-        if (proc != null && !proc.HasExited) Launcher.KillTree(proc);
+        if (proc != null && !proc.HasExited) Launcher.KillProcess(proc);
         base.OnFormClosed(e);
     }
 }

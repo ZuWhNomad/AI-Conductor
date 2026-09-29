@@ -61,6 +61,10 @@ Graceful shutdown journals `queued` + `resume` + `interruptedAt` before aborting
 sets draining to stop new dispatches during handover. The update gate counts only running and queued worker tasks
 (plus running chats); parked and stale tasks do not count as busy.
 
+Detached jobs survive a Conductor stop; to keep a long-lived service independent of Conductor, start it from its own launcher, not from a worker shell. On Windows, `detached: true` starts the job wrapper with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`; `windowsHide` hides its console and the wrapper's child inherits that process group.
+
+Conductor source does not create an external Windows Job Object. Node/libuv creates an internal kill-on-close Job Object for the Node process and explicitly adds non-detached worker children to it; detached job wrappers skip that internal job. Libuv does not request `CREATE_BREAKAWAY_FROM_JOB`, so a separately assigned parent Job Object with kill-on-close can still terminate a detached job. Conductor cannot override that host policy through Node's spawn options.
+
 ## Directory map
 
 ```

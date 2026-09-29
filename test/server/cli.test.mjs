@@ -28,6 +28,15 @@ test('openBrowser uses rundll32 FileProtocolHandler on Windows', () => {
   assert.doesNotMatch(src, /cmd.*\/c.*start/);
 });
 
+test('server stop fallbacks target the server PID without traversing its descendants', () => {
+  const cli = readFileSync(join(REPO_ROOT, 'bin', 'conductor.mjs'), 'utf8');
+  const launcher = readFileSync(join(REPO_ROOT, 'scripts', 'launcher', 'Conductor.cs'), 'utf8');
+  assert.match(cli, /killServerFallback\(info\.pid\)/);
+  assert.doesNotMatch(cli, /taskkill[^\r\n]*\/T/i);
+  assert.match(launcher, /p\.Kill\(\)/);
+  assert.doesNotMatch(launcher, /taskkill[^\r\n]*\/T/i);
+});
+
 test('job CLI documents --gpu and passes it to POST /api/jobs', () => {
   const help = runCli(['help']);
   assert.equal(help.status, 0, help.stderr);

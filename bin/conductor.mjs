@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { REPO_ROOT, stateDir, statePath, redact, readJson } from '../core/paths.mjs';
 import { loadConfig } from '../core/config.mjs';
+import { killServerFallback } from '../core/proc.mjs';
 
 const PID_FILE = () => statePath('server.pid');
 const writePidFile = (info) => { try { writeFileSync(PID_FILE(), JSON.stringify({ pid: process.pid, ...info }, null, 2)); } catch {} };
@@ -116,8 +117,7 @@ if (cmd === 'start') {
     if (r.ok) {
       const body = await r.json().catch(() => ({}));
       if (body.pid == null || body.pid === info.pid) {
-        if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(info.pid), '/T', '/F'], { stdio: 'ignore' });
-        else process.kill(info.pid, 'SIGTERM');
+        killServerFallback(info.pid);
         clearPidFile();
         stopped();
       }

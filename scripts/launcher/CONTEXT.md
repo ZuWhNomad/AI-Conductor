@@ -13,6 +13,8 @@ Node, starts `bin/conductor.mjs`, waits for the port, opens the browser, and sho
 - Fail loudly and in words a user can act on ("Node.js 22+ is required…"), never a silent exit.
 - Child exit code 0 is a deliberate Quit or an update relaunch: re-read `server.pid`, probe `/api/state` for up to
   20 s, and follow that pid if it answers; otherwise close quietly. Non-zero still shows the error dialog.
+- After the graceful shutdown wait, force-stop only the server process PID; do not traverse its descendants because
+  detached jobs are server children too.
 - Keep it dependency-free C#: it compiles with the .NET Framework compiler already on Windows.
 
 **How to test.** Rebuild with `scripts\build-launcher.cmd`, double-click the produced `Conductor.exe` from a copy of
