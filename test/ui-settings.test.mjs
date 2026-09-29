@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { DEFAULTS } from '../core/config.mjs';
+import { DEFAULTS, saveConfig, loadConfig } from '../core/config.mjs';
 
 // Exercise the actual settings renderer and Save handler with the DOM surface they use.
 const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
@@ -165,14 +165,41 @@ test('Settings shows each worker CLI update mode and saves it per provider', asy
   assert.equal(view.posts[0].patch.providers.grok.cliUpdate, 'auto');
 });
 
-test('empty optional numbers stay unset and Settings has no duplicate Quit', async () => {
+test('clearing saved optional numbers removes their effective overrides and Settings has no duplicate Quit', async () => {
+  const config = saveConfig({ worker: { timeoutByCategory: { modeling: 45 } }, providers: { deepseek: { budgetUsd: 100 } } });
+  const saved = render(config);
+  assert.equal(saved.field('worker.timeoutByCategory.modeling').value, '45');
+  assert.equal(saved.field('providers.deepseek.budgetUsd').value, '100');
+  saved.field('worker.timeoutByCategory.modeling').value = '';
+  saved.field('providers.deepseek.budgetUsd').value = '';
+  await saved.save();
+  saveConfig(saved.posts[0].patch);
+  assert.equal(loadConfig().worker.timeoutByCategory.modeling, undefined);
+  assert.equal(loadConfig().providers.deepseek.budgetUsd, null);
   const view = render();
   view.field('worker.timeoutByCategory.modeling').value = '';
   view.field('providers.deepseek.budgetUsd').value = '';
   await view.save();
-  assert.equal(view.posts[0].patch.worker.timeoutByCategory, undefined);
-  assert.equal(view.posts[0].patch.providers?.deepseek?.budgetUsd, undefined);
+  assert.equal(view.posts[0].patch.worker.timeoutByCategory.modeling, null);
+  assert.equal(view.posts[0].patch.providers.deepseek.budgetUsd, null);
   assert.equal(view.nodes.some((n) => n.textContent === 'Quit conductor (stop the server)'), false);
+});
+
+test('Settings update check prevents concurrent requests and restores the button on success and failure', async () => {
+  for (const fail of [false, true]) {
+    let finish;
+    const response = new Promise((resolve, reject) => { finish = fail ? reject : resolve; });
+    const view = render(structuredClone(DEFAULTS), response);
+    const button = view.nodes.find((n) => n.textContent === 'Check for updates (GitHub)');
+    const first = button.onclick();
+    assert.equal(button.disabled, true);
+    await button.onclick(); // must return without waiting for the pending request
+    finish(fail ? new Error('check failed') : { git: true, head: 'abc', branch: 'main' });
+    await first;
+    assert.equal(button.disabled, false);
+    if (fail) assert.ok(view.nodes.some((n) => n.textContent === 'check failed'));
+    else assert.equal(view.updates.length, 1);
+  }
 });
 
 test('all-providers Other keeps the selection and hints when provider is missing', () => {

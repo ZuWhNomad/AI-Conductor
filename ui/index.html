@@ -17,7 +17,7 @@
   </section>
 
   <section class="panel newchat-panel">
-    <button id="btn-newchat-toggle" class="primary wide">+ New chat</button>
+    <button id="btn-newchat-toggle" class="primary wide" aria-expanded="false" aria-controls="newchat-form">+ New chat</button>
     <div id="newchat-form" class="newchat-form" hidden>
       <label class="lbl">Project folder</label>
       <div class="row">
@@ -31,12 +31,14 @@
         <select id="new-effort" title="Effort" aria-label="Conductor effort"></select>
       </div>
       <div class="row between wrap"><span id="new-selection" class="tiny muted"></span><label class="chk" title="Skip all permission prompts for this chat"><input id="new-bypass" type="checkbox"> auto-approve</label><label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="new-overflow" type="checkbox"> API overflow</label><label class="chk" title="Run this chat’s workers in parallel: skip the budget gate that holds a provider to one task at a time. Real provider limits still apply."><input id="new-parallel" type="checkbox"> parallel</label></div>
+      <div id="new-status" class="tiny action-status" role="status"></div>
       <button id="btn-new" class="primary wide">Start chat</button>
     </div>
   </section>
 
   <section class="panel grow">
     <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="search" placeholder="Filter chats" spellcheck="false" aria-label="Filter chats"></div>
+    <div id="sessions-status" class="tiny action-status" role="status"></div>
     <div id="sessions" class="list"></div>
   </section>
 
@@ -78,6 +80,7 @@
             <label class="chk" title="Let the router spend pay-per-token APIs once the subscription classes are capped"><input id="overflow" type="checkbox"> API overflow</label>
             <label class="chk" title="Run this chat’s workers in parallel: skip the budget gate that holds a provider to one task at a time. Real provider limits still apply."><input id="parallel" type="checkbox"> parallel</label>
           </div>
+          <div id="model-status" class="tiny action-status" role="status"></div>
           <div class="tiny muted scope-note">Model switches live · effort applies from the next message · provider is fixed for an existing chat.</div>
         </div>
       </div>
@@ -99,13 +102,14 @@
       <button id="btn-mic" type="button" class="mic" title="Speech to text (Ctrl+M)" aria-label="Speech to text"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="6" y="2" width="4" height="8" rx="2"/><path d="M4 7a4 4 0 0 0 8 0M8 11v3m-3 0h6"/></svg></button>
       <button id="btn-send" class="primary" title="Send (Enter)">Send</button>
     </div>
+    <div id="ui-status" class="tiny action-status" role="status"></div>
     <div id="stt-hint" class="muted tiny" aria-live="polite"></div>
   </div>
 </main>
 
 <aside id="fleet">
   <div class="fleet-head">
-    <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock" aria-label="Collapse / expand fleet">⟨</button></div>
+    <div class="row between"><label class="lbl">Fleet</label><button id="fleet-collapse" class="linkish tiny" title="Collapse / expand the fleet dock" aria-label="Collapse / expand fleet"></button></div>
     <div id="fleet-counts" class="tiny muted">no workers yet</div>
     <div id="fleet-scope" class="seg" role="group" aria-label="Show workers for this chat or all chats">
       <button type="button" data-scope="mine">This chat</button>
@@ -117,7 +121,7 @@
 
 <div id="scrim"></div>
 
-<div id="modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon" aria-label="Close dialog" title="Close">✕</button></div><div id="modal-body" class="modal-body"></div></div></div>
+<div id="modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><b id="modal-title"></b><button id="modal-close" class="icon" aria-label="Close dialog" title="Close">✕</button></div><div id="modal-status" class="tiny action-status" role="status"></div><div id="modal-body" class="modal-body"></div></div></div>
 
 <script type="module" src="/app.js"></script>
 </body>
