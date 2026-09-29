@@ -243,6 +243,28 @@ test('rendered UI regressions', { skip: !candidates.length && 'Set CONDUCTOR_TES
       });
     }
   }
+  await t.test('search and provider controls fit the sidebar at each viewport', async () => {
+    for (const width of [1920, 1000, 375]) {
+      await cdp('Emulation.setDeviceMetricsOverride', { width, height: 1080, deviceScaleFactor: 1, mobile: false });
+      const result = await evaluate(`
+        document.body.classList.add('nav-open'); $('#sidebar').style.transition = 'none'; openSystem(true);
+        $('#chat-filter').focus();
+        ({ background: getComputedStyle($('#chat-filter')).backgroundColor, border: getComputedStyle($('#chat-filter')).borderColor,
+          accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+          overflow: $('#sidebar').scrollWidth > $('#sidebar').clientWidth,
+          fits: ['chat-filter', 'providers-signed-in', 'auto-refresh', 'btn-refresh'].every(id => { const r = $('#' + id).getBoundingClientRect(), side = $('#sidebar').getBoundingClientRect(); return r.left >= side.left && r.right <= side.right; }) });
+      `);
+      assert.equal(result.background, 'rgb(22, 26, 33)');
+      assert.equal(result.border, 'rgb(124, 156, 255)');
+      assert.equal(result.overflow, false); assert.equal(result.fits, true);
+    }
+    const results = await evaluate(`
+      S.sessions = [{ id: 'a', title: 'Alpha', cwd: '/Project/ONE' }, { id: 'b', title: 'Beta', cwd: '/two' }];
+      ['ALPHA', 'project/one', ''].map(query => { S.chatFilter = query; renderSessions(); return $('#sessions').children.length; });
+    `);
+    assert.deepEqual(results, [1, 1, 2]);
+    await evaluate(`document.body.classList.remove('nav-open'); S.chatFilter = '';`);
+  });
   await t.test('budget freshness belongs to the selected provider', async () => {
     const result = await evaluate(`
       S.boot = 2000;
@@ -282,6 +304,132 @@ test('rendered UI regressions', { skip: !candidates.length && 'Set CONDUCTOR_TES
       assert.equal(row.color, row.meter, `${row.text} has the same urgency as its meter`);
       assert.ok(Number(row.weight) > Number(row.labelWeight), 'the percentage is emphasized');
     }
+  });
+  await t.test('budget uses only actual provider-wide windows and the default conductor', async () => {
+    const result = await evaluate(`
+      (() => {
+        S.config.conductor = { provider: 'codex' }; S.current = null;
+        S.limits.providers = {
+          claude: { windows: [{ id: 'five_hour', usedPercent: 7 }, { id: 'seven_day', usedPercent: 92 }] },
+          codex: { windows: [{ id: 'codex:secondary', windowMinutes: 10080, usedPercent: 51 }] }
+        };
+        renderBudget(); const fallback = $('#budget').textContent;
+        S.current = { provider: 'claude' }; renderBudget(); const claude = $('#budget').textContent;
+        S.current = { provider: 'codex' }; renderBudget(); const codex = $('#budget').textContent;
+        const thresholds = [90, 90.01].map(pct => { S.limits.providers.codex.windows[0].usedPercent = pct; renderBudget(); return $('#budget').textContent.includes('weekly'); });
+        const exclusions = [
+          { id: 'session', windowMinutes: 60, usedPercent: 99 },
+          { id: 'five_hour', estimated: true, usedPercent: 99 },
+          { id: 'five_hour', models: 'special', usedPercent: 99 },
+          { id: 'model:weekly', scope: 'model', windowMinutes: 10080, usedPercent: 99 },
+          { id: 'seven_day_overage_included', usedPercent: 99 }
+        ].map(window => { S.limits.providers.codex.windows = [window]; renderBudget(); return $('#budget').textContent; });
+        S.current = null; delete S.config.conductor.provider; renderBudget();
+        return { fallback, claude, codex, thresholds, exclusions, absent: $('#budget').textContent };
+      })();
+    `);
+    assert.match(result.fallback, /codex: 5-hour usage unavailable/);
+    assert.doesNotMatch(result.fallback, /weekly|claude/);
+    assert.match(result.claude, /claude.*5-hour.*7%.*weekly.*92%/);
+    assert.doesNotMatch(result.claude, /codex/);
+    assert.equal(result.codex, result.fallback);
+    assert.deepEqual(result.thresholds, [false, true]);
+    for (const text of result.exclusions) { assert.match(text, /5-hour usage unavailable/); assert.doesNotMatch(text, /99%|weekly/); }
+    assert.match(result.absent, /claude.*5-hour/);
+  });
+  await t.test('provider groups preserve counts, filters and genuine toggles; details expands only this view', async () => {
+    await evaluate(`
+      S.providers = [
+        { id: 'claude', auth: { type: 'subscription' } },
+        { id: 'codex', auth: { type: 'subscription' }, canLogin: true },
+        { id: 'keyed', auth: { type: 'api-key' } },
+        { id: 'local', kind: 'ollama', auth: { type: 'subscription' } }
+      ];
+      S.models.providers = { claude: { status: 'ok' }, codex: { status: 'error', loggedIn: false }, keyed: { status: 'ok' }, local: { status: 'ok' } };
+      loadProviderView(); renderProviders();
+    `);
+    const summaries = () => evaluate(`[...$('#providers').querySelectorAll('summary')].map(node => node.textContent)`);
+    const original = await summaries();
+    assert.deepEqual(original.map(text => text.split(' ').at(-1)), ['1/2', '1/1', '1/1']);
+    await evaluate(`$('#providers-signed-in').click(); S.awaitingAuth.add('codex'); renderProviders();`);
+    assert.equal(await evaluate(`$('#providers-subscriptions').querySelectorAll('.prov').length`), 2);
+    assert.equal(await evaluate(`$('#providers-subscriptions').textContent.includes('Sign in')`), true);
+    await evaluate(`S.awaitingAuth.clear(); renderProviders();`);
+    assert.equal(await evaluate(`$('#providers-subscriptions').querySelectorAll('.prov').length`), 1);
+    assert.deepEqual(await summaries(), original);
+    await evaluate(`new Promise(resolve => { const group = $('#providers-subscriptions'); group.addEventListener('toggle', resolve, { once: true }); group.open = false; })`);
+    const result = await evaluate(`
+      renderProviders(); loadProviderView(); renderProviders();
+      const remembered = { open: $('#providers-subscriptions').open, filter: $('#providers-signed-in').checked };
+      const stored = localStorage.getItem('providerView');
+      openSystem(false); revealProviders(); revealProviders();
+      ({ remembered, stored, after: localStorage.getItem('providerView'), expanded: $('#system-toggle').getAttribute('aria-expanded'), group: $('#providers-subscriptions').open, filter: $('#providers-signed-in').checked });
+    `);
+    assert.deepEqual(result.remembered, { open: false, filter: true });
+    assert.equal(result.after, result.stored);
+    assert.equal(result.expanded, 'true'); assert.equal(result.group, true); assert.equal(result.filter, true);
+    const empty = await evaluate(`
+      openSystem(false); renderProviders();
+      const restored = !$('#providers-subscriptions').open;
+      S.providers = S.providers.filter(p => p.id !== 'local'); S.models.providers.keyed.status = 'error'; renderProviders();
+      ({ restored, noLocal: !$('#providers-local'), empty: $('#providers-keys').textContent });
+    `);
+    assert.equal(empty.restored, true); assert.equal(empty.noLocal, true); assert.match(empty.empty, /0\/1.*No signed-in/);
+    for (const value of ['{broken', '{"signedInOnly":"yes","groups":{"subscriptions":0}}', 'null']) {
+      const defaults = await evaluate(`localStorage.setItem('providerView', ${JSON.stringify(value)}); loadProviderView(); S.providerView;`);
+      assert.deepEqual(defaults, { signedInOnly: false, groups: { subscriptions: true, keys: true, local: true } });
+    }
+    const blocked = await evaluate(`
+      (() => {
+        const storage = localStorage;
+        Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem() { throw Error('blocked'); }, setItem() { throw Error('blocked'); } } });
+        try { loadProviderView(); renderProviders(); $('#providers-signed-in').click(); openSystem(false); revealProviders(); return $('#system-toggle').getAttribute('aria-expanded'); }
+        finally { Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage }); }
+      })();
+    `);
+    assert.equal(blocked, 'true');
+  });
+  await t.test('improvement events refresh only the active list and cannot reopen or replace a modal', async () => {
+    await evaluate(`
+      globalThis.originalGet = api.get; globalThis.originalPost = api.post; globalThis.originalEvents = EventSource;
+      globalThis.entries = [{ id: 'open', kind: 'idea', message: 'Open idea' }, { id: 'done', kind: 'idea', message: 'Resolved idea', resolved: true }];
+      api.get = async () => structuredClone(entries);
+      api.post = async path => { entries.find(entry => path.includes(entry.id)).resolved = true; };
+      globalThis.handlers = {};
+      globalThis.EventSource = class { addEventListener(type, fn) { handlers[type] = fn; } close() {} };
+      connect(); openImprovements();
+    `);
+    assert.deepEqual(await evaluate(`[...$('#modal-body').querySelectorAll('.imp .m')].map(node => node.textContent)`), ['Open idea']);
+    await evaluate(`
+      const ideaInput = $('#modal-body input'); ideaInput.value = 'unfinished'; ideaInput.focus();
+      entries[0].resolved = true; handlers.improvement({ data: JSON.stringify({ seq: 1, count: 0 }) });
+    `);
+    // Drain the existing coalescing timer using a DOM signal, not an assumed network delay.
+    const live = await evaluate(`new Promise(resolve => {
+      const done = () => resolve({ text: S.improvementView.list.textContent, value: $('#modal-body input').value, focused: document.activeElement === $('#modal-body input'), open: S.improvements.length });
+      if (!S.improvementView.list.querySelector('.imp')) done();
+      else { const observer = new MutationObserver(() => { observer.disconnect(); done(); }); observer.observe(S.improvementView.list, { childList: true }); }
+    })`);
+    assert.match(live.text, /Nothing logged/); assert.equal(live.value, 'unfinished'); assert.equal(live.focused, true); assert.equal(live.open, 0);
+    await evaluate(`S.improvementView.showResolved = true; refreshImprovements();`);
+    assert.equal(await evaluate(`$('#modal-body').querySelectorAll('.imp').length`), 2);
+    await evaluate(`entries = []; refreshImprovements();`);
+    assert.match(await evaluate(`S.improvementView.list.textContent`), /Nothing resolved yet/);
+    for (const replacement of [false, true]) {
+      const state = await evaluate(`(async () => {
+        api.get = async () => []; await openImprovements(true);
+        api.get = () => new Promise(resolve => { globalThis.finishList = resolve; });
+        globalThis.refresh = refreshImprovements();
+        ${replacement ? "openModal('Other modal', el('div', null, 'Keep me'));" : 'closeModal();'}
+        finishList([]); await Promise.resolve();
+        // Resolved-tab refresh also reads the all endpoint.
+        finishList([]); await refresh;
+        return { hidden: $('#modal').hidden, title: $('#modal-title').textContent, text: $('#modal-body').textContent };
+      })()`);
+      if (replacement) { assert.equal(state.title, 'Other modal'); assert.equal(state.text, 'Keep me'); }
+      else assert.equal(state.hidden, true);
+    }
+    await evaluate(`api.get = originalGet; api.post = originalPost; globalThis.EventSource = originalEvents; closeModal();`);
   });
   await t.test('Claude fallback effort list excludes ultra and matches Claude tiers', async () => {
     const efforts = await evaluate(`

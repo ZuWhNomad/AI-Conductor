@@ -9,7 +9,7 @@ import { DEFAULTS } from '../core/config.mjs';
 const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('function openSettings()');
 const settings = source.slice(start, source.indexOf('\nfunction ', start + 1));
-function render(config = structuredClone(DEFAULTS), updateResponse = null) {
+function render(config = structuredClone(DEFAULTS), updateResponse = null, storage = new Map()) {
   const nodes = [], posts = [];
   const state = { config, providers: [], update: null };
   const updates = [];
@@ -17,7 +17,8 @@ function render(config = structuredClone(DEFAULTS), updateResponse = null) {
     let value = '';
     const node = { tag, className: cls, textContent: text, children: [], id: '', type: '', style: {},
       get value() { return value; }, set value(v) { value = String(v); },
-      append(...children) { this.children.push(...children); },
+      append(...children) { this.children.push(...children); for (const child of children) child.parent = this; },
+      setAttribute(key, value) { this[key] = value; }, focus() {},
       querySelectorAll() { return this.children.flatMap((n) => [n, ...n.querySelectorAll()]).filter((n) => ['input', 'select'].includes(n.tag)); },
       setCustomValidity(message) { this.validationMessage = message; },
       reportValidity() { return !this.validationMessage; },
@@ -25,9 +26,10 @@ function render(config = structuredClone(DEFAULTS), updateResponse = null) {
     nodes.push(node); return node;
   };
   runInNewContext(settings + '\nopenSettings();', {
+    localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     S: state, el, $: (selector) => nodes.find((n) => '#' + n.id === selector),
     Option: function (text, value) { const n = el('option', null, text); n.value = value; return n; },
-    setTimeout() {}, openModal() {}, closeModal() {}, renderProviders() {}, applyAutoRefresh() {}, refreshNewPicker() {},
+    setTimeout() {}, openModal() {}, closeModal() { state.closed = true; }, revealProviders() { state.revealed = true; }, renderProviders() {}, applyAutoRefresh() {}, refreshNewPicker() {},
     renderUpdate: () => updates.push(state.update),
     act: (fn) => fn(),
     pickerValue: (prefix) => prefix === 'wk-' ? config.worker : config.conductor,
@@ -190,4 +192,55 @@ test('all-providers Other keeps the selection and hints when provider is missing
   model.value = '__other__'; context.window.prompt = () => 'codex:gpt-6-astra';
   runInNewContext(other + '\nresolveOther("new-", true);', context);
   assert.equal(model.value, 'codex:gpt-6-astra');
+});
+
+const panelOf = (node) => node?.className === 'settings-panel' ? node.id : node?.parent ? panelOf(node.parent) : null;
+test('Settings tabs place every control once and save hidden panels together', async () => {
+  const view = render();
+  const controls = view.nodes.filter((node) => ['input', 'select'].includes(node.tag));
+  assert.equal(new Set(controls.map((node) => node.id)).size, controls.length);
+  for (const node of controls) {
+    const expected = /cliUpdate|grok-reset/.test(node.id) ? 'subscriptions' : /providers.deepseek/.test(node.id) ? 'keys' : 'general';
+    assert.equal(panelOf(node), 'settings-' + expected, node.id);
+    assert.ok(view.nodes.some((label) => label.htmlFor === node.id) || node['aria-label'], node.id + ' has a label');
+  }
+  for (const label of ['Check for updates (GitHub)', 'Run doctor (environment check)']) assert.equal(panelOf(view.nodes.find((node) => node.textContent === label)), 'settings-general');
+  const save = view.nodes.find((node) => node.textContent === 'Save');
+  assert.equal(panelOf(save), null);
+  view.nodes.find((node) => node.id === 'settings-tab-keys').onclick();
+  view.field('conductor.maxTurns').value = 123;
+  view.field('providers.codex.cliUpdate').value = 'off';
+  view.field('providers.deepseek.budgetUsd').value = 42;
+  await view.save();
+  const patch = view.posts[0].patch;
+  assert.equal(patch.conductor.maxTurns, 123);
+  assert.equal(patch.providers.codex.cliUpdate, 'off');
+  assert.equal(patch.providers.deepseek.budgetUsd, 42);
+  assert.equal(patch.worker.provider, DEFAULTS.worker.provider);
+  assert.equal(patch.conductor.provider, DEFAULTS.conductor.provider);
+});
+
+test('Settings remembers a valid tab, tolerates storage failures and reuses sign-in navigation', () => {
+  const storage = new Map();
+  let view = render(undefined, null, storage);
+  view.nodes.find((node) => node.id === 'settings-tab-subscriptions').onclick();
+  view = render(undefined, null, storage);
+  assert.equal(view.nodes.find((node) => node.id === 'settings-subscriptions').hidden, false);
+  view.nodes.find((node) => node.textContent === 'Manage subscription sign-ins').onclick();
+  assert.equal(view.state.closed, true);
+  assert.equal(view.state.revealed, true);
+  for (const store of [new Map([['settingsTab', 'invalid']]), { get() { throw Error('blocked'); }, set() { throw Error('blocked'); } }]) {
+    view = render(undefined, null, store);
+    assert.equal(view.nodes.find((node) => node.id === 'settings-general').hidden, false);
+  }
+});
+
+test('untouched saved key stays masked and is omitted from the patch', async () => {
+  const config = structuredClone(DEFAULTS);
+  config.providers.deepseek.apiKey = '\u2022\u2022\u2022\u2022';
+  const view = render(config);
+  assert.equal(view.field('providers.deepseek.apiKey').value, config.providers.deepseek.apiKey);
+  await view.save();
+  assert.equal(view.posts[0].patch.providers.deepseek?.apiKey, undefined);
+  assert.equal(view.posts.length, 1);
 });

@@ -67,7 +67,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 /* new-chat inline form */
 .newchat-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.filter { flex: 0 0 auto; width: 110px; padding: 2px 6px; font-size: 11px; }
+.filter { flex: 1 1 0; min-width: 0; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 2px 6px; font-size: 11px; }
+.filter:focus { border-color: var(--accent); }
 
 /* system drawer */
 .system-panel { flex: 0 0 auto; border-top: 1px solid var(--line); }
@@ -98,6 +99,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .list .item .x { visibility: visible; }
 }
 .list .item:focus-visible, .list .item .x:focus-visible, .task:focus-visible, .cmd-item:focus-visible, .dirs .d:focus-visible { outline: 1px solid var(--accent); }
+.provider-group > summary { cursor: pointer; font-size: 12px; padding: 5px 0; color: var(--muted); }
+.provider-group > summary:focus-visible { outline: 1px solid var(--accent); }
 .providers .prov { padding: 5px 0; border-bottom: 1px dashed var(--line); }
 .providers .prov:last-child { border-bottom: none; }
 .providers .name { display: flex; justify-content: space-between; font-size: 12px; }
@@ -198,6 +201,8 @@ body.fleet-collapsed .fleet-head { padding: 10px 6px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .modal-body { padding: 12px 14px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .modal-body .grid { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+.settings-panel { display: flex; flex-direction: column; gap: 8px; }
+.settings-tabs { flex-wrap: wrap; margin-bottom: 8px; }
 .modal-body .picker select { min-width: 0; flex: 1; }
 .modal-body .picker select:nth-child(2) { flex: 2.4; }
 .modal-body h4 { margin: 8px 0 2px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: .06em; }

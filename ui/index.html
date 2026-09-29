@@ -36,7 +36,7 @@
   </section>
 
   <section class="panel grow">
-    <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="search" placeholder="🔍 filter" spellcheck="false" aria-label="Filter chats"></div>
+    <div class="row between"><label class="lbl">Chats</label><input id="chat-filter" class="filter" type="search" placeholder="Filter chats" spellcheck="false" aria-label="Filter chats"></div>
     <div id="sessions" class="list"></div>
   </section>
 
@@ -44,7 +44,7 @@
     <button id="system-toggle" class="system-head wide" aria-expanded="false"><span class="lbl">System</span><span class="caret muted">▸</span></button>
     <div id="system-body" class="system-body" hidden>
       <section class="panel providers-panel">
-        <div class="row between"><label class="lbl">Providers &amp; limits</label><span class="row"><label class="chk" title="Auto-refresh models & limits on the interval in ⚙ settings"><input id="auto-refresh" type="checkbox"> auto</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></span></div>
+        <div class="row between wrap"><label class="lbl">Providers &amp; limits</label><span class="row wrap"><label class="chk"><input id="providers-signed-in" type="checkbox"> signed-in only</label><label class="chk" title="Auto-refresh models & limits on the interval in ⚙ settings"><input id="auto-refresh" type="checkbox"> auto</label><button id="btn-refresh" class="sm" title="Force refresh models and limits">↻ Refresh</button></span></div>
         <div id="providers" class="providers"></div>
         <div id="refresh-meta" class="muted tiny"></div>
       </section>

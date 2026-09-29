@@ -15,6 +15,21 @@ const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { mode
 let modalOpener = null;
 let newSessionPromise = null;
 
+function loadProviderView() {
+  S.providerView = { signedInOnly: false, groups: { subscriptions: true, keys: true, local: true } };
+  try {
+    const saved = JSON.parse(localStorage.getItem('providerView'));
+    if (typeof saved?.signedInOnly === 'boolean') S.providerView.signedInOnly = saved.signedInOnly;
+    for (const key of Object.keys(S.providerView.groups)) {
+      if (typeof saved?.groups?.[key] === 'boolean') S.providerView.groups[key] = saved.groups[key];
+    }
+  } catch {}
+}
+function saveProviderView() {
+  try { localStorage.setItem('providerView', JSON.stringify(S.providerView)); } catch {}
+}
+loadProviderView();
+
 function asBtn(element, action) {
   element.tabIndex = 0;
   element.setAttribute('role', 'button');
@@ -93,9 +108,33 @@ async function renameSession(s) {
 function meterClass(p) { return p >= 90 ? 'bad' : p >= 70 ? 'warn' : ''; }
 function renderProviders() {
   const box = $('#providers'); box.innerHTML = '';
+  const groups = {};
+  const groupFor = (p) => p.auth?.type === 'local' || ['local', 'ollama'].includes(p.kind) ? 'local' : p.auth?.type === 'subscription' ? 'subscriptions' : 'keys';
+  const filter = $('#providers-signed-in');
+  filter.checked = S.providerView.signedInOnly;
+  filter.onchange = () => { S.providerView.signedInOnly = filter.checked; saveProviderView(); renderProviders(); };
+  for (const [id, label] of [['subscriptions', 'Subscriptions'], ['keys', 'API keys'], ['local', 'Local models']]) {
+    const members = S.providers.filter((p) => groupFor(p) === id);
+    if (id === 'local' && !members.length) continue;
+    const group = el('details', 'provider-group'); group.id = 'providers-' + id;
+    const initialOpen = id === 'subscriptions' && S.revealSubscriptions || S.providerView.groups[id];
+    group.open = initialOpen;
+    group.append(el('summary', null, `${label} · ${members.filter((p) => S.models.providers[p.id]?.status === 'ok').length}/${members.length}`));
+    // Initial and detached queued toggle events must not overwrite the remembered preference.
+    let lastOpen = initialOpen;
+    group.ontoggle = () => {
+      if (!group.isConnected || group.open === lastOpen) return;
+      lastOpen = group.open;
+      if (id === 'subscriptions') S.revealSubscriptions = false;
+      S.providerView.groups[id] = group.open; saveProviderView();
+    };
+    groups[id] = group; box.append(group);
+    if (S.providerView.signedInOnly && !members.some((p) => S.models.providers[p.id]?.status === 'ok' || S.awaitingAuth.has(p.id))) group.append(el('div', 'tiny muted', 'No signed-in providers.'));
+  }
   for (const p of S.providers) {
     const st = S.models.providers[p.id] || {}; const lim = S.limits.providers[p.id] || {};
     const usable = st.status === 'ok';
+    if (S.providerView.signedInOnly && !usable && !S.awaitingAuth.has(p.id)) continue;
     const d = el('div', 'prov');
     const name = el('div', 'name');
     const left = el('span'); const nameEl = p.url ? Object.assign(el('a', null, p.id), { href: p.url, target: '_blank', rel: 'noopener', title: p.url }) : document.createTextNode(p.id);
@@ -173,7 +212,7 @@ function renderProviders() {
       }
     }
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
-    box.append(d);
+    groups[groupFor(p)].append(d);
   }
   $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes}m · panel auto ${S.config?.ui?.autoRefresh ? 'on' : 'off'}`;
 }
@@ -190,11 +229,11 @@ function windowScope(w) {
 }
 /** The plan-level window for a provider+scope: skip per-model/sub-scoped windows, prefer the provider's own primary bucket. */
 function planWindow(providerId, scope) {
-  const ws = (S.limits.providers[providerId]?.windows || []).filter((w) => windowScope(w) === scope);
-  if (!ws.length) return null;
-  const plan = ws.filter((w) => !w.models); // a `models` field marks a per-model window (e.g. claude "weekly Fable")
-  const pool = plan.length ? plan : ws;
-  return pool.find((w) => (w.id || '').startsWith(`${providerId}:`) || /^(five_hour|seven_day)$/.test(w.id || '')) || pool[0];
+  const ws = (S.limits.providers[providerId]?.windows || []).filter((w) => !w.models && w.scope !== 'model' && !w.estimated && !/^(five_hour|seven_day)_/.test(w.id || ''));
+  const pool = ws.filter((w) => scope === 'session'
+    ? w.windowMinutes === 300 || (w.windowMinutes == null && (/^(five_hour|5[_ -]?hour|5h)$/i.test(w.id || '') || /^(5[_ -]?hour|5h)$/i.test(w.label || '')))
+    : windowScope(w) === scope);
+  return pool.find((w) => /^(five_hour|seven_day)$/.test(w.id || '') || (w.id || '').startsWith(`${providerId}:`)) || pool[0];
 }
 function budgetBar(label, w) {
   const b = el('div', 'b');
@@ -205,10 +244,10 @@ function budgetBar(label, w) {
   b.append(line, m);
   return b;
 }
-/** Compact always-visible budget: the SELECTED orchestrator's session + weekly bars first, then a one-line rest. */
+/** Compact budget: the selected conductor's actual five-hour window and high weekly usage. */
 function renderBudget() {
   const box = $('#budget'); if (!box) return; box.innerHTML = '';
-  const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
+  const prov = S.current?.provider || S.config.conductor?.provider || 'claude';
   const pst = S.models.providers[prov] || {};
   if (pst.status && pst.status !== 'ok') box.append(el('div', 'empty', `${prov}: ${pst.loggedIn === false ? 'not signed in' : pst.configured === false ? 'no key' : pst.installed === false ? 'not installed' : pst.error ? 'error' : pst.status}`));
   // A different provider's refresh (or a failed poll) cannot make these cached windows current.
@@ -217,21 +256,9 @@ function renderBudget() {
   box.classList.toggle('stale', !!lim.error || (!!S.boot && asOf < S.boot));
   const session = planWindow(prov, 'session');
   const weekly = planWindow(prov, 'weekly');
-  if (session) box.append(budgetBar(`${prov} · session`, session));
-  if (weekly) box.append(budgetBar(`${prov} · weekly`, weekly));
-  if (!session && !weekly) { const only = (S.limits.providers[prov]?.windows || [])[0]; if (only) box.append(budgetBar(`${prov} · ${only.estimated ? 'est' : 'usage'}`, only)); }
-  const parts = [];
-  for (const p of S.providers || []) {
-    if (p.id === prov) continue; // the selected provider is already shown in full above
-    if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
-    const windows = (S.limits.providers[p.id]?.windows || []).filter((w) => w.usedPercent != null);
-    if (windows.length) {
-      const w = windows.reduce((max, cur) => ((Number(cur.usedPercent) || 0) > (Number(max.usedPercent) || 0) ? cur : max), windows[0]);
-      const wLbl = w.label || w.scope || windowScope(w) || '';
-      parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id}${wLbl ? ` (${wLbl})` : ''} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
-    }
-  }
-  if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
+  if (session) box.append(budgetBar(`${prov} · 5-hour`, session));
+  else box.append(el('div', 'empty', `${prov}: 5-hour usage unavailable`));
+  if (weekly && Number(weekly.usedPercent) > 90) box.append(budgetBar(`${prov} · weekly`, weekly));
   if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
   else if (box.classList.contains('stale')) box.append(el('div', 'empty', `${asOf ? `as of ${new Date(asOf).toLocaleTimeString()}` : 'Age unknown'} · refresh limits`));
   if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
@@ -825,7 +852,7 @@ function noteUpdate(o) {
 // ---------- SSE ----------
 function applyState(st) {
   S.boot = st.boot; S.lastSeq = st.seq || 0;
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements.filter((entry) => !entry.resolved), config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
 }
 async function resync() {
@@ -890,11 +917,8 @@ function connect() {
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
   on('cli-update', () => coalesce('cli-update', async () => { S.cliUpdates = await api.get('/api/cli-update'); renderProviders(); }));
   on('improvement', (ev) => {
-    if (ev?.count != null) {
-      $('#improve-count').textContent = ev.count;
-      return;
-    }
-    coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; });
+    if (ev?.count != null) $('#improve-count').textContent = ev.count;
+    coalesce('improvements', () => refreshImprovements());
   });
   on('model_pull', (ev) => {
     if (ev.error) $('#stt-hint').textContent = `pull ${ev.model}: ${ev.error}`;
@@ -968,6 +992,7 @@ function onSessionEvent(ev) {
 // ---------- modals ----------
 function openModal(title, body) {
   if ($('#modal').hidden) modalOpener = document.activeElement;
+  S.improvementView = null;
   document.body.classList.remove('nav-open');
   $('#modal-title').textContent = title;
   const b = $('#modal-body');
@@ -977,6 +1002,7 @@ function openModal(title, body) {
   $('#modal-close').focus();
 }
 function closeModal() {
+  S.improvementView = null;
   $('#modal').hidden = true;
   if (modalOpener && typeof modalOpener.focus === 'function') {
     modalOpener.focus();
@@ -1006,14 +1032,42 @@ async function browse(path) {
 function openSettings() {
   const c = S.config; const body = el('div');
   const grokReset = () => (Number(c.scorecard?.usageResets?.grok?.periodHours) > 0 ? c.scorecard.usageResets.grok : null); // periodHours 0 / absent = not set
-  const grid = el('div', 'grid');
-  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
-  const toggleField = (label, id, checked, hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = 'checkbox'; i.id = 'cfg-' + id; i.checked = !!checked; grid.append(l, i); return i; };
-  const selectField = (label, id, value, opts) => { grid.append(el('label', null, label)); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
+  const fields = el('div', 'settings-fields');
+  const tabs = el('div', 'row settings-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Settings');
+  const panels = {}, buttons = {};
+  const selectTab = (id) => {
+    for (const key of Object.keys(panels)) {
+      panels[key].hidden = key !== id;
+      buttons[key].setAttribute('aria-selected', String(key === id));
+      buttons[key].tabIndex = key === id ? 0 : -1;
+      buttons[key].className = key === id ? 'primary' : '';
+    }
+    try { localStorage.setItem('settingsTab', id); } catch {}
+  };
+  for (const [id, label] of [['general', 'General'], ['subscriptions', 'Subscriptions'], ['keys', 'API keys']]) {
+    const panel = el('div', 'settings-panel'); panel.id = 'settings-' + id; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'settings-tab-' + id);
+    const button = el('button', null, label); button.id = 'settings-tab-' + id; button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', panel.id);
+    button.onclick = () => selectTab(id);
+    button.onkeydown = (e) => {
+      const keys = Object.keys(panels), index = keys.indexOf(id);
+      const next = e.key === 'ArrowRight' ? keys[(index + 1) % keys.length] : e.key === 'ArrowLeft' ? keys[(index + keys.length - 1) % keys.length] : e.key === 'Home' ? keys[0] : e.key === 'End' ? keys.at(-1) : null;
+      if (next) { e.preventDefault(); selectTab(next); buttons[next].focus(); }
+    };
+    panels[id] = panel; buttons[id] = button; tabs.append(button); fields.append(panel);
+  }
+  let activeTab = 'general';
+  try { const saved = localStorage.getItem('settingsTab'); if (Object.hasOwn(panels, saved)) activeTab = saved; } catch {}
+  selectTab(activeTab);
+  body.append(tabs, fields);
+  let grid;
+  const section = (panel, label) => { if (label) panels[panel].append(el('h4', null, label)); grid = el('div', 'grid'); panels[panel].append(grid); };
+  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; l.htmlFor = 'cfg-' + id; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
+  const toggleField = (label, id, checked, hint = '') => { const l = el('label', null, label); l.title = hint; l.htmlFor = 'cfg-' + id; const i = el('input'); i.type = 'checkbox'; i.id = 'cfg-' + id; i.checked = !!checked; grid.append(l, i); return i; };
+  const selectField = (label, id, value, opts, hint = '') => { grid.append(Object.assign(el('label', null, label), { htmlFor: 'cfg-' + id, title: hint })); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
   const pickerRow = (label, prefix, sel, opts) => {
-    grid.append(el('label', null, label));
+    grid.append(Object.assign(el('label', null, label), { htmlFor: prefix + 'provider' }));
     const row = el('div', 'row picker');
-    for (const part of ['provider', 'model', 'effort']) { const s = el('select'); s.id = `${prefix}${part}`; row.append(s); }
+    for (const part of ['provider', 'model', 'effort']) { const s = el('select'); s.id = `${prefix}${part}`; s.setAttribute('aria-label', `${label} ${part}`); row.append(s); }
     grid.append(row);
     setTimeout(() => {
       fillPicker(prefix, sel, opts);
@@ -1021,60 +1075,64 @@ function openSettings() {
       $(`#${prefix}model`).onchange = () => { if (resolveOther(prefix, true) === false) return; fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
     }, 0);
   };
-  body.append(el('h4', null, 'Default worker (the grunt coder) — provider : model : effort'));
+  section('general', 'Defaults');
   pickerRow('Worker', 'wk-', { provider: c.worker.provider, model: c.worker.model, effort: c.worker.effort }, { conductOnly: false, all: true });
-  body.append(el('h4', null, 'Conductor default — provider : model : effort'));
   pickerRow('Conductor', 'cd-', { provider: c.conductor.provider || 'claude', model: c.conductor.model || '', effort: c.conductor.effort }, { conductOnly: true, all: true });
-  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
-  selectField('New models', 'bench.newModels', c.bench?.newModels || 'off', ['off', 'auto']);
+  section('general', 'Application');
+  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
+  field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
+  const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
+  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } };
+  panels.general.append(upd, updOut);
+  const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
+  doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
+  panels.general.append(doc, docOut);
+  section('general', 'Benchmarking');
+  selectField('Benchmark new models', 'bench.newModels', c.bench?.newModels || 'off', ['off', 'auto'], 'auto benchmarks newly discovered models during off-peak hours; off leaves benchmarking manual.');
   field('Auto-bench off-peak start (local)', 'bench.offPeak.start', c.bench?.offPeak?.start ?? '', 'time', 'Leave both off-peak times empty for no restriction.');
   field('Auto-bench off-peak end (local)', 'bench.offPeak.end', c.bench?.offPeak?.end ?? '', 'time', 'Windows may wrap past midnight, for example 22:00–06:00.');
   toggleField('Auto-bench all weekend', 'bench.offPeak.weekends', c.bench?.offPeak?.weekends ?? true, 'Saturday and Sunday are off-peak all day in local time.');
-  body.append(el('h4', null, 'Worker behaviour'));
+  selectField('Selection before measured scores', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors'], 'priors uses hand-picked model tiers before measured scores exist; off requires an explicit model or measured scores.');
+  section('general', 'Execution');
   toggleField('Efficiency mode', 'worker.efficiencyMode', c.worker.efficiencyMode, 'Wait for the same model when it reaches a usage limit. Off fails over to the next available model.');
-  selectField('Scorecard cold start', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors']);
   const sbxRow = el('div', 'row');
   const sbxSel = el('select'); sbxSel.id = 'cfg-worker.codexSandbox';
   for (const o of ['read-only', 'workspace-write', 'danger-full-access']) sbxSel.append(new Option(o, o));
   sbxSel.value = c.worker.codexSandbox;
-  const sbxOverride = c.worker?.codexSandboxByModel?.[c.worker?.model];
-  const sbxNote = el('span', 'tiny muted', sbxOverride ? ` (default worker ${c.worker.model}: ${sbxOverride})` : '');
+  const sbxOverrides = [c.worker, c.conductor].filter((selection) => selection?.provider === 'codex' && c.worker?.codexSandboxByModel?.[selection.model])
+    .map((selection) => `${selection.model}: ${c.worker.codexSandboxByModel[selection.model]}`);
+  const sbxNote = el('span', 'tiny muted', 'Applies to Codex workers and conductors; per-model overrides take precedence.' + (sbxOverrides.length ? ` Defaults: ${[...new Set(sbxOverrides)].join('; ')}.` : ''));
   sbxRow.append(sbxSel, sbxNote);
-  grid.append(Object.assign(el('label', null, 'Codex sandbox'), { title: 'worker.codexSandboxByModel overrides this per model' }), sbxRow);
+  grid.append(Object.assign(el('label', null, 'Codex sandbox'), { htmlFor: sbxSel.id, title: 'worker.codexSandboxByModel overrides this per model for workers and conductors' }), sbxRow);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
   field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API conductors; big projects need thousands.');
   field('Conductor turn timeout (min)', 'conductor.turnTimeoutMinutes', c.conductor.turnTimeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
   field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Worker timeout for modeling (min)', 'worker.timeoutByCategory.modeling', c.worker.timeoutByCategory?.modeling ?? '', 'number', '0 = no limit. Set only if this category needs a hard cap.');
+  section('general', 'Monitoring / review');
   field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. One global liveness sample per interval.');
   field('Kill after stuck checks', 'watchdog.killAfterStuckChecks', c.watchdog.killAfterStuckChecks, 'number', '0 = flag only; otherwise at least 2. Default 3.');
   field('Loop repeat threshold', 'watchdog.loopRepeat', c.watchdog.loopRepeat, 'number', 'Repeated identical calls or tool-less progress turns before a runaway alert.');
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
-  field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
-  field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
+  field('Worker review rounds before escalation', 'worker.maxRounds', c.worker.maxRounds, 'number', 'Review and follow-up rounds on the same worker before escalating to a stronger model.');
+  section('subscriptions');
+  for (const id of ['codex', 'antigravity', 'grok', 'claude']) selectField(id === 'claude' ? 'Claude Agent SDK updates' : `${id} CLI updates`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
+  const signIns = el('button', 'sm', 'Manage subscription sign-ins');
+  signIns.onclick = () => { closeModal(); revealProviders(); }; panels.subscriptions.append(signIns);
   // Grok reset: "not set" is the default and means Conductor assumes NO reset (no "resets …" on the bar, no
   // use-it-or-lose-it discount) — a guessed reset time is worse than none. Set it once you know yours.
-  { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok weekly reset day')); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
+  { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(Object.assign(el('label', null, 'Grok weekly reset day'), { htmlFor: 'cfg-grok-reset-day' })); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
   const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
-  body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
+  section('keys');
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
-  // Worker CLI updates: off = never check; notify = show "update available"; auto = install when the provider is idle.
-  for (const id of ['codex', 'antigravity', 'grok', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
-  body.append(grid);
-  const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
-  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } };
-  body.append(upd, updOut);
-  const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
-  doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
-  body.append(doc, docOut);
   const prevProviders = c.providers || {};
   const save = el('button', 'primary', 'Save'); save.onclick = () => act(async () => {
     const patch = {};
-    for (const i of grid.querySelectorAll('input,select')) {
+    for (const i of fields.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
       if (i.type === 'number' && i.value.trim() === '') continue;
       const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'checkbox' ? !!i.checked : i.type === 'number' ? Number(i.value) : i.value;
@@ -1112,25 +1170,41 @@ function openSettings() {
   body.append(save);
   openModal('Settings', body);
 }
-async function openImprovements(showResolved = false) {
-  S.improvements = await api.get('/api/improvements');
-  const all = showResolved ? await api.get('/api/improvements?all=1') : S.improvements;
+function openImprovements(showResolved = false) {
   const body = el('div');
+  const view = { body, showResolved, request: 0, list: el('div'), tabs: [] };
   const tabs = el('div', 'row');
-  for (const [label, v] of [['Open', false], ['Resolved', true]]) { const b = el('button', v === showResolved ? 'primary sm' : 'sm', label); b.onclick = () => openImprovements(v); tabs.append(b); }
+  for (const [label, value] of [['Open', false], ['Resolved', true]]) {
+    const button = el('button', 'sm', label);
+    button.onclick = () => { view.showResolved = value; act(() => refreshImprovements(view)); };
+    view.tabs.push({ button, value }); tabs.append(button);
+  }
   body.append(tabs);
   const form = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.placeholder = 'Log an idea or annoyance…'; inp.setAttribute('aria-label', 'Log an idea or annoyance'); const add = el('button', 'sm', 'Add');
-  add.onclick = () => act(async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; openImprovements(); } });
+  add.onclick = () => act(async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; await refreshImprovements(view); } });
   form.append(inp, add); body.append(form);
-  const run = el('button', 'primary sm', 'Run self-review now'); run.onclick = runReview; body.append(run);
-  const shown = showResolved ? all.filter((e) => e.resolved) : S.improvements;
+  const run = el('button', 'primary sm', 'Run self-review now'); run.onclick = runReview; body.append(run, view.list);
+  openModal('Improvement log', body);
+  S.improvementView = view;
+  return act(() => refreshImprovements(view));
+}
+async function refreshImprovements(view = S.improvementView) {
+  const request = view ? ++view.request : 0;
+  const showResolved = !!view?.showResolved;
+  const open = (await api.get('/api/improvements')).filter((entry) => !entry.resolved);
+  S.improvements = open;
+  $('#improve-count').textContent = open.length;
+  const all = showResolved ? await api.get('/api/improvements?all=1') : open;
+  if (!view || S.improvementView !== view || request !== view.request || $('#modal').hidden || !view.body.isConnected) return;
+  for (const { button, value } of view.tabs) button.className = value === showResolved ? 'primary sm' : 'sm';
+  const shown = all.filter((entry) => showResolved ? entry.resolved : !entry.resolved);
+  view.list.innerHTML = '';
   for (const e of [...shown].reverse()) {
     const d = el('div', 'imp'); d.append(el('div', 'k', `${e.kind} · ${e.source} · ${new Date(e.ts).toLocaleString()}${e.resolved ? ' · resolved' : ''}`), el('div', 'm', e.message));
-    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = () => act(async () => { await api.post(`/api/improvements/${e.id}/resolve`); openImprovements(showResolved); }); d.append(r); }
-    body.append(d);
+    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = () => act(async () => { await api.post(`/api/improvements/${e.id}/resolve`); await refreshImprovements(view); }); d.append(r); }
+    view.list.append(d);
   }
-  if (!shown.length) body.append(el('div', 'muted', showResolved ? 'Nothing resolved yet.' : 'Nothing logged. Errors are captured automatically; the conductor and you can add ideas.'));
-  openModal('Improvement log', body);
+  if (!shown.length) view.list.append(el('div', 'muted', showResolved ? 'Nothing resolved yet.' : 'Nothing logged. Errors are captured automatically; the conductor and you can add ideas.'));
 }
 async function runReview() {
   const model = composite(pickerValue('new-'));
@@ -1164,12 +1238,17 @@ function openSystem(open) {
   const b = $('#system-body'); if (!b) return;
   const isOpen = open != null ? open : b.hidden;
   b.hidden = !isOpen;
-  localStorage.setItem('systemOpen', isOpen ? '1' : '0');
+  try { localStorage.setItem('systemOpen', isOpen ? '1' : '0'); } catch {}
+  if (!isOpen) { S.revealSubscriptions = false; renderProviders(); }
   const car = $('#system-toggle .caret'); if (car) car.textContent = isOpen ? '▾' : '▸';
   $('#system-toggle')?.setAttribute('aria-expanded', String(isOpen));
 }
 /** "details ▸" on the budget headline opens the SYSTEM drawer at Providers & limits. */
-function revealProviders() { openSystem(true); $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+function revealProviders() {
+  openSystem(true); S.revealSubscriptions = true; renderProviders();
+  document.body.classList.add('nav-open');
+  $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 async function openScores() {
   const body = el('div');
   const head = el('div', 'row between');
@@ -1281,7 +1360,7 @@ async function boot() {
   $('#chat-filter').oninput = (e) => { S.chatFilter = e.target.value; renderSessions(); };
   $('#btn-nav').onclick = () => document.body.classList.toggle('nav-open');
   $('#scrim').onclick = () => document.body.classList.remove('nav-open');
-  if (localStorage.getItem('systemOpen') === '1') openSystem(true);
+  try { if (localStorage.getItem('systemOpen') === '1') openSystem(true); } catch {}
   if (!S.sessions.length) $('#newchat-form').hidden = false; // first run: no chats yet, show the form
   // model chip popover: toggle on click, close on outside-click / Escape.
   $('#model-chip').onclick = (e) => { e.stopPropagation(); toggleModelPop(); };
