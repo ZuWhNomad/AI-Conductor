@@ -25,6 +25,13 @@ export function registerProc(owner, child) {
 
 export function registeredPids(owner) { return [...(ownerPids.get(owner) || [])]; }
 
+/** Force-stop only the server PID after its graceful HTTP stop path failed; never traverse descendants. */
+export function killServerFallback(pid, { kill = (target, signal) => process.kill(target, signal) } = {}) {
+  const target = Number(pid);
+  if (!Number.isSafeInteger(target) || target <= 0) throw new TypeError('server PID must be a positive integer');
+  kill(target, 'SIGTERM');
+}
+
 /** Agent SDK spawn hook: ChildProcess satisfies SpawnedProcess and exposes its PID to the registry. */
 export function spawnTracked(owner, { command, args, cwd, env, signal }) {
   return registerProc(owner, spawn(command, args, { cwd, env, signal, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }));

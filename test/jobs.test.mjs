@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const { startJob, jobStatus, cancelJob, formatJob } = await import('../core/jobs.mjs');
+const { killServerFallback } = await import('../core/proc.mjs');
 const { statePath, writeJson } = await import('../core/paths.mjs');
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
 const { setMemoryReader } = await import('../core/resources.mjs');
@@ -31,6 +32,22 @@ test('cancel kills the job tree by PID; a job whose process vanished is reported
 
   writeJson(statePath('jobs', 'ghost1.json'), { id: 'ghost1', command: 'x', cwd: '.', status: 'running', startedAt: new Date().toISOString(), pid: 2 ** 22 + 7 });
   assert.equal(jobStatus('ghost1').status, 'lost');
+});
+
+test('server stop fallback targets only the server PID; detached jobs survive', async () => {
+  const j = startJob({ command: `${node} -e "setTimeout(() => {}, 3000)"`, cwd: tmpDir('job-stop') });
+  let running;
+  try {
+    running = await until(() => { const s = jobStatus(j.id); return s?.pid && s?.childPid && alive(s.pid) && alive(s.childPid) && s; });
+    assert.ok(running, 'job wrapper and command are running');
+    const targets = [];
+    killServerFallback(87654321, { kill: (pid, signal) => targets.push({ pid, signal }) });
+    assert.deepEqual(targets, [{ pid: 87654321, signal: 'SIGTERM' }]);
+    assert.ok(alive(running.pid), 'fallback did not target the detached wrapper');
+    assert.ok(alive(running.childPid), 'fallback did not target the job command');
+  } finally {
+    await until(() => { const s = jobStatus(j.id); return s && s.status !== 'running'; }, 5000);
+  }
 });
 
 test('bad input is refused; the output tail is redacted', async () => {

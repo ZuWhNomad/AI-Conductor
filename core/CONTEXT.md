@@ -36,8 +36,10 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 - `bus.mjs` — the event bus (2000-entry / 8MB byte-bound ring, SSE replay). `paths.mjs` — state dir + atomic JSON + `redact` (the one
   secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result and the crash log use it).
 - `jobs.mjs` — detached long jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command
-  that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID. GPU-marked jobs are
-  exclusive; starts also obey the shared RAM guard in `resources.mjs`.
+  that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID. On Windows, the
+  wrapper starts detached with hidden stdio, giving it a new console process group. GPU-marked jobs are exclusive;
+  starts also obey the shared RAM guard in `resources.mjs`. Detached jobs survive a Conductor stop; to keep a
+  long-lived service independent of Conductor, start it from its own launcher, not from a worker shell.
 - `resources.mjs` — system RAM headroom for task/job starts and `/api/state` / limits output; transitions are logged
   once through the improvement log. `setMemoryReader()` injects readings for tests.
 - `watchdog.mjs` — the server-owned liveness loop. It combines bus activity, bounded file walks and one shared OS
@@ -89,6 +91,10 @@ keeps a `for_each` stage's title and shared spec before each vote's item JSON, l
 - Non-Claude chat follow-ups live in the session queue and transcript together; a turn drains the whole queue only while it still owns the session. Claude continues to use its SDK inbox.
 - State lives in the state dir via `paths.mjs` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that
   folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
+- Graceful stop / relaunch aborts worker tasks and probes; it never cancels detached jobs. The forced stop fallback
+  targets the server PID alone. On Windows, Node/libuv's internal kill-on-close Job Object contains non-detached
+  worker children, while `detached: true` job wrappers skip it; detached does not break out of an external kill-on-close
+  Job Object.
 - `config.json` holds only the user's overrides; `loadConfig()` folds `DEFAULTS` in at read time, so a new default
   reaches every user. Secrets live only in config and are never logged; `publicConfig()` masks them for the settings
   UI, and `redact()` strips key shapes and configured key values from everything else written or shown.
