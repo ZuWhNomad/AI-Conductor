@@ -1175,6 +1175,17 @@ test('GP4: seven_day_oauth_apps at 100% blocks the provider; seven_day_nimbus do
   assert.ok(nimbus.windows.find((w) => w.id === 'seven_day_nimbus')?.models, 'nimbus stays model-scoped');
 });
 
+test('codename test-pool keys (iguana_necktie, nimbus_quill) are dropped and never block the provider', () => {
+  const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
+    five_hour: { utilization: 10 },
+    seven_day: { utilization: 20 },
+    iguana_necktie: { utilization: 100 },
+    nimbus_quill: { utilization: 100 },
+  } });
+  assert.deepEqual(r.windows.map((w) => w.id).sort(), ['five_hour', 'seven_day']);
+  assert.equal(r.blocked, false);
+});
+
 test('D5: seven_day_overage_included and overage keys stay unscoped (non-model suffixes)', () => {
   const r = normalizeUsage({ rate_limits_available: true, rate_limits: {
     seven_day_overage_included: { utilization: 100 },
