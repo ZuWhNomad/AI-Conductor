@@ -189,8 +189,11 @@ export function normalizeUsage(u) {
   const windows = [];
   // Emit EVERY reported rate-limit window (so a newly-added five_hour_opus / seven_day_haiku appears on its own),
   // each auto-scoped by modelsForKey; global windows (five_hour, seven_day) stay unscoped.
+  // Keys outside the five_hour/seven_day shape (codename test pools such as iguana_necktie, nimbus_quill) are dropped:
+  // they meter unreleased models, and as unscoped windows they would block the whole provider.
+  const knownKey = (k) => !!WINDOW_LABELS[k] || [...GLOBAL_BASE_KEYS].some((b) => k.startsWith(b + '_'));
   for (const [key, val] of Object.entries(rl)) {
-    if (key === 'model_scoped' || key === 'extra_usage' || !val || typeof val !== 'object' || val.utilization == null) continue;
+    if (key === 'model_scoped' || key === 'extra_usage' || !knownKey(key) || !val || typeof val !== 'object' || val.utilization == null) continue;
     const models = modelsForKey(key);
     windows.push({ id: key, label: WINDOW_LABELS[key] || key.replace(/_/g, ' '), usedPercent: val.utilization, resetsAt: val.resets_at ? Date.parse(val.resets_at) : null, ...(models ? { models } : {}) });
   }

@@ -15,6 +15,21 @@ const S = { awaitingAuth: new Set(), sessions: [], current: null, models: { mode
 let modalOpener = null;
 let newSessionPromise = null;
 
+function loadProviderView() {
+  S.providerView = { signedInOnly: false, groups: { subscriptions: true, keys: true, local: true } };
+  try {
+    const saved = JSON.parse(localStorage.getItem('providerView'));
+    if (typeof saved?.signedInOnly === 'boolean') S.providerView.signedInOnly = saved.signedInOnly;
+    for (const key of Object.keys(S.providerView.groups)) {
+      if (typeof saved?.groups?.[key] === 'boolean') S.providerView.groups[key] = saved.groups[key];
+    }
+  } catch {}
+}
+function saveProviderView() {
+  try { localStorage.setItem('providerView', JSON.stringify(S.providerView)); } catch {}
+}
+loadProviderView();
+
 function asBtn(element, action) {
   element.tabIndex = 0;
   element.setAttribute('role', 'button');
@@ -28,13 +43,18 @@ function asBtn(element, action) {
   return element;
 }
 
-async function act(fn, revert) {
+function showStatus(message, target) {
+  const region = !$('#modal').hidden ? $('#modal-status') : target || (!$('#model-pop').hidden ? $('#model-status') : $('#ui-status'));
+  region.textContent = message;
+}
+
+async function act(fn, revert, target) {
   try {
     return await fn();
   } catch (err) {
     if (typeof revert === 'function') revert(err);
     else if (revert && typeof revert === 'object' && 'checked' in revert) revert.checked = !revert.checked;
-    $('#stt-hint').textContent = err.message || String(err);
+    showStatus(err.message || String(err), target);
   }
 }
 
@@ -77,8 +97,17 @@ function renderSessions() {
     x.onkeydown = (e) => e.stopPropagation();
     if (appPill) it.append(t, appPill, st, ren, x);
     else it.append(t, st, ren, x);
-    asBtn(it, () => openSession(s.id));
+    asBtn(it, () => act(() => openSession(s.id), null, $('#sessions-status')));
     box.append(it);
+  }
+  if (!box.children.length) {
+    const empty = el('div', 'empty', S.sessions.length ? 'No chats match.' : 'No chats yet.');
+    if (S.sessions.length) {
+      const clear = el('button', 'sm', 'Clear filter');
+      clear.onclick = () => { S.chatFilter = ''; $('#chat-filter').value = ''; renderSessions(); };
+      empty.append(clear);
+    }
+    box.append(empty);
   }
 }
 
@@ -93,10 +122,35 @@ async function renameSession(s) {
 function meterClass(p) { return p >= 90 ? 'bad' : p >= 70 ? 'warn' : ''; }
 function renderProviders() {
   const box = $('#providers'); box.innerHTML = '';
+  const groups = {};
+  const groupFor = (p) => p.auth?.type === 'local' || ['local', 'ollama'].includes(p.kind) ? 'local' : p.auth?.type === 'subscription' ? 'subscriptions' : 'keys';
+  const filter = $('#providers-signed-in');
+  filter.checked = S.providerView.signedInOnly;
+  filter.onchange = () => { S.providerView.signedInOnly = filter.checked; saveProviderView(); renderProviders(); };
+  for (const [id, label] of [['subscriptions', 'Subscriptions'], ['keys', 'API keys'], ['local', 'Local models']]) {
+    const members = S.providers.filter((p) => groupFor(p) === id);
+    if (id === 'local' && !members.length) continue;
+    const group = el('details', 'provider-group'); group.id = 'providers-' + id;
+    const initialOpen = id === 'subscriptions' && S.revealSubscriptions || S.providerView.groups[id];
+    group.open = initialOpen;
+    group.append(el('summary', null, `${label} · ${members.filter((p) => S.models.providers[p.id]?.status === 'ok').length}/${members.length}`));
+    // Initial and detached queued toggle events must not overwrite the remembered preference.
+    let lastOpen = initialOpen;
+    group.ontoggle = () => {
+      if (!group.isConnected || group.open === lastOpen) return;
+      lastOpen = group.open;
+      if (id === 'subscriptions') S.revealSubscriptions = false;
+      S.providerView.groups[id] = group.open; saveProviderView();
+    };
+    groups[id] = group; box.append(group);
+    if (S.providerView.signedInOnly && !members.some((p) => S.models.providers[p.id]?.status === 'ok' || S.awaitingAuth.has(p.id))) group.append(el('div', 'tiny muted', 'No signed-in providers.'));
+  }
   for (const p of S.providers) {
     const st = S.models.providers[p.id] || {}; const lim = S.limits.providers[p.id] || {};
     const usable = st.status === 'ok';
+    if (S.providerView.signedInOnly && !usable && !S.awaitingAuth.has(p.id)) continue;
     const d = el('div', 'prov');
+    const status = el('div', 'tiny action-status'); status.setAttribute('role', 'status');
     const name = el('div', 'name');
     const left = el('span'); const nameEl = p.url ? Object.assign(el('a', null, p.id), { href: p.url, target: '_blank', rel: 'noopener', title: p.url }) : document.createTextNode(p.id);
     left.append(el('i', 'dot ' + (usable ? (lim.blocked ? 'bad' : 'ok') : st.status === 'error' ? 'bad' : '')), nameEl);
@@ -113,9 +167,9 @@ function renderProviders() {
       }
       const b = e.target; b.disabled = true;
       try {
-        const r = await api.post(`/api/providers/${p.id}/${act}`); $('#stt-hint').textContent = r.note || r.command;
+        const r = await api.post(`/api/providers/${p.id}/${act}`); showStatus(r.note || r.command);
         if (r.ok) { S.awaitingAuth.add(p.id); renderProviders(); clearTimeout(authTimers.get(p.id)); authTimers.set(p.id, setTimeout(() => { S.awaitingAuth.delete(p.id); authTimers.delete(p.id); renderProviders(); }, 5 * 60_000)); }
-      } catch (err) { $('#stt-hint').textContent = err.message; } finally { b.disabled = false; }
+      } catch (err) { showStatus(err.message, status); } finally { b.disabled = false; }
     };
     if (action) {
       const btn = el('button', 'sm', action === 'install' ? 'Install' : 'Sign in'); btn.title = `${p.auth?.setup || ''}`.trim();
@@ -138,7 +192,7 @@ function renderProviders() {
       else {
         line.append(el('span', 'muted', st.updatedAt ? `checked ${new Date(st.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'never checked'));
         const rc = el('button', 'sm ghost', 'Recheck'); rc.title = `Re-probe ${p.id} now`;
-        rc.onclick = async (e) => { e.stopPropagation(); rc.disabled = true; try { await api.post('/api/models/refresh', { only: [p.id] }); } catch (err) { $('#stt-hint').textContent = err.message; } finally { rc.disabled = false; } };
+        rc.onclick = async (e) => { e.stopPropagation(); rc.disabled = true; try { await api.post('/api/models/refresh', { only: [p.id] }); } catch (err) { showStatus(err.message, status); } finally { rc.disabled = false; } };
         line.append(rc);
       }
       d.append(line);
@@ -152,7 +206,7 @@ function renderProviders() {
       line.append(txt);
       if (cu.available && !cu.note && !cu.applying) {
         const b = el('button', 'sm ghost', 'Update'); b.title = 'Install it now if the provider is idle; verified with a test call, rolled back on failure';
-        b.onclick = async (e) => { e.stopPropagation(); b.disabled = true; try { await api.post('/api/cli-update', { provider: p.id }); } catch (err) { $('#stt-hint').textContent = err.message; } };
+        b.onclick = async (e) => { e.stopPropagation(); b.disabled = true; try { await api.post('/api/cli-update', { provider: p.id }); } catch (err) { showStatus(err.message, status); } finally { b.disabled = false; } };
         line.append(b);
       }
       d.append(line);
@@ -168,12 +222,12 @@ function renderProviders() {
       if (w.estimated) { // let the user record an actual reading to re-calibrate the estimate
         const row = el('div', 'wl tiny'); const inp = el('input'); inp.type = 'number'; inp.min = 0; inp.max = 100; inp.placeholder = 'actual %'; inp.style.width = '5em';
         const set = el('button', 'sm', 'Calibrate'); set.title = w.note || 'record the real % from the provider site to refine the estimate';
-        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; } catch (e) { $('#stt-hint').textContent = e.message; } finally { set.disabled = false; } };
+        set.onclick = async () => { const raw = inp.value.trim(); const v = Number(raw); if (raw === '' || !(v >= 0 && v <= 100)) { inp.focus(); return; } set.disabled = true; try { await api.post(`/api/providers/${p.id}/usage`, { pct: v }); inp.value = ''; } catch (e) { showStatus(e.message, status); } finally { set.disabled = false; } };
         row.append(inp, set); d.append(row);
       }
     }
     if (lim.blocked) { const blocked = el('div', 'tiny', `blocked until ${lim.blockedUntil ? new Date(lim.blockedUntil).toLocaleString() : '?'}`); blocked.style.color = 'var(--bad)'; d.append(blocked); }
-    box.append(d);
+    d.append(status); groups[groupFor(p)].append(d);
   }
   $('#refresh-meta').textContent = `models ${S.models.updatedAt ? new Date(S.models.updatedAt).toLocaleTimeString() : '—'} · limits ${S.limits.updatedAt ? new Date(S.limits.updatedAt).toLocaleTimeString() : '—'} · server poll ${S.config.pollMinutes}m · panel auto ${S.config?.ui?.autoRefresh ? 'on' : 'off'}`;
 }
@@ -190,11 +244,11 @@ function windowScope(w) {
 }
 /** The plan-level window for a provider+scope: skip per-model/sub-scoped windows, prefer the provider's own primary bucket. */
 function planWindow(providerId, scope) {
-  const ws = (S.limits.providers[providerId]?.windows || []).filter((w) => windowScope(w) === scope);
-  if (!ws.length) return null;
-  const plan = ws.filter((w) => !w.models); // a `models` field marks a per-model window (e.g. claude "weekly Fable")
-  const pool = plan.length ? plan : ws;
-  return pool.find((w) => (w.id || '').startsWith(`${providerId}:`) || /^(five_hour|seven_day)$/.test(w.id || '')) || pool[0];
+  const ws = (S.limits.providers[providerId]?.windows || []).filter((w) => !w.models && w.scope !== 'model' && !w.estimated && !/^(five_hour|seven_day)_/.test(w.id || ''));
+  const pool = ws.filter((w) => scope === 'session'
+    ? w.windowMinutes === 300 || (w.windowMinutes == null && (/^(five_hour|5[_ -]?hour|5h)$/i.test(w.id || '') || /^(5[_ -]?hour|5h)$/i.test(w.label || '')))
+    : windowScope(w) === scope);
+  return pool.find((w) => /^(five_hour|seven_day)$/.test(w.id || '') || (w.id || '').startsWith(`${providerId}:`)) || pool[0];
 }
 function budgetBar(label, w) {
   const b = el('div', 'b');
@@ -205,10 +259,10 @@ function budgetBar(label, w) {
   b.append(line, m);
   return b;
 }
-/** Compact always-visible budget: the SELECTED orchestrator's session + weekly bars first, then a one-line rest. */
+/** Compact budget: the selected conductor's actual five-hour window and high weekly usage. */
 function renderBudget() {
   const box = $('#budget'); if (!box) return; box.innerHTML = '';
-  const prov = S.current?.provider || 'claude'; // the selected conductor/orchestrator model's provider
+  const prov = S.current?.provider || S.config.conductor?.provider || 'claude';
   const pst = S.models.providers[prov] || {};
   if (pst.status && pst.status !== 'ok') box.append(el('div', 'empty', `${prov}: ${pst.loggedIn === false ? 'not signed in' : pst.configured === false ? 'no key' : pst.installed === false ? 'not installed' : pst.error ? 'error' : pst.status}`));
   // A different provider's refresh (or a failed poll) cannot make these cached windows current.
@@ -217,21 +271,14 @@ function renderBudget() {
   box.classList.toggle('stale', !!lim.error || (!!S.boot && asOf < S.boot));
   const session = planWindow(prov, 'session');
   const weekly = planWindow(prov, 'weekly');
-  if (session) box.append(budgetBar(`${prov} · session`, session));
-  if (weekly) box.append(budgetBar(`${prov} · weekly`, weekly));
-  if (!session && !weekly) { const only = (S.limits.providers[prov]?.windows || [])[0]; if (only) box.append(budgetBar(`${prov} · ${only.estimated ? 'est' : 'usage'}`, only)); }
-  const parts = [];
-  for (const p of S.providers || []) {
-    if (p.id === prov) continue; // the selected provider is already shown in full above
-    if ((S.models.providers[p.id] || {}).status !== 'ok') continue;
-    const windows = (S.limits.providers[p.id]?.windows || []).filter((w) => w.usedPercent != null);
-    if (windows.length) {
-      const w = windows.reduce((max, cur) => ((Number(cur.usedPercent) || 0) > (Number(max.usedPercent) || 0) ? cur : max), windows[0]);
-      const wLbl = w.label || w.scope || windowScope(w) || '';
-      parts.push(el('span', meterClass(Number(w.usedPercent) || 0), `${p.id}${wLbl ? ` (${wLbl})` : ''} ${Math.round(w.usedPercent)}%${w.estimated ? ' est' : ''}`));
-    }
+  if (session) box.append(budgetBar(`${prov} · 5-hour`, session));
+  else if (lim.balance) box.append(el('div', 'tiny', `${prov} · balance ${lim.balance.amount} ${lim.balance.currency}${lim.balance.available === false ? ' · exhausted' : ''}`));
+  else {
+    const budget = (lim.windows || []).find((w) => !w.models && w.scope !== 'model' && !w.estimated && /budget/i.test(w.id || ''));
+    if (budget) box.append(budgetBar(`${prov} · ${budget.label || 'budget'}`, budget));
+    else box.append(el('div', 'empty', `${prov}: 5-hour usage unavailable`));
   }
-  if (parts.length) { const o = el('div', 'others'); parts.slice(0, 4).forEach((s, i) => { if (i) o.append(' · '); o.append(s); }); if (parts.length > 4) o.append(` · +${parts.length - 4}`); box.append(o); }
+  if (weekly && Number(weekly.usedPercent) > 90) box.append(budgetBar(`${prov} · weekly`, weekly));
   if (lim.error) box.append(el('div', 'empty', 'Refresh failed · cached limits'));
   else if (box.classList.contains('stale')) box.append(el('div', 'empty', `${asOf ? `as of ${new Date(asOf).toLocaleTimeString()}` : 'Age unknown'} · refresh limits`));
   if (!box.childElementCount) box.append(el('div', 'empty', 'Refresh to load limits'));
@@ -296,7 +343,7 @@ function fillPicker(prefix, sel, opts = {}) {
   const keepAll = wantAll && !opts.forceProvider && (!P.dataset.filled || P.value === ALL);
   P.innerHTML = '';
   if (wantAll) P.append(new Option('all providers', ALL));
-  for (const p of agentProviders({ conductOnly: opts.conductOnly !== false })) P.append(new Option(p.id, p.id));
+  for (const p of (opts.fixedProvider ? [{ id: sel.provider }] : agentProviders({ conductOnly: opts.conductOnly !== false }))) P.append(new Option(p.id, p.id));
   P.value = keepAll ? ALL : (sel.provider || (wantAll ? ALL : 'claude'));
   if (!P.value) P.selectedIndex = 0;
   P.dataset.filled = '1';
@@ -339,9 +386,10 @@ function refreshNewPicker(keep = true, forceProvider = false) {
   $('#new-selection').textContent = composite(pickerValue('new-'));
   localStorage.setItem('conductorSel', JSON.stringify(pickerValue('new-')));
 }
-function refreshHeaderPicker(forceProvider = false) {
+function refreshHeaderPicker() {
   if (!S.current) return;
-  fillPicker('', { provider: S.current.provider || 'claude', model: S.current.model || '', effort: S.current.effort || 'high' }, { forceProvider });
+  fillPicker('', { provider: S.current.provider || 'claude', model: S.current.model || '', effort: S.current.effort || 'high' }, { all: false, fixedProvider: true });
+  $('#provider').disabled = true;
 }
 
 // ---------- rendering: transcript ----------
@@ -600,6 +648,8 @@ function renderFleetHead() {
   $('#fleet-counts').textContent = mine.length ? `${running} running · ${queued} queued · ${parked} parked · ${stale} stale · ${doneToday} done today` : 'no workers yet';
   const scope = fleetScope();
   for (const b of $('#fleet-scope').querySelectorAll('button')) {
+    b.disabled = b.dataset.scope === 'mine' && !S.current;
+    b.title = b.disabled ? 'Select a chat to show its workers' : '';
     const on = b.dataset.scope === scope;
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
@@ -647,6 +697,8 @@ async function openTask(id) {
   }).join('\n') || '(none yet)'));
   if (t.result?.finalMessage) { body.append(el('h4', null, 'Worker report')); const r = el('div', 'msg assistant'); r.innerHTML = md(t.result.finalMessage); body.append(r); }
   const row = el('div', 'row');
+  const refresh = el('button', 'sm', 'Refresh'); refresh.onclick = () => act(() => openTask(id));
+  row.append(el('span', 'tiny muted', 'Snapshot · refresh for latest status and actions'), refresh);
   if (!['done', 'failed', 'canceled'].includes(t.status)) { const b = el('button', 'sm danger', 'Cancel task'); b.onclick = () => act(async () => { await api.post(`/api/tasks/${id}/cancel`); closeModal(); }); row.append(b); }
   body.append(row);
   openModal(`Task ${t.id}: ${t.title}`, body);
@@ -714,21 +766,27 @@ async function newSession() {
   const button = $('#btn-new'); button.disabled = true; button.textContent = 'Starting…';
   return (newSessionPromise = (async () => {
     const cwd = $('#cwd').value.trim();
-    if (!cwd) { $('#stt-hint').textContent = 'Pick a project folder first (left panel).'; $('#cwd').focus(); return; }
+    if (!cwd) { showStatus('Pick a project folder first.', $('#new-status')); $('#cwd').focus(); return; }
     localStorage.setItem('cwd', cwd);
     const sel = pickerValue('new-');
     localStorage.setItem('conductorSel', JSON.stringify(sel));
     let s;
     try { s = await api.post('/api/sessions', { cwd, provider: sel.provider, model: sel.model || 'default', effort: sel.effort, permissionMode: $('#new-bypass').checked ? 'bypassPermissions' : 'acceptEdits', overflowApi: $('#new-overflow').checked, parallelOverride: !!$('#new-parallel')?.checked }); }
-    catch (e) { $('#stt-hint').textContent = e.message; return; }
+    catch (e) { showStatus(e.message, $('#new-status')); return; }
     const curCd = S.config?.conductor || {};
     const modelOrNull = sel.model || null;
     if (sel.provider !== curCd.provider || modelOrNull !== (curCd.model || null) || sel.effort !== (curCd.effort || 'high')) {
       api.post('/api/settings', { conductor: { provider: sel.provider, model: modelOrNull, effort: sel.effort } }).catch(() => {});
     }
-    $('#newchat-form').hidden = true; // collapse the inline form once the chat is created
+    toggleNewChat(false); // collapse the inline form once the chat is created
     upsertSession(s); renderSessions(); await openSession(s.id);
   })().finally(() => { newSessionPromise = null; button.disabled = false; button.textContent = 'Start chat'; }));
+}
+function toggleNewChat(show = $('#newchat-form').hidden) {
+  $('#newchat-form').hidden = !show;
+  $('#btn-newchat-toggle').ariaExpanded = String(show);
+  $('#btn-newchat-toggle').textContent = show ? '− New chat' : '+ New chat';
+  if (show) $('#cwd').focus();
 }
 function upsertSession(s) {
   S.sessions = [...S.sessions.filter((x) => x.id !== s.id), s].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -754,11 +812,10 @@ async function send() {
   if (direct) {
     const [, kind, arg, spec] = direct;
     let provider = kind === 'worker' ? undefined : kind === 'astra' ? 'codex' : kind;
-    let model = kind === 'claude' ? arg : undefined;
+    let model = kind === 'claude' && (['default', 'opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]', 'sonnetplan'].includes(arg) || S.models.models.some((m) => m.provider === 'claude' && (m.id === arg || m.resolved === arg || m.aliasOf?.includes(arg)))) ? arg : undefined;
     if (kind === 'worker' && arg) { const m = S.models.models.find((x) => x.id === arg || x.resolved === arg); if (m) { provider = m.provider; model = m.id; } } // /worker <model> targets it; otherwise arg is prepended to the spec (below)
     const body = { sessionId: S.current.id, cwd: S.current.cwd, spec: model ? spec : (arg ? `${arg} ${spec}` : spec), provider, model };
-    addUser(text);
-    try { const t = await api.post('/api/tasks', body); addSys(`worker task ${t.id} queued (${t.provider}${t.model ? '/' + t.model : ''})`); }
+    try { const t = await api.post('/api/tasks', body); addUser(text); addSys(`worker task ${t.id} queued (${t.provider}${t.model ? '/' + t.model : ''})`); }
     catch (e) { if (!ta.value) ta.value = text; addSys(`task failed: ${e.message}`, 'err'); }
     return;
   }
@@ -798,7 +855,7 @@ function pickCmd() { const it = S.cmdItems[S.cmdSel]; if (!it) return; const ta 
 function renderUpdate(st = S.update) {
   const b = $('#btn-update'); if (!b) return;
   const behind = st && st.git && !st.error ? (st.behind || 0) : 0;
-  if (behind > 0) { b.hidden = false; b.classList.add('flash'); b.textContent = `⬇ Update (${behind})`; b.title = `${behind} newer commit(s) on GitHub — click to pull and then restart`; }
+  if (behind > 0) { b.hidden = false; b.classList.add('flash'); b.innerHTML = ''; b.append(el('span', null, '⬇'), el('span', 'update-label', ` Update (${behind})`)); b.setAttribute('aria-label', `Update (${behind})`); b.title = `${behind} newer commit(s) on GitHub — click to pull and then restart`; }
   else { b.hidden = true; b.classList.remove('flash'); }
 }
 /** One source of truth for the four post-update states, from merged flags (updated/npmInstalled/npmError/relaunching/relaunchFailed). */
@@ -825,7 +882,7 @@ function noteUpdate(o) {
 // ---------- SSE ----------
 function applyState(st) {
   S.boot = st.boot; S.lastSeq = st.seq || 0;
-  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements, config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
+  Object.assign(S, { sessions: st.sessions, models: st.models, limits: st.limits, tasks: st.tasks, improvements: st.improvements.filter((entry) => !entry.resolved), config: st.config, providers: st.providers, update: st.update, cliUpdates: st.cliUpdates });
   $('#improve-count').textContent = st.improvementCount ?? S.improvements.length;
 }
 async function resync() {
@@ -890,15 +947,12 @@ function connect() {
   on('limits', () => coalesce('limits', async () => { S.limits = await api.get('/api/limits'); renderProviders(); renderBudget(); }));
   on('cli-update', () => coalesce('cli-update', async () => { S.cliUpdates = await api.get('/api/cli-update'); renderProviders(); }));
   on('improvement', (ev) => {
-    if (ev?.count != null) {
-      $('#improve-count').textContent = ev.count;
-      return;
-    }
-    coalesce('improvements', async () => { S.improvements = await api.get('/api/improvements'); $('#improve-count').textContent = S.improvements.length; });
+    if (ev?.count != null) $('#improve-count').textContent = ev.count;
+    coalesce('improvements', () => refreshImprovements());
   });
   on('model_pull', (ev) => {
-    if (ev.error) $('#stt-hint').textContent = `pull ${ev.model}: ${ev.error}`;
-    else $('#stt-hint').textContent = ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`;
+    if (ev.error) showStatus(`pull ${ev.model}: ${ev.error}`);
+    else showStatus(ev.status === 'done' ? `pulled ${ev.model}` : `pulling ${ev.model}: ${ev.status} ${ev.completed && ev.total ? Math.round(100 * ev.completed / ev.total) + '%' : ''}`);
   });
   on('plan', (ev) => {
     if (!S.current || ev.sessionId !== S.current.id) return;
@@ -968,16 +1022,29 @@ function onSessionEvent(ev) {
 // ---------- modals ----------
 function openModal(title, body) {
   if ($('#modal').hidden) modalOpener = document.activeElement;
+  S.improvementView = null;
   document.body.classList.remove('nav-open');
   $('#modal-title').textContent = title;
   const b = $('#modal-body');
   b.innerHTML = '';
   b.append(body);
+  $('#modal-status').textContent = '';
+  $('#modal').classList.toggle('settings-modal', title === 'Settings');
+  for (const node of document.querySelectorAll('#sidebar, #main, #fleet, #scrim')) node.inert = true;
+  $('#modal').onkeydown = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); }
+    if (e.key !== 'Tab') return;
+    const focusable = [...$('#modal').querySelectorAll('button, input, select, textarea, a[href], [tabindex]')].filter((node) => !node.disabled && node.tabIndex >= 0 && node.getClientRects().length);
+    const next = e.shiftKey ? focusable.at(-1) : focusable[0];
+    if (document.activeElement === (e.shiftKey ? focusable[0] : focusable.at(-1))) { e.preventDefault(); next.focus(); }
+  };
   $('#modal').hidden = false;
   $('#modal-close').focus();
 }
 function closeModal() {
+  S.improvementView = null;
   $('#modal').hidden = true;
+  for (const node of document.querySelectorAll('#sidebar, #main, #fleet, #scrim')) node.inert = false;
   if (modalOpener && typeof modalOpener.focus === 'function') {
     modalOpener.focus();
     modalOpener = null;
@@ -999,6 +1066,7 @@ async function browse(path) {
   } else {
     body.append(el('div', 'tiny muted', `${r.hasGit ? 'git repo · ' : ''}${r.hasClaudeMd ? 'has CLAUDE.md' : 'no CLAUDE.md'}`));
   }
+  if (!r.error && !r.dirs?.length) body.append(el('div', 'muted', 'No subfolders'));
   if (r.parent) { const up = el('div', 'd', '⬆ ..'); asBtn(up, () => act(() => browse(r.parent))); body.append(up); }
   for (const d of (r.dirs || [])) { const x = el('div', 'd', '📁 ' + d); asBtn(x, () => act(() => browse(r.path.replace(/[\\/]$/, '') + (r.path.includes('\\') ? '\\' : '/') + d))); body.append(x); }
   openModal('Choose project folder', body);
@@ -1006,14 +1074,42 @@ async function browse(path) {
 function openSettings() {
   const c = S.config; const body = el('div');
   const grokReset = () => (Number(c.scorecard?.usageResets?.grok?.periodHours) > 0 ? c.scorecard.usageResets.grok : null); // periodHours 0 / absent = not set
-  const grid = el('div', 'grid');
-  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
-  const toggleField = (label, id, checked, hint = '') => { const l = el('label', null, label); l.title = hint; const i = el('input'); i.type = 'checkbox'; i.id = 'cfg-' + id; i.checked = !!checked; grid.append(l, i); return i; };
-  const selectField = (label, id, value, opts) => { grid.append(el('label', null, label)); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
+  const fields = el('div', 'settings-fields');
+  const tabs = el('div', 'row settings-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Settings');
+  const panels = {}, buttons = {};
+  const selectTab = (id) => {
+    for (const key of Object.keys(panels)) {
+      panels[key].hidden = key !== id;
+      buttons[key].setAttribute('aria-selected', String(key === id));
+      buttons[key].tabIndex = key === id ? 0 : -1;
+      buttons[key].className = key === id ? 'primary' : '';
+    }
+    try { localStorage.setItem('settingsTab', id); } catch {}
+  };
+  for (const [id, label] of [['general', 'General'], ['subscriptions', 'Subscriptions'], ['keys', 'API keys']]) {
+    const panel = el('div', 'settings-panel'); panel.id = 'settings-' + id; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'settings-tab-' + id);
+    const button = el('button', null, label); button.id = 'settings-tab-' + id; button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', panel.id);
+    button.onclick = () => selectTab(id);
+    button.onkeydown = (e) => {
+      const keys = Object.keys(panels), index = keys.indexOf(id);
+      const next = e.key === 'ArrowRight' ? keys[(index + 1) % keys.length] : e.key === 'ArrowLeft' ? keys[(index + keys.length - 1) % keys.length] : e.key === 'Home' ? keys[0] : e.key === 'End' ? keys.at(-1) : null;
+      if (next) { e.preventDefault(); selectTab(next); buttons[next].focus(); }
+    };
+    panels[id] = panel; buttons[id] = button; tabs.append(button); fields.append(panel);
+  }
+  let activeTab = 'general';
+  try { const saved = localStorage.getItem('settingsTab'); if (Object.hasOwn(panels, saved)) activeTab = saved; } catch {}
+  selectTab(activeTab);
+  body.append(tabs, fields);
+  let grid;
+  const section = (panel, label) => { if (label) panels[panel].append(el('h4', null, label)); grid = el('div', 'grid'); panels[panel].append(grid); };
+  const field = (label, id, value, type = 'text', hint = '') => { const l = el('label', null, label); l.title = hint; l.htmlFor = 'cfg-' + id; const i = el('input'); i.type = type; i.id = 'cfg-' + id; i.value = value ?? ''; if (type === 'password') { i.placeholder = value ? '(saved)' : 'paste key'; if (!i.dataset) i.dataset = {}; i.dataset.initial = value ?? ''; } grid.append(l, i); return i; };
+  const toggleField = (label, id, checked, hint = '') => { const l = el('label', null, label); l.title = hint; l.htmlFor = 'cfg-' + id; const i = el('input'); i.type = 'checkbox'; i.id = 'cfg-' + id; i.checked = !!checked; grid.append(l, i); return i; };
+  const selectField = (label, id, value, opts, hint = '') => { grid.append(Object.assign(el('label', null, label), { htmlFor: 'cfg-' + id, title: hint })); const s = el('select'); s.id = 'cfg-' + id; for (const o of opts) s.append(new Option(o, o)); s.value = value; grid.append(s); };
   const pickerRow = (label, prefix, sel, opts) => {
-    grid.append(el('label', null, label));
+    grid.append(Object.assign(el('label', null, label), { htmlFor: prefix + 'provider' }));
     const row = el('div', 'row picker');
-    for (const part of ['provider', 'model', 'effort']) { const s = el('select'); s.id = `${prefix}${part}`; row.append(s); }
+    for (const part of ['provider', 'model', 'effort']) { const s = el('select'); s.id = `${prefix}${part}`; s.setAttribute('aria-label', `${label} ${part}`); row.append(s); }
     grid.append(row);
     setTimeout(() => {
       fillPicker(prefix, sel, opts);
@@ -1021,63 +1117,68 @@ function openSettings() {
       $(`#${prefix}model`).onchange = () => { if (resolveOther(prefix, true) === false) return; fillPicker(prefix, pickerValue(prefix), { ...opts, forceProvider: true }); };
     }, 0);
   };
-  body.append(el('h4', null, 'Default worker (the grunt coder) — provider : model : effort'));
+  section('general', 'Defaults');
   pickerRow('Worker', 'wk-', { provider: c.worker.provider, model: c.worker.model, effort: c.worker.effort }, { conductOnly: false, all: true });
-  body.append(el('h4', null, 'Conductor default — provider : model : effort'));
   pickerRow('Conductor', 'cd-', { provider: c.conductor.provider || 'claude', model: c.conductor.model || '', effort: c.conductor.effort }, { conductOnly: true, all: true });
-  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
   selectField('New chats: permissions', 'conductor.permissionMode', c.conductor.permissionMode || 'acceptEdits', ['bypassPermissions', 'acceptEdits']);
   selectField('New chats: API overflow', 'conductor.overflowApi', String(!!c.conductor.overflowApi), ['false', 'true']);
-  selectField('New models', 'bench.newModels', c.bench?.newModels || 'off', ['off', 'auto']);
+  section('general', 'Application');
+  selectField('GitHub updates', 'conductor.autoUpdate', c.conductor.autoUpdate, ['ask', 'auto', 'off']); // ask = notify + apply on click; auto = pull automatically; off = never check
+  field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
+  const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
+  upd.onclick = async () => { if (upd.disabled) return; upd.disabled = true; updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } finally { upd.disabled = false; } };
+  panels.general.append(upd, updOut);
+  const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
+  doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
+  panels.general.append(doc, docOut);
+  section('general', 'Benchmarking');
+  selectField('Benchmark new models', 'bench.newModels', c.bench?.newModels || 'off', ['off', 'auto'], 'auto benchmarks newly discovered models during off-peak hours; off leaves benchmarking manual.');
   field('Auto-bench off-peak start (local)', 'bench.offPeak.start', c.bench?.offPeak?.start ?? '', 'time', 'Leave both off-peak times empty for no restriction.');
   field('Auto-bench off-peak end (local)', 'bench.offPeak.end', c.bench?.offPeak?.end ?? '', 'time', 'Windows may wrap past midnight, for example 22:00–06:00.');
   toggleField('Auto-bench all weekend', 'bench.offPeak.weekends', c.bench?.offPeak?.weekends ?? true, 'Saturday and Sunday are off-peak all day in local time.');
-  body.append(el('h4', null, 'Worker behaviour'));
+  selectField('Selection before measured scores', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors'], 'priors uses hand-picked model tiers before measured scores exist; off requires an explicit model or measured scores.');
+  section('general', 'Execution');
   toggleField('Efficiency mode', 'worker.efficiencyMode', c.worker.efficiencyMode, 'Wait for the same model when it reaches a usage limit. Off fails over to the next available model.');
-  selectField('Scorecard cold start', 'scorecard.coldStart', c.scorecard?.coldStart || 'off', ['off', 'priors']);
   const sbxRow = el('div', 'row');
   const sbxSel = el('select'); sbxSel.id = 'cfg-worker.codexSandbox';
   for (const o of ['read-only', 'workspace-write', 'danger-full-access']) sbxSel.append(new Option(o, o));
   sbxSel.value = c.worker.codexSandbox;
-  const sbxOverride = c.worker?.codexSandboxByModel?.[c.worker?.model];
-  const sbxNote = el('span', 'tiny muted', sbxOverride ? ` (default worker ${c.worker.model}: ${sbxOverride})` : '');
+  const sbxOverrides = [c.worker, c.conductor].filter((selection) => selection?.provider === 'codex' && c.worker?.codexSandboxByModel?.[selection.model])
+    .map((selection) => `${selection.model}: ${c.worker.codexSandboxByModel[selection.model]}`);
+  const sbxNote = el('span', 'tiny muted', 'Applies to Codex workers and conductors; per-model overrides take precedence.' + (sbxOverrides.length ? ` Defaults: ${[...new Set(sbxOverrides)].join('; ')}.` : ''));
   sbxRow.append(sbxSel, sbxNote);
-  grid.append(Object.assign(el('label', null, 'Codex sandbox'), { title: 'worker.codexSandboxByModel overrides this per model' }), sbxRow);
+  grid.append(Object.assign(el('label', null, 'Codex sandbox'), { htmlFor: sbxSel.id, title: 'worker.codexSandboxByModel overrides this per model for workers and conductors' }), sbxRow);
   field('Max parallel workers', 'conductor.maxWorkerConcurrency', c.conductor.maxWorkerConcurrency, 'number');
   field('Max tool turns per chat turn', 'conductor.maxTurns', c.conductor.maxTurns, 'number', 'Claude harness and API conductors; big projects need thousands.');
   field('Conductor turn timeout (min)', 'conductor.turnTimeoutMinutes', c.conductor.turnTimeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Max tool turns per Claude worker task', 'worker.maxTurns', c.worker.maxTurns, 'number');
   field('Worker timeout (min)', 'worker.timeoutMinutes', c.worker.timeoutMinutes, 'number', '0 = no limit. Stop remains immediate.');
   field('Worker timeout for modeling (min)', 'worker.timeoutByCategory.modeling', c.worker.timeoutByCategory?.modeling ?? '', 'number', '0 = no limit. Set only if this category needs a hard cap.');
+  section('general', 'Monitoring / review');
   field('Watchdog check-in every (min)', 'watchdog.intervalMinutes', c.watchdog.intervalMinutes, 'number', '5–1440 minutes. One global liveness sample per interval.');
   field('Kill after stuck checks', 'watchdog.killAfterStuckChecks', c.watchdog.killAfterStuckChecks, 'number', '0 = flag only; otherwise at least 2. Default 3.');
   field('Loop repeat threshold', 'watchdog.loopRepeat', c.watchdog.loopRepeat, 'number', 'Repeated identical calls or tool-less progress turns before a runaway alert.');
   field('Log runs longer than (min)', 'worker.longRunMinutes', c.worker.longRunMinutes, 'number');
-  field('Review rounds max', 'worker.maxRounds', c.worker.maxRounds, 'number');
-  field('Poll models/limits every (min)', 'pollMinutes', c.pollMinutes, 'number');
+  field('Worker review rounds before escalation', 'worker.maxRounds', c.worker.maxRounds, 'number', 'Review and follow-up rounds on the same worker before escalating to a stronger model.');
+  section('subscriptions');
+  for (const id of ['codex', 'antigravity', 'grok', 'claude']) selectField(id === 'claude' ? 'Claude Agent SDK updates' : `${id} CLI updates`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
+  const signIns = el('button', 'sm', 'Manage subscription sign-ins');
+  signIns.onclick = () => { closeModal(); revealProviders(); }; panels.subscriptions.append(signIns);
   // Grok reset: "not set" is the default and means Conductor assumes NO reset (no "resets …" on the bar, no
   // use-it-or-lose-it discount) — a guessed reset time is worse than none. Set it once you know yours.
-  { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(el('label', null, 'Grok weekly reset day')); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
+  { const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']; grid.append(Object.assign(el('label', null, 'Grok weekly reset day'), { htmlFor: 'cfg-grok-reset-day' })); const s = el('select'); s.id = 'cfg-grok-reset-day'; s.title = 'Not set: no reset is assumed, so the bar shows no reset time and Grok gets no near-reset discount.'; s.append(new Option('not set (assume none)', '-1')); days.forEach((n, i) => s.append(new Option(n, i))); s.value = String(grokReset()?.resetDay ?? -1); grid.append(s); }
   const grokHour = field('Grok reset hour (0-23, local)', 'grok-reset-hour', c.scorecard?.usageResets?.grok?.resetHour, 'number'); grokHour.min = 0; grokHour.max = 23; grokHour.id = 'cfg-grok-reset-hour';
-  body.append(el('h4', null, 'API keys (optional; subscriptions need none)'));
+  section('keys');
   field('DeepSeek budget (USD, for the balance meter)', 'providers.deepseek.budgetUsd', c.providers.deepseek?.budgetUsd ?? '', 'number', 'What you topped up; the meter shows % of it consumed. Leave empty to use the highest balance seen.');
   for (const id of ['deepseek']) field(S.providers.find((p) => p.id === id)?.label || id, `providers.${id}.apiKey`, c.providers[id]?.apiKey === '••••' ? '••••' : '', 'password');
-  // Worker CLI updates: off = never check; notify = show "update available"; auto = install when the provider is idle.
-  for (const id of ['codex', 'antigravity', 'grok', 'claude']) selectField(`${id} CLI updates${id === 'claude' ? ' (Agent SDK)' : ''}`, `providers.${id}.cliUpdate`, c.providers[id]?.cliUpdate || 'notify', ['notify', 'auto', 'off']);
-  body.append(grid);
-  const upd = el('button', 'sm', 'Check for updates (GitHub)'); const updOut = el('div', 'muted tiny', '');
-  upd.onclick = async () => { updOut.textContent = 'checking…'; try { const st = await api.get('/api/update?fetch=1'); S.update = st; renderUpdate(); updOut.textContent = st.git ? (st.error ? `${st.branch}@${st.head}: ${st.error}` : `${st.branch}@${st.head}: ${st.behind ? `${st.behind} update(s) available — use the ⬇ Update button in the header` : 'up to date'}${st.ahead ? `, ${st.ahead} local commit(s) not pushed` : ''}${st.dirty ? `, ${st.dirty} uncommitted change(s)` : ''}`) : st.error; } catch (e) { updOut.textContent = e.message; } };
-  body.append(upd, updOut);
-  const doc = el('button', 'sm', 'Run doctor (environment check)'); const docOut = el('pre', null, ''); docOut.hidden = true;
-  doc.onclick = () => act(async () => { doc.disabled = true; try { const r = await api.get('/api/doctor'); docOut.hidden = false; docOut.textContent = r.rows.map((x) => `${x.name.padEnd(20)} ${String(x.value).padEnd(26)} ${x.status}${x.path ? `\n${''.padEnd(20)} ${x.path}` : ''}`).join('\n') + `\n\nPATH entries: ${r.path.length}`; } finally { doc.disabled = false; } });
-  body.append(doc, docOut);
   const prevProviders = c.providers || {};
   const save = el('button', 'primary', 'Save'); save.onclick = () => act(async () => {
     const patch = {};
-    for (const i of grid.querySelectorAll('input,select')) {
+    for (const i of fields.querySelectorAll('input,select')) {
       if (!i.id.startsWith('cfg-')) continue;
-      if (i.type === 'number' && i.value.trim() === '') continue;
-      const path = i.id.replace('cfg-', '').split('.'); let v = i.type === 'checkbox' ? !!i.checked : i.type === 'number' ? Number(i.value) : i.value;
+      const emptyNumber = i.type === 'number' && i.value.trim() === '';
+      if (emptyNumber && !['cfg-worker.timeoutByCategory.modeling', 'cfg-providers.deepseek.budgetUsd'].includes(i.id)) continue;
+      const path = i.id.replace('cfg-', '').split('.'); let v = emptyNumber ? null : i.type === 'checkbox' ? !!i.checked : i.type === 'number' ? Number(i.value) : i.value;
       if (i.type === 'password') {
         if (v === '••••') continue;
         if (!v) {
@@ -1112,25 +1213,42 @@ function openSettings() {
   body.append(save);
   openModal('Settings', body);
 }
-async function openImprovements(showResolved = false) {
-  S.improvements = await api.get('/api/improvements');
-  const all = showResolved ? await api.get('/api/improvements?all=1') : S.improvements;
+function openImprovements(showResolved = false) {
   const body = el('div');
+  const view = { body, showResolved, request: 0, list: el('div'), tabs: [] };
   const tabs = el('div', 'row');
-  for (const [label, v] of [['Open', false], ['Resolved', true]]) { const b = el('button', v === showResolved ? 'primary sm' : 'sm', label); b.onclick = () => openImprovements(v); tabs.append(b); }
+  for (const [label, value] of [['Open', false], ['Resolved', true]]) {
+    const button = el('button', 'sm', label);
+    button.onclick = () => { view.showResolved = value; act(() => refreshImprovements(view)); };
+    view.tabs.push({ button, value }); tabs.append(button);
+  }
   body.append(tabs);
-  const form = el('div', 'row'); const inp = el('input'); inp.type = 'text'; inp.placeholder = 'Log an idea or annoyance…'; inp.setAttribute('aria-label', 'Log an idea or annoyance'); const add = el('button', 'sm', 'Add');
-  add.onclick = () => act(async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; openImprovements(); } });
+  const form = el('form', 'row'); const inp = el('input'); inp.type = 'text'; inp.placeholder = 'Log an idea or annoyance…'; inp.setAttribute('aria-label', 'Log an idea or annoyance'); const add = el('button', 'sm', 'Add');
+  add.type = 'submit';
+  form.onsubmit = (e) => { e.preventDefault(); return act(async () => { if (inp.value.trim()) { await api.post('/api/improvements', { kind: 'idea', message: inp.value.trim() }); inp.value = ''; await refreshImprovements(view); } }); };
   form.append(inp, add); body.append(form);
-  const run = el('button', 'primary sm', 'Run self-review now'); run.onclick = runReview; body.append(run);
-  const shown = showResolved ? all.filter((e) => e.resolved) : S.improvements;
+  const run = el('button', 'primary sm', 'Run self-review now'); run.onclick = runReview; body.append(run, view.list);
+  openModal('Improvement log', body);
+  S.improvementView = view;
+  return act(() => refreshImprovements(view));
+}
+async function refreshImprovements(view = S.improvementView) {
+  const request = view ? ++view.request : 0;
+  const showResolved = !!view?.showResolved;
+  const open = (await api.get('/api/improvements')).filter((entry) => !entry.resolved);
+  S.improvements = open;
+  $('#improve-count').textContent = open.length;
+  const all = showResolved ? await api.get('/api/improvements?all=1') : open;
+  if (!view || S.improvementView !== view || request !== view.request || $('#modal').hidden || !view.body.isConnected) return;
+  for (const { button, value } of view.tabs) button.className = value === showResolved ? 'primary sm' : 'sm';
+  const shown = all.filter((entry) => showResolved ? entry.resolved : !entry.resolved);
+  view.list.innerHTML = '';
   for (const e of [...shown].reverse()) {
     const d = el('div', 'imp'); d.append(el('div', 'k', `${e.kind} · ${e.source} · ${new Date(e.ts).toLocaleString()}${e.resolved ? ' · resolved' : ''}`), el('div', 'm', e.message));
-    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = () => act(async () => { await api.post(`/api/improvements/${e.id}/resolve`); openImprovements(showResolved); }); d.append(r); }
-    body.append(d);
+    if (!e.resolved) { const r = el('button', 'sm', 'Resolve'); r.onclick = () => act(async () => { await api.post(`/api/improvements/${e.id}/resolve`); await refreshImprovements(view); }); d.append(r); }
+    view.list.append(d);
   }
-  if (!shown.length) body.append(el('div', 'muted', showResolved ? 'Nothing resolved yet.' : 'Nothing logged. Errors are captured automatically; the conductor and you can add ideas.'));
-  openModal('Improvement log', body);
+  if (!shown.length) view.list.append(el('div', 'muted', showResolved ? 'Nothing resolved yet.' : 'Nothing logged. Errors are captured automatically; the conductor and you can add ideas.'));
 }
 async function runReview() {
   const model = composite(pickerValue('new-'));
@@ -1149,7 +1267,9 @@ async function quitServer(btn) {
   S.stopped = true;
   if (S.eventSource) { try { S.eventSource.close(); } catch {} S.eventSource = null; }
   if (btn) btn.disabled = true;
-  try { await api.post('/api/shutdown', {}); } catch {}
+  try { await api.post('/api/shutdown', {}); } catch (e) {
+    S.stopped = false; if (btn) btn.disabled = false; connect(); showStatus(e.message); return false;
+  }
   document.body.innerHTML = '<div style="padding:2rem;font:14px system-ui">Conductor stopped. Restart it with <code>conductor start</code>, then reload this page.</div>';
   return true;
 }
@@ -1164,12 +1284,17 @@ function openSystem(open) {
   const b = $('#system-body'); if (!b) return;
   const isOpen = open != null ? open : b.hidden;
   b.hidden = !isOpen;
-  localStorage.setItem('systemOpen', isOpen ? '1' : '0');
+  try { localStorage.setItem('systemOpen', isOpen ? '1' : '0'); } catch {}
+  if (!isOpen) { S.revealSubscriptions = false; renderProviders(); }
   const car = $('#system-toggle .caret'); if (car) car.textContent = isOpen ? '▾' : '▸';
   $('#system-toggle')?.setAttribute('aria-expanded', String(isOpen));
 }
 /** "details ▸" on the budget headline opens the SYSTEM drawer at Providers & limits. */
-function revealProviders() { openSystem(true); $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+function revealProviders() {
+  openSystem(true); S.revealSubscriptions = true; renderProviders();
+  document.body.classList.add('nav-open');
+  $('.providers-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 async function openScores() {
   const body = el('div');
   const head = el('div', 'row between');
@@ -1254,7 +1379,7 @@ async function boot() {
   if (last && S.sessions.some((s) => s.id === last)) openSession(last).catch(() => {});
   setInterval(refreshRunningCards, 15000);
 
-  $('#btn-new').onclick = newSession;
+  $('#btn-new').onclick = () => act(newSession, null, $('#new-status'));
   $('#btn-browse').onclick = () => act(() => browse($('#cwd').value));
   $('#btn-send').onclick = send;
   $('#btn-stop').onclick = () => S.current && act(async () => {
@@ -1270,19 +1395,19 @@ async function boot() {
   $('#btn-settings').onclick = openSettings;
   $('#btn-quit').onclick = (e) => quitServer(e.currentTarget);
   $('#btn-budget-details').onclick = () => revealProviders();
-  if (localStorage.getItem('fleetCollapsed') === '1') { document.body.classList.add('fleet-collapsed'); $('#fleet-collapse').textContent = '⟩'; }
-  $('#fleet-collapse').onclick = () => { const c = document.body.classList.toggle('fleet-collapsed'); localStorage.setItem('fleetCollapsed', c ? '1' : '0'); $('#fleet-collapse').textContent = c ? '⟩' : '⟨'; };
-  $('#fleet-scope').onclick = (e) => { const b = e.target.closest('button[data-scope]'); if (!b) return; localStorage.setItem('fleetScope', b.dataset.scope); renderTasks(); };
+  if (localStorage.getItem('fleetCollapsed') === '1') document.body.classList.add('fleet-collapsed');
+  $('#fleet-collapse').onclick = () => { const c = document.body.classList.toggle('fleet-collapsed'); localStorage.setItem('fleetCollapsed', c ? '1' : '0'); };
+  $('#fleet-scope').onclick = (e) => { const b = e.target.closest('button[data-scope]'); if (!b || b.disabled) return; localStorage.setItem('fleetScope', b.dataset.scope); renderTasks(); };
   // new-chat: one button reveals the inline form; SYSTEM drawer folds admin away.
-  $('#btn-newchat-toggle').onclick = () => { const f = $('#newchat-form'); f.hidden = !f.hidden; if (!f.hidden) $('#cwd').focus(); };
+  $('#btn-newchat-toggle').onclick = () => toggleNewChat();
   $('#system-toggle').onclick = () => openSystem();
   $('#btn-scores').onclick = openScores;
   $('#btn-settings2').onclick = openSettings;
   $('#chat-filter').oninput = (e) => { S.chatFilter = e.target.value; renderSessions(); };
   $('#btn-nav').onclick = () => document.body.classList.toggle('nav-open');
   $('#scrim').onclick = () => document.body.classList.remove('nav-open');
-  if (localStorage.getItem('systemOpen') === '1') openSystem(true);
-  if (!S.sessions.length) $('#newchat-form').hidden = false; // first run: no chats yet, show the form
+  try { if (localStorage.getItem('systemOpen') === '1') openSystem(true); } catch {}
+  if (!S.sessions.length) toggleNewChat(true); // first run: no chats yet, show the form
   // model chip popover: toggle on click, close on outside-click / Escape.
   $('#model-chip').onclick = (e) => { e.stopPropagation(); toggleModelPop(); };
   $('#model-pop').onclick = (e) => e.stopPropagation();
@@ -1296,21 +1421,15 @@ async function boot() {
   $('#new-provider').onchange = (e) => { const v = e.target.value; fillPicker('new-', v === ALL ? savedSelection() : { ...savedSelection(), provider: v, model: '' }, { forceProvider: v !== ALL }); refreshNewPicker(true, v !== ALL); };
   $('#new-model').onchange = () => { if (resolveOther('new-', true) === false) return; refreshNewPicker(true, true); };
   $('#new-effort').onchange = () => refreshNewPicker(true, true);
-  $('#provider').onchange = (e) => { const v = e.target.value; const cur = { provider: S.current?.provider || 'claude', model: S.current?.model || '', effort: S.current?.effort || 'high' }; fillPicker('', v === ALL ? cur : { ...cur, provider: v, model: v === cur.provider ? cur.model : '' }, { forceProvider: v !== ALL }); };
   $('#model').onchange = (e) => {
     if (!S.current) return;
     if (resolveOther('', true) === false) return;
     const v = pickerValue('');
-    if (v.provider !== S.current.provider) {
-      $('#stt-hint').textContent = 'Provider can only be chosen for a new chat; the model switched within ' + S.current.provider + ' only if it belongs to it.';
-      refreshHeaderPicker(true);
-      return;
-    }
     act(async () => {
       await api.post(`/api/sessions/${S.current.id}/model`, { model: v.model || null });
       S.current.model = v.model || null;
       renderChip();
-      fillPicker('', v, { forceProvider: true });
+      refreshHeaderPicker();
     }, () => {
       refreshHeaderPicker(true);
     });
@@ -1331,6 +1450,7 @@ async function boot() {
   $('#overflow').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/overflow`, { overflowApi: e.target.checked }), e.target);
   $('#parallel').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/parallel`, { parallelOverride: e.target.checked }), e.target);
   $('#bypass').onchange = (e) => S.current && act(() => api.post(`/api/sessions/${S.current.id}/mode`, { permissionMode: e.target.checked ? 'bypassPermissions' : 'acceptEdits' }), e.target);
+  $('#cwd').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); act(newSession, null, $('#new-status')); } };
   $('#cwd').onchange = (e) => localStorage.setItem('cwd', e.target.value.trim());
   const ta = $('#input');
   ta.addEventListener('keydown', (e) => {
