@@ -573,7 +573,7 @@ test('Docker-style secret environment arguments redact and restore', () => {
 test('scorecard archive and split sample thresholds are normalized', () => {
   let cfg = saveConfig({ scorecard: { archived: ['  Claude:MODEL  ', '', 7, null], minSamples: -1, benchMinSamples: 0 } });
   assert.deepEqual(cfg.scorecard.archived, ['Claude:MODEL']);
-  assert.equal(cfg.scorecard.minSamples, 1);
+  assert.equal(cfg.scorecard.minSamples, 0.5);
   assert.equal(cfg.scorecard.benchMinSamples, 3);
   cfg = saveConfig({ scorecard: { archived: 'claude:model' } });
   assert.deepEqual(cfg.scorecard.archived, []);
