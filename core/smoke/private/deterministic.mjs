@@ -226,7 +226,7 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "quote": "Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.",
     "claims": [
       ["shipments?", ${JSON.stringify(pct(9))}, "grid upgrades"],
-      ["lead times", "11\\\\s+weeks", "7\\\\s+weeks", "pricing power"]
+      ["lead times", "11\\\\s+weeks|11\\\\s*(?:to|-|–)\\\\s*7\\\\s+weeks", "7\\\\s+weeks", "pricing power"]
     ]
   }
 ]
