@@ -62,7 +62,8 @@ async function withHidden(dir, files, fn) {
 }
 const countTests = (src) => (src.match(/^test\(/gm) || []).length;
 const privateJson = (body) => JSON.parse(bare(body));
-const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel)); } catch { return null; } };
+// Windows PowerShell 5.1 writes UTF-8 with a BOM, which JSON.parse rejects.
+const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel).replace(/^\uFEFF/, '')); } catch { return null; } };
 const wordCount = (s) => (String(s || '').match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) || []).length;
 const SLOP = /\b(?:delve|game[- ]changer|unlock|elevate|tapestry|testament)\b|in today'?s fast-paced world|it is important to note/iu;
 const researchSectionMap = (out, prefix) => {
@@ -428,6 +429,8 @@ const TASKS = [
     check(dir) {
       const got = readJson(dir, 'result.json');
       if (got == null) return { pass: false, notes: 'result.json is missing or invalid JSON' };
+      // The source says "Celsius" and the spec does not ask for a symbol: either spelling is a faithful extraction.
+      if (typeof got.unit === 'string' && /^(?:°?\s*C|celsius)$/i.test(got.unit.trim())) got.unit = 'C';
       const pass = isDeepStrictEqual(got, privateJson(EXTRACT_GOLD));
       return { pass, notes: pass ? '' : 'result.json does not deep-equal the extracted records' };
     },

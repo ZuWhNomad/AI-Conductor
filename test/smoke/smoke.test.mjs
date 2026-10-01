@@ -62,6 +62,17 @@ test('read-3 extraction requires a deep-equal JSON answer', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('read-3 accepts a BOM and the unit spelled as the source spells it', async () => {
+  const b = BATTERY.find((x) => x.id === 'read-3'), dir = tmpDir('extract-bom-unit');
+  b.setup(dir); b.solve(dir);
+  const answer = JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8'));
+  write(dir, { 'result.json': '\uFEFF' + JSON.stringify({ ...answer, unit: 'Celsius' }) });
+  assert.equal((await b.check(dir)).pass, true, 'BOM + Celsius');
+  write(dir, { 'result.json': JSON.stringify({ ...answer, unit: 'F' }) });
+  assert.equal((await b.check(dir)).pass, false, 'wrong unit still fails');
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('read-2 classification enforces the stated 10-of-12 accuracy bar', async () => {
   const b = BATTERY.find((x) => x.id === 'read-2'), dir = tmpDir('classify-threshold');
   b.setup(dir); b.solve(dir);
@@ -217,6 +228,9 @@ test('research-3 requires gold claims, sections, citations and verbatim excerpt 
   assert.equal((await b.check(dir, { result: { finalMessage: variant } })).pass, true, 'different cited sentence and compact numbers');
   const singular = solved.finalMessage.replace('Industry shipments are forecast to grow 9% as regional grid upgrades accelerate.', 'Forecast 9% shipment growth driven by regional grid upgrades is the opportunity.');
   assert.equal((await b.check(dir, { result: { finalMessage: singular } })).pass, true, 'singular shipment phrasing');
+  const range = solved.finalMessage.replace('Lead times fell from 11 weeks to 7 weeks', 'Lead times fell from 11 to 7 weeks');
+  assert.equal((await b.check(dir, { result: { finalMessage: range } })).pass, true, '"from 11 to 7 weeks"');
+  assert.equal((await b.check(dir, { result: { finalMessage: range.replace('11 to 7 weeks', '12 to 7 weeks') } })).pass, false, 'wrong lead time still fails');
   const noQuote = solved.finalMessage.replace('"Alder Systems reported', '"Alder reported');
   assert.match((await b.check(dir, { result: { finalMessage: noQuote } })).notes, /quote is not verbatim/);
   const wrongExcerpt = solved.finalMessage.replace('"Brindle Components ended the quarter with $72 million of cash and no long-term debt."', '"Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%."');
