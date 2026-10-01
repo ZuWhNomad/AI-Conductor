@@ -14,7 +14,7 @@ import { contextBlock } from './context.mjs';
 import { groupOf, modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
 import { findCli } from './proc.mjs';
-import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, activeRunRows, EFFORTS, nextScheduledReset, envFailure } from './scorecard.mjs';
+import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, activeRunRows, EFFORTS, nextScheduledReset, envFailure, reliabilityMetrics } from './scorecard.mjs';
 import { findModel, getModels, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
@@ -327,6 +327,7 @@ export function cancelTask(id, reason) {
   const t = getTask(id); if (!t) return null;
   if (TERMINAL.has(t.status)) return t;
   t.status = 'canceled'; t.error = reason || 'canceled';
+  if (reason === 'timeout') { t.timedOut = true; t.failKind = 'timeout'; }
   delete t.park; t.resumeAt = null; armWake();
   running.get(id)?.abort();
   persist(t); wake(t);
@@ -673,7 +674,12 @@ async function run(t) {
     const abortedDuringRun = ac.signal.aborted; // E1: a shutdown during the bookkeeping below must not requeue a finished run
     if ((r.durationMs || 0) > (wcfg.longRunMinutes) * 60_000) logImprovement('friction', `worker:${t.provider}`, `long run: ${Math.round(r.durationMs / 60_000)} min (${t.category || 'untagged'}, ${t.model || 'default'}:${t.effort || 'default'})`, { taskId: t.id, title: t.title });
     t.threadId = r.threadId || t.threadId;
-    t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items) };
+    if (r.timedOut === true || /^timeout(?:\b| after)/i.test(String(r.error || ''))) { t.timedOut = true; t.failKind = 'timeout'; }
+    t.httpStatus = r.httpStatus ?? null; t.exitCode = r.exitCode ?? null;
+    const reliability = reliabilityMetrics({ ...t, result: r });
+    t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items),
+      turns: reliability.turns, toolCalls: reliability.toolCalls, toolErrors: reliability.toolErrors, thrash: reliability.thrash, timedOut: reliability.timedOut,
+      httpStatus: r.httpStatus ?? null, exitCode: r.exitCode ?? null, limitHit: !!r.limitHit, authFailed: !!r.authFailed, envFailed: !!r.envFailed };
     const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p; // git reports '/', Windows workers '\\': one file, one entry
     const rel = (p) => { try { return slash(isAbsolute(p) ? relative(runCwd, p) || p : p); } catch { return p; } };
     const after = await gitStatus(runCwd); // one status read serves the changed-file list, the phantom check and the diff stat

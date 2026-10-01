@@ -8,9 +8,28 @@ import { join, dirname, basename } from 'node:path';
 const { BATTERY, copiedFromGrader } = await import('../../core/smoke/battery.mjs');
 const { runSmoke, formatSmoke, SMOKE_TASKS, crossProviderJudge } = await import('../../core/smoke/index.mjs');
 const { recordRun, rootRuns, recommend } = await import('../../core/scorecard.mjs');
+const { readNdjson, statePath } = await import('../../core/paths.mjs');
 const { CANARY, bare } = await import('../../core/smoke/private/common.mjs');
 const PRIVATE = new URL('../../core/smoke/private/', import.meta.url);
 const write = (dir, files) => { for (const [rel, body] of Object.entries(files)) { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), body); } };
+
+test('smoke grading voids structured harness failures but keeps timeout as a model fail', async () => {
+  const execute = (outcome) => async (spec) => {
+    const result = outcome === 'http' ? { status: 'failed', error: 'provider returned 400', result: { httpStatus: 400 } }
+      : outcome === 'auth' ? { status: 'failed', error: 'Unauthorized', authFailed: true, result: { authFailed: true } }
+        : outcome === 'limit' ? { status: 'failed', error: 'usage limit', limitHit: true, result: { limitHit: true } }
+          : { status: 'canceled', error: 'timeout', timedOut: true, result: { timedOut: true } };
+    return { id: `reliability-${outcome}`, ...spec, attempts: 1, ...result };
+  };
+  const http = await runSmoke({ models: [{ provider: 'codex', model: 'reliability-http', effort: 'low' }], tasks: ['read-1'], execute: execute('http') });
+  const auth = await runSmoke({ models: [{ provider: 'codex', model: 'reliability-auth', effort: 'low' }], tasks: ['read-1'], execute: execute('auth') });
+  const limit = await runSmoke({ models: [{ provider: 'codex', model: 'reliability-limit', effort: 'low' }], tasks: ['read-1'], execute: execute('limit') });
+  const timeout = await runSmoke({ models: [{ provider: 'codex', model: 'reliability-timeout', effort: 'low' }], tasks: ['read-1'], execute: execute('timeout') });
+  assert.equal(http[0].verdict, 'error'); assert.equal(auth[0].verdict, 'error'); assert.equal(limit[0].verdict, 'skipped'); assert.equal(timeout[0].verdict, 'fail');
+  const rows = readNdjson(statePath('scorecard.ndjson'));
+  for (const id of ['reliability-http', 'reliability-auth', 'reliability-limit']) assert.ok(rows.some((r) => r.op === 'void' && r.taskId === id), id);
+  assert.ok(rows.some((r) => r.op === 'rate' && r.taskId === 'reliability-timeout' && r.verdict === 'fail'));
+});
 
 // Level 6-7 graders: every plausible wrong solution fails, every different-but-correct one passes. Mutants and
 // benchmark checks that cost multi-seconds or fail by timing out run with CONDUCTOR_SMOKE_SLOW=1.
@@ -436,6 +455,20 @@ test('runSmoke rates each run from its check and the rows reach the scorecard as
   assert.match(formatSmoke(results), /deepseek:deepseek-chat:default: 2\/3 passed/);
   await assert.rejects(runSmoke({ models: [] }), { status: 400 });
   await assert.rejects(runSmoke({ models: [{ provider: 'deepseek' }], tasks: ['nope'], execute }), /no matching smoke tasks/);
+});
+
+test('runSmoke repeats each selected task sequentially and filters by level', async () => {
+  let calls = 0; const specs = [];
+  const execute = async (spec) => {
+    calls++; specs.push(spec);
+    const t = { id: `repeat-${calls}`, ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 } };
+    recordRun(t);
+    return t;
+  };
+  const results = await runSmoke({ models: [{ provider: 'deepseek', model: 'repeat-model' }], tasks: ['read-1', 'debug-5'], levels: [1], repeats: 3, execute });
+  assert.equal(results.length, 3);
+  assert.equal(calls, 3);
+  assert.deepEqual(specs.map((s) => s.smokeId), ['read-1', 'read-1', 'read-1']);
 });
 
 test('a task that did not finish is rated fail with the reason', async () => {

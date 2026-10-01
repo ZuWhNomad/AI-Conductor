@@ -2,7 +2,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJson, writeJson, statePath, stateDir, nowIso } from './paths.mjs';
-import { ledgerOf, tokensOf, runCostUsd } from './scorecard.mjs';
+import { ledgerOf, tokensOf, runCostUsd, envFailure } from './scorecard.mjs';
 import { familyOf } from './models.mjs';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
@@ -56,7 +56,7 @@ function median(xs) {
 }
 
 function verdictOf(r, rates) {
-  return rates.get(r.taskId) || (r.status === 'failed' ? 'fail' : null);
+  return rates.get(r.taskId) || (r.status === 'failed' && !envFailure({ ...r, result: r }) ? 'fail' : null);
 }
 
 function isHeldout(r, held) {

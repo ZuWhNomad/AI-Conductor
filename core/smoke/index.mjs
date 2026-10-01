@@ -19,19 +19,23 @@ export const SMOKE_TASKS = BATTERY.map(({ id, category, difficulty, title }) => 
 const inFlight = new Set();
 
 /**
- * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), timeoutMinutes?, hardTimeoutMinutes?, sessionId?, keep?, execute?, onResult? }
+ * @param {object} o { models: [{provider, model, effort}], tasks?: string[] (battery ids), levels?: number[], repeats?: number, timeoutMinutes?, hardTimeoutMinutes?, sessionId?, keep?, execute?, onResult? }
  * `execute(spec, timeoutMinutes)` runs one task and returns the finished task; tests inject a stub. A task at difficulty 6+
  * gets `hardTimeoutMinutes` (smoke.hardTimeoutMinutes), every other task `timeoutMinutes` (smoke.timeoutMinutes).
  */
-export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null, judge = undefined } = {}) {
+export async function runSmoke({ models, tasks = null, levels = null, repeats = 1, timeoutMinutes = loadConfig().smoke.timeoutMinutes, hardTimeoutMinutes = loadConfig().smoke.hardTimeoutMinutes, sessionId = 'smoke', keep = false, execute = executeTask, onResult = null, agentsMd = null, variant = null, judge = undefined } = {}) {
   if (!Array.isArray(models) || !models.length) throw Object.assign(new Error('models must be a non-empty array of {provider, model, effort}'), { status: 400 });
-  const battery = BATTERY.filter((b) => !tasks || tasks.includes(b.id));
+  const repeatCount = Number(repeats);
+  if (!Number.isInteger(repeatCount) || repeatCount < 1 || repeatCount > 5) throw Object.assign(new Error('repeats must be an integer from 1 to 5'), { status: 400 });
+  const selectedLevels = levels == null ? null : [...new Set((Array.isArray(levels) ? levels : [levels]).map(Number))];
+  if (selectedLevels && selectedLevels.some((level) => !Number.isInteger(level) || level < 1 || level > 7)) throw Object.assign(new Error('levels must contain integers from 1 to 7'), { status: 400 });
+  const battery = BATTERY.filter((b) => (!tasks || tasks.includes(b.id)) && (!selectedLevels || selectedLevels.includes(b.difficulty)));
   if (!battery.length) throw Object.assign(new Error(`no matching smoke tasks (have: ${BATTERY.map((b) => b.id).join(', ')})`), { status: 400 });
   // Injected executors are tests/harnesses: do not dispatch a real judge unless the caller also injects one.
   const judgeHook = judge === undefined ? (execute === executeTask ? (request) => crossProviderJudge({ ...request, timeoutMinutes }) : null) : judge;
   const results = [];
   for (const sel of models) {
-    for (const b of battery) {
+    batteryLoop: for (const b of battery) {
       const base = { provider: sel.provider, model: sel.model || null, effort: sel.effort || null, task: b.id, category: b.category, difficulty: b.difficulty };
       const voidPrecedingTimeouts = () => {
         for (let i = results.length - 1; i >= 0 && results[i].provider === sel.provider && results[i].model === base.model && results[i].effort === base.effort && results[i].notes === 'timeout'; i--) {
@@ -42,54 +46,61 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
       if (!providerAvailable(sel.provider, { overflowApi: true, model: sel.model })) { push({ ...base, verdict: 'skipped', notes: 'provider at its usage limit' }); continue; }
       const key = `${sel.provider}:${sel.model || 'default'}:${sel.effort || 'default'}:${b.id}`;
       if (inFlight.has(key)) { push({ ...base, verdict: 'skipped', notes: 'already running in another smoke run' }); continue; }
-      // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\LONGNA~1\...), which the Codex sandbox denies.
-      // Neutral names: neither the path nor the title says conductor, smoke or which task (the worker sees both).
-      const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'w-')));
-      let res;
       inFlight.add(key);
       try {
-        b.setup(dir);
-        if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
-        const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant: variant || b.variant || null }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
-        if ((t.attempts || 0) === 0 && t.status !== 'done') {
-          const limitPark = t.limitHit || t.parked || t.status === 'parked' || !!t.resumeAt || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || '');
-          if (limitPark) {
-            voidPrecedingTimeouts();
-            const err = t.error && t.error !== 'skipped' ? t.error : (t.parked || t.status === 'parked' ? 'parked' : 'limit reached');
-            const notes = /^provider limit/i.test(err) ? String(err).slice(0, 120) : `provider limit: ${String(err).slice(0, 120)}`;
-            push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes });
-            try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
-            break;
+        for (let repeat = 0; repeat < repeatCount; repeat++) {
+          // Long path: Windows may hand out an 8.3 short TEMP (C:\Users\LONGNA~1\...), which the Codex sandbox denies.
+          // Neutral names: neither the path nor the title says conductor, smoke or which task (the worker sees both).
+          const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'w-')));
+          let res;
+          try {
+            b.setup(dir);
+            if (agentsMd) writeFileSync(join(dir, 'AGENTS.md'), agentsMd); // A/B a policy file (Codex and Claude both read AGENTS.md in cwd)
+            const t = await execute({ cwd: dir, title: b.title, spec: b.spec, provider: sel.provider, model: sel.model, effort: sel.effort, category: b.category, difficulty: b.difficulty, sessionId, source: 'smoke', smokeId: b.id, variant: variant || b.variant || null }, b.difficulty >= 6 ? hardTimeoutMinutes : timeoutMinutes);
+            if ((t.attempts || 0) === 0 && t.status !== 'done') {
+              const limitPark = t.limitHit || t.parked || t.status === 'parked' || !!t.resumeAt || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || '');
+              if (limitPark) {
+                voidPrecedingTimeouts();
+                const err = t.error && t.error !== 'skipped' ? t.error : (t.parked || t.status === 'parked' ? 'parked' : 'limit reached');
+                const notes = /^provider limit/i.test(err) ? String(err).slice(0, 120) : `provider limit: ${String(err).slice(0, 120)}`;
+                push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes });
+                break batteryLoop;
+              }
+              res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
+            } else {
+              const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
+              if (t.status !== 'done' && (t.limitHit || t.result?.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
+                // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
+                // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with
+                // Claude on the Google plan): void them so they do not read as model failures.
+                voidPrecedingTimeouts();
+                if (t.id && (t.attempts || 0) > 0) voidTask(t.id, `environment: provider limit: ${String(t.error || 'limit reached').slice(0, 120)}`);
+                push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: `provider limit: ${String(t.error).slice(0, 120)}` });
+                break batteryLoop;
+              }
+              const environment = envFailure(t);
+              if (!check.pass && environment) {
+                // The harness, not the model, failed (sandbox denied the workspace, network down, loop cap): void it now, since a
+                // failed status would otherwise read as a model failure in the ledger.
+                if (t.id) voidTask(t.id, `environment: ${environment}`);
+                res = { ...base, taskId: t.id || null, status: t.status, verdict: 'error', notes: `environment: ${environment}`, durationMs: t.result?.durationMs || 0 };
+              } else {
+                if (t.id && (t.attempts || 0) > 0) rateTask(t.id, check.pass ? 'pass' : 'fail', check.notes);
+                res = { ...base, taskId: t.id || null, status: t.status, verdict: check.pass ? 'pass' : 'fail', notes: String(check.notes || '').slice(0, 400), durationMs: t.result?.durationMs || 0 };
+              }
+            }
+          } catch (e) {
+            res = { ...base, verdict: 'error', notes: String(e?.message || e).slice(0, 400) };
+          } finally {
+            if (!keep) try { rmSync(dir, { recursive: true, force: true }); } catch {}
           }
-          res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
-        } else {
-        const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
-        if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
-          // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
-          // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with
-          // Claude on the Google plan): void them so they do not read as model failures.
-          voidPrecedingTimeouts();
-          push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: `provider limit: ${String(t.error).slice(0, 120)}` });
-          try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
-          break;
-        }
-        if (!check.pass && (t.failKind === 'auth' || t.failKind === 'env' || envFailure(t))) {
-          // The harness, not the model, failed (sandbox denied the workspace, network down, loop cap): void it now, since a
-          // failed status would otherwise read as a model failure in the ledger.
-          if (t.id) voidTask(t.id, `environment: ${envFailure(t)}`);
-          res = { ...base, taskId: t.id || null, status: t.status, verdict: 'error', notes: `environment: ${envFailure(t)}`, durationMs: t.result?.durationMs || 0 };
-        } else {
-          if (t.id && (t.attempts || 0) > 0) rateTask(t.id, check.pass ? 'pass' : 'fail', check.notes);
-          res = { ...base, taskId: t.id || null, status: t.status, verdict: check.pass ? 'pass' : 'fail', notes: String(check.notes || '').slice(0, 400), durationMs: t.result?.durationMs || 0 };
-        }
+          push(res);
         }
       } catch (e) {
-        res = { ...base, verdict: 'error', notes: String(e?.message || e).slice(0, 400) };
+        push({ ...base, verdict: 'error', notes: String(e?.message || e).slice(0, 400) });
       } finally {
         inFlight.delete(key);
-        if (!keep) try { rmSync(dir, { recursive: true, force: true }); } catch {}
       }
-      push(res);
     }
   }
   return results;

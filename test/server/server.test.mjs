@@ -47,7 +47,7 @@ const { getTask, cancelTask } = await import('../../core/tasks.mjs');
 assert.equal(getTask(bootRecoveryId).status, 'running', 'module import loads without restart transitions');
 const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount, updateWaitingDetail } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
-const { CATEGORIES, ROUTED_MAX_DIFFICULTY, runRows, summarize } = await import('../../core/scorecard.mjs');
+const { CATEGORIES, ROUTED_MAX_DIFFICULTY, runRows, summarize, recordRun, rateTask } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
 const realFetch = globalThis.fetch;
 mock.method(globalThis, 'fetch', (input, options) => {
@@ -682,6 +682,25 @@ test('GET /api/scores returns text, the category-level grid, benched cells, and 
   assert.deepEqual(archived.eligibility, []);
 });
 
+test('GET /api/scores exposes reliability fields in a measured grid cell', async () => {
+  const registry = getModels(), oldModels = registry.models, oldProviders = registry.providers;
+  registry.models = [...oldModels, { provider: 'codex', id: 'api-reliability-model', kind: 'agent', efforts: ['low'] }];
+  registry.providers = { ...oldProviders, codex: { ...(oldProviders.codex || {}), status: 'ok' } };
+  try {
+    for (let i = 0; i < 3; i++) {
+      const id = `api-reliability-${i}`;
+      recordRun({ id, title: id, status: 'done', provider: 'codex', model: 'api-reliability-model', effort: 'low', category: 'search', difficulty: 1, source: 'api-reliability', result: {
+        ok: true, turns: 2, toolCalls: 4, toolErrors: 1, thrash: i === 0 ? 1 : 0, timedOut: false, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1,
+      } });
+      rateTask(id, 'pass');
+    }
+    const scores = await get('/api/scores?source=api-reliability&category=search');
+    const cell = scores.grid[0].levels[0];
+    assert.equal(cell.status, 'pick');
+    assert.equal(cell.errorRate, 0); assert.equal(cell.toolErrorRate, 0.25); assert.equal(cell.avgTurns, 2); assert.equal(cell.thrash, 1); assert.equal(cell.timeouts, 0);
+  } finally { registry.models = oldModels; registry.providers = oldProviders; }
+});
+
 test('B10: score eligibility HTTP route appends the override and exposes its reason', async () => {
   const saved = await post('/api/scores/eligibility', { sel: 'fixture:http-model:low', category: 'design', action: 'block', reason: 'owner HTTP decision' });
   assert.equal(saved.ok, true);
@@ -820,5 +839,4 @@ test('R82: a stub response whose write returns false gets closed and unsubscribe
   assert.equal(closed, true, 'res.end() was called when write returned false');
   assert.equal(bus.listenerCount('event'), listenersBefore, 'bus listener was cleaned up');
 });
-
 

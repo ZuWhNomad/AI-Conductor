@@ -361,6 +361,7 @@ async function route(req, res, url) {
       benched: benchedCells(summary.filter((g) => !category || g.category === category)).map((g) => ({
         selection: g.sel, category: g.category, level: g.difficulty, quality: g.quality, n: g.rated,
         weightedN: g.weightedRated ?? g.rated, last: g.last || null, shipped: !!g.shipped,
+        consistency: g.consistency ?? null, repeats: g.repeats ?? null,
       })),
       eligibility: archived ? [] : eligibilityOverrides({ category }),
     });
@@ -691,7 +692,7 @@ function serveStatic(req, res, url) {
 
 export function startServer({ port = null } = {}) {
   installGlobalErrorCapture();
-  try { const n = migrateScorecard(); if (n) logImprovement('idea', 'scorecard', `method-c migration: voided ${n} polluted antigravity row(s) (effort tagged on an effort-in-id model)`); } catch {}
+  try { const n = migrateScorecard(); if (n) logImprovement('idea', 'scorecard', `scorecard migration: voided ${n} legacy harness row(s)`); } catch {}
   const cfg = loadConfig();
   const server = createServer(async (req, res) => {
     const port = server.address().port;

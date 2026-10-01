@@ -7,7 +7,7 @@ working notes belong in the user's notes location, **never in this repo** — a 
 selection is empirical rather than assumed. Every battery task is a tiny scratch project with a
 deterministic check.
 
-**Entry points.** `runSmoke({ models, tasks })` in `index.mjs` (used by the `smoke_test` conductor
+**Entry points.** `runSmoke({ models, tasks, levels, repeats })` in `index.mjs` (used by the `smoke_test` conductor
 tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the task definitions); `private/` (reference solutions, hidden tests,
 mutants: see its `CONTEXT.md`); `formatSmoke(results)`. `research-4` and `research-5` are difficulty-4 filing packs:
 `setup` writes long synthetic documents, and the answer is graded in the worker's reply.

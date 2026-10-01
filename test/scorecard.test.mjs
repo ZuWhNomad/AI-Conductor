@@ -53,6 +53,45 @@ test('ledger rows for a removed provider cannot be routed', () => {
   assert.equal(sc.recommend({ category: 'review', difficulty: 2, source, reg, overflowApi: true }), null);
 });
 
+test('smoke repeats remain per-run evidence while pass^k controls the measured cell', (t) => {
+  const models = ['consistency-aged-pass', 'consistency-aged-flaky'];
+  registryModels(t, models.map((model) => ['codex', model]));
+  const cfg = loadConfig().scorecard;
+  const now = Date.parse('2026-09-30T12:00:00.000Z');
+  const old = new Date(now - 5 * 24 * 3600e3).toISOString();
+  t.mock.method(Date, 'now', () => now);
+  const replay = ({ id, model, verdict }) => {
+    appendNdjson(statePath('scorecard.ndjson'), {
+      op: 'run', ts: old, taskId: id, followUpOf: null, retryOf: null, source: 'smoke', provider: 'codex', model, requestedModel: model,
+      effort: 'low', category: 'debug', difficulty: 7, status: 'done', tokens: { in: 1, out: 1, cached: 0, write: 0, v: 2 }, durationMs: 1,
+      smokeId: 'debug-7-consistency',
+    });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: old, taskId: id, verdict });
+  };
+  try {
+    saveConfig({ scorecard: {
+      shippedBatteries: false, usePriors: false, minSamples: 1, benchMinSamples: 1, quality: 0.75,
+      reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 },
+      classes: { codex: 'subscription' }, classOrder: ['subscription'],
+      prices: Object.fromEntries(models.map((model) => [`codex:${model}`, { in: 1, out: 1, cached: 0 }])),
+    } });
+    for (let i = 0; i < 3; i++) replay({ id: `consistency-aged-pass-${i}`, model: models[0], verdict: 'pass' });
+    replay({ id: 'consistency-aged-flaky-0', model: models[1], verdict: 'pass' });
+    replay({ id: 'consistency-aged-flaky-1', model: models[1], verdict: 'pass' });
+    replay({ id: 'consistency-aged-flaky-2', model: models[1], verdict: 'fail' });
+
+    const rows = sc.summarize({ source: 'smoke', shipped: false }).filter((g) => g.category === 'debug' && g.difficulty === 7);
+    const passing = rows.find((g) => g.model === models[0]);
+    const flaky = rows.find((g) => g.model === models[1]);
+    assert.equal(passing.rated, 3); assert.equal(passing.smokeRated, 3); assert.ok(passing.weightedRated >= 1); assert.ok(passing.smokeWeightedRated >= 1); assert.equal(passing.quality, 1);
+    const pick = sc.recommend({ category: 'debug', difficulty: 7, source: 'smoke', summary: [passing, flaky] });
+    assert.equal(pick?.model, models[0]);
+    assert.doesNotMatch(pick.reason, /extrapolated|escalation/);
+    assert.equal(flaky.rated, 3); assert.equal(flaky.smokeRated, 3); assert.equal(flaky.quality, 0);
+    assert.equal(sc.recommend({ category: 'debug', difficulty: 7, source: 'smoke', summary: [flaky] }), null);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
 test('envFailure identifies provider and CLI environment failures without scanning report prose', () => {
   for (const error of [
     'HTTP status 503 from provider', '503 UNAVAILABLE', 'unknown option --effort',
@@ -82,6 +121,24 @@ test('CLI flag rejection is environmental only for the worker CLI error, not wor
     assert.ok(sc.envFailure({ error: output }), `worker CLI error: ${output}`);
     assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output }] } }), null, `workspace output: ${output}`);
   }
+});
+
+test('reliabilityMetrics follows the recorded transcript shape of every worker kind', () => {
+  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, timedOut: false, items: [
+    { type: 'command_execution', command: 'npm test', exitCode: 1 },
+    { type: 'command_execution', command: 'npm test', exitCode: 2 },
+    { type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: { id: 1 }, error: 'bad gateway' },
+  ] } }), { turns: 2, toolCalls: 3, toolErrors: 3, thrash: 1, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 2, items: [{ type: 'tool_use', name: 'Bash', input: { command: 'pwd' } }] } }), { turns: 2, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, items: [
+    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
+    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
+  ] } }), { turns: 2, toolCalls: 2, toolErrors: 2, thrash: 1, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 1, items: [{ type: 'tool_use', id: 'v1', name: 'search', input: { q: 'x' } }] } }), { turns: 1, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: { status: 'error' } }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: '{"status":400}' }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ status: 'canceled', result: { turns: 0, items: [], timedOut: true } }), { turns: 0, toolCalls: 0, toolErrors: 0, thrash: 0, timedOut: true });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { toolCalls: 2, items: [{ type: 'tool_use', name: 'read', input: {}, output: 'error: one' }] } }), { turns: null, toolCalls: 2, toolErrors: null, thrash: null, timedOut: null });
 });
 
 test('priors: price and tier lookup, config override, shadow dollars', () => {
@@ -414,6 +471,49 @@ test('source filter separates smoke from live runs', () => {
   sc.rateTask('sm1', 'pass');
   assert.ok(sc.rootRuns({ source: 'smoke' }).every((r) => r.source === 'smoke'));
   assert.ok(!sc.rootRuns({ source: 'live' }).some((r) => r.taskId === 'sm1'));
+});
+
+test('smoke repeats use pass^k task cells, ignore voids, and leave live cells unchanged', (t) => {
+  const models = ['consistency-all', 'consistency-flaky', 'consistency-void', 'consistency-cell', 'consistency-run-flaky'];
+  registryModels(t, models.map((id) => ['codex', id]));
+  let id = 0;
+  const smoke = (model, smokeId, verdict, category = 'read', difficulty = 1) => {
+    const taskId = `consistency-${++id}`;
+    run({ id: taskId, source: 'smoke', model, smokeId, category, difficulty });
+    if (verdict === 'void') sc.voidTask(taskId, 'test harness');
+    else sc.rateTask(taskId, verdict);
+  };
+  for (let i = 0; i < 3; i++) smoke('consistency-all', 'read-1', 'pass');
+  smoke('consistency-flaky', 'read-1', 'pass'); smoke('consistency-flaky', 'read-1', 'pass'); smoke('consistency-flaky', 'read-1', 'fail');
+  smoke('consistency-void', 'read-1', 'pass'); smoke('consistency-void', 'read-1', 'void');
+  smoke('consistency-cell', 'read-1', 'pass'); smoke('consistency-cell', 'read-1', 'pass');
+  smoke('consistency-cell', 'read-2', 'fail'); smoke('consistency-cell', 'read-2', 'fail');
+  smoke('consistency-run-flaky', 'read-1', 'pass'); smoke('consistency-run-flaky', 'read-1', 'fail');
+  smoke('consistency-run-flaky', 'read-2', 'pass'); smoke('consistency-run-flaky', 'read-2', 'fail');
+  run({ id: 'consistency-live', source: 'live', model: 'consistency-all', category: 'read', difficulty: 1 }); sc.rateTask('consistency-live', 'pass');
+
+  const rows = sc.summarize({ source: 'smoke', shipped: false });
+  const row = (model) => rows.find((g) => g.model === model && g.category === 'read' && g.difficulty === 1);
+  assert.deepEqual(
+    ((() => { const g = row('consistency-all'); return { rated: g.rated, pass: g.pass, fail: g.fail, quality: g.quality, consistency: g.consistency, repeats: g.repeats }; })()),
+    { rated: 3, pass: 1, fail: 0, quality: 1, consistency: 1, repeats: { min: 3, max: 3 } },
+  );
+  const flaky = row('consistency-flaky');
+  assert.equal(flaky.rated, 3); assert.equal(flaky.pass, 0); assert.equal(flaky.fail, 1); assert.equal(flaky.quality, 0); assert.equal(flaky.consistency, 2 / 3); assert.deepEqual(flaky.repeats, { min: 3, max: 3 });
+  const voided = row('consistency-void');
+  assert.equal(voided.rated, 1); assert.equal(voided.pass, 1); assert.equal(voided.consistency, 1); assert.deepEqual(voided.repeats, { min: 1, max: 1 });
+  const cell = row('consistency-cell');
+  assert.equal(cell.rated, 4); assert.equal(cell.pass, 1); assert.equal(cell.fail, 1); assert.equal(cell.quality, 0.5); assert.equal(cell.consistency, 0.5); assert.deepEqual(cell.repeats, { min: 2, max: 2 });
+  const live = sc.summarize({ source: 'live', shipped: false }).find((g) => g.model === 'consistency-all');
+  assert.equal(live.quality, 1); assert.equal(live.consistency, null); assert.equal(live.repeats, null);
+
+  const previous = loadConfig();
+  try {
+    saveConfig({ scorecard: { shippedBatteries: false, quality: 0.5, minSamples: 1, classOrder: ['subscription'], classes: { codex: 'subscription' } } });
+    const candidates = rows.filter((g) => ['consistency-cell', 'consistency-run-flaky'].includes(g.model));
+    const pick = sc.recommend({ category: 'read', difficulty: 1, source: 'smoke', summary: candidates });
+    assert.equal(pick?.model, 'consistency-cell');
+  } finally { saveConfig(previous); }
 });
 
 test('B11: avgPct is per-window concurrency-adjusted and ignores other quota groups', async () => {
@@ -849,6 +949,31 @@ test('method-c migration voids antigravity rows whose sel carried a spurious eff
   assert.ok(sc.rootRuns().find((c) => c.taskId === 'agy-good'));                  // the clean family row survives
 });
 
+test('scorecard migration voids only harness-error smoke failures and is idempotent', async () => {
+  const { appendNdjson, readNdjson, statePath } = await import('../core/paths.mjs');
+  const source = 'smoke';
+  const row = (taskId, runSource = 'smoke') => appendNdjson(statePath('scorecard.ndjson'), {
+    op: 'run', ts: new Date().toISOString(), taskId, source: runSource, provider: 'codex', model: 'gpt-6-sol', effort: 'medium',
+    category: 'test', difficulty: 6, status: 'failed', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'legacy',
+  });
+  const cases = [
+    ['migration-400', '{"type":"error","status":400,"message":"bad request"}'],
+    ['migration-401', 'unexpected status 401 Unauthorized'],
+    ['migration-limit', "You've hit your usage limit for this model."],
+    ['migration-genuine', '8/9 tests passed'],
+    ['migration-genuine-status', 'expected status 400 in the fixture output'],
+  ];
+  for (const [id, notes] of cases) { row(id); sc.rateTask(id, 'fail', notes); }
+  row('migration-live', 'live'); sc.rateTask('migration-live', 'fail', 'HTTP status 500 from provider');
+  assert.equal(sc.migrateScorecard(), 3);
+  assert.equal(sc.migrateScorecard(), 0);
+  const all = readNdjson(statePath('scorecard.ndjson'));
+  for (const id of ['migration-400', 'migration-401', 'migration-limit']) assert.ok(all.some((r) => r.op === 'void' && r.taskId === id));
+  assert.ok(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-genuine'));
+  assert.ok(sc.rootRuns({ source: 'live' }).some((c) => c.taskId === 'migration-live'));
+  assert.equal(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-400'), false);
+});
+
 test('phantom detection helpers', () => {
   assert.deepEqual(sc.claimedWrites([{ type: 'file_change', changes: [{ path: 'a.js' }, { path: 'b.js' }] }, { type: 'message' }, { type: 'file_change', changes: [{ path: '' }, { nopath: 1 }] }]), ['a.js', 'b.js']);
   assert.deepEqual(sc.claimedWrites(undefined), []);
@@ -863,12 +988,34 @@ test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', 
   sc.recordRun({ id: 'ph1', title: 'p', status: 'failed', failKind: 'phantom', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'test', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }, {});
   sc.rateTask('ph1', 'phantom');
   const g = sc.summarize().find((x) => x.sel === 'codex:gpt-5.6-luna:low' && x.category === 'test' && x.difficulty === 2);
-  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 1); assert.equal(g.phantomRate, 1);
+  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 0); assert.equal(g.phantomRate, 1);
   const er = sc.errorRates();
   assert.ok(er.byProvider.find((e) => e.key === 'codex' && e.phantom >= 1));
   assert.ok(er.byModel.find((e) => e.key === 'codex:gpt-5.6-luna:low' && e.phantom >= 1));
   assert.doesNotThrow(() => sc.rateTask('ph1', 'phantom'));
   assert.throws(() => sc.rateTask('ph1', 'meh'), { status: 400 });
+});
+
+test('summary reliability fields use known values and leave legacy rows unknown', async () => {
+  const { appendNdjson, statePath } = await import('../core/paths.mjs');
+  const source = 'reliability-summary';
+  const add = (id, result, verdict) => {
+    sc.recordRun({ id, title: id, status: 'done', provider: 'claude', model: 'haiku', effort: null, category: 'docs', difficulty: 1, source, result });
+    sc.rateTask(id, verdict);
+  };
+  add('reliability-pass', { ok: true, turns: 2, toolCalls: 4, toolErrors: 1, thrash: 2, timedOut: false, costUsd: 0.4, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'pass');
+  add('reliability-fix', { ok: false, turns: 4, toolCalls: 2, toolErrors: 1, thrash: 0, timedOut: true, costUsd: 0.2, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'fixable');
+  const known = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:haiku:default');
+  assert.equal(known.errorRate, 0.5);
+  assert.equal(known.toolErrorRate, 2 / 6);
+  assert.equal(known.avgTurns, 3);
+  assert.equal(known.thrash, 2);
+  assert.equal(known.timeouts, 1);
+  assert.ok(Math.abs(known.costPerSuccess - 0.6) < 1e-9);
+  appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'reliability-old', source, provider: 'claude', model: 'legacy', effort: null, category: 'docs', difficulty: 1, status: 'done', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'old' });
+  sc.rateTask('reliability-old', 'pass');
+  const old = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:legacy:default');
+  assert.equal(old.toolErrorRate, null); assert.equal(old.avgTurns, null); assert.equal(old.thrash, null); assert.equal(old.timeouts, null);
 });
 
 test('formatScores surfaces the phantom column and error-rate section', () => {

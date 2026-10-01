@@ -1322,6 +1322,18 @@ async function openScores() {
     const levelCols = rows[0]?.levels?.length ? rows[0].levels.map((c) => c.level) : [1, 2, 3, 4, 5, 6, 7];
     hr.append(el('th', null, 'Category'), ...levelCols.map((n) => el('th', null, `L${n}`))); thead.append(hr);
     const tbody = el('tbody');
+    const reliability = (cell) => {
+      const bits = [];
+      if (cell.consistency != null) bits.push(`consistency ${(cell.consistency * 100).toFixed(0)}%`);
+      if (cell.repeats) bits.push(`repeats ${cell.repeats.min}-${cell.repeats.max}`);
+      if (cell.errorRate != null) bits.push(`err ${(cell.errorRate * 100).toFixed(0)}%`);
+      if (cell.toolErrorRate != null) bits.push(`tool ${(cell.toolErrorRate * 100).toFixed(0)}%`);
+      if (cell.avgTurns != null) bits.push(`turns ${cell.avgTurns.toFixed(1)}`);
+      if (cell.thrash != null) bits.push(`thrash ${cell.thrash}`);
+      if (cell.timeouts != null) bits.push(`timeouts ${cell.timeouts}`);
+      if (cell.costPerSuccess != null) bits.push(`$/pass ${cell.costPerSuccess < 0.1 ? cell.costPerSuccess.toFixed(3) : cell.costPerSuccess.toFixed(2)}`);
+      return bits.join(' · ');
+    };
     for (const row of rows) {
       const tr = el('tr'); tr.append(el('th', null, row.category));
       for (const cell of row.levels || []) {
@@ -1330,7 +1342,8 @@ async function openScores() {
         else if (cell.status === 'capped') text = `capped\n${(cell.selections || []).join(', ')}\nuntil ${cell.resetAt ? new Date(cell.resetAt).toLocaleString() : 'reset unknown'}`;
         else {
           const source = cell.evidenceSource === 'prior' ? 'prior' : `${cell.shipped ? 'shipped ' : ''}${cell.evidenceSource || 'evidence'}`;
-          text = `${cell.selection}\n${cell.quality == null ? '' : `q${cell.quality.toFixed(2)} · `}${source} · n=${cell.n ?? 0} · ${cell.last ? String(cell.last).slice(0, 10) : '-'}`;
+          const rel = reliability(cell);
+          text = `${cell.selection}\n${cell.quality == null ? '' : `q${cell.quality.toFixed(2)} · `}${source} · n=${cell.n ?? 0} · ${cell.last ? String(cell.last).slice(0, 10) : '-'}${rel ? `\n${rel}` : ''}`;
         }
         const td = el('td', `score-cell ${cell.status}`, text); td.title = text.replaceAll('\n', ' '); tr.append(td);
       }

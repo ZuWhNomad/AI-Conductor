@@ -11,6 +11,7 @@ import { perTaskPct } from './sweep.mjs';
 import { getModels } from './models.mjs';
 import { loadConfig, DEFAULTS } from './config.mjs';
 import { bus } from './bus.mjs';
+import { logImprovement } from './improve.mjs';
 import { priceFor, priorFor, usdFor, TIER_CEILING, KIND } from './priors.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { cliVersionOf } from './cli-update.mjs';
@@ -96,9 +97,13 @@ export function isPhantomCompletion({ ok, claimed = [], canVerify, observedCount
 const LEGACY_ENV_FAILURES = [
   'max iterations reached', 'UnauthorizedAccessException', 'access (?:was |is )?denied', 'permission denied', 'EACCES', 'EPERM',
   'waiting for network', 'Connection failed', 'ECONNRESET', 'ENOTFOUND', 'fetch failed', 'unexpected status 401',
-  'Incorrect API key provided', 'refresh token was already used',
+  '\\bUnauthorized\\b', 'Incorrect API key provided', 'refresh token was already used', 'access token could not be refreshed',
+  'usage limit', 'rate limit', 'quota', 'too many requests', 'resource exhausted', 'limit reached', 'balance exhausted',
 ];
 const PROVIDER_ENV_FAILURES = [
+  '\\bHTTP\\s*[45]\\d\\d\\b',
+  '\\b(?:HTTP\\s*)?[45]\\d\\d\\b(?=.{0,48}\\b(?:status|error|response|provider)\\b)',
+  '\\b(?:status|error|response|provider)\\b.{0,48}\\b[45]\\d\\d\\b',
   '\\b(?:HTTP\\s*)?50[0234]\\b(?=.{0,48}\\b(?:status|error|unavailable|bad gateway|gateway timeout)\\b)',
   '\\b(?:status|error|unavailable|bad gateway|gateway timeout)\\b.{0,48}\\b50[0234]\\b',
   'status["\'\\s:=]+UNAVAILABLE\\b', // gRPC-style status; a bare "unavailable" in tool output is not a provider error
@@ -111,16 +116,122 @@ const CLI_ENV_FAILURES = ['\\b(?:unknown option|unexpected argument)\\b', '\\bre
 export const ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES, ...CLI_ENV_FAILURES].join('|'), 'i');
 const RESULT_ENV_FAIL = new RegExp([...LEGACY_ENV_FAILURES, ...PROVIDER_ENV_FAILURES].join('|'), 'i');
 const FINAL_MESSAGE_ENV_FAIL = new RegExp(LEGACY_ENV_FAILURES.join('|'), 'i');
-/** A worker or provider failure that belongs to the environment, not the model. */
-export function envFailure(t) {
-  if (t.failKind === 'auth' || t.failKind === 'env') return `${t.failKind === 'auth' ? 'sign-in' : 'harness'}: ${String(t.error || '').slice(0, 160)}`;
+
+const TOOL_CALL_TYPES = new Set(['tool_use', 'tool_call', 'command_execution', 'mcp_tool_call']);
+const TOOL_RESULT_TYPES = new Set(['tool_result', 'command_result', 'mcp_tool_result']);
+const RELIABILITY_TOTALS = Symbol('reliabilityTotals');
+const SMOKE_TOTALS = Symbol('smokeTotals');
+const finiteCount = (v) => Number.isInteger(v) && v >= 0 ? v : null;
+const numberOrNull = (v) => v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+const ownFiniteCount = (o, key) => Object.hasOwn(o || {}, key) ? finiteCount(o[key]) : null;
+const itemIsCall = (i) => !!i && TOOL_CALL_TYPES.has(i.type);
+const callName = (i) => i.type === 'command_execution' ? String(i.command || '').trim() : i.type === 'mcp_tool_call' ? `mcp:${i.server || '?'}:${i.tool || '?'}` : String(i.name || i.tool || i.function?.name || '?');
+const callArgs = (i) => i.type === 'command_execution' ? String(i.command || '') : i.arguments ?? i.args ?? i.input ?? i.function?.arguments ?? null;
+const callKey = (i) => {
+  let args; try { args = JSON.stringify(callArgs(i)); } catch { args = String(callArgs(i)); }
+  return `${callName(i)}\\0${args}`;
+};
+const resultId = (i) => i?.tool_use_id ?? i?.toolCallId ?? i?.tool_call_id ?? i?.call_id ?? i?.id ?? null;
+const resultError = (i) => {
+  if (!i) return null;
+  if (i.isError === true || i.is_error === true) return true;
+  if (i.error != null) return !!i.error;
+  const exit = numberOrNull(i.exitCode ?? i.exit_code);
+  if (exit != null) return exit !== 0;
+  const numericStatus = numberOrNull(i.status);
+  if (numericStatus != null) return numericStatus >= 400;
+  const status = String(i.status || '').toLowerCase();
+  if (status) {
+    if (['error', 'failed', 'failure', 'cancelled', 'canceled', 'aborted'].includes(status)) return true;
+    if (['ok', 'success', 'completed', 'complete', 'done'].includes(status)) return false;
+  }
+  const output = i.output ?? i.result ?? i.content;
+  if (output != null) {
+    if (typeof output === 'object') {
+      const nested = resultError(output);
+      if (nested != null) return nested;
+    } else if (typeof output === 'string' && /^\s*[\[{]/.test(output)) {
+      try {
+        const nested = resultError(JSON.parse(output));
+        if (nested != null) return nested;
+      } catch {}
+    }
+    return /^error\s*:/i.test(typeof output === 'string' ? output : JSON.stringify(output));
+  }
+  return null;
+};
+
+/** Calculate reliability only from transcript facts; absent worker fields remain unknown (null). */
+export function reliabilityMetrics(t = {}) {
+  const result = t.result || {};
+  const rel = plain(result.reliability) ? result.reliability : {};
+  const items = Array.isArray(result.items) ? result.items : null;
+  const calls = items?.filter(itemIsCall) || [];
+  const results = new Map((items || []).filter((i) => TOOL_RESULT_TYPES.has(i?.type) && resultId(i) != null).map((i) => [String(resultId(i)), i]));
+  const explicitCalls = ownFiniteCount(result, 'toolCalls') ?? ownFiniteCount(rel, 'toolCalls') ?? ownFiniteCount(result.tools, 'calls');
+  const explicitErrors = ownFiniteCount(result, 'toolErrors') ?? ownFiniteCount(rel, 'toolErrors') ?? ownFiniteCount(result.tools, 'errors');
+  const toolCalls = explicitCalls ?? (items ? calls.length : null);
+  let toolErrors = explicitErrors, thrash = ownFiniteCount(result, 'thrash') ?? ownFiniteCount(rel, 'thrash');
+  if (items && explicitErrors == null) {
+    // A journaled result may retain only the tail of a longer transcript; do not call omitted outcomes successes.
+    if (explicitCalls != null && calls.length < explicitCalls) { toolErrors = null; if (thrash == null) thrash = null; }
+    else {
+      const outcomes = calls.map((i) => {
+        let outcome = resultError(i);
+        if (outcome == null && i.id != null) outcome = resultError(results.get(String(i.id)));
+        return { key: callKey(i), error: outcome };
+      });
+      toolErrors = outcomes.every((o) => o.error != null) ? outcomes.filter((o) => o.error).length : null;
+      if (thrash == null) {
+        if (outcomes.some((o) => o.error == null)) thrash = null;
+        else {
+          thrash = 0;
+          for (let i = 1; i < outcomes.length; i++) if (outcomes[i].key === outcomes[i - 1].key && outcomes[i].error && outcomes[i - 1].error) thrash++;
+        }
+      }
+    }
+  }
+  if (explicitCalls === 0) { toolErrors ??= 0; thrash ??= 0; }
+  const turns = finiteCount(result.turns) ?? finiteCount(rel.turns) ?? finiteCount(result.num_turns) ?? (items ? (() => {
+    const n = items.filter((i) => i?.type === 'turn' || i?.type === 'assistant_turn' || i?.type === 'turn.completed').length;
+    return n || null;
+  })() : null);
+  const timedOut = typeof t.timedOut === 'boolean' ? t.timedOut : typeof result.timedOut === 'boolean' ? result.timedOut : t.failKind === 'timeout' || /^timeout(?:\b| after)/i.test(String(t.error || result.error || '')) ? true : t.status === 'done' || result.ok === true ? false : null;
+  return { turns, toolCalls, toolErrors, thrash, timedOut };
+}
+
+const taskHttpStatus = (t) => numberOrNull(t.httpStatus ?? t.result?.httpStatus ?? t.result?.http_status ?? t.result?.statusCode ?? t.result?.status_code ?? t.result?.status);
+const taskExitCode = (t) => numberOrNull(t.exitCode ?? t.result?.exitCode ?? t.result?.exit_code);
+/** A worker or provider failure that belongs to the environment, not the model. Structured signals win over text fallback. */
+export function envFailure(t = {}) {
+  if (t.timedOut === true || t.result?.timedOut === true || t.failKind === 'timeout') return null;
+  if (t.limitHit === true || t.result?.limitHit === true || t.failKind === 'limit') return 'provider usage limit';
+  if (t.authFailed === true || t.result?.authFailed === true || t.failKind === 'auth') return `sign-in: ${String(t.error || '').slice(0, 160)}`;
+  if (t.envFailed === true || t.result?.envFailed === true || t.failKind === 'env') return `harness: ${String(t.error || '').slice(0, 160)}`;
+  const httpStatus = taskHttpStatus(t);
+  if (httpStatus >= 400 && httpStatus <= 599) return `provider HTTP ${httpStatus}`;
+  const exitCode = taskExitCode(t), metrics = reliabilityMetrics(t), items = Array.isArray(t.result?.items) ? t.result.items : [];
+  const acted = items.some((i) => /^(agent_message|reasoning|tool_use|tool_call|command_execution|mcp_tool_call|file_change)$/.test(i?.type || '')) || (metrics.turns || 0) > 0;
+  if (exitCode != null && exitCode !== 0 && !acted) return `CLI exited before model acted (${exitCode})`;
+  const fallback = (hit, where) => {
+    if (!hit) return null;
+    try { logImprovement('friction', 'scorecard', `environment failure inferred from ${where}: ${hit}`, { taskId: t.id, provider: t.provider }); } catch {}
+    return hit;
+  };
   const error = String(t.error || '');
   const errorHit = error.match(ENV_FAIL)?.[0];
-  if (errorHit) return errorHit;
-  const providerTexts = (t.result?.items || []).map((i) => String(i.text || i.output || ''));
+  if (errorHit) return fallback(errorHit, 'worker error text');
+  const providerTexts = (Array.isArray(t.result?.items) ? t.result.items : []).map((i) => String(i.text || i.output || i.message || i.error || ''));
   const finalMessage = String(t.result?.finalMessage || '');
   const hit = providerTexts.find((text) => RESULT_ENV_FAIL.test(text));
-  return hit?.match(RESULT_ENV_FAIL)?.[0] || finalMessage.match(FINAL_MESSAGE_ENV_FAIL)?.[0] || null;
+  return fallback(hit?.match(RESULT_ENV_FAIL)?.[0], 'worker item text') || fallback(finalMessage.match(FINAL_MESSAGE_ENV_FAIL)?.[0], 'worker final text');
+}
+
+/** Sum per-run reliability across fix rounds or retry steps; missing legacy fields stay unknown. */
+export function aggregateReliability(rows = []) {
+  const sumKnown = (key) => rows.length && rows.every((r) => finiteCount(r?.[key]) != null) ? rows.reduce((sum, r) => sum + r[key], 0) : null;
+  const boolKnown = rows.length && rows.every((r) => typeof r?.timedOut === 'boolean') ? rows.some((r) => r.timedOut) : null;
+  return { turns: sumKnown('turns'), toolCalls: sumKnown('toolCalls'), toolErrors: sumKnown('toolErrors'), thrash: sumKnown('thrash'), timedOut: boolKnown };
 }
 
 /** Snapshot of a provider's limit windows, taken before a run for the after-run delta. */
@@ -197,11 +308,14 @@ export function recordRun(t, { before = null, concurrent = 0, concurrentByWindow
   const requestedModel = t.model || null;
   const servedModel = t.result?.servedModel || null;
   const model = servedModel || requestedModel;
+  const reliability = reliabilityMetrics(t);
   const row = {
     op: 'run', ts: nowIso(), taskId: t.id, followUpOf: t.followUpOf || null, retryOf: t.retryOf || null, reroutedFrom: t.reroutedFrom || null, sessionId: t.sessionId || null, source: t.source || 'live',
     provider: t.provider, model, requestedModel, effort: t.effort || null, category: t.category || null, difficulty: t.difficulty || null,
     status: t.status, tokens: normalizeUsage(t.result?.usage), costUsd: t.result?.costUsd || 0, costBasis: LIST_COST_PROVIDERS.has(t.provider) && t.result?.costUsd > 0 ? 'list' : 'tokens', durationMs: t.result?.durationMs || 0, variant: t.variant || null,
     pct: windowDelta(before, snapshotWindows(t.provider)), concurrent, concurrentByWindow, title: t.title, smokeId: t.smokeId || null, failKind: t.failKind || null, rounds: t.rounds ?? null,
+    turns: reliability.turns, toolCalls: reliability.toolCalls, toolErrors: reliability.toolErrors, thrash: reliability.thrash, timedOut: reliability.timedOut,
+    httpStatus: taskHttpStatus(t), exitCode: taskExitCode(t), limitHit: !!(t.limitHit || t.result?.limitHit), authFailed: !!(t.authFailed || t.result?.authFailed), envFailed: !!(t.envFailed || t.result?.envFailed),
     tools: t.result?.tools || null, repoFiles: t.repoFiles ?? null, repoBytes: t.repoBytes ?? null, // capability use + project size (plan Part H4): scored later as a view
     cliVersion: cliVersionOf(t.provider), servedModel, // cached --version (SDK for claude); the model the CLI says it ran
   };
@@ -256,6 +370,21 @@ export function migrateScorecard() {
     if (r.requestedModel && r.servedModel === r.model && r.model === `${r.requestedModel}-${r.effort}`) continue; // current Method-C dispatch: exact served id + logical requested family
     if (!/-(low|medium|high)$/.test(r.model || '') || voided.has(r.taskId)) continue; // only raw effort-in-id ids carrying a separate effort
     voidTask(r.taskId, `method-c migration: effort "${r.effort}" tagged on effort-in-id model ${r.model}`);
+    voided.add(r.taskId); n++;
+  }
+  const latestRates = new Map();
+  for (const [order, r] of all.entries()) if (r.op === 'rate') {
+    const prior = latestRates.get(r.taskId);
+    if (!prior || r.ts > prior.ts || (r.ts === prior.ts && order > prior.order)) latestRates.set(r.taskId, { ...r, order });
+  }
+  // A graded note ("8/9 tests passed: …") is a model result even when its text mentions limits or quotas.
+  const harnessNote = (notes) => /^\s*\d+\/\d+ tests passed/.test(String(notes || '')) ? null : String(notes || '').match(/(?:model is at capacity|"?status"?\s*[:=]\s*"?[45]\d\d|\bHTTP\s*(?:status\s*)?[45]\d\d\b|\bUnauthorized\b|access token could not be refreshed|Incorrect API key|usage limit|rate limit|quota|too many requests|resource exhausted|limit reached|balance exhausted)/i)?.[0] || null;
+  for (const r of all) {
+    if (r.op !== 'run' || r.source !== 'smoke' || voided.has(r.taskId)) continue;
+    const rate = latestRates.get(r.taskId);
+    const note = rate?.verdict === 'fail' ? harnessNote(rate.notes) : null;
+    if (!note) continue;
+    voidTask(r.taskId, `harness migration: ${note}`);
     voided.add(r.taskId); n++;
   }
   if (n) bus.publish('score', { migrated: n });
@@ -390,7 +519,8 @@ function rootRunsUncached({ source = null } = {}) {
   for (const a of attempts.values()) {
     const rated = a.members.map((id) => rates.get(id)).filter(Boolean).reduce((latest, rate) =>
       !latest || rate.ts > latest.ts || (rate.ts === latest.ts && rate._order > latest._order) ? rate : latest, null);
-    a.verdict = rated?.verdict || (a.status === 'failed' ? 'fail' : null);
+    Object.assign(a, aggregateReliability(a._rows));
+    a.verdict = rated?.verdict || (a.status === 'failed' && !envFailure(a) ? 'fail' : null);
     a.notes = rated?.notes || null;
     // D7: no run reported usage → cost unknown, EXCEPT when all prices are zero (local model: $0 is real).
     const priceAllZero = a.price && a.price.in === 0 && a.price.out === 0 && (a.price.cached ?? 0) === 0;
@@ -424,7 +554,7 @@ function rootRunsUncached({ source = null } = {}) {
   for (const c of chains.values()) {
     if (source && c.source !== source) continue;
     c.attempts.sort((x, y) => (x.ts < y.ts ? -1 : 1));
-    c.attempts.forEach((a, i) => { if (i < c.attempts.length - 1 && !a.verdict) a.verdict = 'fail'; }); // retried => it did not do
+    c.attempts.forEach((a, i) => { if (i < c.attempts.length - 1 && !a.verdict && !envFailure(a)) a.verdict = 'fail'; }); // retried => it did not do, unless the harness stopped it
     const last = c.attempts[c.attempts.length - 1];
     c.path = c.attempts.map((a) => a.sel);
     // Only a voided original's rating can settle a replacement; ordinary predecessors rate their own attempts.
@@ -434,6 +564,7 @@ function rootRunsUncached({ source = null } = {}) {
     c.tokens = { in: 0, out: 0, cached: 0, write: 0 }; c.durationMs = 0; c.rounds = 0; c.pct = null;
     let usd = 0, priced = 0;
     for (const a of c.attempts) { addTok(c.tokens, a.tokens); c.durationMs += a.durationMs; c.rounds += a.rounds; if (a.usd != null) { usd += a.usd; priced++; } if (a.pct) { c.pct = c.pct || {}; for (const [k, v] of Object.entries(a.pct)) c.pct[k] = (c.pct[k] || 0) + v; } }
+    Object.assign(c, aggregateReliability(c.attempts));
     c.partialCost = false;
     if (!priced) c.usd = null;
     else {
@@ -475,7 +606,9 @@ function shippedSummary(c, now) {
     cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
     quality, liveQuality: null, smokeQuality: quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
     pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
-    errorRate: c.rated ? (c.fail + c.phantom) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
+    consistency: c.rated ? c.pass / c.rated : null, repeats: null,
+    errorRate: c.rated ? (c.fail + c.fixable) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
+    toolErrorRate: null, avgTurns: null, thrash: null, timeouts: null, costPerSuccess: c.pass ? (c.avgUsd == null ? null : c.avgUsd * c.rated / c.pass) : null,
     last: c.lastRunDate, shipped: true,
   };
 }
@@ -491,26 +624,68 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
   const archive = archivedSet(loadConfig().scorecard);
   const evidenceNow = Date.now();
   const groups = new Map();
-  const add = (sel, steps, cat, diff, x) => {
+  const add = (sel, steps, cat, diff, x, { evidenceRuns = null } = {}) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, close: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0 }; groups.set(key, g); }
-    g.n++;
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, close: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _smokeQualityWeightedRated: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0, _toolCalls: 0, _toolErrors: 0, _toolUnknown: false, _turns: [], _thrash: 0, _thrashUnknown: false, _timeouts: 0, _timeoutUnknown: false, _costTotal: 0, _costUnknown: false, _smokePasses: 0, _smokeRuns: 0, _smokeRepeats: [] }; groups.set(key, g); }
+    const evidence = evidenceRuns || [x];
     const source = x.source === 'smoke' ? 'smoke' : 'live';
-    g[source + 'N']++;
-    if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
+    g.n += evidence.length;
+    g[source + 'N'] += evidence.length;
+    for (const run of evidence) {
+      if (run.ts && (!g.last || run.ts > g.last)) g.last = run.ts;
+      if (!run.verdict) continue;
+      const weight = recencyWeight(run.ts, evidenceNow);
+      g.rated++; g[source + 'Rated']++; g.weightedRated += weight; g[source + 'WeightedRated'] += weight;
+    }
+    // Evidence remains per non-void run; only smoke quality and its pass/fail tallies are pass^k per battery task.
     if (x.verdict) {
       const weight = recencyWeight(x.ts, evidenceNow);
-      g.rated++; g[source + 'Rated']++; g.weightedRated += weight; g[source + 'WeightedRated'] += weight; g[x.verdict]++;
+      g[x.verdict]++;
       g._quality[source] += SCORE[x.verdict] * weight;
       g._accept[source] += (x.verdict === 'pass' || x.verdict === 'fixable' ? 1 : 0) * weight;
+      if (source === 'smoke') g._smokeQualityWeightedRated += weight;
     }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd);
     const xs = x.attempts || [x]; g._attempts += xs.length; g._priced += xs.filter((a) => a.usd != null).length;
     const p = maxPct(x.pct); if (p != null) g._pct.push(p);
     g._dur.push(x.durationMs); g._rounds.push(x.rounds);
+    if (finiteCount(x.toolCalls) != null && finiteCount(x.toolErrors) != null) { g._toolCalls += x.toolCalls; g._toolErrors += x.toolErrors; } else g._toolUnknown = true;
+    if (finiteCount(x.turns) != null) g._turns.push(x.turns);
+    if (finiteCount(x.thrash) != null) g._thrash += x.thrash; else g._thrashUnknown = true;
+    if (typeof x.timedOut === 'boolean') { if (x.timedOut) g._timeouts++; } else g._timeoutUnknown = true;
+    if (x.usd != null) g._costTotal += x.usd; else g._costUnknown = true;
+    if (source === 'smoke' && x.smokeEvidence) {
+      g._smokePasses += x.smokeEvidence.passes;
+      g._smokeRuns += x.smokeEvidence.runs;
+      if (x.smokeEvidence.runs) g._smokeRepeats.push(x.smokeEvidence.runs);
+    }
     return g;
+  };
+  const smokeGroups = new Map();
+  const addSmoke = (a) => {
+    const cat = a.category, diff = a.difficulty;
+    if (!cat || !diff) return;
+    const taskKey = a.smokeId || a.taskId;
+    const key = [a.sel, cat, diff, taskKey].join('|');
+    const group = smokeGroups.get(key) || { sel: a.sel, category: cat, difficulty: diff, runs: [] };
+    group.runs.push(a); smokeGroups.set(key, group);
+  };
+  const aggregateSmoke = (group) => {
+    const runs = group.runs, rated = runs.filter((a) => a.verdict);
+    const latest = [...runs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).at(-1) || runs[0];
+    const tokens = { in: 0, out: 0, cached: 0, write: 0 };
+    for (const run of runs) addTok(tokens, run.tokens);
+    const reliability = aggregateReliability(runs);
+    const usd = runs.every((run) => run.usd != null) ? runs.reduce((sum, run) => sum + run.usd, 0) : null;
+    const verdict = rated.length && rated.every((run) => run.verdict === 'pass') ? 'pass' : rated.length ? 'fail' : null;
+    return {
+      ...latest, verdict, tokens, usd, durationMs: runs.reduce((sum, run) => sum + (run.durationMs || 0), 0),
+      rounds: runs.reduce((sum, run) => sum + (run.rounds || 0), 0), attempts: runs,
+      turns: reliability.turns, toolCalls: reliability.toolCalls, toolErrors: reliability.toolErrors, thrash: reliability.thrash, timedOut: reliability.timedOut,
+      smokeEvidence: { passes: rated.filter((run) => run.verdict === 'pass').length, runs: rated.length },
+    };
   };
   for (const c of rootRuns({ source })) {
     const chainArchived = c.attempts.some((a) => isArchived(a.provider, a.model, archive));
@@ -521,7 +696,8 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       const cat = a.category || c.category;
       const diff = a.difficulty || c.difficulty;
       if (!cat || !diff) continue;
-      const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort;
+      if (a.source === 'smoke' && c.attempts.length === 1) addSmoke(a);
+      else { const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort; }
     }
     // The multi-step observed ladder row is chain-level: it must have chain-level tags.
     if (c.attempts.length > 1 && c.category && c.difficulty && chainArchived === archived) {
@@ -530,21 +706,38 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  const local = [...groups.values()].map(({ _quality, _accept, _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, ...g }) => {
+  for (const group of smokeGroups.values()) {
+    const x = aggregateSmoke(group), g = add(group.sel, 1, group.category, group.difficulty, x, { evidenceRuns: group.runs });
+    g.provider = x.provider; g.model = x.model; g.effort = x.effort;
+  }
+  const local = [...groups.values()].map(({ _quality, _accept, _smokeQualityWeightedRated, _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, _toolCalls, _toolErrors, _toolUnknown, _turns, _thrash, _thrashUnknown, _timeouts, _timeoutUnknown, _costTotal, _costUnknown, _smokePasses, _smokeRuns, _smokeRepeats, ...g }) => {
     const cost = g.steps === 1 ? modelInRegistry(getModels(), g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const liveQuality = g.liveRated && g.liveWeightedRated ? _quality.live / g.liveWeightedRated : null;
-    const smokeQuality = g.smokeWeightedRated ? _quality.smoke / g.smokeWeightedRated : null;
+    const smokeQuality = _smokeQualityWeightedRated ? _quality.smoke / _smokeQualityWeightedRated : null;
     // Q3: once this exact cell has live rated work, its quality owns the cell; benchmark evidence remains a count.
     const quality = liveQuality ?? smokeQuality;
     const qualitySource = g.liveRated ? 'live' : 'smoke';
-    return {
+    const row = {
       ...g, cost, priorTier: prior?.tier || null, quality, liveQuality, smokeQuality,
-      accept: g[qualitySource + 'WeightedRated'] ? _accept[qualitySource] / g[qualitySource + 'WeightedRated'] : null,
+      accept: (qualitySource === 'smoke' ? _smokeQualityWeightedRated : g.liveWeightedRated) ? _accept[qualitySource] / (qualitySource === 'smoke' ? _smokeQualityWeightedRated : g.liveWeightedRated) : null,
       ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: meanKnown(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
       avgTokens: mean(_tok), avgUsd: mean(_usd), pricedShare: _attempts ? _priced / _attempts : null, avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
-      errorRate: g.rated ? (g.fail + g.phantom) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
+      errorRate: g.rated ? (g.fail + g.fixable) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
+      toolErrorRate: !_toolUnknown && _toolCalls > 0 ? _toolErrors / _toolCalls : null,
+      avgTurns: meanKnown(_turns), thrash: _thrashUnknown ? null : _thrash, timeouts: _timeoutUnknown ? null : _timeouts,
+      costPerSuccess: g.pass > 0 && !_costUnknown ? _costTotal / g.pass : null,
+      consistency: _smokeRuns ? _smokePasses / _smokeRuns : null,
+      repeats: _smokeRepeats.length ? { min: Math.min(..._smokeRepeats), max: Math.max(..._smokeRepeats) } : null,
     };
+    Object.defineProperty(row, RELIABILITY_TOTALS, { value: {
+      toolCalls: _toolUnknown ? null : _toolCalls, toolErrors: _toolUnknown ? null : _toolErrors,
+      turns: { sum: _turns.reduce((sum, n) => sum + n, 0), count: _turns.length },
+      thrash: _thrashUnknown ? null : _thrash, timeouts: _timeoutUnknown ? null : _timeouts,
+      costTotal: _costUnknown ? null : _costTotal,
+    } });
+    Object.defineProperty(row, SMOKE_TOTALS, { value: { passes: _smokePasses, runs: _smokeRuns, repeats: _smokeRepeats, qualityWeightedRated: _smokeQualityWeightedRated } });
+    return row;
   }).sort(summarySort);
   const cfg = loadConfig().scorecard;
   const useShipped = shipped && !archived && (source == null || source === 'smoke') && cfg.shippedBatteries !== false && process.env.CONDUCTOR_NO_SHIPPED !== '1';
@@ -575,11 +768,11 @@ export function errorRates({ source = null, archived = false } = {}) {
   const models = new Map(), providers = new Map();
   for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict && isArchived(a.provider, a.model, archive) === archived) {
     for (const [map, key] of [[models, a.sel], [providers, a.provider]]) {
-      let g = map.get(key); if (!g) { g = { key, rated: 0, fail: 0, phantom: 0 }; map.set(key, g); }
-      g.rated++; if (a.verdict === 'fail') g.fail++; if (a.verdict === 'phantom') g.phantom++;
+      let g = map.get(key); if (!g) { g = { key, rated: 0, fail: 0, fixable: 0, phantom: 0 }; map.set(key, g); }
+      g.rated++; if (a.verdict === 'fail') g.fail++; if (a.verdict === 'fixable') g.fixable++; if (a.verdict === 'phantom') g.phantom++;
     }
   }
-  const finish = (map) => [...map.values()].map((g) => ({ ...g, errorRate: (g.fail + g.phantom) / g.rated, phantomRate: g.phantom / g.rated })).sort((a, b) => b.errorRate - a.errorRate || b.rated - a.rated);
+  const finish = (map) => [...map.values()].map((g) => ({ ...g, errorRate: (g.fail + g.fixable) / g.rated, phantomRate: g.phantom / g.rated })).sort((a, b) => b.errorRate - a.errorRate || b.rated - a.rated);
   return { byModel: finish(models), byProvider: finish(providers) };
 }
 
@@ -734,15 +927,15 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const eligible = (p) => p.utility > -Infinity;
   const evidenceRank = (p) => {
     const live = cellLiveWeightedRated(p.ref);
-    return live > 0 ? { live: 1, count: live } : { live: 0, count: cellSmokeWeightedRated(p.ref) };
+    return live > 0 ? { live: 1, count: live, consistency: p.ref.consistency ?? -1 } : { live: 0, count: cellSmokeWeightedRated(p.ref), consistency: p.ref.consistency ?? -1 };
   };
   const tier = (p) => TIER_CEILING[p.ref.priorTier] || 0;
   const sortCmp = escalate
-    ? (x, y) => (evidenceRank(y).live - evidenceRank(x).live) || (evidenceRank(y).count - evidenceRank(x).count) || (tier(y) - tier(x)) || (y.utility - x.utility)
+    ? (x, y) => (evidenceRank(y).live - evidenceRank(x).live) || (evidenceRank(y).count - evidenceRank(x).count) || (evidenceRank(y).consistency - evidenceRank(x).consistency) || (tier(y) - tier(x)) || (y.utility - x.utility)
     : (x, y) => {
         if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
         if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
-        return y.utility - x.utility || (y.quality - x.quality) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
+         return y.utility - x.utility || (y.quality - x.quality) || ((y.ref.consistency ?? -1) - (x.ref.consistency ?? -1)) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
       };
   plans.sort(sortCmp);
   // Class walk: the first budget class (in configured order) that holds a viable plan wins; value already ordered the plans.
@@ -792,7 +985,9 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     provider: first.provider, model: first.model, effort: first.effort,
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
-    evidence: { n: best.ref.rated, weightedN: evidenceRated(best.ref), last: best.ref.last || null, source: cellLiveRated(best.ref) > 0 ? 'live' : 'bench', shipped: !!best.ref.shipped },
+    evidence: { n: best.ref.rated, weightedN: evidenceRated(best.ref), last: best.ref.last || null, source: cellLiveRated(best.ref) > 0 ? 'live' : 'bench', shipped: !!best.ref.shipped,
+      consistency: best.ref.consistency ?? null, repeats: best.ref.repeats ?? null,
+      errorRate: best.ref.errorRate ?? null, toolErrorRate: best.ref.toolErrorRate ?? null, avgTurns: best.ref.avgTurns ?? null, thrash: best.ref.thrash ?? null, timeouts: best.ref.timeouts ?? null, costPerSuccess: best.ref.costPerSuccess ?? null },
     class: bestClass,
     reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}${decision(best.steps[0])?.action === 'allow' ? ` [manual allow: ${decision(best.steps[0]).reason}]` : ''}`,
     alternatives: alt,
@@ -923,25 +1118,52 @@ const passGate = (category, reg) => (KIND[category] !== 'visual' ? () => true : 
   return !!p?.tier && !!effort && p.effort === effort && !!modelInRegistry(reg, provider, model)?.efforts?.includes(effort);
 }));
 
-/** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
+/** Merge cells (sorted easiest first) until `floor` rated runs; smoke quality remains battery-task weighted. */
 function pool(cells, floor) {
   const used = []; let weightedRated = 0;
   for (const c of cells) { used.push(c); weightedRated += evidenceRated(c); if (weightedRated >= floor) break; }
   const w = (k, by, cells = used) => { let num = 0, den = 0; for (const c of cells) { if (c[k] == null) continue; const weight = c[by] ?? (by === 'weightedRated' ? c.rated : 0); num += c[k] * weight; den += weight; } return den ? num / den : null; };
+  const qualityWeight = (c) => c.liveRated ? (c.liveWeightedRated ?? c.liveRated) : (c[SMOKE_TOTALS]?.qualityWeightedRated || c.weightedRated || c.rated || 0);
+  const weightedQuality = (key) => { let num = 0, den = 0; for (const c of used) { if (c[key] == null) continue; const weight = qualityWeight(c); num += c[key] * weight; den += weight; } return den ? num / den : null; };
   const base = used[0];
   const stepCosts = base.stepCosts?.map((s, i) => {
     const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
     return { sel: s.sel, avgUsd: w('avgUsd', 'n', costs), avgDurationMs: w('avgDurationMs', 'n', costs) };
   });
   const total = (key, fallback = () => 0) => used.reduce((sum, c) => sum + (c[key] ?? fallback(c)), 0);
-  return {
+  const rel = used.map((c) => c[RELIABILITY_TOTALS] || null);
+  const allRel = rel.every(Boolean);
+  const reliability = allRel ? {
+    toolCalls: rel.every((r) => r.toolCalls != null) ? rel.reduce((sum, r) => sum + r.toolCalls, 0) : null,
+    toolErrors: rel.every((r) => r.toolErrors != null) ? rel.reduce((sum, r) => sum + r.toolErrors, 0) : null,
+    turns: { sum: rel.reduce((sum, r) => sum + r.turns.sum, 0), count: rel.reduce((sum, r) => sum + r.turns.count, 0) },
+    thrash: rel.every((r) => r.thrash != null) ? rel.reduce((sum, r) => sum + r.thrash, 0) : null,
+    timeouts: rel.every((r) => r.timeouts != null) ? rel.reduce((sum, r) => sum + r.timeouts, 0) : null,
+    costTotal: rel.every((r) => r.costTotal != null) ? rel.reduce((sum, r) => sum + r.costTotal, 0) : null,
+  } : null;
+  const pooled = {
     ...base, ...(stepCosts ? { stepCosts } : {}), cells: used.length, difficulty: base.difficulty, difficultyMax: used[used.length - 1].difficulty,
     rated: total('rated'), weightedRated, n: total('n'), liveN: total('liveN', (c) => c.smokeN != null ? 0 : c.n), liveRated: total('liveRated', (c) => c.smokeRated != null ? 0 : c.rated),
     liveWeightedRated: total('liveWeightedRated', (c) => c.liveRated ?? (c.smokeRated != null ? 0 : c.rated)),
     smokeN: total('smokeN'), smokeRated: total('smokeRated'), smokeWeightedRated: total('smokeWeightedRated', (c) => c.smokeRated ?? 0),
-    quality: w('quality', 'weightedRated'), accept: w('accept', 'weightedRated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    quality: weightedQuality('quality'), accept: weightedQuality('accept'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    consistency: (() => { const totals = used.map((c) => c[SMOKE_TOTALS]).filter(Boolean); const runs = totals.reduce((sum, t) => sum + t.runs, 0); return runs ? totals.reduce((sum, t) => sum + t.passes, 0) / runs : null; })(),
+    repeats: (() => { const repeats = used.flatMap((c) => c.repeats ? [c.repeats.min, c.repeats.max] : []); return repeats.length ? { min: Math.min(...repeats), max: Math.max(...repeats) } : null; })(),
+    pass: total('pass'), fixable: total('fixable'), close: total('close'), fail: total('fail'), phantom: total('phantom'),
     last: used.map((c) => c.last).filter(Boolean).sort().at(-1) || null,
+    errorRate: total('rated') ? (total('fail') + total('fixable')) / total('rated') : null,
+    toolErrorRate: reliability?.toolCalls > 0 && reliability.toolErrors != null ? reliability.toolErrors / reliability.toolCalls : null,
+    avgTurns: reliability?.turns.count ? reliability.turns.sum / reliability.turns.count : null,
+    thrash: reliability?.thrash ?? null, timeouts: reliability?.timeouts ?? null,
+    costPerSuccess: total('pass') > 0 && reliability?.costTotal != null ? reliability.costTotal / total('pass') : null,
   };
+  Object.defineProperty(pooled, RELIABILITY_TOTALS, { value: reliability });
+  const smokeTotals = used.map((c) => c[SMOKE_TOTALS]).filter(Boolean);
+  Object.defineProperty(pooled, SMOKE_TOTALS, { value: smokeTotals.length ? {
+    passes: smokeTotals.reduce((sum, t) => sum + t.passes, 0), runs: smokeTotals.reduce((sum, t) => sum + t.runs, 0),
+    repeats: smokeTotals.flatMap((t) => t.repeats), qualityWeightedRated: smokeTotals.reduce((sum, t) => sum + (t.qualityWeightedRated || 0), 0),
+  } : { passes: 0, runs: 0, repeats: [] } });
+  return pooled;
 }
 
 // Single source of truth for effort ordering (low -> ultra). Everything that ranks effort imports this;
@@ -1036,6 +1258,19 @@ export function benchedCells(summary, cfg = loadConfig().scorecard) {
   return (summary || []).filter((g) => g.steps === 1 && evidenceRated(g) >= cfg.benchMinSamples && g.quality != null && g.quality < cfg.quality);
 }
 
+const compactReliability = (g) => {
+  const bits = [];
+  if (g?.consistency != null) bits.push(`consistency ${(g.consistency * 100).toFixed(0)}%`);
+  if (g?.repeats) bits.push(`repeats ${g.repeats.min}-${g.repeats.max}`);
+  if (g?.errorRate != null) bits.push(`err ${(g.errorRate * 100).toFixed(0)}%`);
+  if (g?.toolErrorRate != null) bits.push(`tool ${(g.toolErrorRate * 100).toFixed(0)}%`);
+  if (g?.avgTurns != null) bits.push(`turns ${g.avgTurns.toFixed(1)}`);
+  if (g?.thrash != null) bits.push(`thrash ${g.thrash}`);
+  if (g?.timeouts != null) bits.push(`timeouts ${g.timeouts}`);
+  if (g?.costPerSuccess != null) bits.push(`$/pass ${g.costPerSuccess < 0.1 ? g.costPerSuccess.toFixed(3) : g.costPerSuccess.toFixed(2)}`);
+  return bits.join(' · ');
+};
+
 /** Structured category × level view shared by the short text, HTTP API and scores modal. */
 export function scoresGrid({ source = null, summary = null, categories = CATEGORIES } = {}) {
   summary ||= summarize({ source });
@@ -1047,6 +1282,9 @@ export function scoresGrid({ source = null, summary = null, categories = CATEGOR
         level, status: 'pick', selection: pick.plan?.steps?.join('>') || selOf(pick), quality: pick.plan?.quality ?? null,
         usd: pick.plan?.usd ?? null, n: pick.evidence?.n ?? 0, weightedN: pick.evidence?.weightedN ?? 0,
         last: pick.evidence?.last || null, evidenceSource: pick.evidence?.source || 'prior', shipped: !!pick.evidence?.shipped,
+        consistency: pick.evidence?.consistency ?? null, repeats: pick.evidence?.repeats ?? null,
+         errorRate: pick.evidence?.errorRate ?? null, toolErrorRate: pick.evidence?.toolErrorRate ?? null, avgTurns: pick.evidence?.avgTurns ?? null,
+        thrash: pick.evidence?.thrash ?? null, timeouts: pick.evidence?.timeouts ?? null, costPerSuccess: pick.evidence?.costPerSuccess ?? null,
       };
       if (explain?.status === 'capped') {
         const resetAt = Math.min(...explain.capped.map((c) => c.resetAt).filter((v) => Number.isFinite(v)));
@@ -1072,13 +1310,14 @@ export function formatScoresShort({ source = null } = {}) {
     if (c.status === 'no-data') return `${tag}: no data`;
     if (c.status === 'capped') return `${tag}: capped: ${c.selections.join(', ')} until ${reset(c.resetAt)}`;
     const evidence = c.evidenceSource === 'prior' ? 'prior' : `${c.shipped ? 'shipped ' : ''}${c.evidenceSource} n=${c.n} ${date(c.last)}`;
-    return `${tag}: ${c.selection} ${c.quality == null ? '' : `q${c.quality.toFixed(2)} ${money(c.usd)} `}[${evidence}]`;
+    const reliability = compactReliability(c);
+    return `${tag}: ${c.selection} ${c.quality == null ? '' : `q${c.quality.toFixed(2)} ${money(c.usd)} `}[${evidence}${reliability ? `; ${reliability}` : ''}]`;
   }).join(' · '));
   const manualByCell = new Map(manual.map((r) => [eligibilityKey(r.sel, r.category), r]));
   const benched = benchedCells(all, cfg).filter((g) => manualByCell.get(eligibilityKey(g.sel, g.category))?.action !== 'allow');
   if (benched.length) {
     lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' recency-weighted rated; recommend() skips these cells; a better run lifts them):');
-    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + (g.close || 0) + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + (g.close || 0) + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : '') + (compactReliability(g) ? ', ' + compactReliability(g) : ''));
   }
   if (manual.length) {
     lines.push('', 'Manual eligibility (latest per selection + category):');
@@ -1091,9 +1330,9 @@ export function formatScoresShort({ source = null } = {}) {
 
 /** `conductor scores --csv`: the summary table as CSV (opens in Excel). */
 export function scoresCsv({ source = null, archived = false } = {}) {
-  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'close', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'phantomRate', 'priorTier', 'cost', 'last'];
+  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'close', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'toolErrorRate', 'avgTurns', 'thrash', 'timeouts', 'costPerSuccess', 'phantomRate', 'priorTier', 'cost', 'last', 'consistency', 'repeats'];
   const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
+  return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(k === 'repeats' && g[k] ? `${g[k].min}-${g[k].max}` : g[k])).join(','))].join('\n') + '\n';
 }
 
 /** Conductor/CLI view: the table plus the current plan per category and level. */
@@ -1104,8 +1343,8 @@ export function formatScores({ category = null, source = null, archived = false,
   const cfg = loadConfig().scorecard;
   if (!rows.length && (archived || (cfg.coldStart !== 'priors' && !manual.length))) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
-  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/close/fail/phantom | $/task | %window/task | avg s | rounds | hand-picked prior'] : ['No measured score rows.'];
-  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.close || 0}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${g.priorTier || '-'}`); }
+  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/close/fail/phantom | $/task | %window/task | avg s | rounds | error | tool err | avg turns | thrash | timeouts | $/pass | consistency | repeats | hand-picked prior'] : ['No measured score rows.'];
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; const percent = (v) => v == null ? '-' : `${(v * 100).toFixed(0)}%`; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.close || 0}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${percent(g.errorRate)} | ${percent(g.toolErrorRate)} | ${f(g.avgTurns, 1)} | ${f(g.thrash)} | ${f(g.timeouts)} | ${g.costPerSuccess == null ? '-' : f(g.costPerSuccess, 3)} | ${percent(g.consistency)} | ${g.repeats ? `${g.repeats.min}-${g.repeats.max}` : '-'} | ${g.priorTier || '-'}`); }
   if (!archived) {
     lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} recency-weighted rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.coldStart === 'priors' ? '; cold start: hand-picked priors' : ''}):`);
     let any = false;
@@ -1124,7 +1363,7 @@ export function formatScores({ category = null, source = null, archived = false,
     lines.push('', 'Manual eligibility (latest per selection + category):');
     for (const r of manual) lines.push(`- ${r.action.toUpperCase()} ${r.sel} for ${r.category}: ${r.reason}`);
   }
-  lines.push('', 'Error rates (φ = phantom / unverified completions):');
+  lines.push('', 'Error rates (fail + fixable; φ = phantom / unverified completions):');
   const ers = errorRates({ source, archived }).byProvider;
   if (!ers.length) lines.push('- none rated yet');
   else for (const e of ers) lines.push(`- ${e.key}: ${(e.errorRate * 100).toFixed(0)}% error, ${(e.phantomRate * 100).toFixed(0)}% φ (n=${e.rated})`);

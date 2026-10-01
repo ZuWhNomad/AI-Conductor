@@ -40,6 +40,7 @@ export async function runWorker(t, { signal } = {}) {
   return {
     ok: !!r.ok, threadId: r.threadId || null, finalMessage: redactDeep(r.finalMessage || ''), items: redactDeep(r.items || []), usage: r.usage || null,
     costUsd: r.costUsd || 0, error: redactDeep(r.error || null), limitHit: !!r.limitHit, authFailed: !!r.authFailed, envFailed: !!r.envFailed, retryAfterMs: r.retryAfterMs || null, durationMs: r.durationMs || 0, files: r.files || undefined,
+    turns: Number.isInteger(r.turns) ? r.turns : null, httpStatus: Number.isInteger(r.httpStatus) ? r.httpStatus : null, exitCode: Number.isInteger(r.exitCode) ? r.exitCode : null, timedOut: typeof r.timedOut === 'boolean' ? r.timedOut : null,
   };
 }
 

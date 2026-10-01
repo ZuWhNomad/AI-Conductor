@@ -29,6 +29,28 @@ test('coverage is per offered effort at 8/11; a probe is not a battery and effor
   assert.equal(dueForBench({ days: Infinity, reg: probeRegistry, runs })[0].covered, 1);
 });
 
+test('bench repeats a task sequentially without making completed repeats due again', async () => {
+  reset();
+  const registry = reg([model('codex', 'repeatable', ['low'])]);
+  enqueueBench([{ provider: 'codex', model: 'repeatable', effort: 'low' }], { reg: registry, taskIds: ['a'], probe: false, repeats: 3 });
+  const seen = [];
+  const drained = await runBenchQueue({
+    execute: async (_selection, task, meta) => { seen.push({ task, repeat: meta.repeat, repeats: meta.repeats }); return { verdict: 'pass' }; },
+    tasks: () => [], blockedUntil: () => null, reg: registry,
+  });
+  assert.equal(drained.results.length, 3);
+  assert.deepEqual(seen, [
+    { task: 'a', repeat: 1, repeats: 3 }, { task: 'a', repeat: 2, repeats: 3 }, { task: 'a', repeat: 3, repeats: 3 },
+  ]);
+  assert.equal(getBenchState().lanes.codex.queue.length, 0);
+
+  const repeatedRuns = [{ attempts: [
+    ...BENCH_TASK_IDS.map((id) => attempt('codex', 'repeatable', 'low', id)),
+    ...BENCH_TASK_IDS.map((id) => attempt('codex', 'repeatable', 'low', id)),
+  ] }];
+  assert.deepEqual(dueForBench({ days: Infinity, reg: registry, runs: repeatedRuns }), []);
+});
+
 test('bench.json silently seeds once, absorbs list flaps, and detects new efforts once', () => {
   const previous = loadConfig().bench;
   try {

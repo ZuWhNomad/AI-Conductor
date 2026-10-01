@@ -23,11 +23,28 @@ const { values: flags, positionals } = parseArgs({
   options: {
     port: { type: 'string' }, 'no-open': { type: 'boolean' }, refresh: { type: 'boolean' }, model: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     cwd: { type: 'string' }, gpu: { type: 'boolean' },
-    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' }, 'prune-days': { type: 'string' },
-    hypothesis: { type: 'string' }, mechanism: { type: 'string' }, branch: { type: 'string' }, repeats: { type: 'string' }, heldout: { type: 'string' }, 'state-dir': { type: 'string', multiple: true }, verdict: { type: 'string' }, note: { type: 'string' },
+    models: { type: 'string' }, 'all-models': { type: 'boolean' }, tasks: { type: 'string' }, levels: { type: 'string' }, repeats: { type: 'string' }, keep: { type: 'boolean' }, category: { type: 'string' }, source: { type: 'string' }, archived: { type: 'boolean' }, 'void-env': { type: 'boolean' }, distill: { type: 'boolean' }, out: { type: 'string' }, csv: { type: 'boolean' }, 'agents-md': { type: 'string' }, variant: { type: 'string' }, run: { type: 'boolean' }, days: { type: 'string' }, check: { type: 'boolean' }, 'prune-days': { type: 'string' },
+    hypothesis: { type: 'string' }, mechanism: { type: 'string' }, branch: { type: 'string' }, heldout: { type: 'string' }, 'state-dir': { type: 'string', multiple: true }, verdict: { type: 'string' }, note: { type: 'string' },
   },
 });
 const cmd = positionals[0] || 'start';
+const boundedInt = (raw, name, min, max, fallback = 1) => {
+  const n = raw == null ? fallback : Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) { console.error(`${name} must be an integer from ${min} to ${max}`); process.exit(2); }
+  return n;
+};
+const parseLevels = (raw) => {
+  if (raw == null) return null;
+  const levels = new Set();
+  for (const token of String(raw).split(',')) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(token.trim());
+    if (!m) { console.error('--levels must be a comma-separated list or range from 1 to 7'); process.exit(2); }
+    const first = Number(m[1]), last = Number(m[2] || m[1]);
+    if (first < 1 || last > 7 || first > last) { console.error('--levels must be a comma-separated list or range from 1 to 7'); process.exit(2); }
+    for (let level = first; level <= last; level++) levels.add(level);
+  }
+  return [...levels].sort((a, b) => a - b);
+};
 
 const HELP = `conductor 2.0 — multi-model orchestration workbench
 
@@ -39,9 +56,9 @@ const HELP = `conductor 2.0 — multi-model orchestration workbench
                                              scorecard: quality, $ and % of window per model, category and level;
                                              --archived shows only archived history; --void-env excludes smoke runs the sandbox blocked
   conductor scores --distill [--out FILE]    write aggregate smoke cells safe to ship (default core/policy/batteries.json)
-  conductor smoke --models p:m[:e],...  | --all-models  [--tasks id,id] [--keep] [--agents-md FILE --variant NAME]
+  conductor smoke --models p:m[:e],...  | --all-models  [--tasks id,id] [--levels 1-5] [--repeats 1-5] [--keep] [--agents-md FILE --variant NAME]
                                              run the smoke battery against models to seed the scorecard (spends budget)
-  conductor bench [--run] [--days N] [--refresh]
+  conductor bench [--run] [--days N] [--repeats 1-5] [--refresh]
                                              models with no battery or a stale one (default 21 days); --run probes then batteries them
   conductor review [--model M]               headless self-review of this workbench from the improvement log
   conductor share                            zip the committed files (what git tracks) to your Desktop
@@ -153,11 +170,12 @@ if (cmd === 'start') {
   const days = flags.days ? Number(flags.days) : undefined;
   console.log(formatBench(dueForBench({ days })));
   if (flags.run) {
+    const repeats = boundedInt(flags.repeats, '--repeats', 1, 5);
     const { abortRunning, flushRecords, openTaskCount } = await import('../core/tasks.mjs');
     const open = openTaskCount();
     if (open) { console.error(`refusing to run: ${open} open task(s) in the journal (a running server owns them).`); process.exit(2); }
     process.on('SIGINT', () => { abortRunning(); setTimeout(() => process.exit(130), 1000); });
-    const results = await runBench({ days, onResult: (r) => console.log(`${r.verdict.padEnd(7)} ${r.provider}:${r.model || 'default'}:${r.effort || 'default'}  ${r.task}${r.notes ? `  ${r.notes.split('\n')[0].slice(0, 100)}` : ''}`) });
+    const results = await runBench({ days, repeats, onResult: (r) => console.log(`${r.verdict.padEnd(7)} ${r.provider}:${r.model || 'default'}:${r.effort || 'default'}  ${r.task}${r.notes ? `  ${r.notes.split('\n')[0].slice(0, 100)}` : ''}`) });
     await flushRecords();
     for (const r of results) console.log(`${r.provider}:${r.model}:${r.effort || 'default'}  probe ${r.probe}${r.battery ? `  battery ${r.battery}` : ''}${r.probe !== 'pass' && r.notes ? `  (${r.notes.slice(0, 80)})` : ''}`);
   }
@@ -205,10 +223,13 @@ if (cmd === 'start') {
     process.exit(2);
   }
   const tasks = flags.tasks ? flags.tasks.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  const levels = parseLevels(flags.levels);
+  const repeats = boundedInt(flags.repeats, '--repeats', 1, 5);
   process.on('SIGINT', () => { abortRunning(); setTimeout(() => process.exit(130), 1000); });
-  console.log(`smoke: ${models.length} selection(s) x ${(tasks || SMOKE_TASKS).length} task(s); scorecard in ${stateDir()}`);
+  const selectedTasks = SMOKE_TASKS.filter((t) => (!tasks || tasks.includes(t.id)) && (!levels || levels.includes(t.difficulty)));
+  console.log(`smoke: ${models.length} selection(s) x ${selectedTasks.length} task(s) x ${repeats} repeat(s); scorecard in ${stateDir()}`);
   const agentsMd = flags['agents-md'] ? (await import('node:fs')).readFileSync(flags['agents-md'], 'utf8') : null;
-  const results = await runSmoke({ models, tasks, keep: !!flags.keep, agentsMd, variant: flags.variant || (agentsMd ? 'agents-md' : null), onResult: (r) => console.log(formatSmoke([r]).split('\n')[0]) });
+  const results = await runSmoke({ models, tasks, levels, repeats, keep: !!flags.keep, agentsMd, variant: flags.variant || (agentsMd ? 'agents-md' : null), onResult: (r) => console.log(formatSmoke([r]).split('\n')[0]) });
   await flushRecords();
   console.log('\n' + formatSmoke(results).split('\n').slice(results.length).join('\n'));
   process.exit(0);

@@ -402,7 +402,7 @@ async function makeTools(cwd, signal, deadline, owner) {
  * @returns result with `messages` = the full conversation after this run (for multi-turn use)
  */
 export async function runOpenAICompat(t) {
-  const res = { ok: false, provider: t.provider || 'openai-compat', finalMessage: '', items: [], usage: { input_tokens: 0, output_tokens: 0 }, error: null, limitHit: false, retryAfterMs: null, messages: null };
+  const res = { ok: false, provider: t.provider || 'openai-compat', finalMessage: '', items: [], usage: { input_tokens: 0, output_tokens: 0 }, error: null, limitHit: false, retryAfterMs: null, messages: null, turns: 0, timedOut: false, httpStatus: null };
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data }); t.onEvent?.(event, data); };
   const started = Date.now();
   const deadline = t.timeoutMs ? started + t.timeoutMs : Infinity;
@@ -462,6 +462,7 @@ export async function runOpenAICompat(t) {
           }
           throw e;
         }
+        res.httpStatus = r.status;
         bus.publish('http_rate', { provider: res.provider, status: r.status, headers: Object.fromEntries([...r.headers].filter(([k]) => /ratelimit|retry-after/i.test(k))) });
         if (r.status === 429) { res.limitHit = true; res.retryAfterMs = Number(r.headers.get('retry-after') || 0) * 1000 || null; throw new Error(`429 rate limited: ${(await r.text()).slice(0, 300)}`); }
         if ((r.status >= 500 || r.status === 408) && attempt < HTTP_ATTEMPTS) {
@@ -481,6 +482,7 @@ export async function runOpenAICompat(t) {
       }
       const msg = j.choices?.[0]?.message;
       if (!msg) throw new Error('empty completion');
+      res.turns++;
       messages.push(msg);
       if (msg.content) { res.items.push({ type: 'agent_message', text: msg.content }); emit('item', { item: { type: 'agent_message', text: msg.content }, phase: 'completed' }); }
       const calls = msg.tool_calls || [];
@@ -510,6 +512,7 @@ export async function runOpenAICompat(t) {
     if (!res.ok && !res.error) res.error = 'max iterations reached';
   } catch (e) {
     res.error = String(e?.message || e);
+    if (res.error === 'timeout' || /timeout/i.test(res.error)) res.timedOut = true;
     if (/context (length|window)|maximum context|too many tokens|context_length_exceeded/i.test(res.error)) recordLearnedContextWindow(t.provider || 'openai-compat', t.model, res.lastRequestTokens);
     closeDanglingToolCalls(messages, `not executed: ${res.error}`); // keep the saved history replayable
   }
