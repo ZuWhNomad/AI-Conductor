@@ -337,7 +337,7 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'model_scores',
-      description: 'Scorecard. Default: the short view gives every category@level as a pick with n/date, capped selection/reset, or no data, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. archived: true shows only archived history (full table, no routing plans or bench hygiene). `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
+      description: 'Scorecard. Default: the short view gives every category@level as a pick with n/date, capped selection/reset, or no data, plus benched cells. detail: true (or a category) gives the full table: per model and observed ladders, category and difficulty, verdict quality, consistency/repeats for smoke evidence, $ per task at API list price, % of the provider window, the plans with their reasons, and error rates. archived: true shows only archived history (full table, no routing plans or bench hygiene). `delegate` without a model already auto-picks from this; call this to inspect, not to choose.',
       schema: z.object({ category: z.enum(CATEGORIES).optional(), source: z.enum(['live', 'smoke']).optional().describe('Only real delegations or only smoke runs'), detail: z.boolean().optional().describe('Full table, plans with reasons and error rates (long)'), archived: z.boolean().optional().describe('Show only archived selections') }),
       handler: async (a) => {
         if (a.archived) return formatScores({ category: a.category || null, source: a.source || null, archived: true });
@@ -370,15 +370,18 @@ export function conductorToolDefs({ sessionId, cwd, maxBlockMs }) {
     },
     {
       name: 'smoke_test',
-      description: `Run the smoke battery against a model to seed its scorecard (runs in the background, one task at a time; results appear in model_scores). Tasks: ${SMOKE_TASKS.map((t) => t.id).join(', ')}. Run it before trusting a new or cheap model with real work.`,
-      schema: z.object({ provider: z.string(), model: z.string().optional(), effort: z.string().optional(), tasks: z.array(z.string()).optional().describe('Battery ids; default all') }),
+      description: `Run the smoke battery against a model to seed its scorecard (runs in the background, one task at a time; results appear in model_scores). Tasks: ${SMOKE_TASKS.map((t) => t.id).join(', ')}. Use levels and repeats to measure consistency. Run it before trusting a new or cheap model with real work.`,
+      schema: z.object({ provider: z.string(), model: z.string().optional(), effort: z.string().optional(), tasks: z.array(z.string()).optional().describe('Battery ids; default all'), levels: z.array(z.number().int().min(1).max(7)).optional().describe('Difficulty levels; default all'), repeats: z.number().int().min(1).max(5).optional().describe('Runs per battery task; default 1') }),
       handler: async (a) => {
         const sel = { provider: a.provider, model: a.model || null, effort: a.effort || null };
         if (!PROVIDERS[sel.provider]) return `unknown provider ${sel.provider}`;
-        const ids = a.tasks?.length ? SMOKE_TASKS.filter((t) => a.tasks.includes(t.id)).map((t) => t.id) : SMOKE_TASKS.map((t) => t.id);
+        const levels = a.levels?.length ? [...new Set(a.levels)] : null;
+        const ids = a.tasks?.length ? SMOKE_TASKS.filter((t) => a.tasks.includes(t.id) && (!levels || levels.includes(t.difficulty))).map((t) => t.id) : SMOKE_TASKS.filter((t) => !levels || levels.includes(t.difficulty)).map((t) => t.id);
         if (!ids.length) return `no such smoke tasks; have ${SMOKE_TASKS.map((t) => t.id).join(', ')}`;
-        runSmoke({ models: [sel], tasks: ids, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${selOf(sel)} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
-        return `Smoke test started: ${selOf(sel)} on ${ids.length} task(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
+        const repeats = a.repeats || 1;
+        runSmoke({ models: [sel], tasks: ids, repeats, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${selOf(sel)} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
+        const levelText = levels ? ` at levels ${levels.join(',')}` : '';
+        return `Smoke test started: ${selOf(sel)} on ${ids.length} task(s)${levelText} x ${repeats} repeat(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
       },
     },
     {

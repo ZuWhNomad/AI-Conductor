@@ -120,6 +120,7 @@ const FINAL_MESSAGE_ENV_FAIL = new RegExp(LEGACY_ENV_FAILURES.join('|'), 'i');
 const TOOL_CALL_TYPES = new Set(['tool_use', 'tool_call', 'command_execution', 'mcp_tool_call']);
 const TOOL_RESULT_TYPES = new Set(['tool_result', 'command_result', 'mcp_tool_result']);
 const RELIABILITY_TOTALS = Symbol('reliabilityTotals');
+const SMOKE_TOTALS = Symbol('smokeTotals');
 const finiteCount = (v) => Number.isInteger(v) && v >= 0 ? v : null;
 const numberOrNull = (v) => v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
 const ownFiniteCount = (o, key) => Object.hasOwn(o || {}, key) ? finiteCount(o[key]) : null;
@@ -605,6 +606,7 @@ function shippedSummary(c, now) {
     cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
     quality, liveQuality: null, smokeQuality: quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
     pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
+    consistency: c.rated ? c.pass / c.rated : null, repeats: null,
     errorRate: c.rated ? (c.fail + c.fixable) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
     toolErrorRate: null, avgTurns: null, thrash: null, timeouts: null, costPerSuccess: c.pass ? (c.avgUsd == null ? null : c.avgUsd * c.rated / c.pass) : null,
     last: c.lastRunDate, shipped: true,
@@ -622,19 +624,27 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
   const archive = archivedSet(loadConfig().scorecard);
   const evidenceNow = Date.now();
   const groups = new Map();
-  const add = (sel, steps, cat, diff, x) => {
+  const add = (sel, steps, cat, diff, x, { evidenceRuns = null } = {}) => {
     const key = [sel, cat, diff].join('|');
     let g = groups.get(key);
-    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, close: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0, _toolCalls: 0, _toolErrors: 0, _toolUnknown: false, _turns: [], _thrash: 0, _thrashUnknown: false, _timeouts: 0, _timeoutUnknown: false, _costTotal: 0, _costUnknown: false }; groups.set(key, g); }
-    g.n++;
+    if (!g) { g = { sel, steps, category: cat, difficulty: diff, n: 0, rated: 0, weightedRated: 0, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: 0, smokeRated: 0, smokeWeightedRated: 0, pass: 0, fixable: 0, close: 0, fail: 0, phantom: 0, _quality: { live: 0, smoke: 0 }, _accept: { live: 0, smoke: 0 }, _smokeQualityWeightedRated: 0, _tok: [], _usd: [], _pct: [], _dur: [], _rounds: [], _priced: 0, _attempts: 0, _toolCalls: 0, _toolErrors: 0, _toolUnknown: false, _turns: [], _thrash: 0, _thrashUnknown: false, _timeouts: 0, _timeoutUnknown: false, _costTotal: 0, _costUnknown: false, _smokePasses: 0, _smokeRuns: 0, _smokeRepeats: [] }; groups.set(key, g); }
+    const evidence = evidenceRuns || [x];
     const source = x.source === 'smoke' ? 'smoke' : 'live';
-    g[source + 'N']++;
-    if (x.ts && (!g.last || x.ts > g.last)) g.last = x.ts;
+    g.n += evidence.length;
+    g[source + 'N'] += evidence.length;
+    for (const run of evidence) {
+      if (run.ts && (!g.last || run.ts > g.last)) g.last = run.ts;
+      if (!run.verdict) continue;
+      const weight = recencyWeight(run.ts, evidenceNow);
+      g.rated++; g[source + 'Rated']++; g.weightedRated += weight; g[source + 'WeightedRated'] += weight;
+    }
+    // Evidence remains per non-void run; only smoke quality and its pass/fail tallies are pass^k per battery task.
     if (x.verdict) {
       const weight = recencyWeight(x.ts, evidenceNow);
-      g.rated++; g[source + 'Rated']++; g.weightedRated += weight; g[source + 'WeightedRated'] += weight; g[x.verdict]++;
+      g[x.verdict]++;
       g._quality[source] += SCORE[x.verdict] * weight;
       g._accept[source] += (x.verdict === 'pass' || x.verdict === 'fixable' ? 1 : 0) * weight;
+      if (source === 'smoke') g._smokeQualityWeightedRated += weight;
     }
     g._tok.push(x.tokens.in + x.tokens.out + x.tokens.cached);
     if (x.usd != null) g._usd.push(x.usd);
@@ -646,7 +656,36 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
     if (finiteCount(x.thrash) != null) g._thrash += x.thrash; else g._thrashUnknown = true;
     if (typeof x.timedOut === 'boolean') { if (x.timedOut) g._timeouts++; } else g._timeoutUnknown = true;
     if (x.usd != null) g._costTotal += x.usd; else g._costUnknown = true;
+    if (source === 'smoke' && x.smokeEvidence) {
+      g._smokePasses += x.smokeEvidence.passes;
+      g._smokeRuns += x.smokeEvidence.runs;
+      if (x.smokeEvidence.runs) g._smokeRepeats.push(x.smokeEvidence.runs);
+    }
     return g;
+  };
+  const smokeGroups = new Map();
+  const addSmoke = (a) => {
+    const cat = a.category, diff = a.difficulty;
+    if (!cat || !diff) return;
+    const taskKey = a.smokeId || a.taskId;
+    const key = [a.sel, cat, diff, taskKey].join('|');
+    const group = smokeGroups.get(key) || { sel: a.sel, category: cat, difficulty: diff, runs: [] };
+    group.runs.push(a); smokeGroups.set(key, group);
+  };
+  const aggregateSmoke = (group) => {
+    const runs = group.runs, rated = runs.filter((a) => a.verdict);
+    const latest = [...runs].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).at(-1) || runs[0];
+    const tokens = { in: 0, out: 0, cached: 0, write: 0 };
+    for (const run of runs) addTok(tokens, run.tokens);
+    const reliability = aggregateReliability(runs);
+    const usd = runs.every((run) => run.usd != null) ? runs.reduce((sum, run) => sum + run.usd, 0) : null;
+    const verdict = rated.length && rated.every((run) => run.verdict === 'pass') ? 'pass' : rated.length ? 'fail' : null;
+    return {
+      ...latest, verdict, tokens, usd, durationMs: runs.reduce((sum, run) => sum + (run.durationMs || 0), 0),
+      rounds: runs.reduce((sum, run) => sum + (run.rounds || 0), 0), attempts: runs,
+      turns: reliability.turns, toolCalls: reliability.toolCalls, toolErrors: reliability.toolErrors, thrash: reliability.thrash, timedOut: reliability.timedOut,
+      smokeEvidence: { passes: rated.filter((run) => run.verdict === 'pass').length, runs: rated.length },
+    };
   };
   for (const c of rootRuns({ source })) {
     const chainArchived = c.attempts.some((a) => isArchived(a.provider, a.model, archive));
@@ -657,7 +696,8 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       const cat = a.category || c.category;
       const diff = a.difficulty || c.difficulty;
       if (!cat || !diff) continue;
-      const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort;
+      if (a.source === 'smoke' && c.attempts.length === 1) addSmoke(a);
+      else { const g = add(a.sel, 1, cat, diff, a); g.provider = a.provider; g.model = a.model; g.effort = a.effort; }
     }
     // The multi-step observed ladder row is chain-level: it must have chain-level tags.
     if (c.attempts.length > 1 && c.category && c.difficulty && chainArchived === archived) {
@@ -666,23 +706,29 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       c.attempts.forEach((a, i) => g._stepCosts[i].push({ sel: a.sel, avgUsd: a.usd, avgDurationMs: a.durationMs }));
     }
   }
-  const local = [...groups.values()].map(({ _quality, _accept, _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, _toolCalls, _toolErrors, _toolUnknown, _turns, _thrash, _thrashUnknown, _timeouts, _timeoutUnknown, _costTotal, _costUnknown, ...g }) => {
+  for (const group of smokeGroups.values()) {
+    const x = aggregateSmoke(group), g = add(group.sel, 1, group.category, group.difficulty, x, { evidenceRuns: group.runs });
+    g.provider = x.provider; g.model = x.model; g.effort = x.effort;
+  }
+  const local = [...groups.values()].map(({ _quality, _accept, _smokeQualityWeightedRated, _tok, _usd, _pct, _dur, _rounds, _stepCosts, _priced, _attempts, _toolCalls, _toolErrors, _toolUnknown, _turns, _thrash, _thrashUnknown, _timeouts, _timeoutUnknown, _costTotal, _costUnknown, _smokePasses, _smokeRuns, _smokeRepeats, ...g }) => {
     const cost = g.steps === 1 ? modelInRegistry(getModels(), g.provider, g.model)?.cost || null : null;
     const prior = g.steps === 1 ? priorFor(g.provider, g.model, g.category) : null;
     const liveQuality = g.liveRated && g.liveWeightedRated ? _quality.live / g.liveWeightedRated : null;
-    const smokeQuality = g.smokeWeightedRated ? _quality.smoke / g.smokeWeightedRated : null;
+    const smokeQuality = _smokeQualityWeightedRated ? _quality.smoke / _smokeQualityWeightedRated : null;
     // Q3: once this exact cell has live rated work, its quality owns the cell; benchmark evidence remains a count.
     const quality = liveQuality ?? smokeQuality;
     const qualitySource = g.liveRated ? 'live' : 'smoke';
     const row = {
       ...g, cost, priorTier: prior?.tier || null, quality, liveQuality, smokeQuality,
-      accept: g[qualitySource + 'WeightedRated'] ? _accept[qualitySource] / g[qualitySource + 'WeightedRated'] : null,
+      accept: (qualitySource === 'smoke' ? _smokeQualityWeightedRated : g.liveWeightedRated) ? _accept[qualitySource] / (qualitySource === 'smoke' ? _smokeQualityWeightedRated : g.liveWeightedRated) : null,
       ...(_stepCosts ? { stepCosts: _stepCosts.map((costs) => ({ sel: costs[0].sel, avgUsd: meanKnown(costs.map((c) => c.avgUsd)), avgDurationMs: mean(costs.map((c) => c.avgDurationMs)) })) } : {}),
       avgTokens: mean(_tok), avgUsd: mean(_usd), pricedShare: _attempts ? _priced / _attempts : null, avgPct: cost === 'free-local' ? 0 : mean(_pct), avgDurationMs: mean(_dur), avgRounds: mean(_rounds),
       errorRate: g.rated ? (g.fail + g.fixable) / g.rated : null, phantomRate: g.rated ? g.phantom / g.rated : null,
       toolErrorRate: !_toolUnknown && _toolCalls > 0 ? _toolErrors / _toolCalls : null,
       avgTurns: meanKnown(_turns), thrash: _thrashUnknown ? null : _thrash, timeouts: _timeoutUnknown ? null : _timeouts,
       costPerSuccess: g.pass > 0 && !_costUnknown ? _costTotal / g.pass : null,
+      consistency: _smokeRuns ? _smokePasses / _smokeRuns : null,
+      repeats: _smokeRepeats.length ? { min: Math.min(..._smokeRepeats), max: Math.max(..._smokeRepeats) } : null,
     };
     Object.defineProperty(row, RELIABILITY_TOTALS, { value: {
       toolCalls: _toolUnknown ? null : _toolCalls, toolErrors: _toolUnknown ? null : _toolErrors,
@@ -690,6 +736,7 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
       thrash: _thrashUnknown ? null : _thrash, timeouts: _timeoutUnknown ? null : _timeouts,
       costTotal: _costUnknown ? null : _costTotal,
     } });
+    Object.defineProperty(row, SMOKE_TOTALS, { value: { passes: _smokePasses, runs: _smokeRuns, repeats: _smokeRepeats, qualityWeightedRated: _smokeQualityWeightedRated } });
     return row;
   }).sort(summarySort);
   const cfg = loadConfig().scorecard;
@@ -880,15 +927,15 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const eligible = (p) => p.utility > -Infinity;
   const evidenceRank = (p) => {
     const live = cellLiveWeightedRated(p.ref);
-    return live > 0 ? { live: 1, count: live } : { live: 0, count: cellSmokeWeightedRated(p.ref) };
+    return live > 0 ? { live: 1, count: live, consistency: p.ref.consistency ?? -1 } : { live: 0, count: cellSmokeWeightedRated(p.ref), consistency: p.ref.consistency ?? -1 };
   };
   const tier = (p) => TIER_CEILING[p.ref.priorTier] || 0;
   const sortCmp = escalate
-    ? (x, y) => (evidenceRank(y).live - evidenceRank(x).live) || (evidenceRank(y).count - evidenceRank(x).count) || (tier(y) - tier(x)) || (y.utility - x.utility)
+    ? (x, y) => (evidenceRank(y).live - evidenceRank(x).live) || (evidenceRank(y).count - evidenceRank(x).count) || (evidenceRank(y).consistency - evidenceRank(x).consistency) || (tier(y) - tier(x)) || (y.utility - x.utility)
     : (x, y) => {
         if (eligible(x) !== eligible(y)) return eligible(x) ? -1 : 1;
         if (eligible(x) && x.costUnknown !== y.costUnknown) return x.costUnknown ? 1 : -1; // priced first
-        return y.utility - x.utility || (y.quality - x.quality) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
+         return y.utility - x.utility || (y.quality - x.quality) || ((y.ref.consistency ?? -1) - (x.ref.consistency ?? -1)) || ((x.ref.avgDurationMs ?? 0) - (y.ref.avgDurationMs ?? 0));
       };
   plans.sort(sortCmp);
   // Class walk: the first budget class (in configured order) that holds a viable plan wins; value already ordered the plans.
@@ -939,6 +986,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     fallback: best.fallbackRef ? { provider: best.fallbackRef.provider, model: best.fallbackRef.model, effort: best.fallbackRef.effort } : best.steps.length > 1 ? parseSel(best.steps[1]) : null,
     plan: { steps: best.steps, quality: best.quality, usd: best.usd, estimated: best.estimated, utility: best.utility },
     evidence: { n: best.ref.rated, weightedN: evidenceRated(best.ref), last: best.ref.last || null, source: cellLiveRated(best.ref) > 0 ? 'live' : 'bench', shipped: !!best.ref.shipped,
+      consistency: best.ref.consistency ?? null, repeats: best.ref.repeats ?? null,
       errorRate: best.ref.errorRate ?? null, toolErrorRate: best.ref.toolErrorRate ?? null, avgTurns: best.ref.avgTurns ?? null, thrash: best.ref.thrash ?? null, timeouts: best.ref.timeouts ?? null, costPerSuccess: best.ref.costPerSuccess ?? null },
     class: bestClass,
     reason: `${bestClass ? `class ${bestClass} · ` : ''}${escalate ? 'escalation: strongest evidence (live first, count, prior tier, utility; any class)' : 'best value'} for ${category}@${difficulty} (λ=${lambda}/quality point): ${describe(best)}${best.steps.length > 1 && single && single !== best ? `; best single model ${describe(single)}` : ''}${best.estimated ? '; ladder estimate assumes independent failures' : ''}${best.costUnknown ? ' [cost unknown]' : ''}${decision(best.steps[0])?.action === 'allow' ? ` [manual allow: ${decision(best.steps[0]).reason}]` : ''}`,
@@ -1070,11 +1118,13 @@ const passGate = (category, reg) => (KIND[category] !== 'visual' ? () => true : 
   return !!p?.tier && !!effort && p.effort === effort && !!modelInRegistry(reg, provider, model)?.efforts?.includes(effort);
 }));
 
-/** Merge cells (sorted easiest first) until `floor` rated runs; rated-weighted quality, n-weighted cost and time. */
+/** Merge cells (sorted easiest first) until `floor` rated runs; smoke quality remains battery-task weighted. */
 function pool(cells, floor) {
   const used = []; let weightedRated = 0;
   for (const c of cells) { used.push(c); weightedRated += evidenceRated(c); if (weightedRated >= floor) break; }
   const w = (k, by, cells = used) => { let num = 0, den = 0; for (const c of cells) { if (c[k] == null) continue; const weight = c[by] ?? (by === 'weightedRated' ? c.rated : 0); num += c[k] * weight; den += weight; } return den ? num / den : null; };
+  const qualityWeight = (c) => c.liveRated ? (c.liveWeightedRated ?? c.liveRated) : (c[SMOKE_TOTALS]?.qualityWeightedRated || c.weightedRated || c.rated || 0);
+  const weightedQuality = (key) => { let num = 0, den = 0; for (const c of used) { if (c[key] == null) continue; const weight = qualityWeight(c); num += c[key] * weight; den += weight; } return den ? num / den : null; };
   const base = used[0];
   const stepCosts = base.stepCosts?.map((s, i) => {
     const costs = used.map((c) => ({ ...c.stepCosts[i], n: c.n }));
@@ -1096,7 +1146,9 @@ function pool(cells, floor) {
     rated: total('rated'), weightedRated, n: total('n'), liveN: total('liveN', (c) => c.smokeN != null ? 0 : c.n), liveRated: total('liveRated', (c) => c.smokeRated != null ? 0 : c.rated),
     liveWeightedRated: total('liveWeightedRated', (c) => c.liveRated ?? (c.smokeRated != null ? 0 : c.rated)),
     smokeN: total('smokeN'), smokeRated: total('smokeRated'), smokeWeightedRated: total('smokeWeightedRated', (c) => c.smokeRated ?? 0),
-    quality: w('quality', 'weightedRated'), accept: w('accept', 'weightedRated'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    quality: weightedQuality('quality'), accept: weightedQuality('accept'), avgUsd: w('avgUsd', 'n'), avgDurationMs: w('avgDurationMs', 'n'),
+    consistency: (() => { const totals = used.map((c) => c[SMOKE_TOTALS]).filter(Boolean); const runs = totals.reduce((sum, t) => sum + t.runs, 0); return runs ? totals.reduce((sum, t) => sum + t.passes, 0) / runs : null; })(),
+    repeats: (() => { const repeats = used.flatMap((c) => c.repeats ? [c.repeats.min, c.repeats.max] : []); return repeats.length ? { min: Math.min(...repeats), max: Math.max(...repeats) } : null; })(),
     pass: total('pass'), fixable: total('fixable'), close: total('close'), fail: total('fail'), phantom: total('phantom'),
     last: used.map((c) => c.last).filter(Boolean).sort().at(-1) || null,
     errorRate: total('rated') ? (total('fail') + total('fixable')) / total('rated') : null,
@@ -1106,6 +1158,11 @@ function pool(cells, floor) {
     costPerSuccess: total('pass') > 0 && reliability?.costTotal != null ? reliability.costTotal / total('pass') : null,
   };
   Object.defineProperty(pooled, RELIABILITY_TOTALS, { value: reliability });
+  const smokeTotals = used.map((c) => c[SMOKE_TOTALS]).filter(Boolean);
+  Object.defineProperty(pooled, SMOKE_TOTALS, { value: smokeTotals.length ? {
+    passes: smokeTotals.reduce((sum, t) => sum + t.passes, 0), runs: smokeTotals.reduce((sum, t) => sum + t.runs, 0),
+    repeats: smokeTotals.flatMap((t) => t.repeats), qualityWeightedRated: smokeTotals.reduce((sum, t) => sum + (t.qualityWeightedRated || 0), 0),
+  } : { passes: 0, runs: 0, repeats: [] } });
   return pooled;
 }
 
@@ -1203,6 +1260,8 @@ export function benchedCells(summary, cfg = loadConfig().scorecard) {
 
 const compactReliability = (g) => {
   const bits = [];
+  if (g?.consistency != null) bits.push(`consistency ${(g.consistency * 100).toFixed(0)}%`);
+  if (g?.repeats) bits.push(`repeats ${g.repeats.min}-${g.repeats.max}`);
   if (g?.errorRate != null) bits.push(`err ${(g.errorRate * 100).toFixed(0)}%`);
   if (g?.toolErrorRate != null) bits.push(`tool ${(g.toolErrorRate * 100).toFixed(0)}%`);
   if (g?.avgTurns != null) bits.push(`turns ${g.avgTurns.toFixed(1)}`);
@@ -1223,7 +1282,8 @@ export function scoresGrid({ source = null, summary = null, categories = CATEGOR
         level, status: 'pick', selection: pick.plan?.steps?.join('>') || selOf(pick), quality: pick.plan?.quality ?? null,
         usd: pick.plan?.usd ?? null, n: pick.evidence?.n ?? 0, weightedN: pick.evidence?.weightedN ?? 0,
         last: pick.evidence?.last || null, evidenceSource: pick.evidence?.source || 'prior', shipped: !!pick.evidence?.shipped,
-        errorRate: pick.evidence?.errorRate ?? null, toolErrorRate: pick.evidence?.toolErrorRate ?? null, avgTurns: pick.evidence?.avgTurns ?? null,
+        consistency: pick.evidence?.consistency ?? null, repeats: pick.evidence?.repeats ?? null,
+         errorRate: pick.evidence?.errorRate ?? null, toolErrorRate: pick.evidence?.toolErrorRate ?? null, avgTurns: pick.evidence?.avgTurns ?? null,
         thrash: pick.evidence?.thrash ?? null, timeouts: pick.evidence?.timeouts ?? null, costPerSuccess: pick.evidence?.costPerSuccess ?? null,
       };
       if (explain?.status === 'capped') {
@@ -1257,7 +1317,7 @@ export function formatScoresShort({ source = null } = {}) {
   const benched = benchedCells(all, cfg).filter((g) => manualByCell.get(eligibilityKey(g.sel, g.category))?.action !== 'allow');
   if (benched.length) {
     lines.push('', 'Benched (quality < ' + cfg.quality + ' over >= ' + cfg.benchMinSamples + ' recency-weighted rated; recommend() skips these cells; a better run lifts them):');
-    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + (g.close || 0) + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : ''));
+    for (const g of benched) lines.push('- ' + g.sel + ' ' + g.category + '@' + g.difficulty + ': q' + g.quality.toFixed(2) + ' over ' + g.rated + ' raw / ' + evidenceRated(g).toFixed(2) + ' weighted rated (' + g.pass + '/' + g.fixable + '/' + (g.close || 0) + '/' + g.fail + '/' + g.phantom + ')' + (g.last ? ', last run ' + String(g.last).slice(0, 10) : '') + (compactReliability(g) ? ', ' + compactReliability(g) : ''));
   }
   if (manual.length) {
     lines.push('', 'Manual eligibility (latest per selection + category):');
@@ -1270,9 +1330,9 @@ export function formatScoresShort({ source = null } = {}) {
 
 /** `conductor scores --csv`: the summary table as CSV (opens in Excel). */
 export function scoresCsv({ source = null, archived = false } = {}) {
-  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'close', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'toolErrorRate', 'avgTurns', 'thrash', 'timeouts', 'costPerSuccess', 'phantomRate', 'priorTier', 'cost', 'last'];
+  const cols = ['sel', 'category', 'difficulty', 'steps', 'n', 'rated', 'quality', 'accept', 'pass', 'fixable', 'close', 'fail', 'phantom', 'avgUsd', 'avgPct', 'avgTokens', 'avgDurationMs', 'avgRounds', 'errorRate', 'toolErrorRate', 'avgTurns', 'thrash', 'timeouts', 'costPerSuccess', 'phantomRate', 'priorTier', 'cost', 'last', 'consistency', 'repeats'];
   const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(g[k])).join(','))].join('\n') + '\n';
+  return [cols.join(','), ...summarize({ source, archived }).map((g) => cols.map((k) => q(k === 'repeats' && g[k] ? `${g[k].min}-${g[k].max}` : g[k])).join(','))].join('\n') + '\n';
 }
 
 /** Conductor/CLI view: the table plus the current plan per category and level. */
@@ -1283,8 +1343,8 @@ export function formatScores({ category = null, source = null, archived = false,
   const cfg = loadConfig().scorecard;
   if (!rows.length && (archived || (cfg.coldStart !== 'priors' && !manual.length))) return 'Scorecard is empty. Tag delegations with category/difficulty and rate them with rate_task, or run smoke_test on a model.';
   const f = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
-  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/close/fail/phantom | $/task | %window/task | avg s | rounds | error | tool err | avg turns | thrash | timeouts | $/pass | hand-picked prior'] : ['No measured score rows.'];
-  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; const percent = (v) => v == null ? '-' : `${(v * 100).toFixed(0)}%`; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.close || 0}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${percent(g.errorRate)} | ${percent(g.toolErrorRate)} | ${f(g.avgTurns, 1)} | ${f(g.thrash)} | ${f(g.timeouts)} | ${g.costPerSuccess == null ? '-' : f(g.costPerSuccess, 3)} | ${g.priorTier || '-'}`); }
+  const lines = rows.length ? ['selection | category@lvl | n | rated | quality | accept | pass/fix/close/fail/phantom | $/task | %window/task | avg s | rounds | error | tool err | avg turns | thrash | timeouts | $/pass | consistency | repeats | hand-picked prior'] : ['No measured score rows.'];
+  for (const g of rows) { const marker = g.pricedShare != null && g.pricedShare < 1 ? (g.steps === 1 ? ` (${Math.round(g.pricedShare * g.n)}/${g.n} priced)` : ` (${(g.pricedShare * 100).toFixed(0)}% priced)`) : ''; const usd = (g.avgUsd == null ? '-' : f(g.avgUsd, 3)) + marker; const percent = (v) => v == null ? '-' : `${(v * 100).toFixed(0)}%`; lines.push(`${g.sel}${g.shipped ? ' [shipped]' : ''} | ${g.category}@${g.difficulty} | ${g.n} | ${g.rated} | ${f(g.quality, 2)} | ${f(g.accept, 2)} | ${g.pass}/${g.fixable}/${g.close || 0}/${g.fail}/${g.phantom} | ${usd} | ${f(g.avgPct, 1)} | ${f(g.avgDurationMs / 1000)} | ${f(g.avgRounds, 1)} | ${percent(g.errorRate)} | ${percent(g.toolErrorRate)} | ${f(g.avgTurns, 1)} | ${f(g.thrash)} | ${f(g.timeouts)} | ${g.costPerSuccess == null ? '-' : f(g.costPerSuccess, 3)} | ${percent(g.consistency)} | ${g.repeats ? `${g.repeats.min}-${g.repeats.max}` : '-'} | ${g.priorTier || '-'}`); }
   if (!archived) {
     lines.push('', `Plans (quality ≥ ${cfg.quality} over ≥ ${cfg.minSamples} recency-weighted rated; utility = $${cfg.qualityValueUsd} × quality − $ cost${cfg.hourlyUsd ? ` − $${cfg.hourlyUsd}/h` : ''}; $ = tokens at API list price × provider weight (${Object.entries(cfg.providerWeight || {}).map(([k, v]) => `${k} ${v}`).join(', ')}; full price past ${cfg.quotaPressurePct}% of a window; reserve ${cfg.reservePct} × weight × (ceiling − level); subscription reset discount ${(cfg.wasteSteps || []).map(([h, d]) => `−${Math.round(d * 100)}% ≤${h}h`).join(', ')})${cfg.coldStart === 'priors' ? '; cold start: hand-picked priors' : ''}):`);
     let any = false;

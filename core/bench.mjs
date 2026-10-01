@@ -16,6 +16,12 @@ export const BENCH_TASK_IDS = ['read-1', 'search-1', 'edit-1', 'implement-2', 't
 export const BENCH_COVERAGE = Object.freeze({ rated: 8, total: 11 });
 
 const effortRank = (effort) => effort == null ? -1 : (EFFORTS.indexOf(effort) < 0 ? EFFORTS.length : EFFORTS.indexOf(effort));
+const repeatCount = (value) => {
+  const n = value == null ? 1 : Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 5) throw Object.assign(new Error('repeats must be an integer from 1 to 5'), { status: 400 });
+  return n;
+};
+const storedRepeatCount = (value) => { const n = Number(value); return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1; };
 const selId = (s) => `${s.provider}:${scorecardModelId(s.model) || 'default'}:${s.effort || 'default'}`;
 const seenKey = (s) => selId(s).toLowerCase();
 const modelKey = (s) => `${s.provider}:${scorecardModelId(s.model) || 'default'}`.toLowerCase();
@@ -41,6 +47,8 @@ function normalizeState(value) {
       queue: (Array.isArray(lane.queue) ? lane.queue : []).filter((item) => item?.selection?.provider === provider && Array.isArray(item.remaining)).map((item) => ({
         selection: cloneSelection(item.selection),
         remaining: item.remaining.filter((id) => typeof id === 'string'),
+        repeats: storedRepeatCount(item.repeats),
+        repeat: Number.isInteger(item.repeat) && item.repeat >= 0 && item.repeat < storedRepeatCount(item.repeats) ? item.repeat : 0,
         probePending: !!item.probePending,
         probeFailed: !!item.probeFailed,
         queuedAt: typeof item.queuedAt === 'string' ? item.queuedAt : null,
@@ -150,7 +158,8 @@ export function noteNewModels(before, after) {
 }
 
 /** Add selections to durable provider lanes, cheapest effort first, without starting work. */
-export function enqueueBench(selections, { reg = getModels(), taskIds = BENCH_TASK_IDS, probe = true } = {}) {
+export function enqueueBench(selections, { reg = getModels(), taskIds = BENCH_TASK_IDS, probe = true, repeats = 1 } = {}) {
+  const repeatTotal = repeatCount(repeats);
   const cfg = loadConfig(), state = getBenchState(), listed = new Map(registrySelections(reg).map((s) => [seenKey(s), s]));
   const attempts = rootRuns({ source: 'smoke' }), existing = new Set(Object.values(state.lanes).flatMap((lane) => (lane.queue || []).map((item) => seenKey(item.selection))));
   const additions = [];
@@ -170,7 +179,7 @@ export function enqueueBench(selections, { reg = getModels(), taskIds = BENCH_TA
     const firstForModel = !probedModels.has(modelKey(meta));
     const probePending = probe && firstForModel && coverage.ids.size === 0 && remaining.includes('read-1');
     if (probePending) probedModels.add(modelKey(meta));
-    lane.queue.push({ selection: cloneSelection(meta), remaining, probePending, probeFailed: false, queuedAt: nowIso(), lastError: null });
+    lane.queue.push({ selection: cloneSelection(meta), remaining, repeats: repeatTotal, repeat: 0, probePending, probeFailed: false, queuedAt: nowIso(), lastError: null });
   }
   for (const lane of Object.values(state.lanes)) lane.queue.sort((a, b) => String(a.selection.model).localeCompare(String(b.selection.model)) || effortRank(a.selection.effort) - effortRank(b.selection.effort));
   if (additions.length) saveState(state);
@@ -244,7 +253,7 @@ export async function runBenchQueue({ execute = defaultExecute, tasks = defaultO
     const item = lane.queue[i], meta = listed.get(seenKey(item.selection));
     if (!meta) continue;
     const done = coverageFor(item.selection, meta.offeredEfforts, attempts).ids;
-    item.remaining = item.remaining.filter((id) => !done.has(id));
+    item.remaining = item.remaining.filter((id, index) => !done.has(id) || (index === 0 && item.repeat > 0));
     if (item.probePending && done.has('read-1')) item.probePending = false;
     if (lane.running && seenKey(lane.running.selection) === seenKey(item.selection) && done.has(lane.running.task)) lane.running = null;
     if (!item.remaining.length) lane.queue.splice(i, 1);
@@ -267,16 +276,19 @@ export async function runBenchQueue({ execute = defaultExecute, tasks = defaultO
       if (respectOffPeak && !isOffPeak(new Date(at))) break;
       const task = current.remaining[0];
       if (!task) { lane.queue.shift(); lane.running = null; persist(); continue; }
-      const probe = current.probePending && task === 'read-1';
-      lane.running = { selection: current.selection, task, probe, startedAt: nowIso() };
+      const repeat = current.repeat || 0, repeatTotal = current.repeats || 1;
+      const probe = current.probePending && task === 'read-1' && repeat === 0;
+      lane.running = { selection: current.selection, task, probe, repeat: repeat + 1, repeats: repeatTotal, startedAt: nowIso() };
       persist();
       let result;
-      try { result = await execute(current.selection, task, { probe }); }
+      try { result = await execute(current.selection, task, { probe, repeat: repeat + 1, repeats: repeatTotal }); }
       catch (e) { current.lastError = String(e?.message || e); lane.running = null; persist(); throw e; }
       const row = { ...result, provider, model: current.selection.model, effort: current.selection.effort, task, probe };
       results.push(row); lane.running = null;
       if (['pass', 'fail', 'fixable'].includes(row.verdict)) {
-        current.remaining.shift(); current.lastError = null;
+        current.lastError = null;
+        if (repeat + 1 < repeatTotal) current.repeat = repeat + 1;
+        else { current.repeat = 0; current.remaining.shift(); }
         if (probe) { current.probePending = false; if (row.verdict !== 'pass') current.probeFailed = true; }
         if (!current.remaining.length) lane.queue.shift();
       } else {
@@ -315,9 +327,10 @@ export function wakeBenchQueue() {
 }
 
 /** Explicit CLI/manual runner: queue the current due set, then drain whatever is runnable. */
-export async function runBench({ days, onResult = null } = {}) {
+export async function runBench({ days, repeats = 1, onResult = null } = {}) {
+  const repeatTotal = repeatCount(repeats);
   const due = dueForBench({ days });
-  enqueueBench(due);
+  enqueueBench(due, { repeats: repeatTotal });
   const { results } = await runBenchQueue({ onResult });
   const bySelection = new Map();
   for (const r of results) {

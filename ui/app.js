@@ -1324,6 +1324,8 @@ async function openScores() {
     const tbody = el('tbody');
     const reliability = (cell) => {
       const bits = [];
+      if (cell.consistency != null) bits.push(`consistency ${(cell.consistency * 100).toFixed(0)}%`);
+      if (cell.repeats) bits.push(`repeats ${cell.repeats.min}-${cell.repeats.max}`);
       if (cell.errorRate != null) bits.push(`err ${(cell.errorRate * 100).toFixed(0)}%`);
       if (cell.toolErrorRate != null) bits.push(`tool ${(cell.toolErrorRate * 100).toFixed(0)}%`);
       if (cell.avgTurns != null) bits.push(`turns ${cell.avgTurns.toFixed(1)}`);

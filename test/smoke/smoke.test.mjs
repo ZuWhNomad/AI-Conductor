@@ -457,6 +457,20 @@ test('runSmoke rates each run from its check and the rows reach the scorecard as
   await assert.rejects(runSmoke({ models: [{ provider: 'deepseek' }], tasks: ['nope'], execute }), /no matching smoke tasks/);
 });
 
+test('runSmoke repeats each selected task sequentially and filters by level', async () => {
+  let calls = 0; const specs = [];
+  const execute = async (spec) => {
+    calls++; specs.push(spec);
+    const t = { id: `repeat-${calls}`, ...spec, status: 'done', attempts: 1, result: { finalMessage: 'done', usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 } };
+    recordRun(t);
+    return t;
+  };
+  const results = await runSmoke({ models: [{ provider: 'deepseek', model: 'repeat-model' }], tasks: ['read-1', 'debug-5'], levels: [1], repeats: 3, execute });
+  assert.equal(results.length, 3);
+  assert.equal(calls, 3);
+  assert.deepEqual(specs.map((s) => s.smokeId), ['read-1', 'read-1', 'read-1']);
+});
+
 test('a task that did not finish is rated fail with the reason', async () => {
   const execute = async (spec) => ({ id: 'late', ...spec, status: 'canceled', timedOut: true, attempts: 1, result: null });
   const [r] = await runSmoke({ models: [{ provider: 'deepseek', model: 'deepseek-chat' }], tasks: ['read-1'], execute });

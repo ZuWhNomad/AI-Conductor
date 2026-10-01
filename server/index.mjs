@@ -361,6 +361,7 @@ async function route(req, res, url) {
       benched: benchedCells(summary.filter((g) => !category || g.category === category)).map((g) => ({
         selection: g.sel, category: g.category, level: g.difficulty, quality: g.quality, n: g.rated,
         weightedN: g.weightedRated ?? g.rated, last: g.last || null, shipped: !!g.shipped,
+        consistency: g.consistency ?? null, repeats: g.repeats ?? null,
       })),
       eligibility: archived ? [] : eligibilityOverrides({ category }),
     });
