@@ -22,7 +22,7 @@ writeJson(join(HOME, 'limits.json'), { updatedAt: 'x', providers: {
 
 const sc = await import('../core/scorecard.mjs');
 const pr = await import('../core/priors.mjs');
-const { loadConfig, saveConfig } = await import('../core/config.mjs');
+const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
 const { getModels } = await import('../core/models.mjs');
 // Explicit fixture class and zero price keep routing/cost scenarios independent of a local provider.
 saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, prices: { 'deepseek:deepseek-chat': { in: 0, out: 0, cached: 0 } } } });
@@ -89,6 +89,32 @@ test('smoke repeats remain per-run evidence while pass^k controls the measured c
     assert.doesNotMatch(pick.reason, /extrapolated|escalation/);
     assert.equal(flaky.rated, 3); assert.equal(flaky.smokeRated, 3); assert.equal(flaky.quality, 0);
     assert.equal(sc.recommend({ category: 'debug', difficulty: 7, source: 'smoke', summary: [flaky] }), null);
+  } finally { saveConfig({ scorecard: cfg }); }
+});
+
+test('one aged passing run qualifies a model under the default minSamples', (t) => {
+  const model = 'single-pass-aged';
+  registryModels(t, [['codex', model]]);
+  const cfg = loadConfig().scorecard;
+  const now = Date.parse('2026-09-30T12:00:00.000Z');
+  const old = new Date(now - 10 * 24 * 3600e3).toISOString();
+  t.mock.method(Date, 'now', () => now);
+  try {
+    saveConfig({ scorecard: {
+      shippedBatteries: false, usePriors: false, minSamples: DEFAULTS.scorecard.minSamples, quality: 0.75,
+      reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 },
+      classes: { codex: 'subscription' }, classOrder: ['subscription'], prices: { [`codex:${model}`]: { in: 1, out: 1, cached: 0 } },
+    } });
+    appendNdjson(statePath('scorecard.ndjson'), {
+      op: 'run', ts: old, taskId: 'single-pass-aged-0', followUpOf: null, retryOf: null, source: 'smoke', provider: 'codex', model, requestedModel: model,
+      effort: 'low', category: 'debug', difficulty: 7, status: 'done', tokens: { in: 1, out: 1, cached: 0, write: 0, v: 2 }, durationMs: 1, smokeId: 'debug-7-single',
+    });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: old, taskId: 'single-pass-aged-0', verdict: 'pass' });
+    const cell = sc.summarize({ source: 'smoke', shipped: false }).find((g) => g.model === model);
+    assert.ok(cell.weightedRated < 1 && cell.weightedRated >= DEFAULTS.scorecard.minSamples); // decayed below one run, still above the bar
+    const pick = sc.recommend({ category: 'debug', difficulty: 7, source: 'smoke', summary: [cell] });
+    assert.equal(pick?.model, model);
+    assert.doesNotMatch(pick.reason, /extrapolated|escalation/);
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
@@ -540,7 +566,7 @@ test('B11: avgPct is per-window concurrency-adjusted and ignores other quota gro
 
 test('scorecard config is normalized', () => {
   const cfg = loadConfig();
-  assert.equal(cfg.scorecard.minSamples, 1);
+  assert.equal(cfg.scorecard.minSamples, 1) // an earlier test in this file saved 1; the default is DEFAULTS.scorecard.minSamples;
   assert.equal(cfg.scorecard.benchMinSamples, 3);
   assert.equal(cfg.scorecard.shippedBatteries, true);
   assert.equal(cfg.scorecard.quality, 0.75);
@@ -548,7 +574,7 @@ test('scorecard config is normalized', () => {
   assert.equal(cfg.scorecard.hourlyUsd, 0);
   const bad = saveConfig({ scorecard: { quality: 5, minSamples: -1, qualityValueUsd: 'x', hourlyUsd: -3, prices: 'x', usePriors: 'yes' }, smoke: { timeoutMinutes: 0 } });
   assert.equal(bad.scorecard.quality, 0.75);
-  assert.equal(bad.scorecard.minSamples, 1);
+  assert.equal(bad.scorecard.minSamples, DEFAULTS.scorecard.minSamples);
   assert.equal(bad.scorecard.benchMinSamples, 3);
   assert.equal(bad.scorecard.qualityValueUsd, 5);
   assert.equal(bad.scorecard.hourlyUsd, 0);
