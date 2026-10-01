@@ -106,6 +106,8 @@ export async function runCodex(t) {
   again.durationMs = (first.durationMs || 0) + (again.durationMs || 0);
   again.items = [...(first.items || []), ...(again.items || [])];
   again.warnings = [...(first.warnings || []), ...(again.warnings || [])];
+  again.turns = (first.turns || 0) + (again.turns || 0);
+  again.timedOut = !!(first.timedOut || again.timedOut);
   return again;
 }
 
@@ -130,7 +132,7 @@ function runCodexOnce(t) {
 
   return new Promise((resolve) => {
     const started = Date.now();
-    const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, lastError: null, warnings: [], limitHit: false, authFailed: false, exitCode: null, stderr: '' };
+    const res = { ok: false, provider: 'codex', threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, lastError: null, warnings: [], limitHit: false, authFailed: false, exitCode: null, stderr: '', turns: 0, timedOut: false };
     let child;
     try { child = registerProc(t.id, spawnCodex(args, { cwd: t.cwd, env: { ...process.env, ...mcp.env } })); }
     catch (e) { res.error = e.message; return resolve(res); }
@@ -144,7 +146,7 @@ function runCodexOnce(t) {
     });
     onLines(child.stderr, (line) => { res.stderr = (res.stderr + line + '\n').slice(-4000); });
 
-    const timer = t.timeoutMs ? setTimeout(() => { res.error = `timeout after ${t.timeoutMs}ms`; killTree(child); }, t.timeoutMs) : null;
+    const timer = t.timeoutMs ? setTimeout(() => { res.timedOut = true; res.error = `timeout after ${t.timeoutMs}ms`; killTree(child); }, t.timeoutMs) : null;
     const onAbort = () => { res.error = res.error || 'aborted'; killTree(child); };
     t.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -180,7 +182,7 @@ function runCodexOnce(t) {
 export function applyCodexEvent(ev, res, items, emit = () => {}) {
   switch (ev.type) {
     case 'thread.started': res.threadId = ev.thread_id; emit('thread', { threadId: ev.thread_id }); break;
-    case 'turn.started': emit('turn.started', {}); break;
+    case 'turn.started': res.turns = (res.turns || 0) + 1; emit('turn.started', {}); break;
     case 'item.started': case 'item.updated': case 'item.completed': {
       const it = ev.item; if (!it) break;
       items.set(it.id, summarizeItem(it));

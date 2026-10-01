@@ -42,8 +42,9 @@ export async function runClaude(t) {
   const abort = new AbortController();
   const onAbort = () => abort.abort();
   t.signal?.addEventListener('abort', onAbort, { once: true });
-  const timer = t.timeoutMs ? setTimeout(() => abort.abort(), t.timeoutMs) : null;
-  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false, authFailed: false, envFailed: false };
+  let timedOut = false;
+  const timer = t.timeoutMs ? setTimeout(() => { timedOut = true; abort.abort(); }, t.timeoutMs) : null;
+  const res = { ok: false, provider: t.provider || 'claude', sessionId: t.resumeSessionId || null, finalMessage: '', items: [], usage: null, costUsd: 0, error: null, limitHit: false, authFailed: false, envFailed: false, turns: 0, timedOut: false };
   const emit = (event, data) => bus.publish('worker', { taskId: t.id, provider: res.provider, event, ...data });
   const started = Date.now();
   const bypass = (t.permissionMode || 'bypassPermissions') === 'bypassPermissions';
@@ -76,6 +77,7 @@ export async function runClaude(t) {
     for await (const m of q) {
       if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; res.servedModel = m.model || null; emit('session', { sessionId: m.session_id, model: m.model }); }
       else if (m.type === 'assistant') {
+        res.turns++;
         if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; if (noteRequiredVersion(t, m.error)) res.envFailed = true; }
         for (const b of m.message.content || []) {
           if (b.type === 'text' && b.text) { res.items.push({ type: 'agent_message', text: b.text }); emit('item', { item: { type: 'agent_message', text: b.text }, phase: 'completed' }); }
@@ -103,12 +105,14 @@ export async function runClaude(t) {
     else if (sawRejectedLimit) res.limitHit = true;
   } catch (e) {
     res.error = res.error || (abort.signal.aborted ? (t.timeoutMs ? 'timeout' : 'aborted') : String(e?.message || e));
+    if (timedOut || res.error === 'timeout') res.timedOut = timedOut = true;
     if (noteRequiredVersion(t, res.error)) res.envFailed = true;
     if (LIMIT_RE.test(res.error)) res.limitHit = true;
   } finally {
     if (timer) clearTimeout(timer);
     t.signal?.removeEventListener('abort', onAbort);
   }
+  res.timedOut ||= timedOut;
   res.durationMs = Date.now() - started;
   return res;
 }

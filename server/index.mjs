@@ -691,7 +691,7 @@ function serveStatic(req, res, url) {
 
 export function startServer({ port = null } = {}) {
   installGlobalErrorCapture();
-  try { const n = migrateScorecard(); if (n) logImprovement('idea', 'scorecard', `method-c migration: voided ${n} polluted antigravity row(s) (effort tagged on an effort-in-id model)`); } catch {}
+  try { const n = migrateScorecard(); if (n) logImprovement('idea', 'scorecard', `scorecard migration: voided ${n} legacy harness row(s)`); } catch {}
   const cfg = loadConfig();
   const server = createServer(async (req, res) => {
     const port = server.address().port;

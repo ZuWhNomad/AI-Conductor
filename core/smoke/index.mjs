@@ -64,20 +64,22 @@ export async function runSmoke({ models, tasks = null, timeoutMinutes = loadConf
           res = { ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: String(t.error || 'never dispatched').slice(0, 400) };
         } else {
         const check = t.status === 'done' ? await b.check(dir, t, { judge: judgeHook }) : { pass: false, notes: t.timedOut ? 'timeout' : t.error || t.status };
-        if (t.status !== 'done' && (t.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
+        if (t.status !== 'done' && (t.limitHit || t.result?.limitHit || t.failedOverTo || /usage limit|rate limit|quota|limit reached|at its limit|provider limit/i.test(t.error || ''))) {
           // Provider limit mid-battery: not the model's fault, and the rest of this selection would only time out.
           // Timeouts of this selection immediately before the limit surfaced were the same quota stall (seen with
           // Claude on the Google plan): void them so they do not read as model failures.
           voidPrecedingTimeouts();
+          if (t.id && (t.attempts || 0) > 0) voidTask(t.id, `environment: provider limit: ${String(t.error || 'limit reached').slice(0, 120)}`);
           push({ ...base, taskId: t.id || null, status: t.status, verdict: 'skipped', notes: `provider limit: ${String(t.error).slice(0, 120)}` });
           try { if (!keep) rmSync(dir, { recursive: true, force: true }); } catch {}
           break;
         }
-        if (!check.pass && (t.failKind === 'auth' || t.failKind === 'env' || envFailure(t))) {
+        const environment = envFailure(t);
+        if (!check.pass && environment) {
           // The harness, not the model, failed (sandbox denied the workspace, network down, loop cap): void it now, since a
           // failed status would otherwise read as a model failure in the ledger.
-          if (t.id) voidTask(t.id, `environment: ${envFailure(t)}`);
-          res = { ...base, taskId: t.id || null, status: t.status, verdict: 'error', notes: `environment: ${envFailure(t)}`, durationMs: t.result?.durationMs || 0 };
+          if (t.id) voidTask(t.id, `environment: ${environment}`);
+          res = { ...base, taskId: t.id || null, status: t.status, verdict: 'error', notes: `environment: ${environment}`, durationMs: t.result?.durationMs || 0 };
         } else {
           if (t.id && (t.attempts || 0) > 0) rateTask(t.id, check.pass ? 'pass' : 'fail', check.notes);
           res = { ...base, taskId: t.id || null, status: t.status, verdict: check.pass ? 'pass' : 'fail', notes: String(check.notes || '').slice(0, 400), durationMs: t.result?.durationMs || 0 };

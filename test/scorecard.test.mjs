@@ -84,6 +84,24 @@ test('CLI flag rejection is environmental only for the worker CLI error, not wor
   }
 });
 
+test('reliabilityMetrics follows the recorded transcript shape of every worker kind', () => {
+  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, timedOut: false, items: [
+    { type: 'command_execution', command: 'npm test', exitCode: 1 },
+    { type: 'command_execution', command: 'npm test', exitCode: 2 },
+    { type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: { id: 1 }, error: 'bad gateway' },
+  ] } }), { turns: 2, toolCalls: 3, toolErrors: 3, thrash: 1, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 2, items: [{ type: 'tool_use', name: 'Bash', input: { command: 'pwd' } }] } }), { turns: 2, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, items: [
+    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
+    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
+  ] } }), { turns: 2, toolCalls: 2, toolErrors: 2, thrash: 1, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 1, items: [{ type: 'tool_use', id: 'v1', name: 'search', input: { q: 'x' } }] } }), { turns: 1, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: { status: 'error' } }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: '{"status":400}' }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
+  assert.deepEqual(sc.reliabilityMetrics({ status: 'canceled', result: { turns: 0, items: [], timedOut: true } }), { turns: 0, toolCalls: 0, toolErrors: 0, thrash: 0, timedOut: true });
+  assert.deepEqual(sc.reliabilityMetrics({ result: { toolCalls: 2, items: [{ type: 'tool_use', name: 'read', input: {}, output: 'error: one' }] } }), { turns: null, toolCalls: 2, toolErrors: null, thrash: null, timedOut: null });
+});
+
 test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna').tier, 'B');
   assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier, 'B');   // code: Terminal-Bench 84.7
@@ -849,6 +867,31 @@ test('method-c migration voids antigravity rows whose sel carried a spurious eff
   assert.ok(sc.rootRuns().find((c) => c.taskId === 'agy-good'));                  // the clean family row survives
 });
 
+test('scorecard migration voids only harness-error smoke failures and is idempotent', async () => {
+  const { appendNdjson, readNdjson, statePath } = await import('../core/paths.mjs');
+  const source = 'smoke';
+  const row = (taskId, runSource = 'smoke') => appendNdjson(statePath('scorecard.ndjson'), {
+    op: 'run', ts: new Date().toISOString(), taskId, source: runSource, provider: 'codex', model: 'gpt-6-sol', effort: 'medium',
+    category: 'test', difficulty: 6, status: 'failed', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'legacy',
+  });
+  const cases = [
+    ['migration-400', '{"type":"error","status":400,"message":"bad request"}'],
+    ['migration-401', 'unexpected status 401 Unauthorized'],
+    ['migration-limit', "You've hit your usage limit for this model."],
+    ['migration-genuine', '8/9 tests passed'],
+    ['migration-genuine-status', 'expected status 400 in the fixture output'],
+  ];
+  for (const [id, notes] of cases) { row(id); sc.rateTask(id, 'fail', notes); }
+  row('migration-live', 'live'); sc.rateTask('migration-live', 'fail', 'HTTP status 500 from provider');
+  assert.equal(sc.migrateScorecard(), 3);
+  assert.equal(sc.migrateScorecard(), 0);
+  const all = readNdjson(statePath('scorecard.ndjson'));
+  for (const id of ['migration-400', 'migration-401', 'migration-limit']) assert.ok(all.some((r) => r.op === 'void' && r.taskId === id));
+  assert.ok(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-genuine'));
+  assert.ok(sc.rootRuns({ source: 'live' }).some((c) => c.taskId === 'migration-live'));
+  assert.equal(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-400'), false);
+});
+
 test('phantom detection helpers', () => {
   assert.deepEqual(sc.claimedWrites([{ type: 'file_change', changes: [{ path: 'a.js' }, { path: 'b.js' }] }, { type: 'message' }, { type: 'file_change', changes: [{ path: '' }, { nopath: 1 }] }]), ['a.js', 'b.js']);
   assert.deepEqual(sc.claimedWrites(undefined), []);
@@ -863,12 +906,34 @@ test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', 
   sc.recordRun({ id: 'ph1', title: 'p', status: 'failed', failKind: 'phantom', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'test', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }, {});
   sc.rateTask('ph1', 'phantom');
   const g = sc.summarize().find((x) => x.sel === 'codex:gpt-5.6-luna:low' && x.category === 'test' && x.difficulty === 2);
-  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 1); assert.equal(g.phantomRate, 1);
+  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 0); assert.equal(g.phantomRate, 1);
   const er = sc.errorRates();
   assert.ok(er.byProvider.find((e) => e.key === 'codex' && e.phantom >= 1));
   assert.ok(er.byModel.find((e) => e.key === 'codex:gpt-5.6-luna:low' && e.phantom >= 1));
   assert.doesNotThrow(() => sc.rateTask('ph1', 'phantom'));
   assert.throws(() => sc.rateTask('ph1', 'meh'), { status: 400 });
+});
+
+test('summary reliability fields use known values and leave legacy rows unknown', async () => {
+  const { appendNdjson, statePath } = await import('../core/paths.mjs');
+  const source = 'reliability-summary';
+  const add = (id, result, verdict) => {
+    sc.recordRun({ id, title: id, status: 'done', provider: 'claude', model: 'haiku', effort: null, category: 'docs', difficulty: 1, source, result });
+    sc.rateTask(id, verdict);
+  };
+  add('reliability-pass', { ok: true, turns: 2, toolCalls: 4, toolErrors: 1, thrash: 2, timedOut: false, costUsd: 0.4, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'pass');
+  add('reliability-fix', { ok: false, turns: 4, toolCalls: 2, toolErrors: 1, thrash: 0, timedOut: true, costUsd: 0.2, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'fixable');
+  const known = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:haiku:default');
+  assert.equal(known.errorRate, 0.5);
+  assert.equal(known.toolErrorRate, 2 / 6);
+  assert.equal(known.avgTurns, 3);
+  assert.equal(known.thrash, 2);
+  assert.equal(known.timeouts, 1);
+  assert.ok(Math.abs(known.costPerSuccess - 0.6) < 1e-9);
+  appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'reliability-old', source, provider: 'claude', model: 'legacy', effort: null, category: 'docs', difficulty: 1, status: 'done', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'old' });
+  sc.rateTask('reliability-old', 'pass');
+  const old = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:legacy:default');
+  assert.equal(old.toolErrorRate, null); assert.equal(old.avgTurns, null); assert.equal(old.thrash, null); assert.equal(old.timeouts, null);
 });
 
 test('formatScores surfaces the phantom column and error-rate section', () => {

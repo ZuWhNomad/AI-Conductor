@@ -120,6 +120,9 @@ async function runVendorCliCore(spec, t) {
   again.items = [...first.items, ...again.items];
   again.durationMs = (first.durationMs || 0) + (again.durationMs || 0);
   again.usage = sumUsage(first.usage, again.usage);
+  again.turns = (first.turns || 0) + (again.turns || 0);
+  again.timedOut = !!(first.timedOut || again.timedOut);
+  again.httpStatus ||= first.httpStatus || null;
   return again;
 }
 
@@ -143,8 +146,8 @@ function sumUsage(a, b) {
 
 function runVendorCliOnce(spec, t) {
   const started = Date.now();
-  const res = { ok: false, provider: spec.id, threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, authFailed: false, envFailed: false, exitCode: null, stderr: '' };
-  const st = { spec, cwd: t.cwd, threadId: t.resumeThreadId || null, text: '', finalText: null, usage: null, error: null, httpStatus: null, envFailed: false, items: [], unknown: 0 };
+  const res = { ok: false, provider: spec.id, threadId: t.resumeThreadId || null, finalMessage: '', items: [], usage: null, error: null, limitHit: false, authFailed: false, envFailed: false, exitCode: null, stderr: '', turns: 0, timedOut: false, httpStatus: null };
+  const st = { spec, cwd: t.cwd, threadId: t.resumeThreadId || null, text: '', finalText: null, usage: null, error: null, httpStatus: null, envFailed: false, items: [], unknown: 0, turns: 0 };
   const emit = (event, data) => { bus.publish('worker', { taskId: t.id, provider: spec.id, event, ...data }); t.onEvent?.(event, data); };
   return new Promise((resolve) => {
     const bin = spec.bin();
@@ -169,7 +172,7 @@ function runVendorCliOnce(spec, t) {
       } catch (e) { st.unknown++; }
     });
     onLines(child.stderr, (line) => { res.stderr = (res.stderr + line + '\n').slice(-4000); if (!st.error && (LIMIT_RE.test(line) || AUTH_RE.test(line))) st.errorHint = line; });
-    const timer = t.timeoutMs ? setTimeout(() => { st.error = st.error || `timeout after ${Math.round(t.timeoutMs / 1000)}s`; killTree(child); }, t.timeoutMs) : null;
+    const timer = t.timeoutMs ? setTimeout(() => { res.timedOut = true; st.error = st.error || `timeout after ${Math.round(t.timeoutMs / 1000)}s`; killTree(child); }, t.timeoutMs) : null;
     const onAbort = () => { st.error = st.error || 'aborted'; killTree(child); };
     t.signal?.addEventListener('abort', onAbort, { once: true });
     if (t.signal?.aborted) onAbort();
@@ -185,6 +188,8 @@ function runVendorCliOnce(spec, t) {
       res.usage = st.usage;
       res.servedModel = st.servedModel || null;
       res.items = st.items.slice(-60);
+      res.turns = Number.isInteger(st.turns) ? st.turns : 0;
+      res.httpStatus = Number.isInteger(st.httpStatus) ? st.httpStatus : null;
       res.error = st.error || (code !== 0 ? `${spec.id} exited with code ${code}${res.stderr ? `: ${res.stderr.trim().slice(-400)}` : ''}` : null);
       if (!res.error && code === 0 && !res.finalMessage && !st.items.length) res.error = `${spec.id} produced no output (exit 0)`;
       const haystack = `${res.error || ''}\n${st.errorHint || ''}\n${res.stderr}`;

@@ -106,7 +106,7 @@ export function parseAgyUsage(text) {
 
 /** grok's structured HTTP status: a top-level http_status, or the JSON body inside an errors[] entry ("Internal error: {… "http_status": 402}"). */
 export function httpStatusOf(obj) {
-  if (Number.isInteger(obj?.http_status)) return obj.http_status;
+  for (const key of ['http_status', 'status_code', 'status']) if (Number.isInteger(obj?.[key]) && obj[key] >= 400 && obj[key] <= 599) return obj[key];
   for (const e of obj?.errors || []) {
     const s = String(e), i = s.indexOf('{');
     if (i < 0) continue;
@@ -138,6 +138,7 @@ function parseMessagesStream(obj, st, emit, tag) {
   const served = obj.type === 'system' ? obj.model : obj.type === 'assistant' ? obj.message?.model : null; // the model the CLI says it ran (init, then each message)
   if (typeof served === 'string' && served) st.servedModel = served;
   if (obj.type === 'assistant') {
+    st.turns = (st.turns || 0) + 1;
     for (const c of obj.message?.content || []) {
       if (c.type === 'text' && c.text) { P.message(st, emit, c.text.trim()); st.text += c.text; }
       else if (c.type === 'tool_use') P.toolStart(st, emit, c.id || `${tag}-${st.items.length}`, c.name || 'tool', c.input);
@@ -151,7 +152,7 @@ function parseMessagesStream(obj, st, emit, tag) {
       st.httpStatus = httpStatusOf(obj);
     }
     else st.finalText = typeof obj.result === 'string' && obj.result.trim() ? obj.result.trim() : st.text.trim();
-  } else if (obj.type === 'error' || obj.error) st.error = String(obj.error?.message || obj.error || obj.message);
+  } else if (obj.type === 'error' || obj.error) { st.error = String(obj.error?.message || obj.error || obj.message); st.httpStatus ||= httpStatusOf(obj); }
 }
 
 export const VENDORS = {
@@ -213,9 +214,11 @@ export const VENDORS = {
         if (body.usage) { st.sawStepUsage = true; P.addUsage(st, body.usage); }
       } else if (ev === 'result') {
         if (!st.sawStepUsage && body.usage) P.addUsage(st, body.usage);
+        if (Number.isInteger(body.num_turns)) st.turns = body.num_turns;
+        st.httpStatus ||= httpStatusOf(body) || httpStatusOf(obj);
         if (/^(success|completed|ok|done)$/i.test(String(body.status || ''))) st.finalText = typeof body.response === 'string' ? body.response.trim() : st.text;
         else st.error = String(body.error?.message || body.error || body.message || body.status || 'agy run failed');
-      } else if (obj.error) st.error = String(obj.error?.message || obj.error);
+      } else if (obj.error) { st.error = String(obj.error?.message || obj.error); st.httpStatus ||= httpStatusOf(obj); }
     },
   },
 
