@@ -1318,8 +1318,9 @@ async function openScores() {
   const renderGrid = (rows) => {
     grid.textContent = '';
     if (!rows?.length) { grid.textContent = archived.checked ? 'Archived scores are listed in the full table.' : 'No score data.'; return; }
-    const table = el('table', 'score-grid');
-    const thead = el('thead'); const hr = el('tr'); hr.append(el('th', null, 'Category'), ...[1, 2, 3, 4, 5].map((n) => el('th', null, `L${n}`))); thead.append(hr);
+    const table = el('table', 'score-grid'); const thead = el('thead'); const hr = el('tr');
+    const levelCols = rows[0]?.levels?.length ? rows[0].levels.map((c) => c.level) : [1, 2, 3, 4, 5, 6, 7];
+    hr.append(el('th', null, 'Category'), ...levelCols.map((n) => el('th', null, `L${n}`))); thead.append(hr);
     const tbody = el('tbody');
     for (const row of rows) {
       const tr = el('tr'); tr.append(el('th', null, row.category));

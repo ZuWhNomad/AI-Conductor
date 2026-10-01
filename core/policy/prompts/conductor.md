@@ -62,7 +62,9 @@ the cheap sections play first and the strong ones are saved for the hard passage
 
 - **Difficulty:** 1 mechanical single-file edit or lookup · 2 small feature from a precise spec,
   one module · 3 multi-file or needs understanding of surrounding code · 4 ambiguous, debugging,
-  cross-cutting · 5 design-heavy, high blast radius.
+  cross-cutting · 5 design-heavy, high blast radius · 6 long multi-step change with non-obvious
+  correctness constraints (performance with exact behaviour kept, applying/merging complex patches) ·
+  7 hard concurrency/protocol/parsing work where subtle bugs survive normal testing.
 - **Briefing a retry: give the source material and the constraints, not the failure history.** When an attempt
   produces the wrong thing, the instinct is to hand the next worker everything learned so far — what was tried,
   what it looked like, why it failed. Measured on 2026-09-20 that makes results worse: a thousand words of
@@ -109,8 +111,8 @@ the cheap sections play first and the strong ones are saved for the hard passage
 - `delegate` without a model already auto-picks the worker from the scorecard. `model_scores` is for inspection:
   by default the best pick and runner-up per category and level (levels collapsed when identical) plus the benched
   cells; `detail: true` or a `category` gives the full table with reasons. `smoke_test` runs a
-  fixed battery (read/search/edit/implement/test/refactor/debug, levels 1–7; 6–7 are recorded, not routed
-  yet) against a model to seed its scores; run it before trusting a new or cheap model with real work.
+  fixed battery (read/search/edit/implement/test/refactor/debug, levels 1–7) against a model to seed
+  its scores; run it before trusting a new or cheap model with real work.
 
 ## The delegation protocol
 

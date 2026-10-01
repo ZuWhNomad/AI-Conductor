@@ -41,9 +41,9 @@ const recencyWeight = (ts, now = Date.now()) => {
   return 0.5 ** (age / EVIDENCE_HALF_LIFE_MS);
 };
 const evidenceRated = (g) => g.weightedRated ?? g.rated ?? 0;
-// Routing covers levels 1-5. The smoke battery also records 6-7: those rows show in the tables, but recommend() ignores them.
-export const ROUTED_MAX_DIFFICULTY = 5;
-const LEVELS = [1, 2, 3, 4, 5];
+// Routing covers levels 1-7.
+export const ROUTED_MAX_DIFFICULTY = 7;
+const LEVELS = [1, 2, 3, 4, 5, 6, 7];
 export const scorecardModelId = (model) => typeof model === 'string' ? model.replace(/\[1m\]$/i, '') : model;
 export const selOf = (r) => `${r.provider}:${r.model || 'default'}:${r.effort || 'default'}`;
 const archiveKey = (value) => {
@@ -774,8 +774,10 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
       return _noExtrap ? { capped: true } : null;
     }
     // Nothing proven at this level or above: extrapolate from the nearest lower level (flagged) before the prior.
+    // At difficulty 6-7, fall back to the best available model by quality (as escalation does) rather than refusing.
+    const fallbackEscalate = escalate || difficulty >= 6;
     for (let d = difficulty - 1; d >= 1 && !_noExtrap; d--) {
-      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate, overflowApi, providers, reg, _noExtrap: true, _allowLowerBenchmark: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain, _eligibility });
+      const lower = recommendPlan({ category, difficulty: d, exclude, source, summary: all, escalate: fallbackEscalate, overflowApi, providers, reg, _noExtrap: true, _allowLowerBenchmark: true, _failedBelow: failedBelow, _taskDifficulty: taskDifficulty, _explain, _eligibility });
       if (lower?.capped) return null;
       if (lower?.plan) return { ...lower, reason: `${lower.reason}; extrapolated from level ${d}${lower.evidence?.source === 'bench' ? ' (benchmark evidence)' : ''} — nothing measured at level ${difficulty}+ yet` };
     }
@@ -1007,7 +1009,7 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
 }
 
 /**
- * Short view (what the conductor gets by default): one compact line per category containing all five levels.
+ * Short view (what the conductor gets by default): one compact line per category containing all seven levels.
  * Every cell is a pick with evidence, a capped selection/reset, or no data. Benched cells follow as a computed
  * view of the ledger, never a second record. Memoised on the ledger, limits, models and config.
  */

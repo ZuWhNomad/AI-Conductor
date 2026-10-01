@@ -35,11 +35,11 @@ const registryModels = (t, models) => {
 let n = 0;
 const USAGE = { input_tokens: 100_000, cached_input_tokens: 50_000, output_tokens: 10_000 }; // 50k uncached in, 50k cached, 10k out
 const run = ({ before, ...o }) => sc.recordRun({ id: o.id || `t${++n}`, title: 't', status: 'done', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'implement', difficulty: 2, result: { usage: USAGE, durationMs: 1000 }, ...o }, { before });
-const seed = (provider, model, effort, category, difficulty, verdicts, { usage = USAGE, retryOf = null } = {}) => {
+const seed = (provider, model, effort, category, difficulty, verdicts, { usage = USAGE, retryOf = null, source = null } = {}) => {
   const ids = [];
   for (const v of verdicts) {
     const id = `s${++n}`; ids.push(id);
-    run({ id, provider, model, effort, category, difficulty, retryOf, result: { usage, durationMs: 1000 } });
+    run({ id, source, provider, model, effort, category, difficulty, retryOf, result: { usage, durationMs: 1000 } });
     if (v) sc.rateTask(id, v);
   }
   return ids;
@@ -897,7 +897,7 @@ test('short view: every category@level is a compact pick, capped cell, or no-dat
   const full = sc.formatScores();
   assert.ok(short.length < full.length / 2, 'short ' + short.length + ' vs full ' + full.length);
   const cfg = loadConfig().scorecard;
-  for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5]) {
+  for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5, 6, 7]) {
     const r = sc.recommend({ category: c, difficulty: d });
     const line = short.split('\n').find((l) => l.startsWith('- ' + c + '@1:'));
     assert.ok(line, 'no short line for ' + c + '@' + d);
@@ -2177,4 +2177,109 @@ test('close counts as zero quality without changing accept or errorRate', () => 
   assert.equal(row.errorRate, 0);
   assert.match(sc.formatScores({ category: 'conductor' }), /pass\/fix\/close\/fail\/phantom/);
   assert.match(sc.scoresCsv().split('\n')[0], /,close,/);
+});
+
+test('recommend() uses a 6-7 cell with measured passes', () => {
+  const source = 'measured-6-7';
+  seed('codex', 'gpt-6-astra', 'medium', 'refactor', 6, ['pass', 'pass', 'pass'], { source });
+  seed('codex', 'gpt-6-astra', 'medium', 'implement', 7, ['pass', 'pass', 'pass'], { source });
+
+  const r6 = sc.recommend({ category: 'refactor', difficulty: 6, source });
+  assert.ok(r6);
+  assert.equal(r6.provider, 'codex');
+  assert.equal(r6.model, 'gpt-6-astra');
+  assert.equal(r6.plan.steps[0], 'codex:gpt-6-astra:medium');
+  assert.equal(r6.evidence.source, 'live');
+
+  const r7 = sc.recommend({ category: 'implement', difficulty: 7, source });
+  assert.ok(r7);
+  assert.equal(r7.provider, 'codex');
+  assert.equal(r7.model, 'gpt-6-astra');
+  assert.equal(r7.plan.steps[0], 'codex:gpt-6-astra:medium');
+  assert.equal(r7.evidence.source, 'live');
+});
+
+test('priors alone do not qualify at 6-7', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({ scorecard: { coldStart: 'priors', classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
+    const emptySource = 'priors-only-6-7';
+    // gpt-6-astra has tier A, which covers levels 1-5 via TIER_CEILING, but must NOT qualify at 6 or 7
+    const r5 = sc.recommend({ category: 'implement', difficulty: 5, source: emptySource });
+    assert.ok(r5, 'prior qualifies up to level 5');
+    assert.match(r5.reason, /hand-picked prior/);
+
+    const r6 = sc.recommend({ category: 'implement', difficulty: 6, source: emptySource });
+    assert.equal(r6, null, 'priors alone do not qualify at 6');
+
+    const r7 = sc.recommend({ category: 'implement', difficulty: 7, source: emptySource });
+    assert.equal(r7, null, 'priors alone do not qualify at 7');
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('the no-qualified fallback at 7 picks the best-quality available model', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({
+      scorecard: {
+        usePriors: false,
+        reservePct: 0,
+        providerWeight: { deepseek: 0, codex: 0.6 },
+        classes: { codex: 'subscription', deepseek: 'free' },
+        classOrder: ['free', 'subscription'],
+      },
+    });
+    const source = 'fallback-at-7';
+    // Two models with runs at level 5:
+    // deepseek-chat in 'free' class (would normally win by classOrder at level 5)
+    seed('deepseek', 'deepseek-chat', null, 'implement', 5, ['pass', 'pass', 'pass'], { source });
+    // gpt-6-astra in 'subscription' class, higher tier / quality
+    seed('codex', 'gpt-6-astra', 'medium', 'implement', 5, ['pass', 'pass', 'pass'], { source });
+
+    // At level 5, value routing picks the free class:
+    const at5 = sc.recommend({ category: 'implement', difficulty: 5, source });
+    assert.equal(at5.provider, 'deepseek');
+    assert.equal(at5.class, 'free');
+
+    // At level 7 with nothing qualified at 7, fallback picks the best-quality available model (as escalation does):
+    const at7 = sc.recommend({ category: 'implement', difficulty: 7, source });
+    assert.ok(at7);
+    assert.equal(at7.provider, 'codex');
+    assert.equal(at7.model, 'gpt-6-astra');
+    assert.match(at7.reason, /extrapolated from level 5/);
+    assert.match(at7.reason, /nothing measured at level 7\+ yet/);
+    assert.match(at7.reason, /escalation/);
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
+});
+
+test('reserve logic works with level 7 as the top level', () => {
+  const cfg = loadConfig().scorecard;
+  try {
+    saveConfig({
+      scorecard: {
+        usePriors: false,
+        reservePct: 0.5,
+        providerWeight: { codex: 0.6 },
+        classes: { codex: 'subscription' },
+        classOrder: ['subscription'],
+      },
+    });
+    const source = 'reserve-level-7';
+    // Proven to level 7 with live runs:
+    seed('codex', 'gpt-6-astra', 'medium', 'implement', 7, ['pass', 'pass', 'pass'], { source });
+    // Also proven at level 2:
+    seed('codex', 'gpt-5.6-luna', 'low', 'implement', 2, ['pass', 'pass', 'pass'], { source });
+
+    // On a level 2 task, codex window group ceiling is 7.
+    // Gap is ceiling (7) - taskDifficulty (2) = 5.
+    // Reserve multiplier: 1 + 0.5 * 0.6 * 5 = 2.50
+    const r = sc.recommend({ category: 'implement', difficulty: 2, source });
+    assert.match(r.reason, /reserve ×2\.50: codex window group proven to level 7/);
+  } finally {
+    saveConfig({ scorecard: cfg });
+  }
 });

@@ -251,8 +251,8 @@ export function createTask(i, { dispatch = true } = {}) {
     // Explicit category wins; an unknown non-empty one collapses to 'other'; when none is given, classify the spec
     // (today: UI tasks → 'ui') so hand-diverted /worker UI tasks still land under the right category.
     category: CATEGORIES.includes(i.category) ? i.category : i.category ? 'other' : classifyCategory(`${i.title || ''}\n${i.spec || ''}`),
-    // 1-5 route work; the smoke battery also records 6-7 (recommend() ignores those rows until they are planned in).
-    difficulty: Number.isInteger(i.difficulty) && i.difficulty >= 1 && i.difficulty <= (i.source === 'smoke' ? 7 : ROUTED_MAX_DIFFICULTY) ? i.difficulty : null,
+    // 1-7 route work.
+    difficulty: Number.isInteger(i.difficulty) && i.difficulty >= 1 && i.difficulty <= ROUTED_MAX_DIFFICULTY ? i.difficulty : null,
     source: i.source === 'smoke' ? 'smoke' : 'live',
     smokeId: i.source === 'smoke' && typeof i.smokeId === 'string' ? i.smokeId : null, // battery id, kept out of the worker's prompt
     retryOf: typeof i.retryOf === 'string' && i.retryOf ? i.retryOf : null, // a new attempt after a failed task (any model): costs fold into one chain
