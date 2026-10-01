@@ -20,8 +20,7 @@ mutants: see its `CONTEXT.md`); `formatSmoke(results)`. `research-4` and `resear
   1–3 are sanity checks almost every model passes; 4–5 (`implement-4` evaluator, `test-4` mutant-killing
   suite, `debug-5` async pool) are where ceilings show. Levels 6–7 (`refactor-6` speed under an equivalence
   contract, `implement-6` unified-diff applier, `implement-7` streaming multipart parser, `debug-7` async-cache
-  races) grade against hidden tests counted from the TAP summary; their runs are recorded and shown in the
-  scores, but `recommend()` ignores difficulty > 5, so they do not route yet (delegate stays 1–5).
+  races) grade against hidden tests counted from the TAP summary; their runs route under the empirical evidence rule (priors do not qualify at 6–7).
 - Tasks at difficulty 6+ (L6 and L7) get `smoke.hardTimeoutMinutes` (30); the rest `smoke.timeoutMinutes` (20).
 - Checks must not trust the worker's report: inspect files or run `node --test`. Every check first fails a
   scratch dir holding a file that carries `CANARY` ("copied from the grader"). Hidden files are written only

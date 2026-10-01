@@ -45,19 +45,22 @@ test('L9: maxBlockMs caps blocking waits and run_plan; plan_status reads the liv
   }
 });
 
-test('L32: run_plan category is z.enum(CATEGORIES) and difficulty is int 1-5 in all four places', () => {
+test('L32: run_plan category is z.enum(CATEGORIES) and difficulty is int 1-7 in all four places', () => {
   const schema = defs().find((d) => d.name === 'run_plan').schema;
   const base = { goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x' }] }] };
   assert.throws(() => schema.parse({ ...base, defaults: { category: 'typo-category' } }));
   assert.throws(() => schema.parse({ goal: 'g', stages: [{ id: 'a', defaults: { category: 'typo-category' }, tasks: [{ spec: 'x' }] }] }));
   assert.throws(() => schema.parse({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', category: 'typo-category' }] }] }));
   assert.throws(() => schema.parse({ goal: 'g', stages: [{ id: 'a', for_each: 'z', task: { spec: 'x', category: 'typo-category' } }] }));
-  for (const difficulty of [0, 6, 1.5]) {
+  for (const difficulty of [0, 8, 1.5]) {
     assert.throws(() => schema.parse({ ...base, defaults: { difficulty } }));
     assert.throws(() => schema.parse({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', difficulty }] }] }));
   }
+  for (const difficulty of [6, 7]) {
+    assert.equal(schema.parse({ ...base, defaults: { difficulty } }).defaults.difficulty, difficulty);
+  }
   for (const category of CATEGORIES) {
-    assert.equal(schema.parse({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', category, difficulty: 5 }] }] }).stages[0].tasks[0].category, category);
+    assert.equal(schema.parse({ goal: 'g', stages: [{ id: 'a', tasks: [{ spec: 'x', category, difficulty: 7 }] }] }).stages[0].tasks[0].category, category);
   }
 });
 
@@ -221,8 +224,10 @@ test('L19: auto-picked delegate persists difficulty 2', async () => {
   // would auto-pick if recommend returned something: covered in plans.test.mjs L19 via runPlan.
   const schema = defs().find((d) => d.name === 'delegate').schema;
   assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 3 }).difficulty, 3);
+  assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 6 }).difficulty, 6);
+  assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 7 }).difficulty, 7);
   assert.throws(() => schema.parse({ title: 't', spec: 's', difficulty: 0 }));
-  assert.throws(() => schema.parse({ title: 't', spec: 's', difficulty: 6 }));
+  assert.throws(() => schema.parse({ title: 't', spec: 's', difficulty: 8 }));
 });
 
 test('L23: cancel_task follows a failover to the live replacement and reports an already-finished task', async () => {

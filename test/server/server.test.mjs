@@ -47,7 +47,7 @@ const { getTask, cancelTask } = await import('../../core/tasks.mjs');
 assert.equal(getTask(bootRecoveryId).status, 'running', 'module import loads without restart transitions');
 const { startServer, lagVerdict, doctorReport, isIdle, taskBusyCount, updateWaitingDetail } = await import('../../server/index.mjs');
 const { getModels } = await import('../../core/models.mjs');
-const { CATEGORIES, runRows, summarize } = await import('../../core/scorecard.mjs');
+const { CATEGORIES, ROUTED_MAX_DIFFICULTY, runRows, summarize } = await import('../../core/scorecard.mjs');
 const { server, url } = await startServer({ port: 0 });
 const realFetch = globalThis.fetch;
 mock.method(globalThis, 'fetch', (input, options) => {
@@ -672,7 +672,7 @@ test('GET /api/scores returns text, the category-level grid, benched cells, and 
   assert.equal(typeof sc.text, 'string');
   assert.equal(sc.summary, undefined);
   assert.equal(sc.grid.length, CATEGORIES.length);
-  assert.ok(sc.grid.every((row) => row.levels.length === 5));
+  assert.ok(sc.grid.every((row) => row.levels.length === ROUTED_MAX_DIFFICULTY));
   assert.ok(Array.isArray(sc.benched));
   assert.ok(Array.isArray(sc.eligibility));
   const archived = await get('/api/scores?archived=1');

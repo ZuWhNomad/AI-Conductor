@@ -2313,3 +2313,16 @@ test('R25: shutdown drain awaits a task that settles quickly instead of exiting 
   }
 });
 
+test('createTask accepts difficulty 1-7 and clamps out-of-range to null', () => {
+  const dir = tmpDir('difficulty-range');
+  const t6 = createTask({ cwd: dir, provider: 'codex', model: 'gpt-6-astra', spec: 'x', category: 'implement', difficulty: 6 });
+  const t7 = createTask({ cwd: dir, provider: 'codex', model: 'gpt-6-astra', spec: 'x', category: 'implement', difficulty: 7 });
+  const t8 = createTask({ cwd: dir, provider: 'codex', model: 'gpt-6-astra', spec: 'x', category: 'implement', difficulty: 8 });
+  const t0 = createTask({ cwd: dir, provider: 'codex', model: 'gpt-6-astra', spec: 'x', category: 'implement', difficulty: 0 });
+  assert.equal(t6.difficulty, 6);
+  assert.equal(t7.difficulty, 7);
+  assert.equal(t8.difficulty, null);
+  assert.equal(t0.difficulty, null);
+  for (const t of [t6, t7, t8, t0]) cancelTask(t.id);
+});
+

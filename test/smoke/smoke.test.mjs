@@ -363,27 +363,29 @@ test('smoke tasks at difficulty 6+ get smoke.hardTimeoutMinutes (30); the rest s
   } finally { saveConfig({ smoke: previous }); }
 });
 
-test('routing ignores difficulty > 5: L6/L7 rows neither pool into nor lift a level-1-5 pick; delegate stays 1-5', async () => {
+test('routing ignores difficulty > 7: L8 rows neither pool into nor lift a pick; live tasks route 1-7', async () => {
   const { loadConfig, saveConfig } = await import('../../core/config.mjs');
   const scorecard = loadConfig().scorecard;
   saveConfig({ scorecard: { minSamples: 3 } });
   try {
   const reg = { providers: { codex: { status: 'ok' } }, models: ['gpt-5.6-luna', 'gpt-5.6-terra'].map((id) => ({ provider: 'codex', id, kind: 'agent' })) };
   const row = (model, difficulty, rated, quality, avgUsd) => ({ sel: `codex:${model}:low`, steps: 1, provider: 'codex', model, effort: 'low', category: 'debug', difficulty, rated, n: rated, pass: rated * quality, fixable: 0, fail: rated * (1 - quality), phantom: 0, quality, accept: quality, avgUsd, avgDurationMs: 1000 });
-  // Luna: one cheap rated run at L5 (below the sample floor) plus passing L6/L7 runs that would pool into it. Terra: proven at L5.
-  const base = [row('gpt-5.6-luna', 5, 1, 1, 0.001), row('gpt-5.6-terra', 5, 3, 1, 0.05)];
-  const hard = [row('gpt-5.6-luna', 6, 3, 1, 0.001), row('gpt-5.6-luna', 7, 3, 1, 0.001), row('gpt-5.6-terra', 6, 3, 0, 0.05), row('gpt-5.6-terra', 7, 3, 0, 0.05)];
-  for (let d = 1; d <= 5; d++) assert.deepEqual(recommend({ category: 'debug', difficulty: d, summary: [...base, ...hard], reg }), recommend({ category: 'debug', difficulty: d, summary: base, reg }), `level ${d}`);
-  const r = recommend({ category: 'debug', difficulty: 5, summary: [...base, ...hard], reg });
+  // Luna: one cheap rated run at L7 (below the sample floor) plus passing L8 runs that would pool into it if routed. Terra: proven at L7.
+  const base = [row('gpt-5.6-luna', 7, 1, 1, 0.001), row('gpt-5.6-terra', 7, 3, 1, 0.05)];
+  const hard = [row('gpt-5.6-luna', 8, 3, 1, 0.001), row('gpt-5.6-terra', 8, 3, 0, 0.05)];
+  for (let d = 1; d <= 7; d++) assert.deepEqual(recommend({ category: 'debug', difficulty: d, summary: [...base, ...hard], reg }), recommend({ category: 'debug', difficulty: d, summary: base, reg }), `level ${d}`);
+  const r = recommend({ category: 'debug', difficulty: 7, summary: [...base, ...hard], reg });
   assert.equal(r.model, 'gpt-5.6-terra');
-  assert.doesNotMatch(r.reason, /pooled|reserve/);
+  assert.doesNotMatch(r.reason, /pooled/);
   const { createTask, cancelTask } = await import('../../core/tasks.mjs');
   const cwd = tmpDir('smoke-difficulty');
   const smoke = createTask({ cwd, spec: 'x', provider: 'deepseek', difficulty: 7, source: 'smoke' });
   const live = createTask({ cwd, spec: 'x', provider: 'deepseek', difficulty: 6 });
+  const over = createTask({ cwd, spec: 'x', provider: 'deepseek', difficulty: 8 });
   assert.equal(smoke.difficulty, 7);
-  assert.equal(live.difficulty, null);
-  cancelTask(smoke.id); cancelTask(live.id);
+  assert.equal(live.difficulty, 6);
+  assert.equal(over.difficulty, null);
+  cancelTask(smoke.id); cancelTask(live.id); cancelTask(over.id);
   rmSync(cwd, { recursive: true, force: true });
   } finally { saveConfig({ scorecard }); }
 });
