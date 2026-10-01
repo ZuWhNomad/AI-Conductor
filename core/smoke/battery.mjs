@@ -122,8 +122,10 @@ function researchTrap(item, ans, roster) {
     }
   }
   if (item.trap === 'target') {
+    // Naming the corrected $204 counts as flagging the inconsistency ("the target is $300, but its own numbers support $204").
+    const corrected = (x) => INCONSISTENT.test(x) || /\$\s?204\b/.test(x);
     for (const s of researchSentences(ans)) {
-      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && ((/\bsupport(?:s|ed)?\b/i.test(s) && !INCONSISTENT.test(s)) || !INCONSISTENT.test(ans))) return 'R3 presents the wrong target';
+      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && ((/\bsupport(?:s|ed)?\b/i.test(s) && !corrected(s)) || !corrected(ans))) return 'R3 presents the wrong target';
     }
   }
   if (item.trap === 'rating') {

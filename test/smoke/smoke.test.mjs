@@ -159,6 +159,9 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   assert.equal((await run('research-4', phrasing4)).pass, true, 'research-4 does not attach current to a stale figure in another clause');
   const targetPhrasing4 = ref4.replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The analyst\'s stated twelve-month target is $300. It is not supported by the note\'s own numbers: a 24 times multiple applied to $8.50 yields a target of $204.');
   assert.equal((await run('research-4', targetPhrasing4)).pass, true, 'research-4 accepts a separately stated correction of the analyst target');
+  const terseTarget4 = ref4.replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The analyst\'s twelve-month price target is $300, but its own numbers support $204: 24 × $8.50 = $204.');
+  assert.notEqual(terseTarget4, ref4);
+  assert.equal((await run('research-4', terseTarget4)).pass, true, 'research-4 accepts a terse correction that names the supported figure (GPT-6 phrasing, 2026-10-01)');
   const phrasing5 = ref5
     .replace('Ada Pell has served as chief executive officer for 6 years', 'Ada Pell has served as chief executive officer for six years')
     .replace('Jon Vesper has served as chief financial officer for 3 years', 'Jon Vesper has served as chief financial officer for three years')
