@@ -121,6 +121,7 @@ export const PRIORS = [
   { re: /^codex:gpt-5\.6-luna/, tier: 'B', tiers: { read: 'D' }, tb21: 84.7, gdpval: 1582, mrcr: 41.3, price: { in: 0.2, out: 1.2, cached: 0.02 } }, // weak long-context recall (MRCR 41%)
   { re: /^codex:gpt-5\.5/, tier: 'A', tb21: 88.0, price: { in: 5, out: 30, cached: 0.5 } },
   { re: /^codex:gpt-6-sol/, tier: null, price: { in: 2, out: 10, cached: 0.2 } }, // launched 2026-09-22; >272K input: 2x in, 1.5x out
+  { re: /^codex:gpt-6\.1-sol/, tier: null, price: { in: 2, out: 10, cached: 0.2 } }, // same list price as gpt-6-sol (Matthew, 2026-10-01)
   { re: /^codex:gpt-6-luna/, tier: null, price: { in: 0.1, out: 0.5, cached: 0.01 } }, // launched 2026-09-22
   { re: /^codex:gpt-5\.3-codex-spark/, tier: 'C', tb20: 77.3, price: null }, // own rate-limit bucket; no public API price
   { re: /^codex:/, tier: null, price: null },

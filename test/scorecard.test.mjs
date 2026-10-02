@@ -181,6 +181,7 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.6-luna'), { in: 0.2, out: 1.2, cached: 0.02 });
   // Official list prices checked 2026-09-24 (OpenAI and xAI pricing pages); build-fast must not fall to the 4.7 row.
   assert.deepEqual(pr.priceFor('codex', 'gpt-6-sol', {}), { in: 2, out: 10, cached: 0.2 });
+  assert.deepEqual(pr.priceFor('codex', 'gpt-6.1-sol', {}), { in: 2, out: 10, cached: 0.2 });
   assert.deepEqual(pr.priceFor('codex', 'gpt-6-luna', {}), { in: 0.1, out: 0.5, cached: 0.01 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.7-build-fast', {}), { in: 4, out: 12, cached: 1 });
   assert.deepEqual(pr.priceFor('grok', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
