@@ -1,13 +1,12 @@
 # Tests
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 Node's built-in test runner. Run `npm test` from the repository root (it preloads `test/_env.mjs` with `--import`), or one
 file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… test/workers/`.
 
 **Layout mirrors the source folders that have tests:** `test/workers/` (`core/workers/*`), `test/smoke/` (`core/smoke/`),
-`test/server/` (`server/`), `test/ui/` (`ui/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `git`,
+`test/server/` (`server/`), `test/ui/` (`ui/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `boundaries`, `git`,
 `selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
 `ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
 must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.

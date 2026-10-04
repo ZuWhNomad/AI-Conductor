@@ -1,7 +1,6 @@
 # core/smoke — model smoke battery
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Seed the scorecard (`core/scorecard.mjs`) with automatically rated runs so worker
 selection is empirical rather than assumed. Every battery task is a tiny scratch project with a
@@ -11,6 +10,9 @@ deterministic check.
 tool and `conductor smoke`); `BATTERY` in `battery.mjs` (the task definitions); `private/` (reference solutions, hidden tests,
 mutants: see its `CONTEXT.md`); `formatSmoke(results)`. `research-4` and `research-5` are difficulty-4 filing packs:
 `setup` writes long synthetic documents, and the answer is graded in the worker's reply.
+
+**Boundaries.** A `core/` module: imports `core/` siblings only. The task fixtures here import files the worker is
+expected to create — they are not resolvable on purpose. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - One task at a time per run, so the before/after limit delta belongs to that task.

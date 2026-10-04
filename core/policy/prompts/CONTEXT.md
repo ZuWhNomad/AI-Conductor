@@ -1,7 +1,6 @@
 # core/policy/prompts/ — what the conductor and workers are told
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Text only, no code. Behaviour changes here cost no tokens to review and no restart to reason about.
 `conductor.md` + `orchestration.md` are the always-loaded system prompt for every conductor; `conductor-codex.md` and

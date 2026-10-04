@@ -1,7 +1,6 @@
 # bin/ — the CLI entry point
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** One file, `conductor.mjs`: the `conductor` command. It parses argv, calls into `core/` and `server/`, and
 prints. No logic lives here that a route or a core module could not also use — the UI and the CLI must agree.
@@ -11,6 +10,8 @@ windows as the UI), `scores` (`--csv`), `smoke`, `bench`, `review`, `feedback`, 
 (`new` / `list` / `report`), `stop` (POST
 `/api/shutdown` first; direct server-PID fallback only if `/api/state` matches), `worktrees [--prune-days N]` (list/prune
 isolate:true git worktrees).
+
+**Boundaries.** May import `core/` and `server/`. Nothing imports `bin/`. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - Every command works headless: no prompt, no colour codes the user's terminal must support.

@@ -1,7 +1,6 @@
 # core/workers/ — how each provider kind executes a task
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** A worker runs one task (a spec in a cwd) on a given provider and returns a common result. One runner
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
@@ -26,6 +25,11 @@ the loop keeps stable request prefixes between trims.
   10-minute tool deadline when the run is unlimited), and on cancellation. The tool waits for termination before settling.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs
   (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
+
+**Boundaries.** May import `../proc.mjs`, `../bus.mjs`, `../paths.mjs`, `../config.mjs`, `../mcp.mjs`, `../models.mjs`,
+`../improve.mjs`, `../context.mjs`, `../compaction.mjs`. Must not import the orchestration layer (`tasks`, `scorecard`,
+`sweep`, `limits`, `plans`, `tools`, `conductor`, `watchdog`, `jobs`, `bench`): a worker runs one task and knows nothing
+about the queue. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, authFailed, retryAfterMs?, threadId? }`.

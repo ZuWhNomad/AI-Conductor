@@ -1,6 +1,6 @@
 # share/claude-skill/conductor/ — the /conductor Claude Code skill template
 
-**New here? Read the root `AGENTS.md` first** (repo rules). Notes and plans live in the user's notes location, not here.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** `SKILL.md` is a machine-neutral template of a Claude Code skill that drives Conductor over its HTTP API.
 `{{CONDUCTOR_DIR}}` is replaced with the install folder by the one-line install in `docs/DRIVE-CONDUCTOR.md`.

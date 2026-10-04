@@ -113,8 +113,9 @@ test/                    node --test; mirrors the source folders that have tests
 docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, video-briefing-finance-prompt
 ```
 
-Every folder above also holds a `CONTEXT.md` — purpose, entry points, invariants, how to test — which is what an
-agent reads first and what `core/context.mjs` injects into a worker's spec by path. Project notes (plans, reviews,
+Every folder above also holds a `CONTEXT.md` — purpose, entry points, boundaries, invariants, how to test — which is
+the brief an agent works from and what `core/context.mjs` injects into a worker's spec by path. The import boundaries
+each brief states are enforced by `test/boundaries.test.mjs`. Project notes (plans, reviews,
 backlogs, dated logs) are **not** in this repo; they live in the user's notes location, and `test/hygiene.test.mjs`
 fails if any appear here.
 

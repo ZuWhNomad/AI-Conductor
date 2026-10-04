@@ -1,7 +1,6 @@
 # core/smoke/private — the grader's hidden material
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `../CONTEXT.md` (the battery). Plans, reviews,
-backlogs and working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder. Read `../CONTEXT.md` (the battery) first.
 
 **Purpose.** Everything a smoke worker must not see: reference solutions (what `solve()` writes), hidden tests and
 benchmark scripts (written into the scratch dir only while `check()` runs), test-4's mutants, and the mutants/variants

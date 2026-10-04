@@ -1,7 +1,6 @@
 # core/ — the engine
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Everything the workbench does between the HTTP layer (`server/`) and the vendor CLIs: task
 scheduling, budget-aware model selection, limits, the chat conductor, and the tool surface.
@@ -85,6 +84,11 @@ provider, or the whole provider when the failed model has no window group.
 deliberate compaction cut points (`compaction.mjs`); worker prompt order lives in `tasks.mjs` (`buildPrompt`), with
 worker/MSW instructions before MCP and project context, then the resume note, task, recipe and capabilities. `plans.mjs`
 keeps a `for_each` stage's title and shared spec before each vote's item JSON, lens and vote index.
+
+**Boundaries.** `core/` imports other `core/` modules and the two runtime deps — never `server/`, `bin/`, `ui/` or
+`test/`. Leaves `paths.mjs`, `proc.mjs`, `bus.mjs` import nothing of the repo but `paths.mjs`. `policy/` is text and
+JSON only. `workers/` never imports the orchestration layer (`tasks`, `scorecard`, `sweep`, `limits`, `plans`, `tools`,
+`conductor`, `watchdog`, `jobs`, `bench`); `providers/` never imports `workers/`. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.

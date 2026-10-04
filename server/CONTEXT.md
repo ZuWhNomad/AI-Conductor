@@ -1,7 +1,6 @@
 # server/ — HTTP + SSE + static UI
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** One file, `index.mjs`: the local HTTP server between the browser UI and `core/`. JSON API, the SSE event
 stream, static files from `ui/`, and a minimal MCP endpoint for Codex conductors. Binds to 127.0.0.1 only. It holds no
@@ -34,6 +33,9 @@ The update gate counts running chats and running/queued tasks, excluding parked 
 | `GET /api/doctor`, `POST /api/shutdown` | environment check; the UI Quit button | — |
 | `POST /mcp/<session>` | MCP (JSON-RPC over HTTP) exposing the conductor tools to a Codex conductor | `tools` |
 | anything else | static file from `ui/` (`serveStatic`; path must stay inside `ui/`) | — |
+
+**Boundaries.** May import `core/`. Must not import `bin/` or `ui/` — the UI is served as static files, not code.
+Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - Host must be `127.0.0.1` / `localhost` / `[::1]` on the bound port, a present Origin must match, a present

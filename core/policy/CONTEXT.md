@@ -1,7 +1,6 @@
 # core/policy — how the conductor and its workers behave (text only)
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Everything here is prose read at runtime; there is no code. Change behaviour by editing these files,
 not `core/*.mjs`.
@@ -21,6 +20,8 @@ not `core/*.mjs`.
 
 `context-windows.json` holds verified shipped model context sizes; `core/compaction.mjs` loads it. Per-machine exact
 overrides live in `models.contextWindows`, and learned ceilings live in state `context-windows.json`.
+
+**Boundaries.** Text and JSON only — no `.mjs` here, ever. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.** Machine-independent: no absolute paths, no user names, tools referenced by name. Keep each file short
 enough that a small local model can hold it with the tools' schemas. Path-free: the loaders build paths from

@@ -1,6 +1,6 @@
 # share/ — first-run installers for someone you hand this to
 
-**New here? Read the root `AGENTS.md` first** (repo rules). Plans, reviews and notes stay out of this repo.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** `install.cmd` (Windows) and `install.sh` (macOS/Linux): check for Node, install dependencies, create a
 launcher, and say what to do next. They are what a friend runs after unzipping `conductor share`'s output.

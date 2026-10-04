@@ -1,6 +1,6 @@
 # scripts/launcher/ — source of the double-click Conductor.exe
 
-**New here? Read the root `AGENTS.md` first** (repo rules). Notes and plans live in the user's notes location, not here.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** The launcher a non-technical user double-clicks. `Conductor.cs` is a small WinForms program: it finds
 Node, starts `bin/conductor.mjs`, waits for the port, opens the browser, and shows a tray/dialog if that fails.

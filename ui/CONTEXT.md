@@ -1,7 +1,6 @@
 # ui/ — the browser app
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** The workbench UI: vanilla HTML/JS/CSS served as static files by `server/index.mjs`. No framework, no build
 step, no bundler; edits are live on the next page reload.
@@ -28,6 +27,9 @@ banner and read only that section.
 | `modals` | `openModal`, folder browser (errors disable folder selection), Settings, Improvements log, run review |
 | `quit / misc` | Quit button, model popover, SYSTEM drawer, scores modal |
 | `boot` | wires every DOM event handler, then `resync()` + `connect()` |
+
+**Boundaries.** Browser code: imports only its own files (`./stt.js`) and talks to `server/` over HTTP + SSE. No
+`core/` import can work here, so none is attempted.
 
 **Invariants.**
 - All state lives in `S`; render functions read `S` and rebuild their DOM. Sections call each other freely (there are

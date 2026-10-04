@@ -1,7 +1,6 @@
 # core/providers/ — how each vendor lists models and reports limits
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** One module per vendor: detect whether it's installed/authed, list its models, and poll its usage
 windows. This is the *catalog + meter* layer; how a task actually runs lives in `core/workers/`.
@@ -13,6 +12,10 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
 - `vendors.mjs` — subscription **agent CLIs** (Antigravity `agy`, xAI `grok`). Each is a spec
   (`bin`, `login`, `probe`, `parseModels`, `pollLimits`, `headlessArgs`, `parse`); `providerFor(spec)` turns a spec
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.
+
+**Boundaries.** May import `../proc.mjs`, `../paths.mjs`, `../config.mjs`, `../models.mjs`. Must not import
+`../workers/` — known debt: `vendors.mjs` → `../workers/vendor-cli.mjs`, listed in `test/boundaries.test.mjs` until
+the executor hand-off moves out of the spec. Enforced by that test.
 
 **Invariants.**
 - A limit window may carry a `models` regex — it then meters only the models it names (Antigravity groups Gemini vs
