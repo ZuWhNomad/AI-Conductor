@@ -530,7 +530,7 @@ export function research5Pack() {
     items: [
       { id: 'D1', quote: R5_SEGMENTS, claims: [['[Ii]ndustrial', pct(54)], ['consumer packaging', pct(31)], [pct(15)]] },
       { id: 'D2', quote: R5_CEO, claims: [['Ada Pell', count(6, 'six', 'years?'), 'Northline Pulp'], ['Jon Vesper', count(3, 'three', 'years?'), 'Kite Board']] },
-      { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['\\b4\\b', '\\b9\\b', 'women']] },
+      { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['\\b(?:4|four)\\b', '\\b(?:9|nine)\\b', 'women']] },
       { id: 'D4', quote: R5_DIVIDEND, trap: 'absent', claims: [['not\\s+(?:disclosed|found|reported|mentioned)|(?:do|does)\\s+not\\s+(?:disclose|report|mention)|(?:disclose|report|mention)(?:s|ed)?\\s+no|no\\s+(?:share\\s+)?(?:repurchase|buyback)\\s+authorization']] },
       { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [[money(900, 'million')], [money(840, 'million')], ['stale|outdated|earlier|previous|older|supersed|conflict|contradict|differ|inconsisten|disagree']] },
       { id: 'D6', quotes: [R5_RISK_FIBER, R5_RISK_PORT], claims: [[`recovered(?:${dash}|\\s)+fiber`], ['port terminal']] },
