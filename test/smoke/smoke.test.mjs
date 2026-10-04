@@ -209,6 +209,9 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const words5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Of nine directors, four are women.');
   assert.equal((await run('research-5', words5)).pass, true, 'research-5 counts spelled as words');
   assert.equal((await run('research-5', words5.replace('four are women', 'five are women'))).pass, false, 'wrong count still fails');
+  const tenure5 = ref5.replace('Ada Pell has served as chief executive officer for 6 years and previously was chief financial officer of Northline Pulp. Jon Vesper has served as chief financial officer for 3 years and previously was treasurer of Kite Board Company.', 'CEO Ada Pell: 6-year tenure; previously CFO of Northline Pulp. CFO Jon Vesper: 3-year tenure; previously treasurer of Kite Board Company.');
+  assert.equal((await run('research-5', tenure5)).pass, true, 'research-5 hyphenated tenure');
+  assert.equal((await run('research-5', tenure5.replace('6-year', '16-year'))).pass, false, 'wrong tenure still fails');
   const differentQuote4 = ref4
     .replace('Third-quarter revenue was $412 million', 'Third-quarter revenue was $412M')
     .replace('current order backlog of $1.62 billion', 'current order backlog of $1.62B')
