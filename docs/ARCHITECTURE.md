@@ -75,7 +75,9 @@ core/
   bus.mjs                event bus with ring buffer (SSE replay)
   conductor.mjs          chat sessions = Agent SDK queries with streaming input
   tools.mjs              MCP tools exposed to the conductor
-  tasks.mjs              worker task journal, scheduler, park/resume on limits
+  tasks.mjs              worker task journal, scheduler, run lifecycle, park/resume on limits; re-exports tasks/
+  tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs
+                         (buildPrompt), git.mjs (git helpers, worktree links, repo size)
   jobs.mjs               detached commands that survive turns and server restarts
   watchdog.mjs           liveness verdicts/actions, persisted watches, restart-safe idle-chat wake-ups
   plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
