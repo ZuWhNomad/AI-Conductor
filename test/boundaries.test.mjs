@@ -9,15 +9,15 @@ import { join, posix } from 'node:path';
 import { REPO_ROOT } from '../core/paths.mjs';
 
 const CODE_DIRS = ['core', 'server', 'bin'];
-const LEAVES = ['core/paths.mjs', 'core/proc.mjs', 'core/bus.mjs'];
-const ORCHESTRATION = /^core\/(tasks|scorecard|sweep|limits|plans|tools|conductor|watchdog|jobs|bench)\.mjs$/;
+const LEAVES = ['core/paths', 'core/proc', 'core/bus']; // extension-free: a module may be .mjs or .ts
+const ORCHESTRATION = /^core\/(tasks|scorecard|sweep|limits|plans|tools|conductor|watchdog|jobs|bench)(\/|\.(mjs|ts)$)/;
 
 // Edges that violate a rule today. Remove an entry when the code moves; the test fails if a listed edge is gone.
 const KNOWN_DEBT = [];
 
 function files(dir) {
   return readdirSync(join(REPO_ROOT, dir), { recursive: true })
-    .filter((f) => f.endsWith('.mjs'))
+    .filter((f) => /\.(mjs|ts)$/.test(f))
     .map((f) => posix.join(dir, f.split('\\').join('/')));
 }
 
@@ -36,7 +36,7 @@ function rule(from, to) {
   if (starts('server/') && !/^(core|server)\//.test(to)) return 'server/ imports only core/ (ui/ is served as static files)';
   if (starts('core/providers/') && to.startsWith('core/workers/')) return 'providers/ (catalog + meter) must not import workers/ (execution)';
   if (starts('core/workers/') && ORCHESTRATION.test(to)) return 'workers/ run one task and know nothing about the scheduler';
-  if (LEAVES.includes(from) && to !== 'core/paths.mjs') return 'leaf modules import nothing of the repo but paths.mjs';
+  if (LEAVES.includes(from.replace(/\.(mjs|ts)$/, '')) && !/^core\/paths\.(mjs|ts)$/.test(to)) return 'leaf modules import nothing of the repo but paths';
   return null;
 }
 

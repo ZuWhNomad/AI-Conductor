@@ -9,12 +9,14 @@ spans folders; its directory map says which `CONTEXT.md` to read.
 
 Invariants that hold everywhere:
 
-- **No build step.** Plain ESM (`.mjs`), Node >= 22. Two runtime dependencies (`@anthropic-ai/claude-agent-sdk`,
-  `zod`); do not add more without a strong reason.
+- **No build step.** Plain ESM, Node >= 22.18: `.mjs` today, `.ts` where a module has been converted (Node strips the
+  types at load; only erasable syntax, explicit extensions in imports). Two runtime dependencies
+  (`@anthropic-ai/claude-agent-sdk`, `zod`); do not add more without a strong reason. Dev dependencies are
+  `typescript` and `@types/node`, for `npm run check` only.
 - **Ladder before code:** does it need to exist → stdlib → platform feature → existing dependency → one line → then
   write the minimum.
-- **`npm test` before reporting done.** Tests isolate state via `CONDUCTOR_HOME` (`test/_env.mjs`); never touch the
-  real `~/.conductor2`.
+- **`npm test` and `npm run check` before reporting done.** Tests isolate state via `CONDUCTOR_HOME`
+  (`test/_env.mjs`); never touch the real `~/.conductor2`. `check` is `tsc --noEmit` over the whole tree.
 - **Events:** everything the UI sees goes through `core/bus.mjs` (`bus.publish(type, data)`). Small payloads.
 - **Secrets** live only in `~/.conductor2/config.json`; `publicConfig()` redacts them. Never log them.
 - **Windows first:** spawn CLIs without a shell (`core/proc.mjs`); prefer stdin for long prompts.
