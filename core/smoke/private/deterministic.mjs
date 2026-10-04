@@ -204,8 +204,8 @@ const numeric = (n) => `(?<![\\d.])${number(n)}(?!\\d)`;
 const pct = (n) => `${numeric(n)}\\s*(?:%|percent|per\\s+cent)`;
 const currency = (n) => `(?<![\\d.])(?:\\$\\s*|USD\\s*)?${number(n)}(?:\\s+dollars?)?(?!\\d)`;
 export const money = (n, unit) => `(?<![\\d.])(?:\\$\\s*|USD\\s*)?${number(n)}\\s*(?:${unit}|${unit === 'million' ? 'm|mn' : 'b|bn'})(?:\\s+dollars?)?\\b`;
-const count = (n, word, unit) => `(?:${n}|${word})\\s+${unit}`;
 const dash = '[-\\u2010-\\u2015]';
+const count = (n, word, unit) => `\\b(?:${n}|${word})(?:${dash}|\\s)+${unit}`; // "6 years", "six years", "6-year tenure"
 
 export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
 [
