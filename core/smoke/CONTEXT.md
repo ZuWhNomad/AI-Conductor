@@ -27,6 +27,9 @@ expected to create — they are not resolvable on purpose. Enforced by `test/bou
 - Checks must not trust the worker's report: inspect files or run `node --test`. Every check first fails a
   scratch dir holding a file that carries `CANARY` ("copied from the grader"). Hidden files are written only
   while `check()` runs and removed again.
+- Treat worker-written UTF-8 JSON as text, including an optional BOM. Where a spec permits equivalent wording or
+  formatting, grade the fact rather than one reference spelling (for example `%`/`percent`, compact money units,
+  insignificant decimal zeroes and ordinary Unicode dash variants); pair every such allowance with a negative test.
 - Nothing the worker sees names the battery: scratch dirs live in the OS temp dir as `w-XXXXXX` and the task title
   is the entry's plain `title` (no conductor, smoke or task id). Scratch dirs are removed unless `keep` is set.
 - `conductor smoke` runs the task scheduler in its own process over the same journal as a running

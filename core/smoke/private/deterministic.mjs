@@ -195,10 +195,17 @@ Excerpt C — market conditions
 Industry shipments are forecast to grow 9% next year as regional grid upgrades accelerate. Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.
 `;
 
-const number = (n) => String(n).replace('.', '\\.');
-const pct = (n) => `${number(n)}\\s*(?:%|percent|per\\s+cent)`;
-export const money = (n, unit) => `(?:\\$\\s*)?${number(n)}\\s*(?:${unit}|${unit === 'million' ? 'm|mn' : 'b|bn'})(?:\\s+dollars?)?\\b`;
+const number = (n) => {
+  const [whole, fraction] = String(n).split('.');
+  if (fraction == null || !fraction.replace(/0+$/, '')) return `${whole}(?:\\.0+)?`;
+  return `${whole}\\.${fraction.replace(/0+$/, '')}0*`;
+};
+const numeric = (n) => `(?<![\\d.])${number(n)}(?!\\d)`;
+const pct = (n) => `${numeric(n)}\\s*(?:%|percent|per\\s+cent)`;
+const currency = (n) => `(?<![\\d.])(?:\\$\\s*|USD\\s*)?${number(n)}(?:\\s+dollars?)?(?!\\d)`;
+export const money = (n, unit) => `(?<![\\d.])(?:\\$\\s*|USD\\s*)?${number(n)}\\s*(?:${unit}|${unit === 'million' ? 'm|mn' : 'b|bn'})(?:\\s+dollars?)?\\b`;
 const count = (n, word, unit) => `(?:${n}|${word})\\s+${unit}`;
+const dash = '[-\\u2010-\\u2015]';
 
 export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
 [
@@ -216,8 +223,8 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "citation": "Excerpt B",
     "quote": "Brindle Components ended the quarter with $72 million of cash and no long-term debt.",
     "claims": [
-      [${JSON.stringify(money(72, 'million'))}, "cash", "no long-term debt"],
-      ["capital spending", ${JSON.stringify(money(18, 'million'))}, "second assembly line", "October"]
+      [${JSON.stringify(money(72, 'million'))}, "cash", ${JSON.stringify(`no\\s+long(?:${dash}|\\s)+term\\s+debt`)}],
+      ["capital spending|capital expenditures?|capex", ${JSON.stringify(money(18, 'million'))}, "second assembly line", "October"]
     ]
   },
   {
@@ -226,7 +233,7 @@ export const RESEARCH_GOLD = `// kq7Vx2Lm9Rt4
     "quote": "Component lead times have fallen from 11 weeks to 7 weeks, which may ease pricing power for suppliers.",
     "claims": [
       ["shipments?", ${JSON.stringify(pct(9))}, "grid upgrades"],
-      ["lead times", "11\\\\s+weeks|11\\\\s*(?:to|-|–)\\\\s*7\\\\s+weeks", "7\\\\s+weeks", "pricing power"]
+      ["lead times", ${JSON.stringify(`(?:11|eleven)(?:\\s+weeks|\\s*(?:to|${dash})\\s*(?:7|seven)\\s+weeks)`)}, ${JSON.stringify(`(?:7|seven)\\s+weeks`)}, "pricing power"]
     ]
   }
 ]
@@ -297,7 +304,7 @@ export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
     "end": 10,
     "claim": "The pilot enrolled 120 households in three neighborhoods.",
     "quote": "The pilot enrolled 120 households across three neighborhoods.",
-    "patterns": ["120\\\\s+households", "three\\\\s+neighborhoods"]
+    "patterns": [${JSON.stringify(`${numeric(120)}\\s+households`)}, ${JSON.stringify(`(?:3|three)\\s+neighborhoods`)}]
   },
   {
     "timestamp": "00:18",
@@ -305,7 +312,7 @@ export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
     "end": 22,
     "claim": "Peak electricity demand fell 8 percent during the six-week trial.",
     "quote": "During the six-week trial, peak electricity demand fell by 8 percent.",
-    "patterns": ["peak electricity demand", ${JSON.stringify(pct(8))}, "six-week trial"]
+    "patterns": ["peak electricity demand", ${JSON.stringify(pct(8))}, ${JSON.stringify(`(?:6|six)(?:${dash}|\\s)+week\\s+trial`)}]
   },
   {
     "timestamp": "00:31",
@@ -313,7 +320,7 @@ export const VIDEO_GOLD = `// kq7Vx2Lm9Rt4
     "end": 35,
     "claim": "No battery faults were reported, but two homes briefly lost Wi-Fi.",
     "quote": "No battery faults were reported, although two homes lost Wi-Fi briefly.",
-    "patterns": ["no battery faults", "two homes", "Wi-Fi"]
+    "patterns": ["(?:no|zero)\\\\s+battery faults?", "(?:2|two)\\\\s+homes", "Wi(?:[-\\\\u2010-\\\\u2015]|\\\\s)?Fi"]
   }
 ]
 `;
@@ -422,10 +429,10 @@ export function research4Pack() {
       anchor('filings/10-Q.md', R4_BACKLOG), anchor('filings/10-Q.md', R4_CASH),
     ],
     items: [
-      { id: 'R1', quote: R4_REV, claims: [[money(412, 'million')], ['2\\.18'], ['2\\.05'], ['beat|exceed', '0\\.13']] },
-      { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [[money('1.62', 'billion')], [money('1.40', 'billion')], ['conflict|differ|inconsisten|stale|disagree|before (?:the )?quarter|pre-quarter']] },
-      { id: 'R3', quote: R4_TARGET, trap: 'target', claims: [['\\$204\\b'], ['24'], ['8\\.50']] },
-      { id: 'R4', quote: R4_SPOT, trap: 'rating', rating: 'BUY', claims: [['27\\.5']] },
+      { id: 'R1', quote: R4_REV, claims: [[money(412, 'million')], [currency('2.18')], [currency('2.05')], ['beat|exceed', currency('0.13')]] },
+      { id: 'R2', quote: R4_BACKLOG, trap: 'backlog', claims: [[money('1.62', 'billion')], [money('1.40', 'billion')], ['conflict|contradict|differ|inconsisten|stale|older|supersed|disagree|before (?:the )?quarter|pre-quarter']] },
+      { id: 'R3', quote: R4_TARGET, trap: 'target', claims: [[currency(204)], [numeric(24)], [currency('8.50')]] },
+      { id: 'R4', quote: R4_SPOT, trap: 'rating', rating: 'BUY', claims: [[numeric('27.5')]] },
       { id: 'R5', quote: R4_CASH, claims: [[money(86, 'million')]] },
     ],
   };
@@ -524,9 +531,9 @@ export function research5Pack() {
       { id: 'D1', quote: R5_SEGMENTS, claims: [['[Ii]ndustrial', pct(54)], ['consumer packaging', pct(31)], [pct(15)]] },
       { id: 'D2', quote: R5_CEO, claims: [['Ada Pell', count(6, 'six', 'years?'), 'Northline Pulp'], ['Jon Vesper', count(3, 'three', 'years?'), 'Kite Board']] },
       { id: 'D3', quote: R5_MATRIX, trap: 'aggregate', claims: [['\\b4\\b', '\\b9\\b', 'women']] },
-      { id: 'D4', quote: R5_DIVIDEND, trap: 'absent', claims: [['not disclosed|not found in the sources']] },
-      { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [[money(900, 'million')], [money(840, 'million')], ['stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree']] },
-      { id: 'D6', quotes: [R5_RISK_FIBER, R5_RISK_PORT], claims: [['recovered-fiber'], ['port terminal']] },
+      { id: 'D4', quote: R5_DIVIDEND, trap: 'absent', claims: [['not\\s+(?:disclosed|found|reported|mentioned)|(?:do|does)\\s+not\\s+(?:disclose|report|mention)|(?:disclose|report|mention)(?:s|ed)?\\s+no|no\\s+(?:share\\s+)?(?:repurchase|buyback)\\s+authorization']] },
+      { id: 'D5', quote: R5_GUIDE, trap: 'guidance', claims: [[money(900, 'million')], [money(840, 'million')], ['stale|outdated|earlier|previous|older|supersed|conflict|contradict|differ|inconsisten|disagree']] },
+      { id: 'D6', quotes: [R5_RISK_FIBER, R5_RISK_PORT], claims: [[`recovered(?:${dash}|\\s)+fiber`], ['port terminal']] },
     ],
   };
   return pack5;
