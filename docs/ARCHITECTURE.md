@@ -91,7 +91,9 @@ core/
   context.mjs            CONTEXT.md discovery + path-scoped injection into worker specs
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
-  scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
+  scorecard.mjs          re-export façade over scorecard/ (keeps `./scorecard.mjs` imports working)
+  scorecard/             ledger.mjs (append-only ndjson + identity helpers) → summary.mjs (attempts, chains, cells, shipped
+                         batteries) → recommend.mjs (plans by utility, provider cost model) → report.mjs (grid, text, CSV)
   experiment.mjs         A/B experiment records + compare of tagged scorecard run rows
   priors.mjs             API list prices + shipped/configured hand-picked tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
