@@ -211,18 +211,3 @@ function runVendorCliOnce(spec, t) {
     if (useStdin) { child.stdin.on('error', () => {}); child.stdin.end(t.prompt); }
   });
 }
-
-/** Helpers shared by vendor parsers. */
-export const vendorParse = {
-  addUsage(st, u, { input = 'input_tokens', output = 'output_tokens', cached = 'cache_read_tokens', thinking = 'thinking_tokens' } = {}) {
-    if (!u) return;
-    st.usage = st.usage || { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_output_tokens: 0, ...(st.spec?.usageInputExclusive ? { exclusive: true } : {}) };
-    st.usage.input_tokens += Number(u[input]) || 0;
-    st.usage.output_tokens += Number(u[output]) || 0;
-    st.usage.cached_input_tokens += Number(u[cached]) || 0;
-    st.usage.reasoning_output_tokens += Number(u[thinking]) || 0;
-  },
-  message(st, emit, text) { if (!text) return; st.items.push({ type: 'agent_message', text }); emit('item', { item: { type: 'agent_message', text }, phase: 'completed' }); },
-  toolStart(st, emit, id, name, input) { st.items.push({ type: 'tool_use', id, name, input }); emit('item', { item: { id, type: 'tool_use', name, input: JSON.stringify(input || {}).slice(0, 300), args: input }, phase: 'started' }); },
-  toolDone(st, emit, id, name, output, isError = false) { emit('tool_result', { toolUseId: id, name, isError, text: String(output ?? 'done').slice(0, 4000) }); },
-};

@@ -13,9 +13,7 @@ const LEAVES = ['core/paths.mjs', 'core/proc.mjs', 'core/bus.mjs'];
 const ORCHESTRATION = /^core\/(tasks|scorecard|sweep|limits|plans|tools|conductor|watchdog|jobs|bench)\.mjs$/;
 
 // Edges that violate a rule today. Remove an entry when the code moves; the test fails if a listed edge is gone.
-const KNOWN_DEBT = [
-  'core/providers/vendors.mjs -> core/workers/vendor-cli.mjs', // the executor belongs in workers/; vendors.mjs should only describe the CLI
-];
+const KNOWN_DEBT = [];
 
 function files(dir) {
   return readdirSync(join(REPO_ROOT, dir), { recursive: true })

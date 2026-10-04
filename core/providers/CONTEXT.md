@@ -14,8 +14,7 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.
 
 **Boundaries.** May import `../proc.mjs`, `../paths.mjs`, `../config.mjs`, `../models.mjs`. Must not import
-`../workers/` — known debt: `vendors.mjs` → `../workers/vendor-cli.mjs`, listed in `test/boundaries.test.mjs` until
-the executor hand-off moves out of the spec. Enforced by that test.
+`../workers/`: a spec describes a CLI, the runner in `workers/vendor-cli.mjs` executes it. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - A limit window may carry a `models` regex — it then meters only the models it names (Antigravity groups Gemini vs
