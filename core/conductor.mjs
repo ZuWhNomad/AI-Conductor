@@ -20,7 +20,7 @@ import { KILL_GUARD_HOOKS } from './workers/claude.mjs';
 import { spawnTracked } from './proc.mjs';
 import { runOpenAICompat } from './workers/openai-compat.mjs';
 import { getModels, findModel, markUnavailable } from './models.mjs';
-import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow, estimateTokens } from './compaction.mjs';
+import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow, estimateTokens } from './compaction.ts';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');
 const REQUIRED_VERSION_RE = /version\s+(\d+\.\d+\.\d+)\s+or newer is required/i;

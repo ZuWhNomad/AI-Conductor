@@ -18,7 +18,7 @@ not `core/*.mjs`.
 - `priors.json` — shipped hand-picked scorecard tiers. Rules resolve category, then kind, then default; exact
   machine overrides live in `scorecard.priors`. `core/priors.mjs` retains the code table as the no-file fallback.
 
-`context-windows.json` holds verified shipped model context sizes; `core/compaction.mjs` loads it. Per-machine exact
+`context-windows.json` holds verified shipped model context sizes; `core/compaction.ts` loads it. Per-machine exact
 overrides live in `models.contextWindows`, and learned ceilings live in state `context-windows.json`.
 
 **Boundaries.** Text and JSON only — no `.mjs` here, ever. Enforced by `test/boundaries.test.mjs`.

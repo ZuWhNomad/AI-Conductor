@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { loadConfig, saveConfig } from '../core/config.mjs';
 import { bus } from '../core/bus.mjs';
 import { statePath, readJson, writeJson } from '../core/paths.mjs';
-import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow } from '../core/compaction.mjs';
+import { compactForNextTurn, compactHistory, contextWindowFor, recordLearnedContextWindow } from '../core/compaction.ts';
 
 test('model windows honor override, learned ceiling, shipped data and fallback', () => {
   recordLearnedContextWindow('test', 'learned', 7654);

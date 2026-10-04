@@ -3,7 +3,7 @@
 A local, multi-model agent workbench: a Claude Code clone whose selected Claude model is the
 **conductor** (plans, delegates, reviews) and whose grunt work goes to cheaper workers
 (GPT-6 Astra via the Codex CLI on your ChatGPT subscription, Antigravity and Grok CLIs,
-or the DeepSeek API). Browser UI with speech-to-text. Node >= 22, two runtime
+or the DeepSeek API). Browser UI with speech-to-text. Node >= 22.18, two runtime
 dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 
 ## Ladder decisions (why it is built this way)

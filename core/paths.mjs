@@ -32,6 +32,12 @@ export function tryReadJson(file) {
   catch (e) { return { ok: false, missing: false, error: e }; }
 }
 
+/**
+ * @template [T=any]
+ * @param {string} file
+ * @param {T} [fallback]
+ * @returns {any | T}
+ */
 export function readJson(file, fallback = null) {
   const r = tryReadJson(file);
   return r.ok ? r.value : fallback;

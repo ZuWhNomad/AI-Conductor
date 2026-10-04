@@ -27,7 +27,7 @@ the loop keeps stable request prefixes between trims.
   (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
 
 **Boundaries.** May import `../proc.mjs`, `../bus.mjs`, `../paths.mjs`, `../config.mjs`, `../mcp.mjs`, `../models.mjs`,
-`../improve.mjs`, `../context.mjs`, `../compaction.mjs`. Must not import the orchestration layer (`tasks`, `scorecard`,
+`../improve.mjs`, `../context.mjs`, `../compaction.ts`. Must not import the orchestration layer (`tasks`, `scorecard`,
 `sweep`, `limits`, `plans`, `tools`, `conductor`, `watchdog`, `jobs`, `bench`): a worker runs one task and knows nothing
 about the queue. Enforced by `test/boundaries.test.mjs`.
 

@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
 import { bus } from '../bus.mjs';
-import { estimateTokens, recordLearnedContextWindow, contextWindowFor } from '../compaction.mjs';
+import { estimateTokens, recordLearnedContextWindow, contextWindowFor } from '../compaction.ts';
 import { killTree, registerProc } from '../proc.mjs';
 import { loadConfig } from '../config.mjs';
 import { stateDir } from '../paths.mjs';
