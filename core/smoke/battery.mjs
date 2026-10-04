@@ -64,6 +64,8 @@ const countTests = (src) => (src.match(/^test\(/gm) || []).length;
 const privateJson = (body) => JSON.parse(bare(body));
 // Windows PowerShell 5.1 writes UTF-8 with a BOM, which JSON.parse rejects.
 const readJson = (dir, rel) => { try { return JSON.parse(read(dir, rel).replace(/^\uFEFF/, '')); } catch { return null; } };
+// Source-shape checks must ignore prose that happens to spell the forbidden/required construct.
+const executableSource = (src) => String(src || '').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '').replace(/(['"`])(?:\\.|(?!\1)[^\\\n])*\1/g, '""');
 const wordCount = (s) => (String(s || '').match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) || []).length;
 const SLOP = /\b(?:delve|game[- ]changer|unlock|elevate|tapestry|testament)\b|in today'?s fast-paced world|it is important to note/iu;
 const researchSectionMap = (out, prefix) => {
@@ -119,14 +121,14 @@ const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|n
 function researchTrap(item, ans, roster) {
   if (item.trap === 'backlog') {
     for (const s of researchClauses(ans)) {
-      if (new RegExp(money('1.40', 'billion'), 'i').test(s) && /\bcurrent\b/i.test(s) && !/conflict|differ|inconsisten|stale|disagree|not current|no longer/i.test(s)) return 'R2 treats the stale backlog as current';
+      if (new RegExp(money('1.40', 'billion'), 'i').test(s) && /\bcurrent\b/i.test(s) && !/conflict|differ|inconsisten|stale|older|supersed|disagree|not current|no longer/i.test(s)) return 'R2 treats the stale backlog as current';
     }
   }
   if (item.trap === 'target') {
     // Naming the corrected $204 counts as flagging the inconsistency ("the target is $300, but its own numbers support $204").
-    const corrected = (x) => INCONSISTENT.test(x) || /\$\s?204\b/.test(x);
+    const corrected = (x) => INCONSISTENT.test(x) || /(?<![\d.])(?:\$\s*|USD\s*)?204(?:\.0+)?(?:\s+dollars?)?\b/i.test(x);
     for (const s of researchSentences(ans)) {
-      if (/\btarget\b/i.test(s) && /\$\s?300\b/.test(s) && ((/\bsupport(?:s|ed)?\b/i.test(s) && !corrected(s)) || !corrected(ans))) return 'R3 presents the wrong target';
+      if (/\btarget\b/i.test(s) && /(?<![\d.])(?:\$\s*|USD\s*)?300(?:\.0+)?(?:\s+dollars?)?\b/i.test(s) && ((/\bsupport(?:s|ed)?\b/i.test(s) && !corrected(s)) || !corrected(ans))) return 'R3 presents the wrong target';
     }
   }
   if (item.trap === 'rating') {
@@ -148,7 +150,7 @@ function researchTrap(item, ans, roster) {
   }
   if (item.trap === 'guidance') {
     for (const s of researchSentences(ans)) {
-      if (new RegExp(money(840, 'million'), 'i').test(s) && /\b(?:current|latest)\b/i.test(s) && !/stale|outdated|earlier|previous|conflict|differ|inconsisten|disagree|not current/i.test(s)) return 'D5 treats the stale guidance as current';
+      if (new RegExp(money(840, 'million'), 'i').test(s) && /\b(?:current|latest)\b/i.test(s) && !/stale|outdated|earlier|previous|older|supersed|conflict|differ|inconsisten|disagree|not current/i.test(s)) return 'D5 treats the stale guidance as current';
     }
   }
   return '';
@@ -196,6 +198,31 @@ const timestampSeconds = (s) => {
   if ((p.length !== 2 && p.length !== 3) || p.some((n) => !Number.isFinite(n))) return null;
   return p.length === 2 ? p[0] * 60 + p[1] : p[0] * 3600 + p[1] * 60 + p[2];
 };
+
+const mediaBlocks = (src) => {
+  const css = String(src || '').replace(/\/\*[\s\S]*?\*\//g, ''), blocks = [];
+  for (const match of css.matchAll(/@media\b[^{}]*\{/gi)) {
+    let depth = 1, i = match.index + match[0].length;
+    for (; i < css.length && depth; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}') depth--;
+    }
+    if (!depth) blocks.push({ query: match[0].slice(0, -1), body: css.slice(match.index + match[0].length, i - 1) });
+  }
+  return blocks;
+};
+const oneColumnGrid = (value) => {
+  const v = value.replace(/\s+/g, ' ').trim();
+  return /^(?:1fr|100%|auto|min-content|max-content|minmax\(\s*0\s*,\s*1fr\s*\)|repeat\(\s*1\s*,\s*(?:1fr|100%|auto|minmax\(\s*0\s*,\s*1fr\s*\))\s*\))$/i.test(v);
+};
+const hasMobileCardGrid = (src) => mediaBlocks(src).some(({ query, body }) => {
+  if (!/\(\s*max-width\s*:\s*640px\s*\)/i.test(query)) return false;
+  // The spec names no container class, so any rule in the block may carry the one-column grid.
+  return [...body.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(([, , declarations]) => {
+    const value = /(?:^|;)\s*grid-template-columns\s*:\s*([^;}]+)/i.exec(declarations)?.[1];
+    return value != null && oneColumnGrid(value);
+  });
+});
 const transcriptCues = (transcript) => String(transcript || '').split(/\r?\n\s*\r?\n/).flatMap((block) => {
   const lines = block.trim().split(/\r?\n/), timing = lines.findIndex((line) => line.includes('-->'));
   if (timing < 0) return [];
@@ -504,7 +531,14 @@ const TASKS = [
       if (lines.length !== 6 || !/^HEADLINE:\s*\S/i.test(lines[0]) || !/^SUBHEAD:\s*\S/i.test(lines[1]) || !lines.slice(2, 5).every((l) => /^-\s+\S/.test(l)) || lines[5] !== 'CTA: Start your 14-day free trial.') return { pass: false, notes: 'expected headline, subhead, exactly three bullets and the required CTA' };
       const copy = lines.map((l) => l.replace(/^(?:HEADLINE|SUBHEAD|CTA):\s*|^-\s*/i, '')).join(' '), n = wordCount(copy);
       if (n < 45 || n > 80) return { pass: false, notes: `${n} copy words (need 45-80)` };
-      const required = [/\boffline\b/i, /desktop/i, /mobile/i, /\$8\s*\/\s*month/i, /14-day free trial/i, /no credit card/i];
+      const required = [
+        /\boffline\b/i,
+        /desktop/i,
+        /mobile/i,
+        /(?:\$\s*8(?:\.0+)?(?!\d)|(?<![\d.])8(?:\.0+)?\s+dollars?)\s*(?:\/|per\b|a\b)\s*month|\$\s*8(?:\.0+)?(?!\d)\s+monthly/i,
+        /(?<!\d)14(?:[-\u2010-\u2015]|\s)+day\s+free\s+trial(?!\d)/i,
+        /no\s+(?:credit\s+)?card|without\s+(?:(?:requiring|using)\s+)?(?:a\s+)?credit\s+card|credit\s+card\s+(?:is\s+)?not\s+required|doesn['’]?t\s+require\s+(?:a\s+)?credit\s+card/i,
+      ];
       if (!required.every((r) => r.test(out))) return { pass: false, notes: 'missing a required product fact' };
       if (SLOP.test(out)) return { pass: false, notes: 'banned filler/slop phrase found' };
       return { pass: true, notes: '' };
@@ -568,12 +602,14 @@ const TASKS = [
     id: 'test-2', category: 'test', difficulty: 2, title: 'write tests for a module',
     spec: `Write src/stack.test.mjs using node:test and node:assert/strict with at least 5 test() cases for the Stack class in src/stack.mjs: push/pop order, peek, size, isEmpty, and that pop() on an empty stack throws. Do not modify src/stack.mjs. ${VERIFY}`,
     setup(dir) { write(dir, { 'src/stack.mjs': STACK }); },
-    check(dir) {
+    async check(dir) {
       if (!unchanged(dir, 'src/stack.mjs', STACK)) return { pass: false, notes: 'stack.mjs modified' };
       const src = read(dir, 'src/stack.test.mjs');
       if (!src) return { pass: false, notes: 'no src/stack.test.mjs' };
-      const n = (src.match(/\b(?:test|it)\s*\(/g) || []).length;
-      return n >= 5 ? testsPass(dir) : { pass: false, notes: `${n} test cases (< 5)` };
+      const r = await runNode(dir, ['--test', '--test-reporter=tap']);
+      const n = Number([...r.stdout.matchAll(/^# tests (\d+)\r?$/gm)].at(-1)?.[1] ?? -1);
+      if (!r.ok) return { pass: false, notes: `${r.stdout}\n${r.stderr}`.trim().slice(-1500) };
+      return n >= 5 ? { pass: true, notes: '' } : { pass: false, notes: `${Math.max(n, 0)} test cases (< 5)` };
     },
     solve(dir) { write(dir, bare({ 'src/stack.test.mjs': STACK_TEST })); },
   },
@@ -591,7 +627,7 @@ const TASKS = [
       const field = (body, tag, name) => new RegExp(`<${tag}\\b[^>]*class=["'][^"']*\\b${name}\\b[^"']*["'][^>]*>([^<]*)<\\/${tag}\\s*>`, 'i').exec(body)?.[1].replace(/\s+/g, ' ').trim();
       const values = cards.map((body) => [field(body, 'span', 'label'), field(body, 'strong', 'value'), field(body, 'small', 'detail')]);
       if (!isDeepStrictEqual(values, privateJson(UI_GOLD))) return { pass: false, notes: 'card fields do not match the requested content and order' };
-      if (!/@media\s*\(\s*max-width\s*:\s*640px\s*\)[^{]*\{[\s\S]*?grid-template-columns\s*:\s*1fr\b/i.test(src)) return { pass: false, notes: 'missing the 640px one-column media rule' };
+      if (!hasMobileCardGrid(src)) return { pass: false, notes: 'missing the 640px one-column media rule' };
       if (/https?:\/\//i.test(src)) return { pass: false, notes: 'remote asset URL found' };
       if (/\son[a-z]+\s*=/i.test(src)) return { pass: false, notes: 'inline event handler found' };
       return { pass: true, notes: '' };
@@ -605,7 +641,7 @@ const TASKS = [
     async check(dir) {
       if (!unchanged(dir, 'src/format.test.mjs', FORMAT_TEST)) return { pass: false, notes: 'test file modified' };
       if (!existsSync(join(dir, 'src/money.mjs'))) return { pass: false, notes: 'no src/money.mjs' };
-      const code = readdirSync(join(dir, 'src')).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs')).map((f) => read(dir, `src/${f}`)).join('\n');
+      const code = executableSource(readdirSync(join(dir, 'src')).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs')).map((f) => read(dir, `src/${f}`)).join('\n'));
       const defs = (code.match(/(?:function\s+formatMoney\b|(?:const|let|var)\s+formatMoney\s*=)/g) || []).length;
       if (defs !== 1) return { pass: false, notes: `${defs} formatMoney definitions (want 1)` };
       const exp = await importCheck(dir, 'src/money.mjs', 'typeof m.formatMoney === "function"');
@@ -656,7 +692,7 @@ const TASKS = [
     check(dir) {
       if (!unchanged(dir, 'src/calc.test.mjs', CALC_TEST)) return { pass: false, notes: 'test file modified' };
       // Judge code, not prose: "no eval / new Function" in a comment or string is not a use.
-      const code = (read(dir, 'src/calc.mjs') || '').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '').replace(/(['"`])(?:\\.|(?!\1)[^\\\n])*\1/g, '""');
+      const code = executableSource(read(dir, 'src/calc.mjs'));
       const use = code.split('\n').find((l) => /\beval\s*\(|new\s+Function\b/.test(l));
       if (use) return { pass: false, notes: `uses eval / new Function: ${use.trim().slice(0, 120)}` };
       return testsPass(dir);

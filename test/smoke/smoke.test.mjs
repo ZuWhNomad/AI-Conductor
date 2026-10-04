@@ -86,6 +86,20 @@ test('read-2 classification enforces the stated 10-of-12 accuracy bar', async ()
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('every worker-written JSON grader accepts a UTF-8 BOM and still rejects bad content', async () => {
+  for (const id of ['read-2', 'video-extraction-2', 'review-4']) {
+    const b = BATTERY.find((x) => x.id === id), dir = tmpDir(`json-bom-${id}`);
+    b.setup(dir); b.solve(dir);
+    const rel = id === 'read-2' ? 'labels.json' : id === 'video-extraction-2' ? 'claims.json' : 'review.json';
+    const good = readFileSync(join(dir, rel), 'utf8');
+    write(dir, { [rel]: '\uFEFF' + good });
+    assert.equal((await b.check(dir)).pass, true, `${id} BOM`);
+    write(dir, { [rel]: '\uFEFF{}' });
+    assert.equal((await b.check(dir)).pass, false, `${id} bad JSON shape`);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('implement-3 SQL compares rows deeply on a fresh grader database', async () => {
   const b = BATTERY.find((x) => x.id === 'implement-3'), dir = tmpDir('sql-rows');
   b.setup(dir); b.solve(dir);
@@ -116,8 +130,47 @@ test('ui-2 uses string checks for the media rule and inline handlers', async () 
   assert.equal((await b.check(dir)).pass, false);
   write(dir, { 'index.html': good.replace('@media (max-width: 640px)', '@media (max-width: 641px)') });
   assert.equal((await b.check(dir)).pass, false);
+  write(dir, { 'index.html': good.replace('@media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }', '@media screen and (max-width: 640px) { .cards { grid-template-columns: minmax(0, 1fr); } }') });
+  assert.equal((await b.check(dir)).pass, true, 'equivalent media query and one-column track');
+  write(dir, { 'index.html': good.replace('@media (max-width: 640px) { .cards {', '@media (max-width: 640px) { main {') });
+  assert.equal((await b.check(dir)).pass, true, 'the spec names no container class');
+  write(dir, { 'index.html': good.replace('grid-template-columns: 1fr;', 'grid-template-columns: repeat(2, 1fr);') });
+  assert.equal((await b.check(dir)).pass, false, 'two columns still fail');
   write(dir, { 'index.html': good.replace('<body>', '<body onclick="go()">') });
   assert.equal((await b.check(dir)).pass, false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('test-2 counts executed tests rather than requiring the identifier test', async () => {
+  const b = BATTERY.find((x) => x.id === 'test-2'), dir = tmpDir('stack-aliased-tests');
+  b.setup(dir);
+  const suite = (cases) => `import { test as check } from 'node:test';
+import assert from 'node:assert/strict';
+import { Stack } from './stack.mjs';
+${cases.map((body, i) => `check('case ${i}', () => { ${body} });`).join('\n')}
+`;
+  const cases = [
+    "const s = new Stack(); s.push(1).push(2); assert.equal(s.pop(), 2);",
+    "const s = new Stack(); s.push('x'); assert.equal(s.peek(), 'x');",
+    'const s = new Stack(); s.push(1); assert.equal(s.size, 1);',
+    'const s = new Stack(); assert.equal(s.isEmpty(), true);',
+    'const s = new Stack(); assert.throws(() => s.pop(), /empty/);',
+  ];
+  write(dir, { 'src/stack.test.mjs': suite(cases) });
+  assert.equal((await b.check(dir)).pass, true, 'five aliased node:test cases');
+  write(dir, { 'src/stack.test.mjs': suite(cases.slice(0, 4)) });
+  assert.equal((await b.check(dir)).pass, false, 'four cases still fail');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('refactor-3 counts executable formatMoney definitions, not comments or strings', async () => {
+  const b = BATTERY.find((x) => x.id === 'refactor-3'), dir = tmpDir('money-definition-count');
+  b.setup(dir); b.solve(dir);
+  const file = join(dir, 'src/money.mjs'), good = readFileSync(file, 'utf8');
+  write(dir, { 'src/money.mjs': `// function formatMoney is centralized here.\nconst example = 'function formatMoney';\n${good}` });
+  assert.equal((await b.check(dir)).pass, true, 'prose does not create a second definition');
+  write(dir, { 'src/extra.mjs': 'function formatMoney() { return "wrong"; }\n' });
+  assert.equal((await b.check(dir)).pass, false, 'a second executable definition still fails');
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -153,6 +206,9 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const variant5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Women hold 4 of 9 board seats in the disclosed aggregate.');
   assert.equal((await run('research-4', variant4)).pass, true, 'research-4 variant');
   assert.equal((await run('research-5', variant5)).pass, true, 'research-5 variant');
+  const words5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Of nine directors, four are women.');
+  assert.equal((await run('research-5', words5)).pass, true, 'research-5 counts spelled as words');
+  assert.equal((await run('research-5', words5.replace('four are women', 'five are women'))).pass, false, 'wrong count still fails');
   const differentQuote4 = ref4
     .replace('Third-quarter revenue was $412 million', 'Third-quarter revenue was $412M')
     .replace('current order backlog of $1.62 billion', 'current order backlog of $1.62B')
@@ -173,21 +229,33 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const terseTarget4 = ref4.replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The analyst\'s twelve-month price target is $300, but its own numbers support $204: 24 × $8.50 = $204.');
   assert.notEqual(terseTarget4, ref4);
   assert.equal((await run('research-4', terseTarget4)).pass, true, 'research-4 accepts a terse correction that names the supported figure (GPT-6 phrasing, 2026-10-01)');
+  const numericVariant4 = ref4
+    .replace('$1.40 billion backlog conflicts with that later figure and is stale', '$1.4bn backlog is older and was superseded by that later figure')
+    .replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The note states a twelve-month price target of USD 300. Its own numbers do not support it: 24 times 8.5 dollars yields 204 dollars.');
+  assert.equal((await run('research-4', numericVariant4)).pass, true, 'research-4 accepts equivalent trailing-zero, currency and stale-value wording');
   const phrasing5 = ref5
     .replace('Ada Pell has served as chief executive officer for 6 years', 'Ada Pell has served as chief executive officer for six years')
     .replace('Jon Vesper has served as chief financial officer for 3 years', 'Jon Vesper has served as chief financial officer for three years')
     .replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'The board has 9 directors. In aggregate, 4 are women.')
     .replace('A share repurchase authorization was not disclosed in the sources.', 'A share repurchase authorization was not disclosed in the sources. The 10-Q discusses a $12 million dividend, not a buyback.');
   assert.equal((await run('research-5', phrasing5)).pass, true, 'research-5 accepts equivalent counts and the disclosed dividend');
+  const phrasingAndDash5 = ref5
+    .replace('A share repurchase authorization was not disclosed in the sources.', 'The sources do not mention a share buyback authorization.')
+    .replace('The $840 million figure repeated in the news item is stale.', 'The older $840 million figure was superseded by the latest guidance.')
+    .replace('recovered-fiber prices', 'recovered fiber prices');
+  assert.equal((await run('research-5', phrasingAndDash5)).pass, true, 'research-5 accepts equivalent absence, recency and hyphenation wording');
   const fail = async (id, message, note) => assert.match((await run(id, message)).notes, note);
   await fail('research-4', ref4.replace('The corrected product is $204 and that corrected figure is the target.', 'The corrected product is $204. The price target of $300 is supported by the note.'), /wrong target/);
+  await fail('research-4', ref4.replace('The corrected product is $204 and that corrected figure is the target.', 'The corrected product is 204 dollars. The price target of USD 300 is supported by the note.'), /wrong target/);
   await fail('research-4', ref4.replace('The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'The documents agree on the order backlog of $1.62 billion and also mention $1.40 billion.'), /R2/);
+  await fail('research-4', ref4.replace('The 10-Q reports a current order backlog of $1.62 billion. The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'Although the documents conflict, the 10-Q mentions $1.62B. The current backlog is $1.4bn.'), /treats the stale backlog as current/);
   await fail('research-4', ref4.replace('The 10-Q reports a current order backlog of $1.62 billion. The analyst note\'s $1.40 billion backlog conflicts with that later figure and is stale.', 'Although the documents conflict, the 10-Q mentions $1.62B. The current backlog is $1.40B.'), /treats the stale backlog as current/);
   await fail('research-4', ref4.replace('Rating: BUY', 'Rating: SELL'), /does not match the rule/);
   await fail('research-4', ref4.replace('Rating: BUY\n', ''), /rating line is missing/);
   await fail('research-4', ref4.replace('"Corvane Grid Systems reported third-quarter', '"Corvane Grid Systems posted third-quarter'), /quote is not verbatim/);
   await fail('research-4', ref4.replace('"Corvane Grid Systems reported third-quarter revenue of $412 million and diluted earnings per share of $2.18."', '"The note sets a twelve-month price target of $300 by applying a 24 times multiple to an earnings basis of $8.50."'), /quote is not verbatim/);
   await fail('research-5', ref5.replace('not disclosed in the sources.', 'not disclosed in the sources, aside from a $250 million program.'), /D4 contains a figure/);
+  await fail('research-5', ref5.replace('A share repurchase authorization was not disclosed in the sources.', 'The sources do not mention a share buyback authorization of $250 million.'), /D4 contains a figure/);
   await fail('research-5', ref5.replace('4 of 9 directors are women.', '4 of 9 directors are women. Ada Pell is a woman.'), /named individual/);
   await fail('research-5', ref5.replace('The $840 million figure repeated in the news item is stale.', 'The $840 million figure repeated in the news item is stale. The latest full-year print of $840 million is the one to use.'), /stale guidance/);
   await fail('research-5', ref5.replace('The latest full-year net revenue guidance is $900 million. The $840 million figure repeated in the news item is stale.', 'The latest full-year net revenue guidance is $840M. The $900M figure is stale.'), /stale guidance/);
@@ -231,6 +299,12 @@ test('research-3 requires gold claims, sections, citations and verbatim excerpt 
   const range = solved.finalMessage.replace('Lead times fell from 11 weeks to 7 weeks', 'Lead times fell from 11 to 7 weeks');
   assert.equal((await b.check(dir, { result: { finalMessage: range } })).pass, true, '"from 11 to 7 weeks"');
   assert.equal((await b.check(dir, { result: { finalMessage: range.replace('11 to 7 weeks', '12 to 7 weeks') } })).pass, false, 'wrong lead time still fails');
+  const punctuation = solved.finalMessage
+    .replace('no long-term debt', 'no long‑term debt')
+    .replace('Planned capital spending', 'Planned capex')
+    .replace('11 weeks to 7 weeks', 'eleven—seven weeks');
+  assert.equal((await b.check(dir, { result: { finalMessage: punctuation } })).pass, true, 'equivalent hyphenation, capex and number-range wording');
+  assert.equal((await b.check(dir, { result: { finalMessage: punctuation.replace('eleven—seven weeks', 'twelve—seven weeks') } })).pass, false, 'wrong range still fails');
   const noQuote = solved.finalMessage.replace('"Alder Systems reported', '"Alder reported');
   assert.match((await b.check(dir, { result: { finalMessage: noQuote } })).notes, /quote is not verbatim/);
   const wrongExcerpt = solved.finalMessage.replace('"Brindle Components ended the quarter with $72 million of cash and no long-term debt."', '"Alder Systems reported that FY2026 revenue rose 14% to $228 million, while gross margin widened from 41% to 46%."');
@@ -259,6 +333,16 @@ test('writing variants enforce adherence and use only an optional different-prov
   const slop = solved.finalMessage.replace('Rain stitched', "In today's fast-paced world, rain stitched");
   assert.match((await b.check(dir, { result: { finalMessage: slop } })).notes, /banned filler/);
   rmSync(dir, { recursive: true, force: true });
+  const copy = BATTERY.find((x) => x.id === 'writing-3'), copyDir = tmpDir('writing-copy-phrasing');
+  copy.setup(copyDir); const solvedCopy = copy.solve(copyDir);
+  const equivalent = solvedCopy.finalMessage.replace('Pay $8/month after a 14-day free trial with no credit card required.', 'Pay $8 per month after a 14 day free trial without requiring a credit card.');
+  const equivalentResult = await copy.check(copyDir, { result: { finalMessage: equivalent } });
+  assert.equal(equivalentResult.pass, true, equivalentResult.notes);
+  const wrongPrice = equivalent.replace('$8 per month', '$80 per month');
+  assert.equal((await copy.check(copyDir, { result: { finalMessage: wrongPrice } })).pass, false, 'wrong price still fails');
+  const needsCard = equivalent.replace('without requiring a credit card', 'requiring a credit card');
+  assert.equal((await copy.check(copyDir, { result: { finalMessage: needsCard } })).pass, false, 'requiring a card still fails');
+  rmSync(copyDir, { recursive: true, force: true });
 });
 
 test('the default subjective judge is off when no different provider is available', async () => {
@@ -276,9 +360,14 @@ test('video-extraction-2 requires verbatim quotes and timestamps inside the supp
   const good = JSON.parse(readFileSync(join(dir, 'claims.json'), 'utf8'));
   assert.equal((await b.check(dir)).pass, true);
   good[0].quote = 'Enrollment was distributed across the full service area.';
-  good[1].claim = 'Peak electricity demand fell 8% during the six-week trial.';
+  good[0].claim = 'The pilot enrolled 120 households in 3 neighborhoods.';
+  good[1].claim = 'Peak electricity demand fell 8% during the six week trial.';
+  good[2].claim = 'Zero battery faults occurred, while 2 homes briefly lost Wi‑Fi.';
   write(dir, { 'claims.json': JSON.stringify(good) });
-  assert.equal((await b.check(dir)).pass, true, 'different transcript sentence and percent format');
+  assert.equal((await b.check(dir)).pass, true, 'different transcript sentence, numbers, hyphenation and percent format');
+  good[2].claim = 'Zero battery faults occurred, while 3 homes briefly lost Wi‑Fi.'; write(dir, { 'claims.json': JSON.stringify(good) });
+  assert.equal((await b.check(dir)).pass, false, 'wrong home count still fails');
+  good[2].claim = 'Zero battery faults occurred, while 2 homes briefly lost Wi‑Fi.';
   good[0].quote = 'Enrollment covered most of the service area.'; write(dir, { 'claims.json': JSON.stringify(good) });
   assert.match((await b.check(dir)).notes, /quote is not verbatim/);
   good[0].quote = good[1].quote; write(dir, { 'claims.json': JSON.stringify(good) });
