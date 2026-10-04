@@ -206,6 +206,9 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const variant5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Women hold 4 of 9 board seats in the disclosed aggregate.');
   assert.equal((await run('research-4', variant4)).pass, true, 'research-4 variant');
   assert.equal((await run('research-5', variant5)).pass, true, 'research-5 variant');
+  const words5 = ref5.replace('The company\'s matrix reports the aggregate only: 4 of 9 directors are women.', 'Of nine directors, four are women.');
+  assert.equal((await run('research-5', words5)).pass, true, 'research-5 counts spelled as words');
+  assert.equal((await run('research-5', words5.replace('four are women', 'five are women'))).pass, false, 'wrong count still fails');
   const differentQuote4 = ref4
     .replace('Third-quarter revenue was $412 million', 'Third-quarter revenue was $412M')
     .replace('current order backlog of $1.62 billion', 'current order backlog of $1.62B')
