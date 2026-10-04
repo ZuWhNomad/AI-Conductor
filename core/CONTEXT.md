@@ -6,7 +6,7 @@ Rules: `AGENTS.md`. This file is the brief for work in this folder.
 scheduling, budget-aware model selection, limits, the chat conductor, and the tool surface.
 
 **Entry points.**
-- `tasks.mjs` — the worker-task journal + scheduler. `schedule()` is the framework budget gate: it admits queued
+- `tasks.mjs` + `tasks/` (see its `CONTEXT.md`; `tasks.mjs` keeps the stateful core and re-exports `tasks/`) — the worker-task journal + scheduler. `schedule()` is the framework budget gate: it admits queued
   tasks per-window and, over target, degrades to sequential per provider (never a park-until-reset stall); it also
   holds queued work while system RAM meets `resources.maxRamPct` and retries after one unrefed 30-second timer; a real
   provider limit fails over or parks. `run()` executes and scores; finished tasks retain budget reservations and
@@ -69,7 +69,7 @@ provider, or the whole provider when the failed model has no window group.
 | a model is missing from the picker, or has the wrong efforts | `providers/<vendor>.mjs` `listModels()` → `models.mjs`; subscription CLIs: `providers/vendors.mjs` (`collapseEffortFamilies`) |
 | a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.mjs` |
 | a check-in, detached watch or background-completion wake is wrong | `watchdog.mjs`, then `tasks.mjs` wake-consumption markers and `conductor.mjs` session state |
-| the worker got the wrong instructions (notes, recipe, MCP servers, programs) | `tasks.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs` (scoped by category), `capabilities.mjs` + `policy/capabilities.json`, `prompts/worker.md` |
+| the worker got the wrong instructions (notes, recipe, MCP servers, programs) | `tasks/prompt.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs` (scoped by category), `capabilities.mjs` + `policy/capabilities.json`, `prompts/worker.md` |
 | the conductor chat misbehaves (streaming, permissions, model switch, history) | `conductor.mjs`; what it is told: `policy/prompts/conductor*.md`, `policy/prompts/orchestration.md` |
 | a conductor tool is missing or returns the wrong thing | `tools.mjs` (defined once, served to all three runtimes) |
 | a `run_plan` stage, vote or loop goes wrong | `plans.mjs` |
@@ -81,7 +81,7 @@ provider, or the whole provider when the failed model has no window group.
 | improvement log, self-review, feedback bundle | `improve.mjs`, `feedback.mjs` |
 
 **Prompt caching.** Put shared, stable text first and task-specific text last. Conductor history stays append-only between
-deliberate compaction cut points (`compaction.ts`); worker prompt order lives in `tasks.mjs` (`buildPrompt`), with
+deliberate compaction cut points (`compaction.ts`); worker prompt order lives in `tasks/prompt.mjs` (`buildPrompt`), with
 worker/MSW instructions before MCP and project context, then the resume note, task, recipe and capabilities. `plans.mjs`
 keeps a `for_each` stage's title and shared spec before each vote's item JSON, lens and vote index.
 
