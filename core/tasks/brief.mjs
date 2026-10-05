@@ -23,7 +23,7 @@ function briefText(t) {
     `- created: ${t.createdAt ?? ''}`,
     `- cwd: ${t.cwd ?? ''}`,
     `- provider: ${t.provider ?? ''}:${t.model ?? ''}:${t.effort ?? ''}`,
-    `- category: ${t.category ?? ''}@${t.difficulty ?? ''}`,
+    `- category: ${t.category || t.difficulty ? `${t.category ?? '-'}@${t.difficulty ?? '-'}` : '-'}`,
   ];
   if (t.followUpOf) lines.push(`- followUpOf: ${t.followUpOf}`);
   if (t.retryOf) lines.push(`- retryOf: ${t.retryOf}`);

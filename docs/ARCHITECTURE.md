@@ -83,7 +83,7 @@ core/
                          (run_plan, plan_status) → info.mjs (scores, models, limits, smoke, list, log, context) →
                          index.mjs (conductorToolDefs and the MCP / function adapters)
   tasks.mjs              worker task journal, scheduler, run lifecycle, park/resume on limits; re-exports tasks/
-  tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs
+  tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs + brief.mjs (per-task <state>/tasks/<id>.md: spec at create, ## Result at terminal)
                          (buildPrompt), git.mjs (git helpers, worktree links, repo size)
   jobs.mjs               detached commands that survive turns and server restarts
   watchdog.mjs           liveness verdicts/actions, persisted watches, restart-safe idle-chat wake-ups
