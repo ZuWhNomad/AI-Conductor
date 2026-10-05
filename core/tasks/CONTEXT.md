@@ -28,7 +28,7 @@ removal (`git worktree remove --force` follows them on Windows). Ignored (one wa
 - `brief.mjs` — `briefPath`, `syncBrief`. The human-readable brief at `<state>/tasks/<id>.md`.
 - `view.mjs` — what a task looks like to readers: `publicTask` (record without the full spec), `taskSummary` (fleet /
   list payload: no paths, diff stat or item tail; 120-char previews), `describeTask` (the conductor-facing text;
-  a terminal task names the brief file, and `worker.reportInTool: 'compact'` keeps 12 report lines),
+  a terminal task names the brief file when it exists, and `worker.reportInTool: 'compact'` keeps 12 report lines),
   `countTools` (calls / errors / byName from a worker's items).
 - `prompt.mjs` — `buildPrompt(t)`: worker preamble (`policy/prompts/worker.md`) and MSW kernel first, then MCP note,
   project `CONTEXT.md` notes, resume note, task, recipe and capability lines. Recipe and tool lines have separate
@@ -51,7 +51,7 @@ Enforced in part by `test/boundaries.test.mjs`.
   `git worktree remove --force` (which follows junctions on Windows); a surviving link aborts the removal.
 - Prompt order: shared, stable text first, task-specific text last (provider prompt caching).
 - Views never include the full spec or item list in list payloads; detail endpoints and scoring keep the full record.
-- The brief is written once (the spec) and appended once (`## Result` when the task is terminal). `persist` in
+- The brief is written once (the spec) and appended once (`## Result <!-- conductor:result -->` when the task is terminal; a bare `## Result` inside a spec is not the marker). `persist` in
   `../tasks.mjs` is the only hook. A later persist does not rewrite earlier text. Everything in the file is redacted.
 
 **How to test.** `node --import ./test/_env.mjs --test test/tasks/*.test.mjs test/journal.test.mjs test/git.test.mjs`.
