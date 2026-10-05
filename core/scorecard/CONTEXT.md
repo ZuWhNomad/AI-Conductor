@@ -41,6 +41,6 @@ from `tasks`, `plans`, `tools`, `conductor` or `server`. Enforced by `test/bound
 - No model name is hard-coded anywhere in the selection logic; classes come from how a provider authenticates.
 - Memo keys must include every input a view depends on (ledger stat, config, registry `updatedAt`, shipped file).
 
-**How to test.** `node --import ./test/_env.mjs --test test/scorecard.test.mjs test/selection.test.mjs
-test/escalation.test.mjs` (the ledger fixtures are built under `CONDUCTOR_HOME`); `test/limits.test.mjs` for window
+**How to test.** `node --import ./test/_env.mjs --test test/scorecard/*.test.mjs test/selection.test.mjs
+test/escalation.test.mjs` (the ledger fixtures are built under `CONDUCTOR_HOME`); `test/limits/*.test.mjs` for window
 scoping. Full: `npm test`.

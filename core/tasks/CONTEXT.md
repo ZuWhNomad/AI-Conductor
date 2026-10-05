@@ -49,5 +49,5 @@ Enforced in part by `test/boundaries.test.mjs`.
 - Prompt order: shared, stable text first, task-specific text last (provider prompt caching).
 - Views never include the full spec or item list in list payloads; detail endpoints and scoring keep the full record.
 
-**How to test.** `node --import ./test/_env.mjs --test test/tasks.test.mjs test/journal.test.mjs test/git.test.mjs`.
+**How to test.** `node --import ./test/_env.mjs --test test/tasks/*.test.mjs test/journal.test.mjs test/git.test.mjs`.
 Full: `npm test`.
