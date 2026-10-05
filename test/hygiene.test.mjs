@@ -200,14 +200,16 @@ test('every test file imports _env.mjs before any repo module', () => {
 function isProjectNote(file) {
   // This is product documentation for the review method, not a project's review findings.
   if (file === 'docs/REVIEW-FRAMEWORK.md') return false;
+  // Suite for core/plans.mjs. A project-notes plans/ folder is still rejected everywhere else.
+  if (file.startsWith('test/plans/')) return false;
   return /(^|\/)(plans|reviews|notes)\//i.test(file) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW|ROADMAP)[-_.]/i.test(basename(file));
 }
 
 test('project-note names are rejected at every depth; the review method remains product documentation', () => {
-  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md']) {
+  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md', 'docs/plans/work.md']) {
     assert.equal(isProjectNote(file), true, file);
   }
-  for (const file of ['docs/REVIEW-FRAMEWORK.md', 'docs/ARCHITECTURE.md', 'core/plans.mjs']) {
+  for (const file of ['docs/REVIEW-FRAMEWORK.md', 'docs/ARCHITECTURE.md', 'core/plans.mjs', 'test/plans/stages.test.mjs']) {
     assert.equal(isProjectNote(file), false, file);
   }
 });
