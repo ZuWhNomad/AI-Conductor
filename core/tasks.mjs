@@ -21,6 +21,7 @@ import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
 import { accessProviders } from './capabilities.mjs';
 import { resourceStatus } from './resources.mjs';
 import { publicTask, taskSummary, countTools } from './tasks/view.mjs';
+import { syncBrief } from './tasks/brief.mjs';
 import { buildPrompt } from './tasks/prompt.mjs';
 import { findGitRoot, gitExec, gitStatus, diffStatus, gitDiffStat, isolatedCwd, linkIsolateDirs, unlinkIsolateLinks, ageLabel, repoSize } from './tasks/git.mjs';
 export * from './tasks/view.mjs';
@@ -169,6 +170,7 @@ function persist(t) {
   writeJson(join(DIR(), `${t.id}.json`), t);
   indexTask(t); saveIndexSoon(); trimTasks();
   bus.publish('task', { task: taskSummary(t) });
+  syncBrief(t);
 }
 
 /** Journal watchdog-only metadata without publishing a task event or changing updatedAt. */

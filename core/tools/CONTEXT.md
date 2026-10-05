@@ -36,6 +36,9 @@ import `tasks`, `models`, `limits`, `improve`, `context`, `providers/index`, `co
   Every name the old `tools.mjs` exported is still exported from the facade.
 - `awaitTask`, `recommend`, `runPlan`, `getPlan` and the capability readers are imported by `../tools.mjs`
   and passed into `defs`. Moving those imports into a group skips the plan-test mock.
+- `worker.reportInTool` defaults to `full`. `compact` makes the `delegate` / `await_task` / `task_status` text
+  (`describeTask`) keep the first 12 non-empty lines of a finished report and the brief path. The brief file is
+  written either way.
 
 **How to test.** `node --import ./test/_env.mjs --test test/tools.test.mjs test/escalation.test.mjs test/mcp.test.mjs
 test/capabilities.test.mjs` (state under `CONDUCTOR_HOME`). Full: `npm test`.

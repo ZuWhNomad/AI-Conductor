@@ -39,7 +39,7 @@ Selections are written `provider:model:effort` everywhere (UI, config, API, CLI)
 the last segment when it is a known effort word, preserving colons in model ids.
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
-thread/session id, status, result, usage). States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
+thread/session id, status, result, usage). The same folder holds a human-readable brief, `tasks/<id>.md`, written once with the spec at creation and appended once with the result when the task finishes. States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
 and `canceled`; `stale` is non-terminal and waits for the user. Tasks that die at a provider limit are parked with a
 `resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). The git reads around a run (`status`
 before and after, `diff --stat`) are asynchronous through `execFile`. Ledger parsing and journal I/O remain

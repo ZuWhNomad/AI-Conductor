@@ -40,6 +40,7 @@ export const DEFAULTS = {
     tasksInMemory: 500,               // newest terminal task records retained alongside all open tasks; older records stay on disk
     recipeChars: 10000,               // log recipes over this character budget (the full recipe is still appended). Headroom over the longest shipped recipe (image-to-3d-model.b.md, 9443 chars on 2026-09-25).
     toolLineChars: 1500,              // character budget for capability lines appended to a worker spec
+    reportInTool: 'full',             // 'full' | 'compact': compact tool results keep 12 report lines and the brief path
     codexSandbox: 'workspace-write',  // 'read-only' | 'workspace-write' | 'danger-full-access'
     // Per-model exceptions to codexSandbox, for a task or conductor session that names no sandbox itself.
     // Empty since 2026-09-27: the geometry libraries' DLLs now load under workspace-write (the sandbox group had lost
@@ -263,6 +264,7 @@ function normalize(cfg, raw = {}) {
   if (!Number.isInteger(cfg.worker.resumeStaggerSeconds) || cfg.worker.resumeStaggerSeconds < 0 || cfg.worker.resumeStaggerSeconds > 600) cfg.worker.resumeStaggerSeconds = DEFAULTS.worker.resumeStaggerSeconds;
   if (!Number.isFinite(cfg.worker.toolResultLowWater) || cfg.worker.toolResultLowWater < 0 || cfg.worker.toolResultLowWater >= 1) cfg.worker.toolResultLowWater = DEFAULTS.worker.toolResultLowWater;
   cfg.worker.efficiencyMode = !!cfg.worker.efficiencyMode;
+  if (!['full', 'compact'].includes(cfg.worker.reportInTool)) cfg.worker.reportInTool = 'full';
   delete cfg.worker.failoverAfterBlockMinutes; // superseded by the single efficiency-mode switch
   delete cfg.worker.resumeMaxAgeHours; // interrupted work is durable; age no longer cancels it at startup
   if (!Number.isInteger(cfg.worker.tasksInMemory) || cfg.worker.tasksInMemory < 50) cfg.worker.tasksInMemory = DEFAULTS.worker.tasksInMemory;

@@ -1,5 +1,7 @@
-// Task views: what a task looks like to the fleet list, the detail endpoint and the conductor. Pure functions of a
-// task record; no state, no I/O.
+// Task views: what a task looks like to the fleet list, the detail endpoint and the conductor. No task state.
+// describeTask reads worker.reportInTool when the caller does not pass a report mode.
+import { loadConfig } from '../config.mjs';
+import { briefPath } from './brief.mjs';
 
 export function publicTask(t) {
   if (!t) return null;
@@ -33,7 +35,7 @@ export function countTools(items) {
 }
 
 /** One compact, conductor-facing summary of a task. */
-export function describeTask(t) {
+export function describeTask(t, { reportMode = loadConfig().worker.reportInTool } = {}) {
   if (!t) return 'unknown task';
   const r = t.result || {};
   const cmds = r.tools?.calls ?? countTools(r.items)?.calls ?? 0;
@@ -61,6 +63,12 @@ export function describeTask(t) {
   if (r.usage) lines.push(`Usage: ${JSON.stringify(r.usage)}`);
   if (r.files?.length) lines.push(`Files: ${r.files.join(', ')}`);
   if (cmds) lines.push(`Actions: ${cmds} commands/tool calls`);
-  if (r.finalMessage) lines.push(`Worker report:\n${r.finalMessage}`);
+  if (r.finalMessage) {
+    if (reportMode === 'compact') {
+      const head = String(r.finalMessage).split('\n').filter((line) => line.trim()).slice(0, 12);
+      lines.push(`Worker report:\n${head.join('\n')}\n… (full report in the brief file)`);
+    } else lines.push(`Worker report:\n${r.finalMessage}`);
+  }
+  if (t.status === 'done' || t.status === 'failed' || t.status === 'canceled') lines.push(`Brief: ${briefPath(t.id)}`);
   return lines.join('\n');
 }
