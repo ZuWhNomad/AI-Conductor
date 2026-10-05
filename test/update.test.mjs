@@ -10,6 +10,10 @@ import { findCli } from '../core/proc.mjs';
 import { REPO_ROOT } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
 const { updateStatus, applyUpdate, checkForUpdates, formatUpdate, npmCommand } = await import('../core/update.mjs');
+function uiSource(root) {
+  const files = ['modules/core.js', 'modules/markdown.js', 'modules/sidebar.js', 'modules/budget.js', 'modules/chip.js', 'modules/picker.js', 'modules/transcript.js', 'modules/fleet.js', 'modules/sessions.js', 'modules/update.js', 'modules/sse.js', 'modules/modals.js', 'modules/misc.js', 'app.js'];
+  return files.map((f) => readFileSync(new URL(f, root), 'utf8')).join('\n').replace(/^\s*import\b.*$/gm, '').replace(/^\s*export\b.*$/gm, '');
+}
 
 const git = findCli('git');
 const run = (cwd, ...args) => execFileSync(git, args, { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -192,7 +196,7 @@ test('update: failed npm install reaches the HTTP response and UI without relaun
     assert.equal(event.updated, true); assert.equal(event.npmInstalled, false); assert.equal(event.npmError, r.npmError);
 
     // Run the browser's update handlers with a minimal DOM; both SSE and the response use noteUpdate.
-    const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+    const source = uiSource(new URL('../ui/', import.meta.url));
     const button = { hidden: false, classList: { remove() {} } }, lines = [];
     const ui = { S: {}, $: () => button, addSys: (text, cls) => { const line = { textContent: text, className: 'sysline ' + cls, isConnected: true }; lines.push(line); return line; } };
     runInNewContext(source.slice(source.indexOf('// ---------- update affordance ----------'), source.indexOf('// ---------- SSE ----------')), ui);
