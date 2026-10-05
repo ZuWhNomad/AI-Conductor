@@ -73,7 +73,9 @@ core/
   paths.mjs              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
   bus.mjs                event bus with ring buffer (SSE replay)
-  conductor.mjs          chat sessions = Agent SDK queries with streaming input
+  conductor.mjs          re-export façade over conductor/ (keeps `./conductor.mjs` imports working)
+  conductor/             prompt.mjs (policy prompts) → sessions.mjs (session store) → common.mjs (shared Codex/loop
+                         events) → runtime-claude.mjs → runtime-codex.mjs → runtime-loop.mjs → turns.mjs (send / interrupt / stop)
   tools.mjs              MCP tools exposed to the conductor
   tasks.mjs              worker task journal, scheduler, run lifecycle, park/resume on limits; re-exports tasks/
   tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs

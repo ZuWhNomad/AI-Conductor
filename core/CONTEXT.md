@@ -17,7 +17,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `scorecard/` | Ledger and `recommend()` (utility = value-of-quality − cost): `wasteDiscount`, `providerWindows`, `nextScheduledReset`. `migrateScorecard` voids pre-Method-C polluted antigravity rows at server boot. | `scorecard/CONTEXT.md` |
 | `limits.mjs` | Per-provider window registry (polled, scope-keyed refresh). | this file |
 | `usage-estimate.mjs` | Advisory % for windowless providers (never gates dispatch). | this file |
-| `conductor.mjs` | Chat sessions (Agent SDK / Codex / API). | this file |
+| `conductor.mjs` | Re-exports `conductor/` (chat sessions: Agent SDK / Codex / API). | `conductor/CONTEXT.md` |
 | `tools.mjs` | The tools a conductor session gets. | this file |
 | `bus.mjs` | Event bus (2000-entry / 8MB byte-bound ring, SSE replay). | this file |
 | `paths.mjs` | State dir, atomic JSON, and `redact` (the one secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result, and the crash log). | this file |
