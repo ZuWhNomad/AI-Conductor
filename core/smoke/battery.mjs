@@ -117,7 +117,7 @@ const excerpt = (source, label) => {
 };
 // R3 answer rule (the Quote may still repeat the source sentence): a sentence that contains both
 // "target" and the note's $300 figure fails unless an inconsistency word is in that same sentence.
-const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|not equal|differ|not support|does not support|unsupported/i;
+const INCONSISTENT = /inconsisten|incorrect|wrong|error|misstat|does not equal|not equal|differ|(?:not|n['’]t) support|unsupported/i;
 function researchTrap(item, ans, roster) {
   if (item.trap === 'backlog') {
     for (const s of researchClauses(ans)) {

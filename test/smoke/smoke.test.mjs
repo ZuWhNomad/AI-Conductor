@@ -232,6 +232,8 @@ test('research-4 and research-5 bury filing facts and reject the seeded traps', 
   const terseTarget4 = ref4.replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The analyst\'s twelve-month price target is $300, but its own numbers support $204: 24 × $8.50 = $204.');
   assert.notEqual(terseTarget4, ref4);
   assert.equal((await run('research-4', terseTarget4)).pass, true, 'research-4 accepts a terse correction that names the supported figure (GPT-6 phrasing, 2026-10-01)');
+  const contraction4 = terseTarget4.replace('but its own numbers support $204: 24 × $8.50 = $204.', 'but the note\'s own numbers don\'t support it. A 24x multiple on an earnings basis of $8.50 gives $204.');
+  assert.equal((await run('research-4', contraction4)).pass, true, 'research-4 accepts "don\'t support it" (Sonnet 5.5 phrasing, 2026-10-04)');
   const numericVariant4 = ref4
     .replace('$1.40 billion backlog conflicts with that later figure and is stale', '$1.4bn backlog is older and was superseded by that later figure')
     .replace('The note states a twelve-month price target of $300, which is inconsistent with a 24 times multiple applied to an earnings basis of $8.50. The corrected product is $204 and that corrected figure is the target.', 'The note states a twelve-month price target of USD 300. Its own numbers do not support it: 24 times 8.5 dollars yields 204 dollars.');
