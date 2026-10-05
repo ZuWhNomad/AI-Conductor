@@ -1,49 +1,13 @@
-import { HOME } from './_env.mjs';
+import { HOME } from '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { appendNdjson, statePath, writeJson } from '../core/paths.mjs';
-
-// Registries are loaded at import time: seed them before importing the scorecard.
-writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' }, deepseek: { status: 'ok' } }, models: [
-  { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api' },
-  { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
-  { provider: 'codex', id: 'gpt-5.6-terra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
-  { provider: 'codex', id: 'gpt-6-astra', kind: 'agent', cost: 'subscription', efforts: ['low', 'medium'] },
-  { provider: 'claude', id: 'haiku', kind: 'agent', cost: 'subscription' },
-  ...[
-    ['claude', 'opus'], ['claude', 'sonnet'],
-    ['deepseek', 'deepseek-flash'], ['antigravity', 'flash'],
-  ].map(([provider, id]) => ({ provider, id, kind: 'agent' })),
-] });
-writeJson(join(HOME, 'limits.json'), { updatedAt: 'x', providers: {
-  codex: { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 12, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] },
-} });
-
-const sc = await import('../core/scorecard.mjs');
-const pr = await import('../core/priors.mjs');
-const { loadConfig, saveConfig, DEFAULTS } = await import('../core/config.mjs');
-const { getModels } = await import('../core/models.mjs');
-// Explicit fixture class and zero price keep routing/cost scenarios independent of a local provider.
-saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, prices: { 'deepseek:deepseek-chat': { in: 0, out: 0, cached: 0 } } } });
-const registryModels = (t, models) => {
-  const reg = getModels(), previous = reg.models;
-  reg.models = [...previous, ...models.map(([provider, id]) => ({ provider, id, kind: 'agent' }))];
-  t.after(() => { reg.models = previous; });
-};
+import {
+  sc, pr, loadConfig, saveConfig, DEFAULTS, getModels,
+  registryModels, USAGE, run, seed,
+  join, appendNdjson, statePath, writeJson,
+} from './_helpers.mjs';
 
 let n = 0;
-const USAGE = { input_tokens: 100_000, cached_input_tokens: 50_000, output_tokens: 10_000 }; // 50k uncached in, 50k cached, 10k out
-const run = ({ before, ...o }) => sc.recordRun({ id: o.id || `t${++n}`, title: 't', status: 'done', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'implement', difficulty: 2, result: { usage: USAGE, durationMs: 1000 }, ...o }, { before });
-const seed = (provider, model, effort, category, difficulty, verdicts, { usage = USAGE, retryOf = null, source = null } = {}) => {
-  const ids = [];
-  for (const v of verdicts) {
-    const id = `s${++n}`; ids.push(id);
-    run({ id, source, provider, model, effort, category, difficulty, retryOf, result: { usage, durationMs: 1000 } });
-    if (v) sc.rateTask(id, v);
-  }
-  return ids;
-};
 
 test('ledger rows for a removed provider cannot be routed', () => {
   const source = 'removed-provider-ledger';
@@ -118,293 +82,26 @@ test('one aged passing run qualifies a model under the default minSamples', (t) 
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('envFailure identifies provider and CLI environment failures without scanning report prose', () => {
-  for (const error of [
-    'HTTP status 503 from provider', '503 UNAVAILABLE', 'unknown option --effort',
-    'unexpected argument --effort', 'requires --effort', "invalid value for '--effort'", 'WinError 32: file locked',
-    'EBUSY: resource busy or locked', 'CUDA out of memory', 'CUDA error: driver', 'llama-server crashed',
-    'cudaMalloc failed', 'provider quota rejected task at startup',
-    'Selected model is at capacity', 'model is at capacity',
-  ]) assert.ok(sc.envFailure({ error }), error);
-  assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: '503 UNAVAILABLE' }] } }));
-  assert.ok(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'Selected model is at capacity' }] } }));
-  assert.equal(sc.envFailure({ result: { finalMessage: 'This report discusses HTTP 503 handling in prose.' } }), null);
-  assert.ok(sc.envFailure({ error: '{"status": "UNAVAILABLE"}' }));
-  assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output: 'feature unavailable in this build' }] } }), null);
-  for (const error of [
-    'max iterations reached', 'UnauthorizedAccessException', 'access was denied', 'permission denied', 'EACCES', 'EPERM',
-    'waiting for network', 'Connection failed', 'ECONNRESET', 'ENOTFOUND api.example', 'fetch failed',
-    'unexpected status 401', 'Incorrect API key provided', 'refresh token was already used',
-  ]) assert.ok(sc.envFailure({ error }), error);
-});
-
-test('HTTP 502 and 504 gateway responses are provider environment failures', () => {
-  for (const error of ['502 Bad Gateway', 'HTTP 504 Gateway Timeout']) assert.ok(sc.envFailure({ error }), error);
-});
-
-test('CLI flag rejection is environmental only for the worker CLI error, not workspace command output', () => {
-  for (const output of ["error: unknown option '--flag'", "error: unexpected argument 'bar'"]) {
-    assert.ok(sc.envFailure({ error: output }), `worker CLI error: ${output}`);
-    assert.equal(sc.envFailure({ error: 'worker failed', result: { items: [{ output }] } }), null, `workspace output: ${output}`);
-  }
-});
-
-test('reliabilityMetrics follows the recorded transcript shape of every worker kind', () => {
-  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, timedOut: false, items: [
-    { type: 'command_execution', command: 'npm test', exitCode: 1 },
-    { type: 'command_execution', command: 'npm test', exitCode: 2 },
-    { type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: { id: 1 }, error: 'bad gateway' },
-  ] } }), { turns: 2, toolCalls: 3, toolErrors: 3, thrash: 1, timedOut: false });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 2, items: [{ type: 'tool_use', name: 'Bash', input: { command: 'pwd' } }] } }), { turns: 2, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { turns: 2, items: [
-    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
-    { type: 'tool_use', name: 'read', input: { path: 'a' }, output: 'error: missing' },
-  ] } }), { turns: 2, toolCalls: 2, toolErrors: 2, thrash: 1, timedOut: null });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { ok: true, turns: 1, items: [{ type: 'tool_use', id: 'v1', name: 'search', input: { q: 'x' } }] } }), { turns: 1, toolCalls: 1, toolErrors: null, thrash: null, timedOut: false });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: { status: 'error' } }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { items: [{ type: 'mcp_tool_call', server: 'fixture', tool: 'lookup', args: {}, result: '{"status":400}' }] } }), { turns: null, toolCalls: 1, toolErrors: 1, thrash: 0, timedOut: null });
-  assert.deepEqual(sc.reliabilityMetrics({ status: 'canceled', result: { turns: 0, items: [], timedOut: true } }), { turns: 0, toolCalls: 0, toolErrors: 0, thrash: 0, timedOut: true });
-  assert.deepEqual(sc.reliabilityMetrics({ result: { toolCalls: 2, items: [{ type: 'tool_use', name: 'read', input: {}, output: 'error: one' }] } }), { turns: null, toolCalls: 2, toolErrors: null, thrash: null, timedOut: null });
-});
-
-test('priors: price and tier lookup, config override, shadow dollars', () => {
-  assert.equal(pr.priorFor('codex', 'gpt-5.6-luna').tier, 'B');
-  assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier, 'B');   // code: Terminal-Bench 84.7
-  assert.equal(pr.priorFor('codex', 'gpt-5.6-luna', 'summarize').tier, 'D');   // read: MRCR 41%
-  assert.equal(pr.priorFor('grok', 'grok-4.6', 'review').tier, 'B');           // reason: GDPval 1730
-  assert.equal(pr.priorFor('grok', 'grok-4.6', 'debug').tier, 'D');
-  assert.equal(pr.priorFor('claude', 'claude-fable-5-1[1m]').tier, 'A');
-  assert.equal(pr.priorFor('antigravity', 'gemini-3.8-flash-low').tier, 'A');
-  assert.equal(pr.priorFor('deepseek', 'deepseek-chat:latest').price.in, 0.3);
-  assert.equal(pr.priorFor('codex', 'gpt-5.3-codex-spark').price, null);
-  assert.equal(pr.priorFor('nope', 'x'), null);
-  assert.deepEqual(pr.priceFor('codex', 'gpt-5.6-luna'), { in: 0.2, out: 1.2, cached: 0.02 });
-  // Official list prices checked 2026-09-24 (OpenAI and xAI pricing pages); build-fast must not fall to the 4.7 row.
-  assert.deepEqual(pr.priceFor('codex', 'gpt-6-sol', {}), { in: 2, out: 10, cached: 0.2 });
-  assert.deepEqual(pr.priceFor('codex', 'gpt-6.1-sol', {}), { in: 2, out: 10, cached: 0.2 });
-  assert.deepEqual(pr.priceFor('codex', 'gpt-6-luna', {}), { in: 0.1, out: 0.5, cached: 0.01 });
-  assert.deepEqual(pr.priceFor('grok', 'grok-4.7-build-fast', {}), { in: 4, out: 12, cached: 1 });
-  assert.deepEqual(pr.priceFor('grok', 'grok-4.7', {}), { in: 2, out: 6, cached: 0.5 });
-  assert.deepEqual(pr.priceFor('grok', 'grok-4.5', {}), { in: 2, out: 6, cached: 0.3 });
-  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5', {}), { in: 4, out: 20, cached: 0.2 });
-  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5[1m]', {}), { in: 4, out: 20, cached: 0.2 });
-  assert.deepEqual(pr.priceFor('claude', 'claude-opus-5', {}), { in: 5, out: 25, cached: 0.5 });
-  assert.equal(pr.priceFor('antigravity', 'gpt-oss-120b', {}), null);
-  assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
-  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });
-  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 3 } } } }), { in: 1, out: 2, cached: 0.1, write: 3 });
-  assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2, write: 'nope' } } } }), { in: 1, out: 2, cached: 0.1 });
-  assert.deepEqual(pr.priceFor('deepseek', 'deepseek-flash', { scorecard: { prices: { 'deepseek:deepseek-flash': { in: 2, out: 4, cached: 0.2, write: 8 } } } }, new Date('2026-09-09T12:00:00Z')), { in: 1, out: 2, cached: 0.1, write: 4 });
-  // 50k uncached @0.2 + 50k cached @0.02 + 10k out @1.2 = 0.01 + 0.001 + 0.012
-  assert.ok(Math.abs(pr.usdFor({ in: 50_000, cached: 50_000, out: 10_000 }, { in: 0.2, out: 1.2, cached: 0.02 }) - 0.023) < 1e-9);
-  assert.equal(pr.usdFor({ in: 1 }, null), null);
-});
-
-test('usage shapes normalize to uncached in / out / cached', () => {
-  assert.deepEqual(sc.normalizeUsage({ input_tokens: 100, cached_input_tokens: 40, output_tokens: 20 }), { in: 60, out: 20, cached: 40, write: 0, v: 2 });
-  assert.deepEqual(sc.normalizeUsage({ 'claude-x': { inputTokens: 5, outputTokens: 6, cacheReadInputTokens: 7 }, 'claude-y': { inputTokens: 1, outputTokens: 1 } }), { in: 6, out: 7, cached: 7, write: 0, v: 2 });
-  assert.equal(sc.normalizeUsage(null), null);
-  assert.equal(sc.normalizeUsage({}), null);
-});
-
-test('window delta ignores rolled-over windows and clamps at zero', () => {
-  const before = [{ id: 'a', usedPercent: 10, resetsAt: 1 }, { id: 'b', usedPercent: 50, resetsAt: 1 }, { id: 'c', usedPercent: 5, resetsAt: 1 }];
-  const after = [{ id: 'a', usedPercent: 13, resetsAt: 1 }, { id: 'b', usedPercent: 2, resetsAt: 2 }, { id: 'c', usedPercent: 4, resetsAt: 1 }];
-  assert.deepEqual(sc.windowDelta(before, after), { a: 3, c: 0 });
-  assert.equal(sc.windowDelta([], after), null);
-  assert.equal(sc.windowDelta(before, [{ id: 'z', usedPercent: 1 }]), null);
-});
-
-test('run identity records the reported model while retaining the requested selection', () => {
-  const exact = run({ id: 'served-exact', source: 'served-identity', provider: 'claude', model: 'default', effort: 'high', result: { servedModel: 'claude-opus-5-5[1m]', usage: USAGE, durationMs: 1 } });
-  assert.equal(exact.model, 'claude-opus-5-5[1m]');
-  assert.equal(exact.requestedModel, 'default');
-  assert.equal(exact.servedModel, 'claude-opus-5-5[1m]');
-  assert.equal(exact.effort, 'high');
-  assert.equal(sc.rootRuns({ source: 'served-identity' })[0].attempts[0].model, 'claude-opus-5-5');
-
-  const effortInId = run({ id: 'served-effort-id', source: 'served-effort-id', provider: 'antigravity', model: 'gemini-3.8-flash', effort: 'low', result: { servedModel: 'gemini-3.8-flash-low', usage: USAGE, durationMs: 1 } });
-  assert.equal(effortInId.model, 'gemini-3.8-flash-low');
-  assert.equal(effortInId.requestedModel, 'gemini-3.8-flash');
-  assert.equal(effortInId.servedModel, 'gemini-3.8-flash-low');
-  assert.equal(effortInId.effort, 'low');
-  assert.equal(sc.rootRuns({ source: 'served-effort-id' })[0].attempts[0].sel, 'antigravity:gemini-3.8-flash:low');
-  assert.equal(sc.migrateScorecard(), 0, 'the legacy Method-C migration does not void a newly recorded exact dispatch');
-});
-
-test('amend rows correct identity in runRows and rootRuns, last value wins, and unvoid restores', () => {
-  const source = 'amend-identity';
-  const cfg = loadConfig().scorecard;
-  run({ id: 'amend-run', source, model: 'old-alias', effort: 'low' });
-  sc.rateTask('amend-run', 'pass');
-  sc.voidTask('amend-run', 'wrong identity');
-  assert.equal(sc.runRows().find((r) => r.taskId === 'amend-run'), undefined);
-
-  sc.amendTask('amend-run', { model: 'gpt-5.6-terra', effort: 'medium', unvoid: true, reason: 'resolved from journal' });
-  sc.amendTask('amend-run', { model: 'gpt-6-sol', reason: 'later correction' });
-  const row = sc.runRows().find((r) => r.taskId === 'amend-run');
-  assert.equal(row.model, 'gpt-6-sol');
-  assert.equal(row.effort, 'medium');
-  const attempt = sc.rootRuns({ source })[0].attempts[0];
-  assert.equal(attempt.model, row.model);
-  assert.equal(attempt.effort, row.effort);
-  assert.equal(attempt.verdict, 'pass');
-  assert.ok(sc.summarize({ source }).some((g) => g.sel === 'codex:gpt-6-sol:medium'));
-  try {
-    saveConfig({ scorecard: { archived: ['codex:gpt-6-sol'] } });
-    assert.equal(sc.summarize({ source }).length, 0);
-    assert.ok(sc.summarize({ source, archived: true }).some((g) => g.sel === 'codex:gpt-6-sol:medium'));
-  } finally { saveConfig({ scorecard: cfg }); }
-
-  sc.voidTask('amend-run', 'later exclusion');
-  assert.equal(sc.runRows().find((r) => r.taskId === 'amend-run'), undefined);
-  assert.equal(sc.rootRuns({ source }).length, 0);
-});
-
-test('fix rounds fold into an attempt; retries fold attempts into a chain with the last verdict', () => {
-  run({ id: 'root', category: 'edit', before: [{ id: 'codex:primary', usedPercent: 10, resetsAt: 1000 }, { id: 'codex:secondary', usedPercent: 40, resetsAt: 2000 }] });
-  run({ id: 'fix1', category: 'edit', followUpOf: 'root', result: { usage: { input_tokens: 500, output_tokens: 100 }, durationMs: 500 } });
-  sc.rateTask('fix1', 'fixable');
-  let c = sc.rootRuns().find((r) => r.taskId === 'root');
-  assert.equal(c.verdict, 'fixable');
-  sc.rateTask('root', 'pass', 'fine');
-  c = sc.rootRuns().find((r) => r.taskId === 'root');
-  assert.equal(c.verdict, 'pass');
-  assert.deepEqual(c.tokens, { in: 50_500, out: 10_100, cached: 50_000, write: 0 });
-  assert.equal(c.rounds, 1);
-  assert.equal(c.durationMs, 1500);
-  assert.deepEqual(c.pct, { 'codex:primary': 2, 'codex:secondary': 0 });
-  assert.ok(Math.abs(c.usd - (50_500 * 0.2 + 50_000 * 0.02 + 10_100 * 1.2) / 1e6) < 1e-9);
-
-  // A failed Luna attempt retried on Terra: one chain, path luna>terra, verdict from Terra, cost summed.
-  run({ id: 'try1', category: 'debug', difficulty: 4 });
-  sc.rateTask('try1', 'fail', 'wrong fix');
-  run({ id: 'try2', category: 'debug', difficulty: 4, model: 'gpt-5.6-terra', effort: 'medium', retryOf: 'try1' });
-  sc.rateTask('try2', 'pass');
-  const chain = sc.rootRuns().find((r) => r.taskId === 'try1');
-  assert.deepEqual(chain.path, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
-  assert.equal(chain.verdict, 'pass');
-  assert.equal(chain.attempts.length, 2);
-  assert.ok(chain.usd > chain.attempts[0].usd && chain.usd > chain.attempts[1].usd);
-  // an unrated earlier attempt that was retried counts as a fail
-  run({ id: 'u1', category: 'docs', difficulty: 1 });
-  run({ id: 'u2', category: 'docs', difficulty: 1, model: 'gpt-6-astra', retryOf: 'u1' });
-  assert.equal(sc.rootRuns().find((r) => r.taskId === 'u1').attempts[0].verdict, 'fail');
-
-  run({ id: 'crashed', category: 'edit', status: 'failed' });
-  assert.equal(sc.rootRuns().find((r) => r.taskId === 'crashed').verdict, 'fail');
-  sc.voidTask('crashed', 'sandbox denied the workspace');
-  assert.equal(sc.rootRuns().find((r) => r.taskId === 'crashed'), undefined);
-  // rate_task's `void` verdict routes to voidTask: the run leaves every aggregate.
-  run({ id: 'signin', category: 'edit', status: 'failed' });
-  assert.equal(sc.rateTask('signin', 'void', 'codex 401').op, 'void');
-  assert.equal(sc.rootRuns().find((r) => r.taskId === 'signin'), undefined);
-  assert.throws(() => sc.rateTask('root', 'meh'), { status: 400 });
-});
-
-test('a usage-limit reroute skips the cut-off run in the quality chain', () => {
-  const source = 'failover-reroute';
-  run({ id: `${source}-a`, source, category: 'review', difficulty: 2 });
-  sc.rateTask(`${source}-a`, 'fail');
-  // B hit a usage limit and has no scorecard row. C keeps A as its quality predecessor and records B separately.
-  run({ id: `${source}-c`, source, category: 'review', difficulty: 2, model: 'gpt-5.6-terra', effort: 'medium', retryOf: `${source}-a`, reroutedFrom: `${source}-b` });
-  sc.rateTask(`${source}-c`, 'pass');
-  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-a`);
-  assert.deepEqual(chain.path, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
-  assert.ok(!chain.attempts.some((a) => a.taskId === `${source}-b`));
-  assert.equal(sc.runRows().find((r) => r.taskId === `${source}-c`)?.reroutedFrom, `${source}-b`);
-  sc.voidTask(`${source}-a`, 'test fixture');
-  sc.voidTask(`${source}-c`, 'test fixture');
-});
-
-test('voidTask publishes the same score event as rateTask', async () => {
-  const { bus } = await import('../core/bus.mjs');
-  const seen = [];
-  const on = (e) => { if (e.type === 'score' && e.taskId === 'void-pub') seen.push({ type: e.type, taskId: e.taskId, verdict: e.verdict }); };
-  bus.on('event', on);
-  try { sc.voidTask('void-pub', 'sandbox denied the workspace'); }
-  finally { bus.off('event', on); }
-  assert.deepEqual(seen, [{ type: 'score', taskId: 'void-pub', verdict: 'void' }]);
-});
-
-test('summarize: single-step rows count every attempt, path rows count observed ladders', () => {
-  const sum = sc.summarize();
-  const luna4 = sum.find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'debug' && g.difficulty === 4);
-  assert.equal(luna4.fail, 1);
-  const ladder = sum.find((g) => g.steps === 2 && g.category === 'debug');
-  assert.equal(ladder.sel, 'codex:gpt-5.6-luna:low>codex:gpt-5.6-terra:medium');
-  assert.equal(ladder.pass, 1);
-  assert.equal(luna4.priorTier, 'B');
-  assert.equal(ladder.priorTier, null);
-});
-
-test('recommend: value not cheapness — a dearer model wins only when its extra quality is worth it', () => {
-  saveConfig({ scorecard: { minSamples: 3, providerWeight: { codex: 1, claude: 1, deepseek: 0 }, reservePct: 0 } }); // list-price economics for this scenario
-  // implement@2: Luna 0.8 quality (~$0.023/task), Terra 1.0 quality (10x the tokens price: ~$0.23), Astra 1.0 (~$1.15)
-  seed('codex', 'gpt-5.6-luna', 'low', 'implement', 2, ['pass', 'pass', 'pass', 'fixable', 'fail']);
-  seed('codex', 'gpt-5.6-terra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']);
-  seed('codex', 'gpt-6-astra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']);
-  const sum = sc.summarize();
-  const luna = sum.find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'implement' && g.difficulty === 2);
-  assert.equal(luna.quality, 0.7);
-  assert.equal(luna.accept, 0.8);
-  assert.ok(Math.abs(luna.avgUsd - 0.023) < 1e-9);
-
-  // λ = $5: Luna alone fails the 0.75 bar; ladder Luna->Terra: quality 0.7 + 0.2*1.0 = 0.9 at 0.023 + 0.2*0.23 = 0.069 -> U 4.43
-  // Terra alone: 1.0 at 0.23 -> U 4.77 -> Terra wins; Astra 1.0 at 1.15 -> U 3.85
-  let r = sc.recommend({ category: 'implement', difficulty: 2 });
-  assert.equal(r.model, 'gpt-5.6-terra');
-  assert.equal(r.plan.steps.length, 1);
-  assert.match(r.reason, /best value for implement@2/);
-  // λ = $1: quality is cheap -> the ladder (U 0.831) beats Terra alone (U 0.77)
-  saveConfig({ scorecard: { qualityValueUsd: 1 } });
-  r = sc.recommend({ category: 'implement', difficulty: 2 });
-  assert.deepEqual(r.plan.steps, ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-terra:medium']);
-  assert.equal(r.plan.estimated, true);
-  assert.equal(r.model, 'gpt-5.6-luna');
-  assert.equal(r.fallback.model, 'gpt-5.6-terra');
-  assert.match(r.reason, /then on fail/);
-  // λ = $100: quality is everything -> both Terra and Astra hit 1.0; Terra is cheaper
-  saveConfig({ scorecard: { qualityValueUsd: 100 } });
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).model, 'gpt-5.6-terra');
-  saveConfig({ scorecard: { qualityValueUsd: 5 } });
-
-  // exclusion and level logic. Without Terra, Astra alone ($1.15, U 3.85) loses to Luna-first with Astra as the net (U 4.25).
-  let x = sc.recommend({ category: 'implement', difficulty: 2, exclude: ['codex:gpt-5.6-terra'] });
-  assert.deepEqual(x.plan.steps, ['codex:gpt-5.6-luna:low', 'codex:gpt-6-astra:medium']);
-  assert.equal(x.fallback.model, 'gpt-6-astra');
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 1 }).model, 'gpt-5.6-terra');   // level-2 evidence covers level 1
-  x = sc.recommend({ category: 'implement', difficulty: 3 });                                        // no evidence at 3+: extrapolated, flagged
-  assert.equal(x.model, 'gpt-5.6-terra');
-  assert.match(x.reason, /extrapolated from level 2/);
-  seed('codex', 'gpt-5.6-terra', 'medium', 'implement', 3, ['fail', 'fail', 'pass']);
-  seed('codex', 'gpt-6-astra', 'medium', 'implement', 3, ['pass', 'pass', 'fixable']);
-  x = sc.recommend({ category: 'implement', difficulty: 3 });
-  assert.equal(x.plan.steps.at(-1), 'codex:gpt-6-astra:medium');                                 // Astra is the only qualified final step at 3
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).model, 'gpt-5.6-terra');     // failing at 3 does not disqualify at 2
-  assert.match(sc.recommend({ category: 'implement', difficulty: 4 }).reason, /extrapolated from level 3/);
-
-  // free local model: $0 -> wins as soon as it clears the bar with enough samples
-  seed('deepseek', 'deepseek-chat', null, 'implement', 2, ['pass', 'pass']);
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).model, 'gpt-5.6-terra');
-  seed('deepseek', 'deepseek-chat', null, 'implement', 2, ['pass']);
-  assert.equal(sc.recommend({ category: 'implement', difficulty: 2 }).provider, 'deepseek');
-  // ...unless wall clock is priced: deepseek-chat took 1000 ms like the others here, so make it slow
-  assert.equal(sc.recommend({ category: 'docs', difficulty: 1 }), null);
-
-  const text = sc.formatScores();
-  assert.match(text, /implement@2/);
-  assert.match(text, /- implement@3: class [a-z]+ · best value/);
-  assert.match(text, /\| B$/m);
-  assert.match(sc.formatScores({ category: 'review' }), /empty|none/);
-});
-
 test('escalate picks the highest measured quality, not the next cheap rung', () => {
   // implement@2 after seeding: Terra (1.0, $0.23), Astra (1.0, $1.15), deepseek-chat (1.0, $0) -> value pick is deepseek-chat; escalation ties on quality, then utility -> still deepseek-chat;
   // exclude the free one and Terra: value pick would be a Luna-first ladder, escalation goes straight to Astra alone.
-  const r = sc.recommend({ category: 'implement', difficulty: 2, exclude: ['deepseek:deepseek-chat', 'codex:gpt-5.6-terra'], escalate: true });
-  assert.deepEqual(r.plan.steps, ['codex:gpt-6-astra:medium']);
-  assert.match(r.reason, /escalation/);
+  // That seeding and the list-price config used to be the previous test, now in report.test.mjs.
+  const prev = loadConfig();
+  saveConfig({ scorecard: { minSamples: 3, providerWeight: { codex: 1, claude: 1, deepseek: 0 }, reservePct: 0, qualityValueUsd: 5 } });
+  const ids = [
+    ...seed('codex', 'gpt-5.6-luna', 'low', 'implement', 2, ['pass', 'pass', 'pass', 'fixable', 'fail']),
+    ...seed('codex', 'gpt-5.6-terra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']),
+    ...seed('codex', 'gpt-6-astra', 'medium', 'implement', 2, ['pass', 'pass', 'pass']),
+    ...seed('deepseek', 'deepseek-chat', null, 'implement', 2, ['pass', 'pass', 'pass']),
+  ];
+  try {
+    const r = sc.recommend({ category: 'implement', difficulty: 2, exclude: ['deepseek:deepseek-chat', 'codex:gpt-5.6-terra'], escalate: true });
+    assert.deepEqual(r.plan.steps, ['codex:gpt-6-astra:medium']);
+    assert.match(r.reason, /escalation/);
+  } finally {
+    for (const id of ids) sc.voidTask(id, 'fixture moved with the value test');
+    saveConfig(prev);
+  }
 });
 
 test('escalation ranks live evidence count across classes', () => {
@@ -456,6 +153,7 @@ test('a higher effort within the cost slack dominates the lower effort of the sa
 
 test('thin cells pool harder levels until the sample floor is met', () => {
   // one run each at refactor 2, 3, 4 -> level-2 evidence pools all three; level-4 evidence is a single run (not enough)
+  saveConfig({ scorecard: { minSamples: 3 } }); // was left set by 'recommend: value not cheapness' (now in report.test.mjs)
   seed('codex', 'gpt-5.6-terra', 'low', 'refactor', 2, ['pass']);
   seed('codex', 'gpt-5.6-terra', 'low', 'refactor', 3, ['fixable']);
   seed('codex', 'gpt-5.6-terra', 'low', 'refactor', 4, ['pass']);
@@ -491,13 +189,6 @@ test('cold-start effort scales with difficulty, clamped to the model\'s efforts'
   assert.equal(sc.priorEffort(['low', 'medium'], 4), 'medium'); // clamped to what the model actually offers
   assert.equal(sc.priorEffort(['high', 'max'], 2), 'high');     // nothing at/below the target -> lowest available
   assert.equal(sc.priorEffort([], 4), null);
-});
-
-test('source filter separates smoke from live runs', () => {
-  run({ id: 'sm1', source: 'smoke', category: 'read', difficulty: 1 });
-  sc.rateTask('sm1', 'pass');
-  assert.ok(sc.rootRuns({ source: 'smoke' }).every((r) => r.source === 'smoke'));
-  assert.ok(!sc.rootRuns({ source: 'live' }).some((r) => r.taskId === 'sm1'));
 });
 
 test('smoke repeats use pass^k task cells, ignore voids, and leave live cells unchanged', (t) => {
@@ -543,59 +234,6 @@ test('smoke repeats use pass^k task cells, ignore voids, and leave live cells un
   } finally { saveConfig(previous); }
 });
 
-test('B11: avgPct is per-window concurrency-adjusted and ignores other quota groups', async () => {
-  const lim = await import('../core/limits.mjs');
-  const source = 'B11-avg-pct', provider = 'b11-provider', model = 'gemini-pro';
-  const previous = lim.getLimits().providers[provider];
-  lim.getLimits().providers[provider] = { provider, windows: [
-    { id: 'shared' }, { id: 'gemini', models: 'gemini' }, { id: 'third-party', models: 'claude|gpt' },
-  ] };
-  try {
-    for (const [i, pct] of [{ shared: 8, gemini: 6, 'third-party': 90 }, { shared: 4, gemini: 4, 'third-party': 80 }, { 'third-party': 70 }].entries()) {
-      const id = `${source}-${i}`;
-      appendNdjson(statePath('scorecard.ndjson'), {
-        op: 'run', taskId: id, ts: new Date(Date.now() + i).toISOString(), source, provider, model, effort: null, category: 'edit', difficulty: 2,
-        status: 'done', tokens: { in: 100, out: 0, cached: 0, v: 2 }, durationMs: 1, rounds: 1,
-        pct, concurrentByWindow: i ? { shared: 0, gemini: 0, 'third-party': 0 } : { shared: 3, gemini: 1, 'third-party': 0 },
-      });
-      sc.rateTask(id, 'pass');
-    }
-    const cell = sc.summarize({ source, shipped: false }).find((g) => g.model === model);
-    assert.equal(cell.avgPct, 3.5); // maxes are 3 and 4 after divisors; a run with only an unrelated window adds no value
-  } finally { lim.getLimits().providers[provider] = previous; }
-});
-
-test('scorecard config is normalized', () => {
-  const cfg = loadConfig();
-  assert.equal(cfg.scorecard.minSamples, 1) // an earlier test in this file saved 1; the default is DEFAULTS.scorecard.minSamples;
-  assert.equal(cfg.scorecard.benchMinSamples, 3);
-  assert.equal(cfg.scorecard.shippedBatteries, true);
-  assert.equal(cfg.scorecard.quality, 0.75);
-  assert.equal(cfg.scorecard.qualityValueUsd, 5);
-  assert.equal(cfg.scorecard.hourlyUsd, 0);
-  const bad = saveConfig({ scorecard: { quality: 5, minSamples: -1, qualityValueUsd: 'x', hourlyUsd: -3, prices: 'x', usePriors: 'yes' }, smoke: { timeoutMinutes: 0 } });
-  assert.equal(bad.scorecard.quality, 0.75);
-  assert.equal(bad.scorecard.minSamples, DEFAULTS.scorecard.minSamples);
-  assert.equal(bad.scorecard.benchMinSamples, 3);
-  assert.equal(bad.scorecard.qualityValueUsd, 5);
-  assert.equal(bad.scorecard.hourlyUsd, 0);
-  assert.deepEqual(bad.scorecard.prices, {});
-  assert.equal(bad.scorecard.coldStart, 'priors');
-  assert.equal(bad.scorecard.usePriors, undefined);
-  assert.equal(bad.smoke.timeoutMinutes, 20);
-  saveConfig({ scorecard: { usePriors: false } });
-});
-
-test('a retry chain survives a voided original, and a rating on the voided id settles the retry', () => {
-  run({ id: 'cap1', category: 'summarize', difficulty: 2 });          // died on a harness cap
-  sc.voidTask('cap1', 'environment: iteration cap');
-  run({ id: 'cap2', category: 'summarize', difficulty: 2, retryOf: 'cap1' });
-  sc.rateTask('cap1', 'pass', 'rated on the original id, as instructed');
-  const chain = sc.rootRuns().find((c) => c.attempts.some((a) => a.taskId === 'cap2'));
-  assert.equal(chain.attempts.length, 1);          // the voided attempt does not count
-  assert.equal(chain.verdict, 'pass');             // but its rating reaches the retry
-});
-
 test('provider weight: included subscriptions are near-free until their window fills; blocked providers are never picked', async () => {
   seed('codex', 'gpt-5.6-terra', 'low', 'review', 2, ['pass', 'pass', 'pass']);                       // list ~$0.23 -> weighted 0.046 at 0.2
   saveConfig({ scorecard: { prices: { 'deepseek:deepseek-flash': { in: 0.3, out: 1.2, cached: 0.006 } }, providerWeight: { codex: 0.2, deepseek: 1 }, reservePct: 0, classes: { codex: 'api', deepseek: 'api' } } }); // same class: compare on weighted value
@@ -605,7 +243,7 @@ test('provider weight: included subscriptions are near-free until their window f
   assert.equal(sc.recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'deepseek');             // 0.027 < 0.046
   saveConfig({ scorecard: { providerWeight: { codex: 0.05 } } });
   assert.equal(sc.recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'codex');                // 0.0115 < 0.027
-  const lim = await import('../core/limits.mjs');
+  const lim = await import('../../core/limits.mjs');
   lim.getLimits().providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent: 90, resetsAt: Date.now() + 3.6e6 }] };
   assert.equal(sc.providerWeight('codex'), 1);                                                        // quota pressure -> full price
   assert.equal(sc.recommend({ category: 'review', difficulty: 2, overflowApi: true }).provider, 'deepseek');
@@ -638,7 +276,7 @@ test('class walk: the first budget class proven at the level wins; capped classe
   assert.equal(sc.providerClass('codex'), 'subscription');
   assert.equal(sc.providerClass('claude'), 'conductor');
   assert.equal(sc.providerClass('deepseek'), 'api');
-  const lim = await import('../core/limits.mjs');
+  const lim = await import('../../core/limits.mjs');
   lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: [] };
   // refactor@2: antigravity (included) proven at 2, codex Terra proven at 2 and 4, deepseek proven at 2 but cheapest of all
   seed('antigravity', 'flash', null, 'refactor', 2, ['pass', 'pass', 'pass']);
@@ -663,24 +301,8 @@ test('class walk: the first budget class proven at the level wins; capped classe
   saveConfig({ scorecard: { reservePct: 0.5, classes: { deepseek: 'free' }, classCap: { free: 100, included: 100, subscription: 100, conductor: 95, api: 100 } } });
 });
 
-test('bench: lists models with no battery or a stale one', async () => {
-  const { BENCH_TASK_IDS, dueForBench, formatBench } = await import('../core/bench.mjs');
-  const reg = { updatedAt: 'x', providers: { codex: { status: 'ok' }, deepseek: { status: 'ok' }, grok: { status: 'unavailable' } }, models: [
-    { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low', 'high'] },
-    { provider: 'codex', id: 'brand-new', kind: 'agent', efforts: ['low'] },
-    { provider: 'deepseek', id: 'deepseek-chat', kind: 'agent', cost: 'api', efforts: [] },
-    { provider: 'grok', id: 'grok-4.7', kind: 'agent', efforts: [] },
-  ] };
-  const attempt = (effort, smokeId, i) => ({ provider: 'codex', model: 'gpt-5.6-luna', effort, smokeId, verdict: 'pass', ts: new Date(Date.now() - i).toISOString() });
-  const runs = [{ attempts: BENCH_TASK_IDS.slice(0, 8).map((id, i) => attempt('low', id, i)).concat(BENCH_TASK_IDS.slice(0, 7).map((id, i) => attempt('high', id, i))) }];
-  const due = dueForBench({ days: 21, reg, runs });
-  assert.deepEqual(due.map((d) => `${d.provider}:${d.model}:${d.effort}`), ['codex:brand-new:low', 'codex:gpt-5.6-luna:high', 'deepseek:deepseek-chat:null']);
-  assert.match(formatBench(due), /3 selection\(s\) due/);
-  assert.equal(dueForBench({ days: -1, reg, runs }).length, 4); // the covered low effort becomes stale
-});
-
 test("the conductor's plan is capped on its session window only; weekly (Fable weekly included) may run to 100%", async () => {
-  const lim = await import('../core/limits.mjs');
+  const lim = await import('../../core/limits.mjs');
   lim.getLimits().providers.claude = { provider: 'claude', windows: [{ id: 'claude:5h', label: '5-hour', usedPercent: 50 }, { id: 'claude:w', label: 'weekly', usedPercent: 99 }, { id: 'claude:wf', label: 'weekly Fable', usedPercent: 100 }] };
   assert.equal(sc.providerClass('claude'), 'conductor');
   assert.equal(sc.providerAvailable('claude', { model: 'opus' }), true);
@@ -694,7 +316,7 @@ test("the conductor's plan is capped on its session window only; weekly (Fable w
 });
 
 test('conductor selection rejects exhausted or rejected scoped weekly windows, but allows other groups and expired windows', async () => {
-  const { getLimits, noteRateLimitEvent } = await import('../core/limits.mjs');
+  const { getLimits, noteRateLimitEvent } = await import('../../core/limits.mjs');
   const previous = getLimits().providers.claude;
   const scorecard = loadConfig().scorecard;
   const pick = (model) => sc.recommend({ category: 'other', difficulty: 2, providers: ['claude'], exclude: [model === 'opus' ? 'claude:sonnet' : 'claude:opus'] });
@@ -720,13 +342,6 @@ test('conductor selection rejects exhausted or rejected scoped weekly windows, b
   } finally { getLimits().providers.claude = previous; saveConfig({ scorecard }); }
 });
 
-test('modeling is a first-class category (journaled and scored as itself, not as other)', () => {
-  assert.ok(sc.CATEGORIES.includes('modeling'));
-  run({ id: 'mod1', category: 'modeling', difficulty: 4 });
-  sc.rateTask('mod1', 'fixable');
-  assert.ok(sc.summarize().some((g) => g.category === 'modeling' && g.difficulty === 4));
-});
-
 test('a hand-routed model without an effort gets the higher of the configured default and the difficulty target', () => {
   const reg = { models: [{ provider: 'codex', id: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }, { provider: 'antigravity', id: 'gemini-3.8-flash-low', efforts: [] }, { provider: 'antigravity', id: 'gemini-3.8-flash', efforts: ['low', 'medium', 'high'] }] };
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'gpt-6-astra', difficulty: 4, defaultEffort: 'medium', reg }), 'high');   // the bug: medium default, hard task
@@ -735,32 +350,6 @@ test('a hand-routed model without an effort gets the higher of the configured de
   assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash-low', difficulty: 4, defaultEffort: 'high', reg }), null); // no effort dimension: never carries an effort (agy bakes it into the id)
   assert.equal(sc.effortForTask({ provider: 'antigravity', model: 'gemini-3.8-flash', difficulty: 4, defaultEffort: 'medium', reg }), 'high'); // collapsed family: effort scales with difficulty, clamped to low/medium/high
   assert.equal(sc.effortForTask({ provider: 'codex', model: 'nope', difficulty: 4, defaultEffort: null, reg }), null);
-});
-
-test('a run recorded from outside Conductor (unmeasured tokens) counts for quality but is unpriced', async () => {
-  const { appendNdjson, statePath } = await import('../core/paths.mjs');
-  appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'ext1', source: 'live', provider: 'codex', model: 'gpt-6-astra', effort: 'ultra', category: 'modeling', difficulty: 4, status: 'done', tokens: { in: 0, out: 0, cached: 0, v: 2 }, costUsd: 0, durationMs: 0, unmeasured: true, title: 'external' });
-  sc.rateTask('ext1', 'pass', 'recorded from an external run');
-  const a = sc.rootRuns().flatMap((c) => c.attempts).find((x) => x.taskId === 'ext1');
-  assert.equal(a.verdict, 'pass'); assert.equal(a.usd, null);
-  const g = sc.summarize().find((x) => x.category === 'modeling' && x.difficulty === 4 && /astra/.test(x.sel));
-  assert.equal(g.pass, 1); assert.equal(g.avgUsd, null);
-});
-
-test('modeling: only a recorded pass is routable, at the effort that passed', async () => {
-  const p = await import('../core/priors.mjs');
-  assert.equal(p.priorFor('codex', 'gpt-6-astra', 'modeling').tier, 'A');
-  assert.equal(p.priorFor('codex', 'gpt-6-astra', 'modeling').effort, 'ultra');
-  assert.equal(p.priorFor('claude', 'opus-5', 'modeling').tier, null);      // "close" is not routable
-  assert.equal(p.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, 'A');   // passed with the recipe (2026-09-12)
-  assert.equal(p.priorFor('codex', 'gpt-5.6-luna', 'modeling').tier, null); // fail
-  assert.equal(p.priorFor('kimi', 'kimi-k3', 'modeling').tier, null);       // never benchmarked: no code prior leaks in
-  assert.equal(p.priorFor('codex', 'gpt-6-sol', 'modeling').tier, null);    // a newer gpt-6 model does not inherit Astra's verdict
-  // Drafting has its own verdicts (good / weak / unusable recorded as pass / close / fail), not modeling's.
-  assert.deepEqual([p.priorFor('codex', 'gpt-6-astra', 'drafting').tier, p.priorFor('codex', 'gpt-6-astra', 'drafting').effort], ['A', 'xhigh']);
-  for (const [provider, model] of [['claude', 'claude-fable-5-1[1m]'], ['codex', 'gpt-5.6-sol'], ['grok', 'grok-4.7'], ['grok', 'grok-4.6'], ['claude', 'opus-5']]) {
-    assert.equal(p.priorFor(provider, model, 'drafting').tier, null, `${provider}:${model} has no drafting pass`);
-  }
 });
 
 test('visual work: every automatic route honors the recorded-pass gate; nothing weaker when no pass is available', (t) => {
@@ -882,8 +471,8 @@ test('GP2-02: every visual ladder step needs supported effort; supported alterna
 });
 
 test('wasteDiscount: a soon-resetting subscription window is discounted regardless of used percent', async () => {
-  const { wasteDiscount } = await import('../core/scorecard.mjs');
-  const { getLimits } = await import('../core/limits.mjs');
+  const { wasteDiscount } = await import('../../core/scorecard.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = { ...loadConfig().scorecard, wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' } };
   const lim = getLimits();
   const wk = (usedPercent, hoursToReset) => { lim.providers.codex = { windows: [{ id: 'codex:primary', label: 'Codex weekly', usedPercent, resetsAt: Date.now() + hoursToReset * 3600e3, windowMinutes: 10080 }] }; };
@@ -904,8 +493,8 @@ test('wasteDiscount: a soon-resetting subscription window is discounted regardle
 });
 
 test('wasteDiscount uses absolute stepped boundaries and strength', async () => {
-  const { wasteDiscount } = await import('../core/scorecard.mjs');
-  const { getLimits } = await import('../core/limits.mjs');
+  const { wasteDiscount } = await import('../../core/scorecard.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const limits = getLimits(), previous = limits.providers.codex;
   const now = Date.parse('2026-09-20T12:00:00Z');
   const cfg = { ...loadConfig().scorecard, wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1, classes: { codex: 'subscription' } };
@@ -927,34 +516,8 @@ test('wasteDiscount uses absolute stepped boundaries and strength', async () => 
   } finally { limits.providers.codex = previous; }
 });
 
-test('a fully discounted plan keeps zero cost through utility and score formatting', async () => {
-  const { getLimits } = await import('../core/limits.mjs');
-  const cfg = loadConfig().scorecard, limits = getLimits(), previous = limits.providers.codex;
-  const source = 'waste-zero-cost';
-  try {
-    saveConfig({ scorecard: { usePriors: false, quality: 0.75, minSamples: 3, qualityValueUsd: 5, reservePct: 0, hourlyUsd: 0,
-      wasteSteps: [[72, 0.5], [48, 0.8], [24, 1]], wasteStrength: 1,
-      providerWeight: { codex: 1 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
-    limits.providers.codex = { windows: [{ id: 'weekly', label: 'weekly', usedPercent: 99, resetsAt: Date.now() + 23 * 3600e3, windowMinutes: 10080 }] };
-    for (let i = 0; i < 3; i++) {
-      const id = `${source}-${i}`;
-      run({ id, source, provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'search', difficulty: 2 });
-      sc.rateTask(id, 'pass');
-    }
-    const summary = sc.summarize({ source });
-    const pick = sc.recommend({ category: 'search', difficulty: 2, summary });
-    assert.equal(pick.plan.usd, 0);
-    assert.equal(pick.plan.utility, 5 * pick.plan.quality);
-    assert.match(pick.reason, /at \$0\.000/);
-    const short = sc.formatScoresShort({ source });
-    const full = sc.formatScores({ category: 'search', source });
-    assert.match(short, /\$0\.000/); assert.match(full, /at \$0\.000/);
-    assert.doesNotMatch(short + full, /NaN|Infinity/);
-  } finally { limits.providers.codex = previous; saveConfig({ scorecard: cfg }); }
-});
-
 test('nextScheduledReset + wasteDiscount apply to a windowless provider on a configured schedule', async () => {
-  const { nextScheduledReset, wasteDiscount } = await import('../core/scorecard.mjs');
+  const { nextScheduledReset, wasteDiscount } = await import('../../core/scorecard.mjs');
   const cfg = { usageResets: { grok: { periodHours: 24, resetHour: 18 } }, classes: { grok: 'included' }, wasteSteps: [[48, 0.5], [24, 1]], wasteStrength: 0.9, providerWeight: {} };
   const now = Date.parse('2026-09-15T10:00:00'); // local morning; next reset is 18:00 LOCAL today
   const nr = nextScheduledReset('grok', cfg, now);
@@ -962,131 +525,6 @@ test('nextScheduledReset + wasteDiscount apply to a windowless provider on a con
   assert.equal(new Date(nr).getHours(), 18, 'reset is at the configured local wall-clock hour (system timezone)');
   assert.ok(wasteDiscount('grok', cfg, null, now) < 0.5, 'a windowless provider near its scheduled reset is discounted (plow through it)');
   assert.equal(nextScheduledReset('codex', cfg, now), null, 'no schedule configured -> null');
-});
-
-test('method-c migration voids antigravity rows whose sel carried a spurious effort, idempotently', async () => {
-  const { appendNdjson, statePath } = await import('../core/paths.mjs');
-  const row = (taskId, model, effort) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId, source: 'live', provider: 'antigravity', model, effort, category: 'edit', difficulty: 2, status: 'done', tokens: { in: 100, out: 10, cached: 0, v: 2 }, durationMs: 100, title: 'x' });
-  row('agy-bad', 'gemini-3.6-flash-low', 'high'); // raw effort-in-id model + spurious effort (the old bug)
-  row('agy-good', 'gemini-3.8-flash', 'high');    // Method-C shape: family id + real effort
-  sc.rateTask('agy-bad', 'pass'); sc.rateTask('agy-good', 'pass');
-  assert.equal(sc.migrateScorecard(), 1);                                        // exactly the polluted row is voided
-  assert.equal(sc.migrateScorecard(), 0);                                        // idempotent: nothing left to void
-  assert.equal(sc.rootRuns().find((c) => c.taskId === 'agy-bad'), undefined);    // dropped from the aggregates
-  assert.ok(sc.rootRuns().find((c) => c.taskId === 'agy-good'));                  // the clean family row survives
-});
-
-test('scorecard migration voids only harness-error smoke failures and is idempotent', async () => {
-  const { appendNdjson, readNdjson, statePath } = await import('../core/paths.mjs');
-  const source = 'smoke';
-  const row = (taskId, runSource = 'smoke') => appendNdjson(statePath('scorecard.ndjson'), {
-    op: 'run', ts: new Date().toISOString(), taskId, source: runSource, provider: 'codex', model: 'gpt-6-sol', effort: 'medium',
-    category: 'test', difficulty: 6, status: 'failed', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'legacy',
-  });
-  const cases = [
-    ['migration-400', '{"type":"error","status":400,"message":"bad request"}'],
-    ['migration-401', 'unexpected status 401 Unauthorized'],
-    ['migration-limit', "You've hit your usage limit for this model."],
-    ['migration-genuine', '8/9 tests passed'],
-    ['migration-genuine-status', 'expected status 400 in the fixture output'],
-  ];
-  for (const [id, notes] of cases) { row(id); sc.rateTask(id, 'fail', notes); }
-  row('migration-live', 'live'); sc.rateTask('migration-live', 'fail', 'HTTP status 500 from provider');
-  assert.equal(sc.migrateScorecard(), 3);
-  assert.equal(sc.migrateScorecard(), 0);
-  const all = readNdjson(statePath('scorecard.ndjson'));
-  for (const id of ['migration-400', 'migration-401', 'migration-limit']) assert.ok(all.some((r) => r.op === 'void' && r.taskId === id));
-  assert.ok(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-genuine'));
-  assert.ok(sc.rootRuns({ source: 'live' }).some((c) => c.taskId === 'migration-live'));
-  assert.equal(sc.rootRuns({ source }).some((c) => c.taskId === 'migration-400'), false);
-});
-
-test('phantom detection helpers', () => {
-  assert.deepEqual(sc.claimedWrites([{ type: 'file_change', changes: [{ path: 'a.js' }, { path: 'b.js' }] }, { type: 'message' }, { type: 'file_change', changes: [{ path: '' }, { nopath: 1 }] }]), ['a.js', 'b.js']);
-  assert.deepEqual(sc.claimedWrites(undefined), []);
-  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: true, observedCount: 0 }), true);
-  assert.equal(sc.isPhantomCompletion({ ok: false, claimed: ['a'], canVerify: true, observedCount: 0 }), false);
-  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: false, observedCount: 0 }), false);
-  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: ['a'], canVerify: true, observedCount: 1 }), false);
-  assert.equal(sc.isPhantomCompletion({ ok: true, claimed: [], canVerify: true, observedCount: 0 }), false);
-});
-
-test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', () => {
-  sc.recordRun({ id: 'ph1', title: 'p', status: 'failed', failKind: 'phantom', provider: 'codex', model: 'gpt-5.6-luna', effort: 'low', category: 'test', difficulty: 2, result: { usage: { input_tokens: 10, output_tokens: 1 }, durationMs: 1 } }, {});
-  sc.rateTask('ph1', 'phantom');
-  const g = sc.summarize().find((x) => x.sel === 'codex:gpt-5.6-luna:low' && x.category === 'test' && x.difficulty === 2);
-  assert.equal(g.phantom, 1); assert.equal(g.fail, 0); assert.equal(g.quality, 0); assert.equal(g.errorRate, 0); assert.equal(g.phantomRate, 1);
-  const er = sc.errorRates();
-  assert.ok(er.byProvider.find((e) => e.key === 'codex' && e.phantom >= 1));
-  assert.ok(er.byModel.find((e) => e.key === 'codex:gpt-5.6-luna:low' && e.phantom >= 1));
-  assert.doesNotThrow(() => sc.rateTask('ph1', 'phantom'));
-  assert.throws(() => sc.rateTask('ph1', 'meh'), { status: 400 });
-});
-
-test('summary reliability fields use known values and leave legacy rows unknown', async () => {
-  const { appendNdjson, statePath } = await import('../core/paths.mjs');
-  const source = 'reliability-summary';
-  const add = (id, result, verdict) => {
-    sc.recordRun({ id, title: id, status: 'done', provider: 'claude', model: 'haiku', effort: null, category: 'docs', difficulty: 1, source, result });
-    sc.rateTask(id, verdict);
-  };
-  add('reliability-pass', { ok: true, turns: 2, toolCalls: 4, toolErrors: 1, thrash: 2, timedOut: false, costUsd: 0.4, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'pass');
-  add('reliability-fix', { ok: false, turns: 4, toolCalls: 2, toolErrors: 1, thrash: 0, timedOut: true, costUsd: 0.2, usage: { input_tokens: 1, output_tokens: 1 }, durationMs: 1 }, 'fixable');
-  const known = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:haiku:default');
-  assert.equal(known.errorRate, 0.5);
-  assert.equal(known.toolErrorRate, 2 / 6);
-  assert.equal(known.avgTurns, 3);
-  assert.equal(known.thrash, 2);
-  assert.equal(known.timeouts, 1);
-  assert.ok(Math.abs(known.costPerSuccess - 0.6) < 1e-9);
-  appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'reliability-old', source, provider: 'claude', model: 'legacy', effort: null, category: 'docs', difficulty: 1, status: 'done', tokens: { in: 1, out: 1, cached: 0, v: 2 }, durationMs: 1, title: 'old' });
-  sc.rateTask('reliability-old', 'pass');
-  const old = sc.summarize({ source, shipped: false }).find((g) => g.sel === 'claude:legacy:default');
-  assert.equal(old.toolErrorRate, null); assert.equal(old.avgTurns, null); assert.equal(old.thrash, null); assert.equal(old.timeouts, null);
-});
-
-test('formatScores surfaces the phantom column and error-rate section', () => {
-  const text = sc.formatScores();
-  assert.match(text, /pass\/fix\/close\/fail\/phantom/);
-  assert.match(text, /Error rates/);
-});
-
-test('ui is a first-class category and classifyCategory tags UI/frontend work', () => {
-  assert.ok(sc.CATEGORIES.includes('ui'));
-  assert.equal(pr.KIND.ui, 'code');                                  // ui rides the code priors for cold-start defaults
-  assert.equal(pr.priorFor('codex', 'gpt-6-astra', 'ui').tier, 'A'); // sensible default via the code kind
-  for (const s of ['fix the CSS layout of the sidebar', 'the modal button style is broken', 'update styles.css', 'React component re-renders', 'make the panel responsive']) assert.equal(sc.classifyCategory(s), 'ui', s);
-  for (const s of ['refactor the scheduler', 'add a retry to the API client', 'summarize the docs', '']) assert.equal(sc.classifyCategory(s), null, s);
-});
-
-test('research, writing and video extraction are first-class categories with matching prior kinds', () => {
-  for (const category of ['research', 'writing', 'video-extraction']) assert.ok(sc.CATEGORIES.includes(category));
-  assert.equal(pr.KIND.research, 'read');
-  assert.equal(pr.KIND.writing, 'reason');
-  assert.equal(pr.KIND['video-extraction'], 'read');
-});
-
-test('short view: every category@level is a compact pick, capped cell, or no-data cell; benched cells; csv', () => {
-  const short = sc.formatScoresShort();
-  const full = sc.formatScores();
-  assert.ok(short.length < full.length / 2, 'short ' + short.length + ' vs full ' + full.length);
-  const cfg = loadConfig().scorecard;
-  for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5, 6, 7]) {
-    const r = sc.recommend({ category: c, difficulty: d });
-    const line = short.split('\n').find((l) => l.startsWith('- ' + c + '@1:'));
-    assert.ok(line, 'no short line for ' + c + '@' + d);
-    assert.ok(line.includes(c + '@' + d + ':'), line);
-    if (r) assert.ok(line.includes(r.provider + ':' + (r.model || 'default') + ':' + (r.effort || 'default')), line);
-    else assert.match(line, new RegExp(c + '@' + d + ': (?:capped:|no data)'));
-  }
-  assert.doesNotMatch(short, /runner-up/);
-  const bad = sc.benchedCells(sc.summarize(), cfg)[0];
-  if (bad) assert.ok(short.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'benched cell listed');
-  if (bad) assert.ok(full.includes('- ' + bad.sel + ' ' + bad.category + '@' + bad.difficulty + ':'), 'full view lists benched cell');
-  assert.equal(sc.formatScoresShort(), short);                           // memoised: same inputs, same text
-  const csv = sc.scoresCsv();
-  assert.match(csv.split('\n')[0], /^sel,category,difficulty,/);
-  assert.equal(csv.trim().split('\n').length, sc.summarize().length + 1);
 });
 
 test('B1: a winning observed ladder dispatches its exact first worker, including tagged model IDs', (t) => {
@@ -1111,7 +549,7 @@ test('B1: a winning observed ladder dispatches its exact first worker, including
 test('B6: observed mixed-provider costs are weighted per step, including paid then API and pooled levels', async (t) => {
   registryModels(t, [['claude', 'paid'], ['codex', 'fallback'], ['deepseek', 'local:latest']]);
   const cfg = loadConfig().scorecard;
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const limits = getLimits();
   const previous = { ...limits.providers };
   const now = Date.parse('2026-09-28T16:20:00Z');
@@ -1225,7 +663,7 @@ test('B5: prior fallback honors exact-effort and whole-model exclusions', () => 
 
 test('R2H1: tagged measured selections honor whole-model exclusions and scoped quotas', async (t) => {
   registryModels(t, [['deepseek', 'deepseek-chat:latest']]);
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const limits = getLimits(), previous = limits.providers.deepseek;
   const cfg = loadConfig().scorecard;
   const source = 'R2H1';
@@ -1256,10 +694,10 @@ test('R2H1: tagged measured selections honor whole-model exclusions and scoped q
 });
 
 test('R2B2: every measured plan step must remain usable in the registry, including aliases', async () => {
-  const { getModels } = await import('../core/models.mjs');
+  const { getModels } = await import('../../core/models.mjs');
 // Explicit fixture class and zero price keep routing/cost scenarios independent of a local provider.
 saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, prices: { 'deepseek:deepseek-chat': { in: 0, out: 0, cached: 0 } } } });
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const reg = getModels(), limits = getLimits();
   const previous = { models: reg.models, providers: reg.providers, limits: limits.providers };
   const cfg = loadConfig().scorecard;
@@ -1293,117 +731,6 @@ saveConfig({ scorecard: { classes: { codex: 'subscription', deepseek: 'free' }, 
     reg.providers.deepseek.status = 'unavailable';
     assert.equal(pick([cell([local]), cell([remote])]).provider, 'codex', 'qualified available alternative wins');
   } finally { reg.models = previous.models; reg.providers = previous.providers; limits.providers = previous.limits; saveConfig({ scorecard: cfg }); }
-});
-
-test('R2B4: a predecessor failure does not rate its unreviewed replacement', () => {
-  const source = 'R2B4';
-  run({ id: `${source}-original`, source });
-  sc.rateTask(`${source}-original`, 'fail', 'reviewed before replacement');
-  run({ id: `${source}-replacement`, source, retryOf: `${source}-original`, model: 'gpt-5.6-terra' });
-  const summary = sc.summarize({ source });
-  const original = summary.find((g) => g.steps === 1 && g.model === 'gpt-5.6-luna');
-  const replacement = summary.find((g) => g.steps === 1 && g.model === 'gpt-5.6-terra');
-  assert.equal(original.fail, 1);
-  assert.equal(replacement.rated, 0);
-  assert.equal(replacement.fail, 0);
-  assert.equal(summary.find((g) => g.steps === 2).rated, 0);
-  run({ id: `${source}-followup`, source, followUpOf: `${source}-replacement`, model: 'gpt-5.6-terra' });
-  sc.rateTask(`${source}-replacement`, 'pass', 'reviewed attempt including its follow-up');
-  assert.equal(sc.rootRuns({ source })[0].verdict, 'pass');
-  sc.voidTask(`${source}-original`, 'harness failure');
-  assert.equal(sc.rootRuns({ source })[0].verdict, 'pass', 'an explicit replacement verdict beats a voided ancestor verdict');
-});
-
-test('R2B6: voids invalidate cached admission costs and are filtered on stat fallback', async (t) => {
-  const { measuredCostByWindow, admit } = await import('../core/sweep.mjs');
-  const fs = (await import('node:fs')).default;
-  const { syncBuiltinESMExports } = await import('node:module');
-  const provider = 'r2b6-fixture';
-  for (const [taskId, delta] of [['R2B6-valid', 3], ['R2B6-void', 90]]) {
-    appendNdjson(statePath('scorecard.ndjson'), { op: 'run', taskId, provider, pct: { weekly: delta } });
-  }
-  const windows = [{ id: 'weekly', label: 'weekly', usedPercent: 60 }]; // headroom 40: average 46.5 does not fit; the remaining 3 does
-  const cost = () => measuredCostByWindow(sc.runRows(), provider);
-  assert.deepEqual(cost(), { weekly: 46.5 });
-  const cached = sc.runRows();
-  assert.equal(sc.runRows(), cached, 'unchanged ledger uses the cache');
-  assert.equal(admit(windows, [{ costs: cost() }]).n, 0);
-  sc.voidTask('R2B6-void', 'invalid measurement');
-  assert.notEqual(sc.runRows(), cached, 'void append invalidates cached rows');
-  assert.deepEqual(cost(), { weekly: 3 });
-  assert.equal(admit(windows, [{ costs: cost() }]).n, 1);
-  const stat = fs.statSync;
-  let fallbacks = 0;
-  const mock = t.mock.method(fs, 'statSync', (file, ...args) => {
-    if (file === statePath('scorecard.ndjson')) { fallbacks++; throw new Error('fixture stat failure'); }
-    return stat(file, ...args);
-  });
-  syncBuiltinESMExports();
-  try {
-    assert.deepEqual(cost(), { weekly: 3 });
-    assert.equal(fallbacks, 1, 'readable ledger takes the stat-failure fallback');
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-});
-
-test('D7: a run with no reported usage is unknown cost, except a zero list price is really $0', () => {
-  run({ id: 'D7-missing', source: 'D7-missing', category: 'read', difficulty: 1, result: { durationMs: 1000 } });
-  sc.rateTask('D7-missing', 'pass');
-  const missing = sc.rootRuns({ source: 'D7-missing' }).find((c) => c.taskId === 'D7-missing');
-  assert.equal(missing.usd, null);
-  assert.equal(missing.attempts[0].usd, null);
-  assert.equal(sc.summarize({ source: 'D7-missing' }).find((g) => g.sel === 'codex:gpt-5.6-luna:low').avgUsd, null);
-
-  run({ id: 'D7-local', source: 'D7-local', provider: 'deepseek', model: 'deepseek-chat', effort: null, category: 'read', difficulty: 1, result: { durationMs: 1000 } });
-  sc.rateTask('D7-local', 'pass');
-  const local = sc.rootRuns({ source: 'D7-local' }).find((c) => c.taskId === 'D7-local');
-  assert.equal(local.usd, 0);
-  assert.equal(sc.summarize({ source: 'D7-local' }).find((g) => g.provider === 'deepseek').avgUsd, 0);
-});
-
-test('A2: Claude uses reported list cost, cells expose priced share, and chains estimate known steps', () => {
-  const source = 'A2-costs';
-  const claude = run({ id: 'A2-claude', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 2, result: { usage: { input_tokens: 100_000, output_tokens: 100_000 }, costUsd: 1.23 } });
-  assert.equal(claude.costBasis, 'list');
-  const codex = run({ id: 'A2-codex', source, category: 'read', difficulty: 2, result: { usage: USAGE, costUsd: 0 } });
-  assert.equal(codex.costBasis, 'tokens');
-  const claudeAttempt = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude').attempts[0];
-  assert.equal(claudeAttempt.usd, 1.23); assert.equal(claudeAttempt.costBasis, 'list');
-  run({ id: 'A2-claude-fix', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 1 } });
-  run({ id: 'A2-claude-fix-round', source, provider: 'claude', model: 'haiku', effort: null, category: 'read', difficulty: 3, followUpOf: 'A2-claude-fix', result: { usage: { input_tokens: 100_000, output_tokens: 0 }, costUsd: 0 } });
-  const tokenClaude = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-claude-fix').attempts[0];
-  assert.equal(tokenClaude.costBasis, 'tokens'); assert.equal(tokenClaude.usd, 0.2);
-
-  const row = (id, model, usage, retryOf = null) => run({ id, source, provider: 'codex', model, effort: 'low', category: 'test', difficulty: 2, retryOf, result: { usage, durationMs: 1 } });
-  row('A2-history', 'gpt-5.6-luna', { input_tokens: 100_000, output_tokens: 0 });
-  row('A2-head', 'gpt-5.6-luna', null);
-  row('A2-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-head');
-  const chain = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-head');
-  const lunaMean = sc.rootRuns().flatMap((c) => c.attempts).filter((a) => a.sel === 'codex:gpt-5.6-luna:low' && a.category === 'test' && a.difficulty === 2 && a.usd != null).map((a) => a.usd).reduce((sum, usd, _, xs) => sum + usd / xs.length, 0);
-  assert.ok(Math.abs(chain.usd - (chain.attempts[1].usd + lunaMean)) < 1e-12);
-  assert.equal(chain.partialCost, false);
-
-  row('A2-no-history', 'gpt-6-astra', null);
-  row('A2-priced-tail', 'gpt-5.6-terra', { input_tokens: 100_000, output_tokens: 0 }, 'A2-no-history');
-  const partial = sc.rootRuns({ source }).find((c) => c.taskId === 'A2-no-history');
-  assert.equal(partial.usd, null); assert.equal(partial.partialCost, true);
-
-  for (const id of ['A2-share-1', 'A2-share-2', 'A2-share-3']) run({ id, source, category: 'docs', difficulty: 4, result: { usage: { input_tokens: 100_000, output_tokens: 0 } } });
-  run({ id: 'A2-share-null', source, category: 'docs', difficulty: 4, result: { usage: null } });
-  const cell = sc.summarize({ source }).find((g) => g.sel === 'codex:gpt-5.6-luna:low' && g.category === 'docs' && g.difficulty === 4);
-  assert.equal(cell.pricedShare, 0.75);
-  assert.equal(cell.avgUsd, 0.02);
-  assert.match(sc.formatScores({ source }), /\(3\/4 priced\)/);
-});
-
-test('chain cost estimates an untagged step using the chain category and difficulty', () => {
-  const source = 'chain-cost-inherited-tags';
-  run({ id: `${source}-history`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'test', difficulty: 2 });
-  run({ id: `${source}-head`, source, category: 'test', difficulty: 2 });
-  run({ id: `${source}-tail`, source, model: 'gpt-5.6-terra', effort: 'medium', category: null, difficulty: null, retryOf: `${source}-head`, result: { durationMs: 1 } });
-  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-head`);
-  assert.equal(chain.attempts[1].usd, null);
-  assert.equal(chain.partialCost, false);
-  assert.ok(chain.usd > chain.attempts[0].usd);
 });
 
 test('a ladder with an unpriced step ranks as cost unknown after priced plans', () => {
@@ -1474,7 +801,7 @@ test('escalate: prior tier breaks an evidence tie before price', () => {
 });
 
 test('B5: provenButCapped honors the caller providers allow-list so a blocked excluded provider does not block extrapolation', async () => {
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
   const previous = limits.providers.codex;
@@ -1641,61 +968,6 @@ test('B4 deterministic ledger replay changes H2 escalation and M4 estimated-ladd
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('B5 deterministic replay: lower benchmarks extrapolate, live quality wins, and 45-day weights retire evidence', (t) => {
-  const cfg = loadConfig().scorecard;
-  const models = ['b5-bench', 'b5-override', 'b5-aging'];
-  registryModels(t, models.map((model) => ['codex', model]));
-  const now = Date.parse('2026-09-27T12:00:00.000Z');
-  t.mock.method(Date, 'now', () => now);
-  const replay = ({ id, model, category, difficulty, verdict, source = 'live', ts }) => {
-    appendNdjson(statePath('scorecard.ndjson'), {
-      op: 'run', ts, taskId: id, followUpOf: null, retryOf: null, source, provider: 'codex', model, requestedModel: model,
-      effort: null, category, difficulty, status: 'done', tokens: { in: 1, out: 1, cached: 0, write: 0, v: 2 }, durationMs: 1,
-    });
-    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts, taskId: id, verdict });
-  };
-  try {
-    saveConfig({ scorecard: {
-      shippedBatteries: true, usePriors: false, minSamples: 1, benchMinSamples: 3, quality: 0.75,
-      reservePct: 0, hourlyUsd: 0, wasteStrength: 0, providerWeight: { codex: 1 },
-      classes: { codex: 'subscription' }, classOrder: ['subscription'],
-      prices: Object.fromEntries(models.map((model) => [`codex:${model}`, { in: 1, out: 1, cached: 0 }])),
-    } });
-
-    replay({ id: 'b5-own-level', model: 'b5-bench', category: 'read', difficulty: 2, verdict: 'pass', source: 'smoke', ts: new Date(now).toISOString() });
-    const ownLevel = sc.summarize({ source: 'smoke' }).filter((g) => g.model === 'b5-bench');
-    assert.equal(sc.recommend({ category: 'read', difficulty: 2, summary: ownLevel }).model, 'b5-bench');
-    assert.equal(sc.recommend({ category: 'read', difficulty: 1, summary: ownLevel }), null, 'benchmark evidence does not flow down a level');
-    const extrapolated = sc.recommend({ category: 'read', difficulty: 3, summary: ownLevel });
-    assert.equal(extrapolated.model, 'b5-bench');
-    assert.match(extrapolated.reason, /extrapolated from level 2 \(benchmark evidence\)/);
-
-    for (let i = 0; i < 3; i++) replay({ id: `b5-smoke-pass-${i}`, model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'pass', source: 'smoke', ts: new Date(now).toISOString() });
-    replay({ id: 'b5-live-fail', model: 'b5-override', category: 'debug', difficulty: 2, verdict: 'fail', ts: new Date(now).toISOString() });
-    const override = sc.summarize().find((g) => g.model === 'b5-override' && g.category === 'debug');
-    assert.deepEqual({ quality: override.quality, liveQuality: override.liveQuality, smokeQuality: override.smokeQuality, rated: override.rated }, { quality: 0, liveQuality: 0, smokeQuality: 1, rated: 4 });
-    assert.equal(sc.recommend({ category: 'debug', difficulty: 2, summary: [override] }), null, 'one live rating owns quality over smoke in the same cell');
-    assert.equal(sc.benchedCells([override]).length, 1, 'benchMinSamples still uses the evidence count');
-
-    const fortyFiveDaysAgo = new Date(now - 45 * 24 * 3600e3).toISOString();
-    for (let i = 0; i < 2; i++) replay({ id: `b5-aging-${i}`, model: 'b5-aging', category: 'review', difficulty: 1, verdict: 'pass', ts: fortyFiveDaysAgo });
-    const atHalfLife = sc.summarize({ source: 'live' }).find((g) => g.model === 'b5-aging');
-    assert.equal(atHalfLife.weightedRated, 1);
-    assert.equal(sc.recommend({ category: 'review', difficulty: 1, summary: [atHalfLife] }).model, 'b5-aging');
-    t.mock.method(Date, 'now', () => now + 24 * 3600e3);
-    const retired = sc.summarize({ source: 'live' }).find((g) => g.model === 'b5-aging');
-    assert.ok(retired.weightedRated < 1);
-    assert.equal(sc.recommend({ category: 'review', difficulty: 1, summary: [retired] }), null);
-
-    const noShipped = process.env.CONDUCTOR_NO_SHIPPED;
-    delete process.env.CONDUCTOR_NO_SHIPPED;
-    try {
-      const shipped = sc.summarize({ source: 'smoke' }).find((g) => g.shipped);
-      assert.ok(shipped && shipped.smokeRated === shipped.rated && shipped.smokeWeightedRated > 0, 'shipped cells are benchmark evidence');
-    } finally { process.env.CONDUCTOR_NO_SHIPPED = noShipped; }
-  } finally { saveConfig({ scorecard: cfg }); }
-});
-
 test('F1: extrapolation can use the nearest lower benchmark cell while preserving live and visual rules', (t) => {
   const cfg = loadConfig().scorecard;
   try {
@@ -1740,7 +1012,7 @@ test('F1: extrapolation can use the nearest lower benchmark cell while preservin
 });
 
 test('B5 reservation ceiling uses live evidence only within the selected model window group', async (t) => {
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits(), previous = limits.providers.antigravity;
   registryModels(t, [['antigravity', 'gemini-b5']]);
@@ -1811,7 +1083,7 @@ test('B8: cold-start prior sort skips candidates whose class is not in classOrde
 });
 
 test('B2: a ledger model no longer in the registry does not veto extrapolation', async () => {
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
   const prevDeepSeek = limits.providers.deepseek;
@@ -1830,22 +1102,8 @@ test('B2: a ledger model no longer in the registry does not veto extrapolation',
   } finally { limits.providers.deepseek = prevDeepSeek; saveConfig({ scorecard: cfg }); }
 });
 
-test('B3: each retry attempt is scored under its own category/difficulty; untagged attempts are skipped', () => {
-  const source = 'B3-tags';
-  run({ id: `${source}-head`, source, category: null, difficulty: null });
-  run({ id: `${source}-retry`, source, retryOf: `${source}-head`, model: 'gpt-5.6-terra', effort: 'medium', category: 'debug', difficulty: 3 });
-  sc.rateTask(`${source}-retry`, 'pass');
-  const chain = sc.rootRuns({ source }).find((c) => c.taskId === `${source}-head`);
-  assert.equal(chain.attempts.length, 2);
-  assert.ok(chain.usd > chain.attempts[0].usd && chain.usd > chain.attempts[1].usd, 'chain cost still sums both attempts');
-  const sum = sc.summarize({ source });
-  const tagged = sum.find((g) => g.steps === 1 && g.model === 'gpt-5.6-terra' && g.category === 'debug' && g.difficulty === 3);
-  assert.equal(tagged.pass, 1);
-  assert.equal(sum.find((g) => g.steps === 1 && g.model === 'gpt-5.6-luna'), undefined, 'untagged head is not summarized');
-});
-
 test('B5: reserve() weights the step model, not the busiest window across groups', async () => {
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
   const previous = limits.providers.antigravity;
@@ -1868,7 +1126,7 @@ test('B5: reserve() weights the step model, not the busiest window across groups
 
 test('B4: usageResets schedule fallback applies only when the provider has no real non-session window', async () => {
   const { wasteDiscount } = sc;
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const limits = getLimits();
   const previous = limits.providers.grok;
   const now = Date.parse('2026-09-15T10:00:00');
@@ -1892,41 +1150,6 @@ test('B10: scheduled reset hour is reapplied after setDate (DST spring-forward)'
   const daily = new Date(sc.nextScheduledReset('spr', { usageResets: { spr: { resetHour: 2 } } }, at));
   assert.equal(daily.getHours(), 2);
   assert.equal(daily.getDate(), 9);
-});
-
-test('P3: rootRuns reuses the runRows size/mtime cache', async (t) => {
-  const fs = (await import('node:fs')).default;
-  const paths = await import('../core/paths.mjs');
-  const { syncBuiltinESMExports } = await import('node:module');
-  sc.runRows();
-  const orig = fs.readFileSync;
-  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
-    if (file === statePath('scorecard.ndjson')) throw new Error('P3: cache miss re-read');
-    return orig.call(fs, file, ...args);
-  });
-  syncBuiltinESMExports();
-  try {
-    assert.throws(() => paths.readNdjson(statePath('scorecard.ndjson')), /P3: cache miss re-read/);
-    assert.doesNotThrow(() => sc.rootRuns());
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-});
-
-
-
-test('B11: claude opus/default aliases are anchored so 4.x ids use the 4.x rules', () => {
-  assert.equal(pr.priorFor('claude', 'opus').tier, 'A');
-  assert.equal(pr.priorFor('claude', 'default').tier, 'A');
-  assert.equal(pr.priorFor('claude', 'claude-opus-5').tier, 'A');
-  assert.equal(pr.priorFor('claude', 'opus-5').tier, 'A');
-  assert.equal(pr.priorFor('claude', 'opus-4-6').tier, 'B');
-  assert.equal(pr.priorFor('claude', 'opus-4-5').tier, 'C');
-});
-
-test('L13: cache-write tokens are counted and priced at write ?? in*1.25', () => {
-  assert.deepEqual(sc.normalizeUsage({ inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 }), { in: 10, out: 2, cached: 3, write: 4, v: 2 });
-  assert.deepEqual(sc.normalizeUsage({ input_tokens: 100, cache_creation_input_tokens: 20, output_tokens: 5 }), { in: 100, out: 5, cached: 0, write: 20, v: 2 });
-  assert.ok(Math.abs(pr.usdFor({ in: 1e6, write: 1e6 }, { in: 1, out: 0, cached: 0 }) - 2.25) < 1e-9);
-  assert.ok(Math.abs(pr.usdFor({ in: 1e6, write: 1e6 }, { in: 1, out: 0, cached: 0, write: 2 }) - 3) < 1e-9);
 });
 
 test('L11: a thin observed ladder keeps the estimate; a sampled one combines with A', () => {
@@ -1964,7 +1187,7 @@ test('L11: a thin observed ladder keeps the estimate; a sampled one combines wit
 });
 
 test('L12: a proven-but-capped level stops extrapolation instead of descending further', async () => {
-  const { getLimits } = await import('../core/limits.mjs');
+  const { getLimits } = await import('../../core/limits.mjs');
   const cfg = loadConfig().scorecard;
   const limits = getLimits();
   const previous = limits.providers.codex;
@@ -2022,114 +1245,11 @@ test('L40: escalation prior fallback sorts by tier, not cheapest price', () => {
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
-test('B7: formatScoresShort memo key includes a minute bucket', async (t) => {
-  const { getLimits } = await import('../core/limits.mjs');
-  const cfg = loadConfig().scorecard;
-  const limits = getLimits();
-  const previous = limits.providers.codex;
-  const source = 'L42-memo';
-  const now = Date.parse('2026-09-23T10:30:00');
-  try {
-    saveConfig({ scorecard: { usePriors: false, classCap: { subscription: 80 }, classes: { codex: 'subscription' }, classOrder: ['subscription'] } });
-    limits.providers.codex = { provider: 'codex', windows: [{ id: 'codex:primary', usedPercent: 10, resetsAt: now + 8 * 3600e3 }] };
-    for (let i = 0; i < 3; i++) {
-      run({ id: `${source}-${i}`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'review', difficulty: 1 });
-      sc.rateTask(`${source}-${i}`, 'pass');
-    }
-    t.mock.method(Date, 'now', () => now);
-    const a = sc.formatScoresShort({ source });
-    assert.match(a, /gpt-5\.6-terra/);
-    const stamp = limits.updatedAt;
-    limits.providers.codex.windows[0].usedPercent = 99;
-    limits.updatedAt = stamp;
-    t.mock.method(Date, 'now', () => now + 30_000);
-    assert.equal(sc.formatScoresShort({ source }), a, 'same minute keeps the memo');
-    t.mock.method(Date, 'now', () => now + 60_000);
-    const b = sc.formatScoresShort({ source });
-    assert.notEqual(b, a, 'new minute misses the memo');
-    assert.match(b, /review@1: capped: codex:gpt-5\.6-terra:medium until/);
-  } finally {
-    limits.providers.codex = previous;
-    saveConfig({ scorecard: cfg });
-  }
-});
-
-test('M8: summarize memoizes until the ledger or scorecard config changes', () => {
-  const source = 'M8-summary-memo';
-  const cfg = loadConfig().scorecard;
-  try {
-    run({ id: `${source}-0`, source, category: 'review', difficulty: 1 });
-    sc.rateTask(`${source}-0`, 'pass');
-    const first = sc.summarize({ source });
-    assert.strictEqual(sc.summarize({ source }), first);
-    run({ id: `${source}-1`, source, category: 'review', difficulty: 1 });
-    const afterLedger = sc.summarize({ source });
-    assert.notStrictEqual(afterLedger, first);
-    saveConfig({ scorecard: { reservePct: cfg.reservePct === 0.5 ? 0.6 : 0.5 } });
-    assert.notStrictEqual(sc.summarize({ source }), afterLedger);
-  } finally { saveConfig({ scorecard: cfg }); }
-});
-
-test('D8: short view memo key includes a future provider reset but not a past one', () => {
-  const now = Date.parse('2026-09-23T10:30:00Z');
-  const base = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now - 1 }] } } };
-  const future = { updatedAt: 'D8', providers: { codex: { windows: [{ id: 'primary', usedPercent: 100, resetsAt: now + 60_000 }] } } };
-  assert.notEqual(sc.shortMemoKey({ source: 'D8', limits: base, now }), sc.shortMemoKey({ source: 'D8', limits: future, now }));
-});
-
-test('short view memo key changes when a model-scoped confirmed limit expires', () => {
-  const now = Date.parse('2026-09-23T10:30:00Z');
-  const blockedUntil = now + 60_000;
-  const limits = { updatedAt: 'confirmed-limit', providers: { codex: { windows: [], confirmedLimit: { blockedUntil } } } };
-  assert.notEqual(
-    sc.shortMemoKey({ source: 'confirmed-limit', limits, now }),
-    sc.shortMemoKey({ source: 'confirmed-limit', limits, now: blockedUntil + 1 }),
-  );
-});
-
-test('L2: the latest rating across a root and follow-up decides the attempt verdict', () => {
-  const check = (source, rootVerdictAt, followVerdictAt, expected) => {
-    const root = `${source}-root`, follow = `${source}-follow`;
-    run({ id: root, source, category: 'review', difficulty: 1 });
-    run({ id: follow, source, followUpOf: root, category: 'review', difficulty: 1 });
-    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: rootVerdictAt, taskId: root, verdict: 'fail' });
-    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: followVerdictAt, taskId: follow, verdict: 'pass' });
-    assert.equal(sc.rootRuns({ source })[0].attempts[0].verdict, expected);
-  };
-  check('L2-follow-latest', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z', 'pass');
-  check('L2-root-latest', '2026-01-01T00:00:01.000Z', '2026-01-01T00:00:00.000Z', 'fail');
-});
-
 test('P6: extrapolation reuses the already-folded summary', () => {
   const cell = { sel: 'codex:gpt-5.6-terra:medium', steps: 1, provider: 'codex', model: 'gpt-5.6-terra', effort: 'medium', category: 'implement', difficulty: 2, rated: 3, n: 3, quality: 1, accept: 1, avgUsd: 0.01, avgDurationMs: 0 };
   const r = sc.recommend({ category: 'implement', difficulty: 4, summary: [cell], source: 'P6-absent' });
   assert.equal(r.model, 'gpt-5.6-terra');
   assert.match(r.reason, /extrapolated from level 2/);
-});
-
-test('P16: migrateScorecard reads the ledger cache via allRows', async (t) => {
-  const fs = (await import('node:fs')).default;
-  const paths = await import('../core/paths.mjs');
-  const { syncBuiltinESMExports } = await import('node:module');
-  sc.runRows();
-  const orig = fs.readFileSync;
-  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
-    if (file === paths.statePath('scorecard.ndjson')) throw new Error('P16: cache miss re-read');
-    return orig.call(fs, file, ...args);
-  });
-  syncBuiltinESMExports();
-  try {
-    assert.throws(() => paths.readNdjson(paths.statePath('scorecard.ndjson')), /P16: cache miss re-read/);
-    assert.doesNotThrow(() => sc.migrateScorecard());
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-});
-
-test('I11: dead conductor-facing priors text is gone; results still route', () => {
-  assert.equal(pr.MODELING.best, undefined);
-  assert.equal(pr.MODELING.caveat, undefined);
-  assert.equal(pr.DRAFTING.caveat, undefined);
-  assert.equal(pr.priorFor('codex', 'gpt-6-astra', 'modeling').tier, 'A');
-  assert.equal(pr.priorFor('codex', 'gpt-6-astra').note, null);
 });
 
 test('I14: cold-start effort map comes from config with DEFAULTS fallback', () => {
@@ -2138,49 +1258,6 @@ test('I14: cold-start effort map comes from config with DEFAULTS fallback', () =
   saveConfig({ scorecard: { difficultyEffort: { 1: 'low', 2: 'medium', 3: 'medium', 4: 'high', 5: 'max' } } });
   assert.equal(sc.priorEffort(['low', 'medium', 'high', 'xhigh', 'max'], 5), 'max');
   saveConfig({ scorecard: { difficultyEffort: cfg.difficultyEffort } });
-});
-
-test('D1: visual close is not a modest tier; Sol modeling is a pass', () => {
-  assert.equal(pr.priorFor('claude', 'opus', 'modeling').tier, null);
-  assert.equal(pr.priorFor('codex', 'gpt-5.6-sol', 'modeling').tier, 'A');
-});
-
-test('archived selections split main and archived views without changing the ledger or active retry verdict', () => {
-  const cfg = loadConfig().scorecard;
-  const source = 'archive-views';
-  try {
-    saveConfig({ scorecard: { archived: [], minSamples: 1, benchMinSamples: 3, usePriors: false } });
-    run({ id: `${source}-old`, source, model: 'gpt-5.6-luna', effort: 'low', category: 'debug', difficulty: 3 });
-    sc.rateTask(`${source}-old`, 'fail');
-    run({ id: `${source}-new`, source, model: 'gpt-5.6-terra', effort: 'medium', category: 'debug', difficulty: 3, retryOf: `${source}-old` });
-    sc.rateTask(`${source}-new`, 'pass');
-
-    const before = JSON.stringify(sc.summarize({ source }));
-    const beforeShort = sc.formatScoresShort({ source });
-    assert.ok(JSON.parse(before).some((g) => g.steps === 2));
-    saveConfig({ scorecard: { archived: ['CoDeX:GpT-5.6-LuNa'] } });
-
-    const main = sc.summarize({ source }), archived = sc.summarize({ source, archived: true });
-    assert.deepEqual(main.map((g) => g.sel), ['codex:gpt-5.6-terra:medium']);
-    assert.equal(main[0].pass, 1, 'the active retry keeps its own verdict');
-    assert.ok(archived.some((g) => g.sel === 'codex:gpt-5.6-luna:low'));
-    assert.ok(archived.some((g) => g.steps === 2 && g.sel.includes('gpt-5.6-terra')));
-    assert.ok(!archived.some((g) => g.steps === 1 && g.model === 'gpt-5.6-terra'));
-    assert.deepEqual(sc.errorRates({ source }).byModel.map((g) => g.key), ['codex:gpt-5.6-terra:medium']);
-    assert.deepEqual(sc.errorRates({ source, archived: true }).byModel.map((g) => g.key), ['codex:gpt-5.6-luna:low']);
-    assert.ok(sc.runRows().some((r) => r.taskId === `${source}-old`), 'archive never filters runRows()');
-    assert.equal(sc.scoresCsv({ source, archived: true }).trim().split('\n').length, archived.length + 1);
-    assert.doesNotMatch(sc.formatScores({ source, archived: true }), /Plans \(/);
-    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna', 'codex:gpt-5.6-terra'] } });
-    assert.notEqual(sc.formatScoresShort({ source }), beforeShort, 'config change invalidates the short-view memo');
-
-    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna'] } });
-    assert.equal(sc.recommend({ category: 'debug', difficulty: 3, source }).model, 'gpt-5.6-terra');
-    assert.equal(sc.recommend({ category: 'debug', difficulty: 3, source, escalate: true }).model, 'gpt-5.6-terra');
-    saveConfig({ scorecard: { archived: [] } });
-    assert.equal(JSON.stringify(sc.summarize({ source })), before, 'unarchiving restores the summary byte-for-byte');
-    assert.equal(sc.formatScoresShort({ source }), beforeShort, 'unarchiving restores the memoized short view');
-  } finally { saveConfig({ scorecard: cfg }); }
 });
 
 test('recommend excludes archived registry models from measured and prior-only routing', () => {
@@ -2223,7 +1300,7 @@ test('[1m] scorecard rows group, price, route and satisfy bench hygiene as the b
     assert.ok(row.avgUsd > 0, 'the suffixed run uses the base model price');
     assert.equal(sc.recommend({ category: 'docs', difficulty: 2, source }).model, 'claude-fable-5-1');
 
-    const { BENCH_TASK_IDS, dueForBench } = await import('../core/bench.mjs');
+    const { BENCH_TASK_IDS, dueForBench } = await import('../../core/bench.mjs');
     for (const [i, smokeId] of BENCH_TASK_IDS.slice(0, 8).entries()) {
       run({ id: `${source}-smoke-${i}`, source: 'smoke', smokeId, provider: 'claude', model: 'claude-fable-5-1[1m]', effort: 'low', category: 'read', difficulty: 1 });
       sc.rateTask(`${source}-smoke-${i}`, 'pass');
@@ -2235,86 +1312,6 @@ test('[1m] scorecard rows group, price, route and satisfy bench hygiene as the b
       { provider: 'claude', id: 'claude-opus-5-5[1m]', kind: 'agent', efforts: ['low'] },
     ] };
     assert.deepEqual(dueForBench({ days: 21, reg }), [], 'suffix/base duplicates are satisfied once and archived aliases are skipped');
-  } finally { saveConfig({ scorecard: cfg }); }
-});
-
-test('one pass qualifies, while benching and failed-below prior suppression require benchMinSamples', () => {
-  const cfg = loadConfig().scorecard;
-  const reg = { providers: { codex: { status: 'ok' } }, models: [{ provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low'] }] };
-  try {
-    saveConfig({ scorecard: { archived: [], usePriors: true, minSamples: 1, benchMinSamples: 3, classOrder: ['subscription'] } });
-    run({ id: 'qualify-one-pass', source: 'qualify-one', category: 'implement', difficulty: 2 });
-    sc.rateTask('qualify-one-pass', 'pass');
-    const qualified = sc.recommend({ category: 'implement', difficulty: 2, source: 'qualify-one', reg });
-    assert.equal(qualified.model, 'gpt-5.6-luna');
-    assert.ok(qualified.plan, 'one rated pass is measured evidence, not a prior-only pick');
-
-    run({ id: 'bench-one-fail', source: 'bench-threshold', category: 'implement', difficulty: 2 });
-    sc.rateTask('bench-one-fail', 'fail');
-    const afterOne = sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg });
-    assert.equal(afterOne.model, 'gpt-5.6-luna', 'one failure does not suppress the prior');
-    assert.match(afterOne.reason, /prior only/);
-    assert.doesNotMatch(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched/);
-
-    for (const i of [2, 3]) {
-      run({ id: `bench-${i}-fail`, source: 'bench-threshold', category: 'implement', difficulty: 2 });
-      sc.rateTask(`bench-${i}-fail`, 'fail');
-    }
-    assert.equal(sc.recommend({ category: 'implement', difficulty: 2, source: 'bench-threshold', reg }), null, 'three failures suppress the prior');
-    assert.match(sc.formatScoresShort({ source: 'bench-threshold' }), /Benched \(quality < 0\.75 over >= 3 recency-weighted rated/);
-  } finally { saveConfig({ scorecard: cfg }); }
-});
-
-test('B10: shipped priors use category then kind then default, with exact config overrides', () => {
-  const cfg = loadConfig().scorecard;
-  try {
-    saveConfig({ scorecard: { priors: { 'codex:gpt-5.6-luna': { category: { summarize: 'A' }, kind: { read: 'C' }, default: 'D' } } } });
-    assert.deepEqual([
-      pr.priorFor('codex', 'gpt-5.6-luna', 'summarize').tier,
-      pr.priorFor('codex', 'gpt-5.6-luna', 'docs').tier,
-      pr.priorFor('codex', 'gpt-5.6-luna', 'implement').tier,
-    ], ['A', 'C', 'D']);
-  } finally { saveConfig({ scorecard: cfg }); }
-});
-
-test('B10: manual eligibility blocks measured and prior picks; latest allow lifts a bench and explains why', () => {
-  const cfg = loadConfig().scorecard;
-  const reg = { providers: { codex: { status: 'ok' } }, models: [{ provider: 'codex', id: 'manual', kind: 'agent', efforts: ['low'] }] };
-  const sel = 'codex:manual:low';
-  try {
-    saveConfig({ scorecard: {
-      coldStart: 'priors', shippedBatteries: false, minSamples: 1, benchMinSamples: 3,
-      classOrder: ['free'], classes: { codex: 'free' }, providerWeight: { codex: 0 },
-      prices: { 'codex:manual': { in: 1, out: 1 } }, priors: { 'codex:manual': { default: 'B' } },
-    } });
-    assert.equal(sc.recommend({ category: 'other', difficulty: 2, summary: [], reg }).model, 'manual');
-    assert.match(sc.formatScores({ summary: [] }), /hand-picked prior/);
-
-    for (let i = 0; i < 3; i++) {
-      run({ id: `eligibility-fail-${i}`, source: 'eligibility-bench', provider: 'codex', model: 'manual', effort: 'low', category: 'other', difficulty: 2 });
-      sc.rateTask(`eligibility-fail-${i}`, 'fail');
-    }
-    assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }), null, 'bench suppresses the prior');
-    sc.setEligibility(sel, 'other', 'allow', 'owner accepts this model here');
-    const allowed = sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg, explain: true });
-    assert.equal(allowed.pick.model, 'manual');
-    assert.match(allowed.explain.reason, /manual allow: owner accepts this model here/);
-
-    sc.setEligibility(sel, 'other', 'block', 'known bad fit');
-    const blocked = sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg, explain: true });
-    assert.equal(blocked.pick, null);
-    assert.equal(blocked.explain.status, 'eligibility');
-    assert.match(blocked.explain.reason, /known bad fit/);
-    assert.equal(sc.eligibilityOverrides({ category: 'other' }).find((r) => r.sel === sel).action, 'block', 'latest decision wins');
-
-    sc.setEligibility(sel, 'other', 'allow', 're-enabled after review');
-    assert.equal(sc.recommend({ category: 'other', difficulty: 2, source: 'eligibility-bench', reg }).model, 'manual');
-
-    run({ id: 'eligibility-measured-pass', source: 'eligibility-measured', provider: 'codex', model: 'manual', effort: 'low', category: 'review', difficulty: 2 });
-    sc.rateTask('eligibility-measured-pass', 'pass');
-    sc.setEligibility(sel, 'review', 'block', 'manual measured block');
-    assert.equal(sc.recommend({ category: 'review', difficulty: 2, source: 'eligibility-measured', reg }), null);
-    assert.match(sc.formatScoresShort({ source: 'eligibility-bench' }), /ALLOW codex:manual:low for other: re-enabled after review/);
   } finally { saveConfig({ scorecard: cfg }); }
 });
 
@@ -2338,19 +1335,6 @@ test('conductor rows stay out of worker routing ceilings and worker-only run rea
   assert.deepEqual(sc.recommend(request), before);
   assert.ok(sc.runRows().some((r) => conductorIds.includes(r.taskId)), 'ratings remain in the scorecard ledger');
   assert.equal(sc.activeRunRows().some((r) => conductorIds.includes(r.taskId)), false, 'budget and usage inputs exclude conductor rows');
-});
-
-test('close counts as zero quality without changing accept or errorRate', () => {
-  const id = 'close-is-not-accepted';
-  run({ id, category: 'conductor', difficulty: 4 });
-  sc.rateTask(id, 'close');
-  const row = sc.summarize({ shipped: false }).find((g) => g.category === 'conductor' && g.difficulty === 4);
-  assert.equal(row.close, 1);
-  assert.equal(row.quality, 0);
-  assert.equal(row.accept, 0);
-  assert.equal(row.errorRate, 0);
-  assert.match(sc.formatScores({ category: 'conductor' }), /pass\/fix\/close\/fail\/phantom/);
-  assert.match(sc.scoresCsv().split('\n')[0], /,close,/);
 });
 
 test('recommend() uses a 6-7 cell with measured passes', () => {
