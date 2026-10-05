@@ -75,7 +75,7 @@ export function describeTask(t, { reportMode = loadConfig().worker.reportInTool 
       }
       const truncated = raw.slice(cut).some((line) => line.trim());
       const head = truncated ? raw.slice(0, cut) : raw;
-      lines.push(`Worker report:\n${head.join('\n')}${truncated ? (existsSync(briefPath(t.id)) ? '\n… (full report in the brief file)' : '\n… (report truncated)') : ''}`);
+      lines.push(`Worker report:\n${head.join('\n')}${truncated ? '\n… (full report in the brief file)' : ''}`);
     } else lines.push(`Worker report:\n${r.finalMessage}`);
   }
   if ((t.status === 'done' || t.status === 'failed' || t.status === 'canceled') && existsSync(briefPath(t.id))) lines.push(`Brief: ${briefPath(t.id)}`);
