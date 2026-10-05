@@ -9,6 +9,21 @@ park / failover / wake, `awaitTask`, `recoverTasks`, and the worktree lifecycle 
 `tasks.mjs?<query>` for a fresh instance, hook its own `./workers/index.mjs` and `./sweep.mjs` imports, and read its
 source. `../tasks.mjs` re-exports all three modules here, so callers keep importing `tasks.mjs`.
 
+**The stateful core (`../tasks.mjs`).** `../tasks.mjs` keeps the stateful core and re-exports this folder — the worker-task
+journal + scheduler. `schedule()` is the framework budget gate: it admits queued tasks per-window and, over target,
+degrades to sequential per provider (never a park-until-reset stall); it also holds queued work while system RAM meets
+`resources.maxRamPct` and retries after one unrefed 30-second timer; a real provider limit fails over or parks. `run()`
+executes and scores; finished tasks retain budget reservations and probe exclusion until a post-completion limits poll
+and scoring settle, without holding worker concurrency slots. Import only loads the journal; server-owned
+`recoverTasks()` staggers crash/graceful resumes, keeps future parks, and makes a second crash recovery `stale`
+(Re-run or Discard). Graceful stop journals the requeue before aborting. `isolate: true` (delegate / run_plan /
+createTask): the scheduler creates `git worktree add --detach` under `statePath('worktrees', <attempt root id>)`
+before the worker starts, junctions/symlinks `worker.isolateLinks` (`node_modules`, `.venv`) from the source checkout,
+commits onto `conductor/<id>` when the worker ends, and exposes `cleanupWorktree` / `listWorktrees`
+(`conductor worktrees [--prune-days N]`). Cleanup unlinks those junctions and verifies every link path is gone before
+removal (`git worktree remove --force` follows them on Windows). Ignored (one warning) for a non-git cwd or
+`sandbox: 'read-only'`. Follow-ups reuse the dir; `retry_of` gets a new one.
+
 **Entry points.**
 - `view.mjs` — what a task looks like to readers: `publicTask` (record without the full spec), `taskSummary` (fleet /
   list payload: no paths, diff stat or item tail; 120-char previews), `describeTask` (the conductor-facing text),
