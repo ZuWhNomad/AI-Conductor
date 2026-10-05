@@ -25,3 +25,5 @@ Invariants that hold everywhere:
   would need. `test/hygiene.test.mjs` fails on a tracked `plans/`, `reviews/` or `notes/` folder.
 - **A new folder gets a `CONTEXT.md` in the same commit** (the hygiene test checks it exists). A changed import
   boundary updates both the folder's `CONTEXT.md` and `test/boundaries.test.mjs`.
+- **A code file stays under 500 non-blank lines** (a test file 700, a `CONTEXT.md` 110); the allowance list in
+  `test/size.test.mjs` may only shrink.

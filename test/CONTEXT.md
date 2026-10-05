@@ -10,7 +10,7 @@ file / folder: `node --import ./test/_env.mjs --test test/tasks/`, `… test/wor
 (`core/plans.mjs`), `test/smoke/` (`core/smoke/`), `test/server/` (`server/`), `test/ui/` (`ui/`). Each folder has a
 `_helpers.mjs` for shared setup (not a test file; it still imports `../_env.mjs` first) and a `CONTEXT.md` saying what each file
 covers. Tests for the other flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `boundaries`, `git`,
-`selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
+`selection`, `escalation`, `journal`, `size`) stay at the root. Put a new test beside the tests of the folder its module lives in.
 `ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
 must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.
 `proc.test.mjs` checks shell-free executable/npm-shim spawning, unresolved Windows script refusal in worker and
