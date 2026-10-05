@@ -7,7 +7,7 @@ stays in `../tasks.mjs`: the task Map and journal, `createTask`, `schedule()` an
 park / failover / wake, `awaitTask`, `recoverTasks`, and the worktree lifecycle that reads or journals tasks
 (`prepareIsolation`, `finishIsolation`, `cleanupWorktree`, `listWorktrees`). It cannot move: tests re-import
 `tasks.mjs?<query>` for a fresh instance, hook its own `./workers/index.mjs` and `./sweep.mjs` imports, and read its
-source. `../tasks.mjs` re-exports all three modules here, so callers keep importing `tasks.mjs`.
+source. `../tasks.mjs` re-exports `view`, `prompt` and `git`; `brief.mjs` is called from `persist` and is not re-exported.
 
 **The stateful core (`../tasks.mjs`).** `../tasks.mjs` keeps the stateful core and re-exports this folder — the worker-task
 journal + scheduler. `schedule()` is the framework budget gate: it admits queued tasks per-window and, over target,
@@ -25,8 +25,10 @@ removal (`git worktree remove --force` follows them on Windows). Ignored (one wa
 `sandbox: 'read-only'`. Follow-ups reuse the dir; `retry_of` gets a new one.
 
 **Entry points.**
+- `brief.mjs` — `briefPath`, `syncBrief`. The human-readable brief at `<state>/tasks/<id>.md`.
 - `view.mjs` — what a task looks like to readers: `publicTask` (record without the full spec), `taskSummary` (fleet /
-  list payload: no paths, diff stat or item tail; 120-char previews), `describeTask` (the conductor-facing text),
+  list payload: no paths, diff stat or item tail; 120-char previews), `describeTask` (the conductor-facing text;
+  a terminal task names the brief file, and `worker.reportInTool: 'compact'` keeps 12 report lines),
   `countTools` (calls / errors / byName from a worker's items).
 - `prompt.mjs` — `buildPrompt(t)`: worker preamble (`policy/prompts/worker.md`) and MSW kernel first, then MCP note,
   project `CONTEXT.md` notes, resume note, task, recipe and capability lines. Recipe and tool lines have separate
@@ -36,8 +38,9 @@ removal (`git worktree remove --force` follows them on Windows). Ignored (one wa
   `isolate: true` link plumbing: `isolatedCwd`, `linkIsolateDirs` (junctions / symlinks of `worker.isolateLinks`, kept
   out of commits via `info/exclude`), `unlinkIsolateLinks`; `ageLabel`, `formatWorktrees`.
 
-**Boundaries.** The three modules are leaves: none imports another, and none imports `../tasks.mjs`; `../tasks.mjs`
-imports all three. Outside this folder they import only `paths`, `config`, `proc`, `context`, `improve`, `recipes`,
+**Boundaries.** The modules here are leaves: none imports `../tasks.mjs`, and none imports another except
+`view.mjs`, which imports `brief.mjs` for the brief path. `../tasks.mjs` imports them and re-exports `view`,
+`prompt` and `git`. Outside this folder they import only `paths`, `config`, `proc`, `context`, `improve`, `recipes`,
 `capabilities`, `mcp` — nothing from `scorecard`, `sweep`, `limits`, `workers`, `plans`, `tools`, `conductor` or
 `server`. Never add module state that must differ between `tasks.mjs` instances: it belongs in `../tasks.mjs`.
 Enforced in part by `test/boundaries.test.mjs`.
@@ -48,6 +51,8 @@ Enforced in part by `test/boundaries.test.mjs`.
   `git worktree remove --force` (which follows junctions on Windows); a surviving link aborts the removal.
 - Prompt order: shared, stable text first, task-specific text last (provider prompt caching).
 - Views never include the full spec or item list in list payloads; detail endpoints and scoring keep the full record.
+- The brief is written once (the spec) and appended once (`## Result` when the task is terminal). `persist` in
+  `../tasks.mjs` is the only hook. A later persist does not rewrite earlier text. Everything in the file is redacted.
 
 **How to test.** `node --import ./test/_env.mjs --test test/tasks/*.test.mjs test/journal.test.mjs test/git.test.mjs`.
 Full: `npm test`.

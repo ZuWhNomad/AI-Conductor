@@ -43,7 +43,7 @@ export function defs({ sessionId, cwd, maxBlockMs, awaitTask, recommend, accessP
   return [
     {
       name: 'delegate',
-      description: 'Run a worker on a self-contained task in the project directory. Write a full spec (goal, files, constraints, acceptance criteria, verification command). Tag it with category + difficulty; leave provider/model empty to let the scorecard pick the cheapest model that has proven itself for that kind of work. Blocks until done unless background=true. Returns the worker report, changed files and diff stat (files that changed in the repo while it ran — concurrent tasks in the same directory show up in each other\'s lists) — verify them yourself, then rate_task.',
+      description: 'Run a worker on a self-contained task in the project directory. Write a full spec (goal, files, constraints, acceptance criteria, verification command). Tag it with category + difficulty; leave provider/model empty to let the scorecard pick the cheapest model that has proven itself for that kind of work. Blocks until done unless background=true. Returns the worker report, changed files and diff stat (files that changed in the repo while it ran — concurrent tasks in the same directory show up in each other\'s lists) — verify them yourself, then rate_task. The full report is also in the task\'s brief file.',
       schema: z.object({
         title: z.string().describe('Short task title'),
         spec: z.string().describe('The complete spec the worker will see (it has not seen this conversation)'),
@@ -163,7 +163,7 @@ export function defs({ sessionId, cwd, maxBlockMs, awaitTask, recommend, accessP
     },
     {
       name: 'await_task',
-      description: 'Wait for a background task to finish and return its report. Set wait_if_parked to keep waiting through provider-limit parks.',
+      description: 'Wait for a background task to finish and return its report. Set wait_if_parked to keep waiting through provider-limit parks. The full report is also in the task\'s brief file.',
       schema: z.object({ task_id: z.string(), timeout_minutes: z.number().max(1440).optional(), wait_if_parked: z.boolean().optional().describe('Keep waiting through parks until the timeout or task completion') }),
       handler: async (a) => {
         const t = getTask(a.task_id);
@@ -174,7 +174,7 @@ export function defs({ sessionId, cwd, maxBlockMs, awaitTask, recommend, accessP
     },
     {
       name: 'task_status',
-      description: 'Current status of a task. While it runs: a coarse progress snapshot (elapsed time, last activity or tool, tokens when known; refreshed about once a minute, not a live stream). After it ends: its latest actions.',
+      description: 'Current status of a task. While it runs: a coarse progress snapshot (elapsed time, last activity or tool, tokens when known; refreshed about once a minute, not a live stream). After it ends: its latest actions. The full report is also in the task\'s brief file.',
       schema: z.object({ task_id: z.string() }),
       handler: async (a) => {
         const t = getTask(a.task_id); if (!t) return `unknown task ${a.task_id}`;
