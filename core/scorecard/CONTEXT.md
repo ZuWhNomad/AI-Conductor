@@ -29,9 +29,9 @@ imports keep working — new code imports the module it needs.
 - `report.mjs` — presentation only: `scoresGrid` (category × level), `formatScoresShort` (what the conductor reads;
   memoised on `shortMemoKey`), `scoresCsv`, `formatScores`, `benchedCells`.
 
-**Boundaries.** `ledger` → `summary` → `recommend` → `report`, never backwards. Outside this folder they import
+**Boundaries.** `ledger` → `summary` → `recommend` → `report`, never backwards. That internal order is a convention stated here. Outside this folder they import
 `paths`, `limits`, `sweep`, `models`, `config`, `bus`, `improve`, `priors`, `providers/index`, `cli-update` — nothing
-from `tasks`, `plans`, `tools`, `conductor` or `server`. Enforced by `test/boundaries.test.mjs`.
+from `tasks`, `plans`, `tools`, `conductor` or `server`. `test/boundaries.test.mjs` enforces the outward rules (what the folder may import from outside).
 
 **Invariants.**
 - The ledger is never rewritten: corrections are `void` / `amend` rows; `voided` runs stay in the chain graph for

@@ -12,7 +12,7 @@ working — new code imports the module it needs.
 - `sessions.mjs` — the session Map, hydrated from `sessions.json` at import, and its public shape: `publicSession`,
   `parseSelection`, `runtimeFor`, `listSessions`, `getSession`, `createSession`, `deleteSession`, the title / effort /
   model / permission / parallel / overflow setters, queued-message removal, watchdog check-ins, restart notes,
-  permission resurfacing, `reloadSessions`, `sessionContext`. `stop()` lives here (it only clears session fields).
+  permission resurfacing, `reloadSessions`, `sessionContext`. `stop()` lives here: it aborts the running turn, denies pending permissions, and clears the session's live fields.
 - `common.mjs` — `turnEventMapper`, the Codex/loop worker-event → UI message translation both runtimes share.
 - `runtime-claude.mjs` — one long-lived Agent SDK query per session (`start`). Streaming input goes through `Inbox`.
 - `runtime-codex.mjs` — one `codex exec` turn (`runCodexTurn`). Imports `runCodex` from `../workers/codex.mjs`.
@@ -22,10 +22,10 @@ working — new code imports the module it needs.
   Picks the runtime, drains a non-Claude queue only while the turn still owns the session.
 
 **Boundaries.** `prompt` → `sessions` → `common` → `runtime-claude` → `runtime-codex` → `runtime-loop` → `turns`,
-never backwards. Outside this folder the modules import `paths`, `config`, `bus`, `mcp`, `session-flags`, `tools`,
+never backwards. That internal order is a convention stated here. Outside this folder the modules import `paths`, `config`, `bus`, `mcp`, `session-flags`, `tools`,
 `plans`, `improve`, `providers/index`, `recipes`, `workers/claude`, `workers/openai-compat`, `proc`, `models`,
 `compaction.ts`, `workers/codex`, and `@anthropic-ai/claude-agent-sdk`. Nothing from `server/`, `bin/`, `ui/` or
-`test/`. Enforced by `test/boundaries.test.mjs`.
+`test/`. `test/boundaries.test.mjs` enforces the outward rules (what the folder may import from outside).
 
 **Invariants.**
 - The session Map and the `serverUrl` string each live in exactly one module (`sessions.mjs`, `runtime-codex.mjs`).

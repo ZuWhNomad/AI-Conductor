@@ -5,7 +5,12 @@ import { redact, statePath } from '../paths.mjs';
 import { logImprovement } from '../improve.mjs';
 
 const TERMINAL = new Set(['done', 'failed', 'canceled']);
-const RESULT = /(?:^|\n)## Result(?:\n|$)/;
+// Unique so a spec that itself contains a bare "## Result" (pasted worker reports) does not suppress the append.
+const RESULT_MARKER = '## Result <!-- conductor:result -->';
+
+function hasResult(text) {
+  return text.split(/\r?\n/).includes(RESULT_MARKER);
+}
 
 export const briefPath = (id) => statePath('tasks', `${id}.md`);
 
@@ -37,7 +42,14 @@ function briefText(t) {
 
 function resultText(t) {
   const r = t.result || {};
-  const lines = ['', '## Result', '', statusLine(t), ''];
+  const lines = ['', RESULT_MARKER, '', statusLine(t), ''];
+  if (t.isolation?.dir || t.isolation?.branch) {
+    const i = t.isolation;
+    const parts = [];
+    if (i.dir) parts.push(i.dir);
+    if (i.branch) parts.push(`branch ${i.branch}`);
+    lines.push(`- isolation: ${parts.join(', ')}`, '');
+  }
   if (t.error) lines.push(`Error: ${t.error}`, '');
   if (t.changedFiles?.length) lines.push(`Changed files: ${t.changedFiles.join(', ')}`, '');
   if (t.diffStat) lines.push('Diff stat:', t.diffStat, '');
@@ -46,7 +58,7 @@ function resultText(t) {
   return lines.join('\n');
 }
 
-/** Create the brief if it is missing, and append ## Result once when the task is terminal. Never throws. */
+/** Create the brief if it is missing, and append the result marker once when the task is terminal. Never throws. */
 export function syncBrief(t) {
   if (!t?.id) return;
   try {
@@ -55,7 +67,7 @@ export function syncBrief(t) {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, redact(briefText(t)));
     }
-    if (TERMINAL.has(t.status) && !RESULT.test(readFileSync(file, 'utf8'))) appendFileSync(file, redact(resultText(t)));
+    if (TERMINAL.has(t.status) && !hasResult(readFileSync(file, 'utf8'))) appendFileSync(file, redact(resultText(t)));
   } catch (e) {
     try { logImprovement('error', 'tasks:brief', `brief ${t.id}: ${e?.message || e}`, { taskId: t.id }); } catch {}
   }

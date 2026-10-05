@@ -12,7 +12,7 @@
   },
   "scripts": {
     "start": "node bin/conductor.mjs",
-    "test": "node --test --import ./test/_env.mjs \"test/**/*.test.mjs\"",
+    "test": "node --test --import ./test/_env.mjs \"test/**/*.test.{mjs,ts}\"",
     "check": "tsc --noEmit"
   },
   "dependencies": {

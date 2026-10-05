@@ -38,7 +38,7 @@ test('creating a task writes the brief once; a running persist does not rewrite 
   }
 
   const done = readFileSync(file, 'utf8');
-  assert.equal((done.match(/^## Result$/gm) || []).length, 1);
+  assert.equal((done.match(/^## Result <!-- conductor:result -->$/gm) || []).length, 1);
   assert.ok(done.startsWith(first.trimEnd()) || done.startsWith(first.replace(/\n$/, '')));
   assert.match(done, /worker said this/);
   assert.equal((done.match(/worker said this/g) || []).length, 1);
@@ -57,7 +57,7 @@ test('a terminal persist appends one result and a further persist appends nothin
   assert.doesNotMatch(created, /## Result/);
   cancelTask(t.id);
   const once = readFileSync(file, 'utf8');
-  assert.equal((once.match(/^## Result$/gm) || []).length, 1);
+  assert.equal((once.match(/^## Result <!-- conductor:result -->$/gm) || []).length, 1);
   assert.match(once, /Error: canceled/);
   assert.ok(once.includes(describeTask(getTask(t.id)).split('\n')[0]));
   assert.ok(once.startsWith(created.trimEnd()));
@@ -84,14 +84,19 @@ test('describeTask compact mode keeps 12 report lines; an unknown reportInTool i
   assert.equal(kept.length, 12);
   assert.equal(kept[0], 'line 1');
   assert.equal(kept[11], 'line 12');
+  assert.match(compact, /Worker report:\nline 1\n\nline 2\n/);
   assert.match(compact, /… \(full report in the brief file\)/);
-  assert.match(compact, new RegExp(`Brief: ${briefPath(t.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.doesNotMatch(compact, /Brief:/);
   assert.doesNotMatch(compact, /line 13/);
+
+  const short = describeTask({ ...t, id: 'briefshort', result: { finalMessage: 'alpha\n\nbeta' } }, { reportMode: 'compact' });
+  assert.match(short, /Worker report:\nalpha\n\nbeta/);
+  assert.doesNotMatch(short, /full report in the brief file/);
 
   const full = describeTask(t, { reportMode: 'full' });
   assert.match(full, /line 15/);
   assert.doesNotMatch(full, /full report in the brief file/);
-  assert.match(full, /Brief: /);
+  assert.doesNotMatch(full, /Brief:/);
 
   saveConfig({ worker: { reportInTool: 'essay' } });
   try {
@@ -106,6 +111,38 @@ test('describeTask compact mode keeps 12 report lines; an unknown reportInTool i
   } finally {
     saveConfig({ worker: { reportInTool: 'full' } });
   }
+  syncBrief(t);
+  assert.match(describeTask(t, { reportMode: 'full' }), new RegExp(`Brief: ${briefPath(t.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+});
+
+test('a spec containing a Result heading still gets its result appended once', () => {
+  const spec = 'Review the stage.\n\n## Result\nThe worker wrote this heading.\n';
+  const t = createTask({ cwd: tmpDir('brief-marker'), title: 'judge', spec, provider: 'deepseek', model: 'x' }, { dispatch: false });
+  const file = briefPath(t.id);
+  const created = readFileSync(file, 'utf8');
+  assert.match(created, /^## Result$/m);
+  assert.doesNotMatch(created, /<!-- conductor:result -->/);
+  cancelTask(t.id);
+  const done = readFileSync(file, 'utf8');
+  assert.equal((done.match(/^## Result <!-- conductor:result -->$/gm) || []).length, 1);
+  assert.match(done, /Error: canceled/);
+  cancelTask(t.id);
+  syncBrief(getTask(t.id));
+  assert.equal(readFileSync(file, 'utf8'), done);
+});
+
+test('isolation set after creation is named in the result', () => {
+  const t = createTask({ cwd: tmpDir('brief-iso'), title: 'isolate me', spec: 'work', provider: 'deepseek', model: 'x' }, { dispatch: false });
+  const file = briefPath(t.id);
+  assert.doesNotMatch(readFileSync(file, 'utf8'), /isolation/);
+  getTask(t.id).isolation = { dir: 'C:\\wt\\iso', branch: 'conductor/iso-branch' };
+  cancelTask(t.id);
+  const done = readFileSync(file, 'utf8');
+  const [head, result] = done.split('## Result <!-- conductor:result -->');
+  assert.ok(result);
+  assert.doesNotMatch(head, /iso-branch/);
+  assert.match(result, /C:\\wt\\iso/);
+  assert.match(result, /branch conductor\/iso-branch/);
 });
 
 test('optional brief links are recorded when the task has them', () => {
