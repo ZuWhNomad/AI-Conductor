@@ -3,7 +3,7 @@
 A local, multi-model agent workbench: a Claude Code clone whose selected Claude model is the
 **conductor** (plans, delegates, reviews) and whose grunt work goes to cheaper workers
 (GPT-6 Astra via the Codex CLI on your ChatGPT subscription, Antigravity and Grok CLIs,
-or the DeepSeek API). Browser UI with speech-to-text. Node >= 22, two runtime
+or the DeepSeek API). Browser UI with speech-to-text. Node >= 22.18, two runtime
 dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 
 ## Ladder decisions (why it is built this way)
@@ -39,7 +39,7 @@ Selections are written `provider:model:effort` everywhere (UI, config, API, CLI)
 the last segment when it is a known effort word, preserving colons in model ids.
 
 Every worker run is a **task** journaled under `~/.conductor2/tasks/<id>.json` (spec, provider,
-thread/session id, status, result, usage). States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
+thread/session id, status, result, usage). The same folder holds a human-readable brief, `tasks/<id>.md`, written once with the spec at creation and appended once with the result when the task finishes. States are `queued`, `running`, `parked`, `stale`, `done`, `failed`,
 and `canceled`; `stale` is non-terminal and waits for the user. Tasks that die at a provider limit are parked with a
 `resumeAt` and resumed automatically (`codex exec resume`, `claude --resume`). The git reads around a run (`status`
 before and after, `diff --stat`) are asynchronous through `execFile`. Ledger parsing and journal I/O remain
@@ -70,15 +70,28 @@ Conductor source does not create an external Windows Job Object. Node/libuv crea
 ```
 bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, bench, review, feedback, share, update, stop, experiment
 core/
-  paths.mjs              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
+  paths.ts               state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
-  bus.mjs                event bus with ring buffer (SSE replay)
-  conductor.mjs          chat sessions = Agent SDK queries with streaming input
-  tools.mjs              MCP tools exposed to the conductor
-  tasks.mjs              worker task journal, scheduler, park/resume on limits
+  bus.ts                 event bus with ring buffer (SSE replay)
+  compaction.ts          model context sizes, prompt-size estimates, deterministic conversation compaction
+  conductor.mjs          re-export façade over conductor/ (keeps `./conductor.mjs` imports working)
+  conductor/             prompt.mjs (policy prompts) → sessions.mjs (session store) → common.mjs (shared Codex/loop
+                         events) → runtime-claude.mjs → runtime-codex.mjs → runtime-loop.mjs → turns.mjs (send / interrupt / stop)
+  tools.mjs              re-export façade over tools/ (keeps `./tools.mjs` imports working)
+  tools/                 _shared.mjs (selection, task-wait registry, escalation, formatters) → delegation.mjs
+                         (delegate, follow_up, await_task, task_status, cancel_task, worktree_cleanup, rate_task) →
+                         jobs.mjs (job_start, job_status, watch_job, job_cancel, allow_command) → plans.mjs
+                         (run_plan, plan_status) → info.mjs (scores, models, limits, smoke, list, log, context) →
+                         index.mjs (conductorToolDefs and the MCP / function adapters)
+  tasks.mjs              worker task journal, scheduler, run lifecycle, park/resume on limits; re-exports tasks/
+  tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs
+                         (buildPrompt), git.mjs (git helpers, worktree links, repo size); brief.mjs (per-task <state>/tasks/<id>.md: spec written at create,
+                         ## Result appended once at terminal; worker.reportInTool full|compact)
   jobs.mjs               detached commands that survive turns and server restarts
   watchdog.mjs           liveness verdicts/actions, persisted watches, restart-safe idle-chat wake-ups
-  plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
+  plans.mjs              re-export façade over plans/ (keeps `./plans.mjs` imports working)
+  plans/                 validate.mjs (plan shape) → findings.mjs (findings, verdicts, tallies) → expand.mjs
+                         ({{goal}}, {{seen}}, {{item}}, {{results:<stage>}}) → executor.mjs (runPlan, registry, journal)
   policy/                orchestration policy and shipped data:
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
     recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)
@@ -91,7 +104,9 @@ core/
   context.mjs            CONTEXT.md discovery + path-scoped injection into worker specs
   improve.mjs            error/improvement log + review runner (self-iteration)
   mcp.mjs                conductor-wide MCP registry (Codex + Claude user configs + config.json)
-  scorecard.mjs          per model × category × difficulty: verdicts, tokens, % of window; recommend()
+  scorecard.mjs          re-export façade over scorecard/ (keeps `./scorecard.mjs` imports working)
+  scorecard/             ledger.mjs (append-only ndjson + identity helpers) → summary.mjs (attempts, chains, cells, shipped
+                         batteries) → recommend.mjs (plans by utility, provider cost model) → report.mjs (grid, text, CSV)
   experiment.mjs         A/B experiment records + compare of tagged scorecard run rows
   priors.mjs             API list prices + shipped/configured hand-picked tiers, a cold-start expectation
   sweep.mjs              the admit() budget gate: measured per-window cost vs per-window targets
@@ -103,18 +118,21 @@ core/
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   cli-update.mjs         worker CLI updates (codex, agy, grok; the Agent SDK in dev): daily check, install when idle, verify, roll back
-  proc.mjs               spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
+  proc.ts                spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
+server/routes/           one HTTP resource per file, handle(ctx)
 scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
+ui/modules/              browser ES modules per section; app.js is boot only
 share/                   install.cmd, install.sh (for friends)
-test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/), the rest flat
+test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/, tasks/, scorecard/, limits/, plans/), the rest flat
 docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, video-briefing-finance-prompt
 ```
 
-Every folder above also holds a `CONTEXT.md` — purpose, entry points, invariants, how to test — which is what an
-agent reads first and what `core/context.mjs` injects into a worker's spec by path. Project notes (plans, reviews,
+Every folder above also holds a `CONTEXT.md` — purpose, entry points, boundaries, invariants, how to test — which is
+the brief an agent works from and what `core/context.mjs` injects into a worker's spec by path. The import boundaries
+each brief states are enforced by `test/boundaries.test.mjs`. Project notes (plans, reviews,
 backlogs, dated logs) are **not** in this repo; they live in the user's notes location, and `test/hygiene.test.mjs`
 fails if any appear here.
 

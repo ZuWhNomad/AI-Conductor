@@ -6,9 +6,10 @@ import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { findCli } from '../core/proc.mjs';
-import { REPO_ROOT } from '../core/paths.mjs';
-import { bus } from '../core/bus.mjs';
+import { findCli } from '../core/proc.ts';
+import { REPO_ROOT } from '../core/paths.ts';
+import { bus } from '../core/bus.ts';
+import { uiSource } from './ui/_source.mjs';
 const { updateStatus, applyUpdate, checkForUpdates, formatUpdate, npmCommand } = await import('../core/update.mjs');
 
 const git = findCli('git');
@@ -192,7 +193,7 @@ test('update: failed npm install reaches the HTTP response and UI without relaun
     assert.equal(event.updated, true); assert.equal(event.npmInstalled, false); assert.equal(event.npmError, r.npmError);
 
     // Run the browser's update handlers with a minimal DOM; both SSE and the response use noteUpdate.
-    const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+    const source = uiSource(new URL('../ui/', import.meta.url));
     const button = { hidden: false, classList: { remove() {} } }, lines = [];
     const ui = { S: {}, $: () => button, addSys: (text, cls) => { const line = { textContent: text, className: 'sysline ' + cls, isConnected: true }; lines.push(line); return line; } };
     runInNewContext(source.slice(source.indexOf('// ---------- update affordance ----------'), source.indexOf('// ---------- SSE ----------')), ui);

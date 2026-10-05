@@ -1,7 +1,7 @@
 // Claude-harness worker: a one-shot Agent SDK run.
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { bus } from '../bus.mjs';
-import { spawnTracked } from '../proc.mjs';
+import { bus } from '../bus.ts';
+import { spawnTracked } from '../proc.ts';
 import { markUnavailable } from '../models.mjs';
 import { logImprovement } from '../improve.mjs';
 

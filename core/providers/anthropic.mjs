@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
-import { findCli } from '../proc.mjs';
+import { findCli } from '../proc.ts';
 
 export const id = 'claude';
 export const label = 'Claude (Anthropic subscription)';

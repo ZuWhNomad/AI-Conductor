@@ -8,7 +8,7 @@ import { createTask, getTask, cancelTask, listTasks } from '../core/tasks.mjs';
 import { abortPlans } from '../core/plans.mjs';
 import { loadConfig, saveConfig } from '../core/config.mjs';
 import { CATEGORIES } from '../core/scorecard.mjs';
-import { bus } from '../core/bus.mjs';
+import { bus } from '../core/bus.ts';
 
 const cwd = () => tmpDir('tools');
 const defs = (opts = {}) => conductorToolDefs({ sessionId: opts.sessionId || 'tools', cwd: opts.cwd || cwd(), maxBlockMs: opts.maxBlockMs });
@@ -202,7 +202,7 @@ test('I7: allow_command names config.json or POST /api/settings, not Settings', 
 });
 
 test('I12: the unreachable configured-default branch is gone', () => {
-  const src = readFileSync(fileURLToPath(new URL('../core/tools.mjs', import.meta.url)), 'utf8');
+  const src = readFileSync(fileURLToPath(new URL('../core/tools/delegation.mjs', import.meta.url)), 'utf8');
   assert.doesNotMatch(src, /configured default \$\{t\.provider\}/);
 });
 
@@ -221,7 +221,7 @@ test('L47: delegate reads loadConfig() inside the handler, not once at tool-tabl
 
 test('L19: auto-picked delegate persists difficulty 2', async () => {
   // Empty scorecard → auto-pick refuses (I2). Pin is not auto-pick. Use a tagged call that
-  // would auto-pick if recommend returned something: covered in plans.test.mjs L19 via runPlan.
+  // would auto-pick if recommend returned something: covered in test/plans/stages.test.mjs L19 via runPlan.
   const schema = defs().find((d) => d.name === 'delegate').schema;
   assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 3 }).difficulty, 3);
   assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 6 }).difficulty, 6);

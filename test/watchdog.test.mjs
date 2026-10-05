@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bus } from '../core/bus.mjs';
+import { bus } from '../core/bus.ts';
 import { classify, createWatchdog, recentFileActivity, registerWatch, listWatches } from '../core/watchdog.mjs';
 import { createTask, getTask, touchTaskAlive, cancelTask } from '../core/tasks.mjs';
-import { statePath, writeJson } from '../core/paths.mjs';
+import { statePath, writeJson } from '../core/paths.ts';
 
 const cfg = () => ({ watchdog: { intervalMinutes: 30, killAfterStuckChecks: 3, loopRepeat: 5 } });
 const noSnapshot = async () => ({ ok: false, processes: new Map() });

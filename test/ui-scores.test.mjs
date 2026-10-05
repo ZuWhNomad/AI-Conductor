@@ -1,10 +1,10 @@
 import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { uiSource } from './ui/_source.mjs';
 
-const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+const source = uiSource(new URL('../ui/', import.meta.url));
 const start = source.indexOf('async function openScores()');
 const openScores = source.slice(start, source.indexOf('\n// ---------- boot', start));
 

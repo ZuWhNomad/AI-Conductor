@@ -3,8 +3,8 @@
 import { PROVIDERS } from './providers/index.mjs';
 import { windowFromEvent, familyRe, escapeScope } from './providers/anthropic.mjs';
 import { statSync } from 'node:fs';
-import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
-import { bus } from './bus.mjs';
+import { readJson, writeJson, statePath, nowIso } from './paths.ts';
+import { bus } from './bus.ts';
 import { loadConfig } from './config.mjs';
 
 const blockedMs = () => (loadConfig().scorecard.blockedMinutes) * 60_000; // how long a provider is assumed blocked after a limit hit with no retry-after

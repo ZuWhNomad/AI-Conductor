@@ -1,7 +1,6 @@
 # core/policy/recipes
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Hand-curated frameworks by scorecard category. Worker and both-audience entries are appended to a
 matching worker's spec through `core/tasks.mjs buildPrompt` and `core/recipes.mjs recipeFor(category, variant)`;

@@ -3,12 +3,13 @@ setlocal
 REM Conductor 2.0 installer for Windows: checks Node, installs dependencies, creates a launcher.
 cd /d "%~dp0.."
 where node >nul 2>nul || (
-  echo Node.js 22 or newer is required. Install it from https://nodejs.org and run this again.
+  echo Node.js 22.18 or newer is required. Install it from https://nodejs.org and run this again.
   pause & exit /b 1
 )
-for /f "tokens=1 delims=." %%v in ('node -p "process.versions.node"') do set NODEMAJOR=%%v
-if %NODEMAJOR% LSS 22 (
-  echo Node.js %NODEMAJOR% found; Conductor needs 22 or newer. Install it from https://nodejs.org
+REM Conductor ships some modules as .ts and relies on Node stripping the types at load (on by default since 22.18).
+node -e "process.exit(process.features.typescript ? 0 : 1)" >nul 2>nul
+if errorlevel 1 (
+  echo Node.js found is older than 22.18; Conductor needs 22.18 or newer. Install it from https://nodejs.org
   pause & exit /b 1
 )
 echo Installing dependencies...

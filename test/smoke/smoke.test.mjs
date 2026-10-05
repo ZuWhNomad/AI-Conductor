@@ -8,7 +8,7 @@ import { join, dirname, basename } from 'node:path';
 const { BATTERY, copiedFromGrader } = await import('../../core/smoke/battery.mjs');
 const { runSmoke, formatSmoke, SMOKE_TASKS, crossProviderJudge } = await import('../../core/smoke/index.mjs');
 const { recordRun, rootRuns, recommend } = await import('../../core/scorecard.mjs');
-const { readNdjson, statePath } = await import('../../core/paths.mjs');
+const { readNdjson, statePath } = await import('../../core/paths.ts');
 const { CANARY, bare } = await import('../../core/smoke/private/common.mjs');
 const PRIVATE = new URL('../../core/smoke/private/', import.meta.url);
 const write = (dir, files) => { for (const [rel, body] of Object.entries(files)) { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), body); } };
@@ -601,7 +601,7 @@ test('GP: a parked smoke task is canceled before scratch cleanup and remains ski
   const { PROVIDERS } = await import('../../core/providers/index.mjs');
   const { getLimits } = await import('../../core/limits.mjs');
   const { getTask, cancelTask } = await import('../../core/tasks.mjs');
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const previous = loadConfig(), priorLimit = getLimits().providers.deepseek;
   const timeoutMinutes = previous.smoke.timeoutMinutes;
   delete getLimits().providers.deepseek;

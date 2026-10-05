@@ -1,37 +1,40 @@
 # ui/ — the browser app
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** The workbench UI: vanilla HTML/JS/CSS served as static files by `server/index.mjs`. No framework, no build
 step, no bundler; edits are live on the next page reload.
 
-**Files.** `index.html` (layout: `#sidebar`, `#main`, `#fleet`, modals), `app.js` (everything below), `stt.js`
-(speech-to-text via the Web Speech API: `createSTT`, `insertAtCaret`), `styles.css`.
+**Files.** `index.html` (layout: `#sidebar`, `#main`, `#fleet`, modals), `app.js` (boot only), `modules/` (one file per
+former section; see `modules/CONTEXT.md`), `stt.js` (speech-to-text via the Web Speech API: `createSTT`,
+`insertAtCaret`), `styles.css`.
 
-**`app.js` index.** One file, 13 sections; each starts with a banner `// ---------- <name> ----------`. Grep the
-banner and read only that section.
+**`app.js` index.** Banners remain (`// ---------- <name> ----------`); each banner lives in the file below.
+`modules/CONTEXT.md` lists exports and the few functions that moved so the import graph stays acyclic.
 
-| banner | what is in it |
+| banner | file |
 |---|---|
-| (top, no banner) | `$`, `el`, the `api` fetch helper, the single state object `S` |
-| `markdown-lite` | `esc`, `md`: the tiny markdown renderer for assistant text |
-| `rendering: sidebar` | chat list (`renderSessions`, accessible rename/delete buttons), **Providers & limits** panel (`renderProviders`, meters) |
-| `budget headline` | the Budget block: which window applies to the selected conductor (`windowScope`, `planWindow`, `renderBudget`) |
-| `model chip (header)` | `renderChip`: the header chip showing the conductor model |
-| `conductor picker: provider : model : effort` | the three linked selects, for New chat and for the header popover (`fillPicker`, `refreshNewPicker`, `refreshHeaderPicker`, `savedSelection`) |
-| `rendering: transcript` | chat messages: streaming deltas, tool calls/results, permission prompts, queued-message controls, history replay |
-| `fleet dock` | worker task cards on the right (`renderTasks`, `taskCard`, `updateTask`, `openTask`) |
-| `sessions` | open / create a chat, status pill, `send` (also the `/worker …` direct-to-worker shortcut), queue-aware composer and Stop recovery |
-| `update affordance` | `renderUpdate`: the flashing **⬇ Update** button |
-| `SSE` | `resync` (full refetch of `/api/state`), `connect` (EventSource, one handler per event type), `onSessionEvent` |
-| `modals` | `openModal`, folder browser (errors disable folder selection), Settings, Improvements log, run review |
-| `quit / misc` | Quit button, model popover, SYSTEM drawer, scores modal |
-| `boot` | wires every DOM event handler, then `resync()` + `connect()` |
+| (top, no banner) | `modules/core.js` — `$`, `el`, `api`, `S`; also `openModal` / `closeModal` |
+| `markdown-lite` | `modules/markdown.js` |
+| `rendering: sidebar` | `modules/sidebar.js` — `renderProviders`. Chat list is `modules/sessions.js`; `meterClass` is `modules/budget.js` |
+| `budget headline` | `modules/budget.js` |
+| `model chip (header)` | `modules/chip.js` |
+| `conductor picker: provider : model : effort` | `modules/picker.js` |
+| `rendering: transcript` | `modules/transcript.js` |
+| `fleet dock` | `modules/fleet.js` — `updateTask` is `modules/sessions.js` |
+| `sessions` | `modules/sessions.js` — also `renderSessions`, `renameSession`, `updateTask`, `onSessionEvent` |
+| `update affordance` | `modules/update.js` |
+| `SSE` | `modules/sse.js` — also `refreshImprovements`. `onSessionEvent` is `modules/sessions.js` |
+| `modals` | `modules/modals.js` — `openModal` / `closeModal` are `modules/core.js` |
+| `quit / misc` | `modules/misc.js` |
+| `boot` | `app.js` |
+
+**Boundaries.** Browser code: imports only its own files (`./stt.js`, `./modules/*.js`) and talks to `server/` over HTTP + SSE. No
+`core/` import can work here, so none is attempted.
 
 **Invariants.**
-- All state lives in `S`; render functions read `S` and rebuild their DOM. Sections call each other freely (there are
-  ~80 cross-section references), which is why the file is not split yet.
+- All state lives in one `S` object, exported from `modules/core.js` and imported by the other modules (never copied).
+  Cross-section calls are explicit imports. The graph is acyclic; see `modules/CONTEXT.md`.
 - Data arrives two ways only: `api.get/post/del` (JSON, throws on a non-2xx with the server's `error`) and the SSE
   stream `/api/events`. A changed `boot` id or a replay gap (`hello.oldest > lastSeq + 1` for a nonzero cursor)
   triggers `resync()`, including the improvement count, then reconnects.
@@ -41,7 +44,7 @@ banner and read only that section.
 - Queued user bubbles come from `queued` events or `m.queued` history records; `dequeued` drops their controls, while queue
   removal deletes the bubble.
 - Files stay `.js`: the server's MIME map has no `.mjs`.
-- Every `id` that `app.js` looks up with `$('#…')` must exist in `index.html`.
+- Every `id` that `app.js` or `modules/*.js` looks up with `$('#…')` must exist in `index.html`.
 
 **How to test.** `npm test` covers serving (`test/server/server.test.mjs`: `/` and `/app.js`), settings rendering and
 saving with a DOM stub (`test/ui-settings.test.mjs`), and browser regressions (`test/ui/layout.test.mjs`: responsive

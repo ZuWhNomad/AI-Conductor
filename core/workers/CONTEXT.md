@@ -1,7 +1,6 @@
 # core/workers/ — how each provider kind executes a task
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** A worker runs one task (a spec in a cwd) on a given provider and returns a common result. One runner
 per provider *kind*; `index.mjs` dispatches by kind. The catalog/limits layer is `core/providers/`.
@@ -27,6 +26,11 @@ the loop keeps stable request prefixes between trims.
 - `vendor-cli.mjs` — the generic runner for the `core/providers/vendors.mjs` subscription CLIs
   (read-only tasks on git repos run in a disposable snapshot worktree via `readOnlyViaSnapshot`).
 
+**Boundaries.** May import `../proc.ts`, `../bus.ts`, `../paths.ts`, `../config.mjs`, `../mcp.mjs`, `../models.mjs`,
+`../improve.mjs`, `../context.mjs`, `../compaction.ts`. Must not import the orchestration layer (`tasks`, `scorecard`,
+`sweep`, `limits`, `plans`, `tools`, `conductor`, `watchdog`, `jobs`, `bench`): a worker runs one task and knows nothing
+about the queue. Enforced by `test/boundaries.test.mjs`.
+
 **Invariants.**
 - A worker resolves to `{ ok, finalMessage, items, usage, error, limitHit, authFailed, retryAfterMs?, threadId? }`.
   `limitHit` runs are never scored; on a real limit the scheduler fails over or parks (`core/tasks.mjs`). `authFailed`
@@ -36,12 +40,12 @@ the loop keeps stable request prefixes between trims.
   `status`, the "unexpected status NNN" prefix); grok `http_status` (402/429 limit, 401/403 auth); grok's own session
   `events.jsonl` for plan-mode cancels. agy gives no structured status: text patterns are the
   fallback, and each use is logged to the improvement log.
-- `runWorker` redacts its result (keys a CLI echoes, e.g. OpenAI's 401) before anything records it; see `paths.mjs` `redact`.
+- `runWorker` redacts its result (keys a CLI echoes, e.g. OpenAI's 401) before anything records it; see `paths.ts` `redact`.
 - `writableRoots` (delegate `writable_roots`): extra writable directories — Codex `--add-dir`, Claude
   `additionalDirectories`, Antigravity `--add-dir`. Grok runs unsandboxed; the rest ignore it.
 - `isolate: true` is scheduler-owned (`core/tasks.mjs`): the worker just receives `cwd` pointing at the worktree.
-- No shell for spawns — go through `core/proc.mjs` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
-- Long-lived CLI/SDK children register their PID owner in `core/proc.mjs`, which lets the watchdog attribute their
+- No shell for spawns — go through `core/proc.ts` (`spawnCli` unwraps npm `.cmd`; `spawnCodex` never uses a shell).
+- Long-lived CLI/SDK children register their PID owner in `core/proc.ts`, which lets the watchdog attribute their
   process trees and CPU without killing by image/name.
 - The openai-compat `run` tool is disabled by default (`worker.shell: false`). Explicit `true` or an allow-list
   trusts host execution: permitted programs can read/write outside the workspace. `shellDenied` filters commands,
@@ -52,7 +56,7 @@ the loop keeps stable request prefixes between trims.
 - Claude runs (workers and conductor chats) carry `KILL_GUARD_HOOKS`: a PreToolUse hook denies killing processes by
   name or image (`taskkill /IM`, `Stop-Process -Name`, `pkill`, `killall`), which would kill the Conductor itself.
   Vendor CLIs can't be hooked; `core/policy/prompts/worker.md` tells them the same rule.
-- Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.mjs`.
+- Prefer stdin / a prompt-file for long prompts (Windows argv limit); emit UI events through `core/bus.ts`.
 
 **How to test.** `test/workers/`: `openai-compat.test.mjs`, `file-tools.test.mjs` (responsiveness, bounds, cleanup), `shell-safety.test.mjs` (spawn/allow-list),
 `vendor-cli.test.mjs`, `codex-args.test.mjs` / `codex-parse.test.mjs`, `codex-auth.test.mjs` (401 → authFailed, redaction). `CONDUCTOR_HOME`-isolated.

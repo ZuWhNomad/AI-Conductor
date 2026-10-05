@@ -1,12 +1,12 @@
 import '../_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { uiSource } from './_source.mjs';
 
-const app = readFileSync(new URL('../../ui/app.js', import.meta.url), 'utf8');
-const sse = app.slice(app.indexOf('// ---------- SSE ----------'), app.indexOf('function onSessionEvent('));
+const app = uiSource(new URL('../../ui/', import.meta.url));
+const sse = app.slice(app.indexOf('// ---------- SSE ----------'), app.indexOf('async function refreshImprovements('));
 function client({ lastSeq = 10, boot = 'same', stateError = false, failPath = null } = {}) {
   const nodes = new Map(), streams = [], timers = [], gets = [], opened = [];
   const state = { seq: 3000, sessions: [], models: {}, limits: {}, tasks: [], improvements: [{ id: 'remaining' }], config: { ui: {} }, providers: [] };
@@ -77,7 +77,7 @@ test('a failed coalesced refetch runs a full resync after advancing the cursor',
 });
 
 const openSrc = app.slice(app.indexOf('async function openSession(id)'), app.indexOf('\nfunction clearCurrent()'));
-const onSrc = app.slice(app.indexOf('function onSessionEvent(ev)'), app.indexOf('// ---------- modals ----------'));
+const onSrc = app.slice(app.indexOf('function onSessionEvent(ev)'), app.indexOf('// ---------- update affordance ----------'));
 function openingClient() {
   const el = { textContent: '', checked: false, focus() {}, classList: { remove() {} } };
   const pending = [], deltas = [], permissions = [], renders = [], users = [], dropped = [], removed = [];

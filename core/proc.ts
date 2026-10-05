@@ -1,21 +1,77 @@
 // Process helpers: locate/spawn CLIs, track their owners, sample process trees, and kill by PID.
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
 const WIN = process.platform === 'win32';
-const probeChildren = new Set();
-const ownerPids = new Map();
+const probeChildren = new Set<ChildProcess>();
+const ownerPids = new Map<string, Set<number>>();
 const execFileP = promisify(execFile);
 
+/** One row of a portable OS process snapshot. */
+export interface ProcEntry {
+  pid: number;
+  ppid: number;
+  cpuSeconds: number;
+  rssBytes: number;
+  name: string;
+}
+
+export interface ProcessSnapshotOk {
+  ok: true;
+  processes: Map<number, ProcEntry>;
+}
+export interface ProcessSnapshotErr {
+  ok: false;
+  processes: Map<number, ProcEntry>;
+  error: string;
+}
+export type ProcessSnapshot = ProcessSnapshotOk | ProcessSnapshotErr;
+
+/** Live sample of one registered owner's process tree. */
+export interface OwnerSample {
+  available: boolean;
+  alive: boolean;
+  cpuSeconds: number | null;
+  rssBytes: number | null;
+  names: string[];
+}
+
+/** How to run a CLI without a shell: the executable plus argv that precede the caller's args. */
+export interface CliCommand {
+  command: string;
+  args: string[];
+}
+
+/** Options for {@link spawnCli}. `shell` is accepted and then forced off. */
+export interface SpawnCliOptions extends SpawnOptions {}
+
+/** Agent SDK spawn-hook options. `ChildProcess` satisfies `SpawnedProcess`. */
+export interface SpawnTrackedOptions {
+  command: string;
+  args: readonly string[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}
+
+export interface ServerKillOptions {
+  kill?: (target: number, signal: NodeJS.Signals) => void;
+}
+
+export interface OnLinesOptions {
+  maxLine?: number;
+}
+
 /** Associate a spawned child with a task id (or `conductor:<sessionId>`) until it exits. */
-export function registerProc(owner, child) {
+export function registerProc<T extends ChildProcess>(owner: string | null | undefined, child: T): T {
   if (!owner || !child?.pid) return child;
   const pid = Number(child.pid);
-  const pids = ownerPids.get(owner) || new Set();
+  const pids = ownerPids.get(owner) || new Set<number>();
   pids.add(pid); ownerPids.set(owner, pids);
-  const done = () => {
+  const done = (): void => {
     const current = ownerPids.get(owner); if (!current) return;
     current.delete(pid); if (!current.size) ownerPids.delete(owner);
   };
@@ -23,21 +79,21 @@ export function registerProc(owner, child) {
   return child;
 }
 
-export function registeredPids(owner) { return [...(ownerPids.get(owner) || [])]; }
+export function registeredPids(owner: string): number[] { return [...(ownerPids.get(owner) || [])]; }
 
 /** Force-stop only the server PID after its graceful HTTP stop path failed; never traverse descendants. */
-export function killServerFallback(pid, { kill = (target, signal) => process.kill(target, signal) } = {}) {
+export function killServerFallback(pid: number, { kill = (target, signal) => process.kill(target, signal) }: ServerKillOptions = {}): void {
   const target = Number(pid);
   if (!Number.isSafeInteger(target) || target <= 0) throw new TypeError('server PID must be a positive integer');
   kill(target, 'SIGTERM');
 }
 
 /** Agent SDK spawn hook: ChildProcess satisfies SpawnedProcess and exposes its PID to the registry. */
-export function spawnTracked(owner, { command, args, cwd, env, signal }) {
+export function spawnTracked(owner: string | null | undefined, { command, args, cwd, env, signal }: SpawnTrackedOptions): ChildProcess {
   return registerProc(owner, spawn(command, args, { cwd, env, signal, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }));
 }
 
-const cpuTime = (text) => {
+const cpuTime = (text: string): number => {
   const raw = String(text || '').trim();
   const dash = raw.indexOf('-');
   const days = dash >= 0 ? Number(raw.slice(0, dash)) : 0;
@@ -48,30 +104,31 @@ const cpuTime = (text) => {
 };
 
 /** Parse the compact JSON produced by the Win32_Process probe. */
-export function parseWindowsProcesses(text) {
-  const parsed = JSON.parse(String(text || '[]') || '[]');
+export function parseWindowsProcesses(text: string): Map<number, ProcEntry> {
+  const parsed: unknown = JSON.parse(String(text || '[]') || '[]');
   const rows = Array.isArray(parsed) ? parsed : [parsed];
-  return new Map(rows.flatMap((r) => {
-    const pid = Number(r.ProcessId), ppid = Number(r.ParentProcessId);
+  return new Map(rows.flatMap((r): Array<[number, ProcEntry]> => {
+    const row = r as { ProcessId?: unknown; ParentProcessId?: unknown; KernelModeTime?: unknown; UserModeTime?: unknown; WorkingSetSize?: unknown; Name?: unknown };
+    const pid = Number(row.ProcessId), ppid = Number(row.ParentProcessId);
     if (!Number.isInteger(pid) || pid <= 0) return [];
-    return [[pid, { pid, ppid: Number.isInteger(ppid) ? ppid : 0, cpuSeconds: (Number(r.KernelModeTime) + Number(r.UserModeTime)) / 10_000_000 || 0, rssBytes: Number(r.WorkingSetSize) || 0, name: String(r.Name || '') }]];
+    return [[pid, { pid, ppid: Number.isInteger(ppid) ? ppid : 0, cpuSeconds: (Number(row.KernelModeTime) + Number(row.UserModeTime)) / 10_000_000 || 0, rssBytes: Number(row.WorkingSetSize) || 0, name: String(row.Name || '') }]];
   }));
 }
 
 /** Parse `ps -A -o pid=,ppid=,time=,rss=,comm=` output. */
-export function parsePsProcesses(text) {
-  const out = new Map();
+export function parsePsProcesses(text: string): Map<number, ProcEntry> {
+  const out = new Map<number, ProcEntry>();
   for (const line of String(text || '').split(/\r?\n/)) {
     const m = /^\s*(\d+)\s+(\d+)\s+((?:\d+-)?\d+:\d{2}(?::\d{2})?)\s+(\d+)\s+(.+?)\s*$/.exec(line);
     if (!m) continue;
     const pid = Number(m[1]);
-    out.set(pid, { pid, ppid: Number(m[2]), cpuSeconds: cpuTime(m[3]), rssBytes: Number(m[4]) * 1024, name: m[5] });
+    out.set(pid, { pid, ppid: Number(m[2]), cpuSeconds: cpuTime(m[3] ?? ''), rssBytes: Number(m[4]) * 1024, name: m[5] ?? '' });
   }
   return out;
 }
 
 /** One bounded, shell-free OS process snapshot for all watchdog owners. */
-export async function snapshotProcesses({ platform = process.platform, exec = execFileP } = {}) {
+export async function snapshotProcesses({ platform = process.platform, exec = execFileP } = {}): Promise<ProcessSnapshot> {
   try {
     if (platform === 'win32') {
       const ps = findCli('powershell') || join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -81,11 +138,11 @@ export async function snapshotProcesses({ platform = process.platform, exec = ex
     }
     const { stdout } = await exec('ps', ['-A', '-o', 'pid=,ppid=,time=,rss=,comm='], { encoding: 'utf8', windowsHide: true, timeout: 20_000, maxBuffer: 32 * 1024 * 1024 });
     return { ok: true, processes: parsePsProcesses(stdout) };
-  } catch (e) { return { ok: false, processes: new Map(), error: String(e?.message || e) }; }
+  } catch (e) { return { ok: false, processes: new Map(), error: String((e as { message?: unknown } | null)?.message || e) }; }
 }
 
 /** Sum a registered owner's live roots and descendants from one shared snapshot. */
-export function ownerProcessSample(owner, snapshot) {
+export function ownerProcessSample(owner: string, snapshot: ProcessSnapshot | null | undefined): OwnerSample {
   if (!snapshot?.ok) return { available: false, alive: false, cpuSeconds: null, rssBytes: null, names: [] };
   const roots = new Set(registeredPids(owner));
   const owned = new Set([...roots].filter((pid) => snapshot.processes.has(pid)));
@@ -94,12 +151,12 @@ export function ownerProcessSample(owner, snapshot) {
     changed = false;
     for (const p of snapshot.processes.values()) if (!owned.has(p.pid) && owned.has(p.ppid)) { owned.add(p.pid); changed = true; }
   }
-  let cpuSeconds = 0, rssBytes = 0; const names = new Set();
-  for (const pid of owned) { const p = snapshot.processes.get(pid); cpuSeconds += p.cpuSeconds || 0; rssBytes += p.rssBytes || 0; if (p.name) names.add(p.name); }
+  let cpuSeconds = 0, rssBytes = 0; const names = new Set<string>();
+  for (const pid of owned) { const p = snapshot.processes.get(pid)!; cpuSeconds += p.cpuSeconds || 0; rssBytes += p.rssBytes || 0; if (p.name) names.add(p.name); }
   return { available: true, alive: owned.size > 0, cpuSeconds, rssBytes, names: [...names] };
 }
 
-export function findOnPath(name) {
+export function findOnPath(name: string): string | null {
   const exts = WIN ? ['.cmd', '.exe', '.bat', ''] : [''];
   for (const dir of (process.env.PATH || '').split(delimiter)) {
     if (!dir) continue;
@@ -116,14 +173,14 @@ export function findOnPath(name) {
  * running its JS entry with the current node, which avoids all command-line quoting issues.
  */
 /** Places npm puts global CLIs when the process PATH has not caught up (fresh installs, launchers). */
-function npmGlobalDirs() {
-  const dirs = [];
+function npmGlobalDirs(): string[] {
+  const dirs: string[] = [];
   if (WIN) { if (process.env.APPDATA) dirs.push(join(process.env.APPDATA, 'npm')); if (process.env.LOCALAPPDATA) dirs.push(join(process.env.LOCALAPPDATA, 'npm')); }
   else { if (process.env.HOME) dirs.push(join(process.env.HOME, '.npm-global', 'bin'), join(process.env.HOME, '.local', 'bin')); dirs.push('/usr/local/bin', '/opt/homebrew/bin'); }
   return dirs;
 }
 
-export function findCli(name) {
+export function findCli(name: string): string | null {
   const onPath = findOnPath(name);
   if (onPath) return onPath;
   const exts = WIN ? ['.cmd', '.exe', '.bat', ''] : [''];
@@ -133,9 +190,9 @@ export function findCli(name) {
   return null;
 }
 
-export function codexCommand() {
+export function codexCommand(): CliCommand | null {
   if (process.env.CONDUCTOR_CODEX) return { command: process.env.CONDUCTOR_CODEX, args: [] };
-  let found = findCli('codex');
+  let found: string | null | undefined = findCli('codex');
   if (!found && WIN && process.env.LOCALAPPDATA) {
     const dir = join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
     try {
@@ -162,10 +219,11 @@ export function codexCommand() {
  * we can spawn `node <entry>` directly — no shell, no cmd re-parse of `%*` (which is where a prompt containing `&`,
  * `|`, `>` would inject a command). Returns { command: node, args:[entry] } or null when it isn't a resolvable shim.
  */
-export function resolveNpmShim(cmdPath) {
+export function resolveNpmShim(cmdPath: string): CliCommand | null {
   if (!WIN || !/\.cmd$/i.test(cmdPath)) return null;
-  let txt; try { txt = readFileSync(cmdPath, 'utf8'); } catch { return null; }
-  const unwrap = (raw) => {
+  let txt: string;
+  try { txt = readFileSync(cmdPath, 'utf8'); } catch { return null; }
+  const unwrap = (raw: string): string => {
     const rel = raw.replace(/%~dp0\\?/gi, '').replace(/%[^%]*%/g, '').replace(/^["\\/]+/, '');
     return isAbsolute(rel) ? rel : join(dirname(cmdPath), rel);
   };
@@ -192,8 +250,8 @@ export function resolveNpmShim(cmdPath) {
  * `node <entry>` and still avoid the shell entirely. Refuse unresolved scripts: shell escaping cannot safely
  * preserve arbitrary arguments through cmd.exe and a script's own `%*` re-parse.
  */
-export function spawnCli(bin, args, opts = {}) {
-  const base = { windowsHide: true, detached: !WIN, ...opts, shell: false }; // callers may override window visibility, never shell safety
+export function spawnCli(bin: string, args: readonly string[], opts: SpawnCliOptions = {}): ChildProcess {
+  const base: SpawnOptions = { windowsHide: true, detached: !WIN, ...opts, shell: false }; // callers may override window visibility, never shell safety
   if (WIN && /\.(cmd|bat)$/i.test(bin)) {
     const shim = resolveNpmShim(bin);
     if (shim) return spawn(shim.command, [...shim.args, ...args], base); // no shell: argv passed verbatim, no re-parse
@@ -202,19 +260,19 @@ export function spawnCli(bin, args, opts = {}) {
   return spawn(bin, args, base);
 }
 
-export function spawnCodex(args, opts = {}) {
+export function spawnCodex(args: readonly string[], opts: SpawnOptions = {}): ChildProcess {
   const c = codexCommand();
   if (!c) throw new Error('codex CLI not found on PATH. Install with: npm i -g @openai/codex');
-  const base = { windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'], ...opts };
+  const base: SpawnOptions = { windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'], ...opts };
   return spawn(c.command, [...c.args, ...args], base);
 }
 
 /** Kill a child and its descendants (Codex spawns a native binary under the node shim). */
-export function killTree(child) {
+export function killTree(child: ChildProcess | null | undefined): void {
   if (!child) return;
   if (child.pid && child.exitCode === null) {
     try {
-      if (WIN) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }, (err) => { if (err) try { child.kill(); } catch {} });
+      if (WIN) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, (err: Error | null) => { if (err) try { child.kill(); } catch {} });
       else process.kill(-child.pid, 'SIGTERM');
     } catch { try { child.kill(); } catch {} }
   } else if (child.pid && !WIN) {
@@ -225,17 +283,17 @@ export function killTree(child) {
   setTimeout(() => { try { child.stdout?.destroy(); } catch {} try { child.stderr?.destroy(); } catch {} }, 500).unref?.();
 }
 
-export function trackProbe(child) {
+export function trackProbe(child: ChildProcess | null | undefined): ChildProcess | null | undefined {
   if (child && child.pid) {
     probeChildren.add(child);
-    const done = () => probeChildren.delete(child);
+    const done = (): void => { probeChildren.delete(child); };
     child.once('exit', done);
     child.once('error', done);
   }
   return child;
 }
 
-export function killProbes() {
+export function killProbes(): void {
   for (const child of [...probeChildren]) {
     try { killTree(child); } catch {}
   }
@@ -243,12 +301,12 @@ export function killProbes() {
 }
 
 /** Feed newline-delimited data from a stream to a callback, line by line. */
-export function onLines(stream, cb, { maxLine = 4 * 1024 * 1024 } = {}) {
+export function onLines(stream: Readable, cb: (line: string) => void, { maxLine = 4 * 1024 * 1024 }: OnLinesOptions = {}): void {
   let buf = '';
   stream.setEncoding('utf8');
   stream.on('data', (chunk) => {
     buf += chunk;
-    let i;
+    let i: number;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).replace(/\r$/, '');
       buf = buf.slice(i + 1);

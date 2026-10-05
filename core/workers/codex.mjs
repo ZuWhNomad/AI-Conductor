@@ -1,11 +1,11 @@
 // Astra / GPT worker: drives `codex exec --json` (ChatGPT subscription) and parses its JSONL events.
-import { spawnCodex, killTree, onLines, registerProc } from '../proc.mjs';
-import { bus } from '../bus.mjs';
+import { spawnCodex, killTree, onLines, registerProc } from '../proc.ts';
+import { bus } from '../bus.ts';
 import { codexMcpArgs } from '../mcp.mjs';
 import { readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { readTail } from '../paths.mjs';
+import { readTail } from '../paths.ts';
 import { logImprovement } from '../improve.mjs';
 
 // Codex's own fixed usage-limit sentence, anchored at the start of the turn error (recorded in rollouts 2026-09-06..25:

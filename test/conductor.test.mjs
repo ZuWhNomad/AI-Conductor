@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { registerHooks } from 'node:module';
-import { writeJson, readJson } from '../core/paths.mjs';
+import { writeJson, readJson } from '../core/paths.ts';
 
 writeJson(join(HOME, 'sessions.json'), [{
   id: 'restored-e12', cwd: HOME, title: 'restored', provider: 'claude', runtime: 'claude',
@@ -84,13 +84,13 @@ const codexUrl = 'data:text/javascript,' + encodeURIComponent(`
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@anthropic-ai/claude-agent-sdk') return { url: sdkUrl, shortCircuit: true };
-    if (specifier === './workers/codex.mjs' && context.parentURL?.includes('conductor.mjs')) return { url: codexUrl, shortCircuit: true };
+    if ((specifier === './workers/codex.mjs' || specifier === '../workers/codex.mjs') && /\/core\/conductor(\.mjs|\/)/.test(context.parentURL || '')) return { url: codexUrl, shortCircuit: true };
     return nextResolve(specifier, context);
   },
 });
 
 const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, cancelQueuedMessage, stopSession, canNudge, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
-const { bus } = await import('../core/bus.mjs');
+const { bus } = await import('../core/bus.ts');
 const { getModels, findModel } = await import('../core/models.mjs');
 const { listImprovements } = await import('../core/improve.mjs');
 
@@ -559,7 +559,7 @@ test('pendingCount is on publicSession and updated fires when a permission is ad
 });
 
 test('the conductor prompt points at this install\'s review framework, whatever the chat cwd', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   assert.ok(!PROMPT.includes('{{CONDUCTOR_DOCS}}'));
   const path = `${join(REPO_ROOT, 'docs')}/REVIEW-FRAMEWORK.md`;
   assert.ok(PROMPT.includes(path));

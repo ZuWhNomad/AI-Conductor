@@ -1,6 +1,6 @@
 // Error + improvement log (the self-iteration input) and the review prompt that consumes it.
-import { appendNdjson, readNdjson, writeJson, statePath, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { bus } from './bus.mjs';
+import { appendNdjson, readNdjson, writeJson, statePath, nowIso, shortId, REPO_ROOT } from './paths.ts';
+import { bus } from './bus.ts';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
 
 const FILE = () => statePath('improvements.ndjson');

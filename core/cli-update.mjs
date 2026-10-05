@@ -7,11 +7,11 @@
 import { execFile } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT, readJson, writeJson, appendNdjson, statePath, nowIso, resolveStateDir } from './paths.mjs';
+import { REPO_ROOT, readJson, writeJson, appendNdjson, statePath, nowIso, resolveStateDir } from './paths.ts';
 import { loadConfig } from './config.mjs';
-import { bus } from './bus.mjs';
+import { bus } from './bus.ts';
 import { logImprovement } from './improve.mjs';
-import { codexCommand, findCli } from './proc.mjs';
+import { codexCommand, findCli } from './proc.ts';
 import { VENDORS, capture } from './providers/vendors.mjs';
 import { npmCommand } from './update.mjs';
 

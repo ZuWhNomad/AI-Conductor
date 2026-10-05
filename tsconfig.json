@@ -1,0 +1,21 @@
+{
+  // Type-checking only (`npm run check`). Nothing is compiled: Node >= 22.18 strips types at load, so `.ts` modules
+  // run as they are, next to the `.mjs` ones, with explicit extensions in every import. Only erasable syntax is
+  // allowed (no enums, namespaces or parameter properties) — that is what Node can strip.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "strict": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["core/**/*", "server/**/*", "bin/**/*", "test/**/*"],
+  "exclude": ["node_modules", "core/smoke/private/**"]
+}

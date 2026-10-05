@@ -340,7 +340,7 @@ test('grok weekly usage-reset day and hour persist as numbers and clamp', () => 
 });
 
 test('state dir: CONDUCTOR_HOME wins; otherwise a .state/ folder beside the code, else ~/.conductor2', async () => {
-  const { resolveStateDir, REPO_ROOT } = await import('../core/paths.mjs');
+  const { resolveStateDir, REPO_ROOT } = await import('../core/paths.ts');
   const { existsSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { homedir } = await import('node:os');

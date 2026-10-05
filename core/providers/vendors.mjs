@@ -7,11 +7,25 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.mjs';
-import { readTail } from '../paths.mjs';
-import { vendorParse as P } from '../workers/vendor-cli.mjs';
+import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.ts';
+import { readTail } from '../paths.ts';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
+
+/** Helpers shared by the vendor output parsers below (emit UI items, accumulate usage). */
+const P = {
+  addUsage(st, u, { input = 'input_tokens', output = 'output_tokens', cached = 'cache_read_tokens', thinking = 'thinking_tokens' } = {}) {
+    if (!u) return;
+    st.usage = st.usage || { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_output_tokens: 0, ...(st.spec?.usageInputExclusive ? { exclusive: true } : {}) };
+    st.usage.input_tokens += Number(u[input]) || 0;
+    st.usage.output_tokens += Number(u[output]) || 0;
+    st.usage.cached_input_tokens += Number(u[cached]) || 0;
+    st.usage.reasoning_output_tokens += Number(u[thinking]) || 0;
+  },
+  message(st, emit, text) { if (!text) return; st.items.push({ type: 'agent_message', text }); emit('item', { item: { type: 'agent_message', text }, phase: 'completed' }); },
+  toolStart(st, emit, id, name, input) { st.items.push({ type: 'tool_use', id, name, input }); emit('item', { item: { id, type: 'tool_use', name, input: JSON.stringify(input || {}).slice(0, 300), args: input }, phase: 'started' }); },
+  toolDone(st, emit, id, name, output, isError = false) { emit('tool_result', { toolUseId: id, name, isError, text: String(output ?? 'done').slice(0, 4000) }); },
+};
 
 // Antigravity (Method C): effort is baked into the model id (…-low / -medium / -high) and the CLI has no --effort
 // flag. Collapse each such family into ONE logical model exposing efforts:[…] with the concrete id per effort, so

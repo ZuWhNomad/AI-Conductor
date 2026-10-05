@@ -8,9 +8,11 @@ import { once } from 'node:events';
 import { runInNewContext } from 'node:vm';
 import { DEFAULTS } from '../../core/config.mjs';
 
+import { uiSource } from './_source.mjs';
+
 const html = readFileSync(new URL('../../ui/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../ui/styles.css', import.meta.url), 'utf8');
-const app = readFileSync(new URL('../../ui/app.js', import.meta.url), 'utf8');
+const app = uiSource(new URL('../../ui/', import.meta.url));
 export function browserCandidates(env = process.env, exists = existsSync) {
   if (env.CONDUCTOR_TEST_BROWSER) return [env.CONDUCTOR_TEST_BROWSER];
   const dirs = [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA].filter(Boolean);

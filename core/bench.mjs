@@ -7,7 +7,7 @@ import { runSmoke } from './smoke/index.mjs';
 import { logImprovement } from './improve.mjs';
 import { openTasks } from './tasks.mjs';
 import { modelBlockedUntil } from './limits.mjs';
-import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
+import { readJson, writeJson, statePath, nowIso } from './paths.ts';
 
 const FILE = () => statePath('bench.json');
 // The scorecard plan's coverage battery is the original eleven L1-L5 tasks. Newer fixtures do not silently move

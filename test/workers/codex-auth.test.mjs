@@ -94,7 +94,7 @@ test('runWorker redacts the echoed key at the source and passes authFailed on', 
 
 test('no session log: the fixed Codex usage-limit sentence is a logged limit hit; other wording is not', async (ctx) => {
   const { readFileSync } = await import('node:fs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   // Recorded turn errors (rollouts 2026-09-06..25); the thread has no rollout file here, so only the fallback can decide.
   const recorded = [TASK_COMPLETE.usage.message, "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 2:11 AM.", "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 27th, 2026 1:36 PM."];
   for (const [i, message] of recorded.entries()) {

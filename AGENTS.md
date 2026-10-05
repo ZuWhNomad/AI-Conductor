@@ -1,19 +1,29 @@
-# Conductor 2.0 — notes for agents working on this repo
+# Conductor 2.0 — rules for agents working on this repo
 
 If `../WORKSPACE.md` exists, read it first (local workspace index; never commit it or copy its paths into this repo).
-Read `docs/ARCHITECTURE.md` next. Then:
 
-- **No build step.** Plain ESM (`.mjs`), Node >= 22. Two runtime dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`). Do not add more without a strong reason.
-- **Ladder before code:** does it need to exist → stdlib → platform feature → existing dependency → one line → then write the minimum.
-- **Run `npm test`** before reporting done. Tests isolate state via `CONDUCTOR_HOME` (see `test/_env.mjs`); never touch the real `~/.conductor2`.
-- **Where things live:** `core/` engine, `core/workers/` how each provider executes a task, `core/providers/` how each vendor lists models and reports limits, `core/policy/` the orchestration policy (`prompts/`, `recipes/`; text only), `server/` HTTP+SSE, `ui/` the browser app (vanilla JS), `bin/` CLI.
-- **Adding a provider:** one module in `core/providers/` exporting `id, label, kind, auth, detect(), listModels(), pollLimits()`; register it in `core/providers/index.mjs`; if `kind` is new, add a runner in `core/workers/`. A subscription **CLI** (agent binary with a headless mode) is just a spec in `core/providers/vendors.mjs` — verify its flags against the real binary and record the event shapes in `test/workers/vendor-cli.test.mjs`.
-- **Events:** everything the UI sees goes through `core/bus.mjs` (`bus.publish(type, data)`). Keep payloads small; the ring buffer replays the last 2000.
-- **Secrets:** API keys live only in `~/.conductor2/config.json`; `publicConfig()` redacts them. Never log them.
-- **Windows first:** spawn CLIs without a shell (see `core/proc.mjs`); prefer stdin for long prompts.
+**The unit of work is a folder.** Every code folder has a `CONTEXT.md`: purpose, entry points, boundaries, invariants
+and the test command. A task's brief is that file plus the tests it names — read it before the code, and stay inside
+the folder's boundaries (`test/boundaries.test.mjs` enforces them). Open `docs/ARCHITECTURE.md` only when the work
+spans folders; its directory map says which `CONTEXT.md` to read.
+
+Invariants that hold everywhere:
+
+- **No build step.** Plain ESM, Node >= 22.18: `.mjs` today, `.ts` where a module has been converted (Node strips the
+  types at load; only erasable syntax, explicit extensions in imports). Two runtime dependencies
+  (`@anthropic-ai/claude-agent-sdk`, `zod`); do not add more without a strong reason. Dev dependencies are
+  `typescript` and `@types/node`, for `npm run check` only.
+- **Ladder before code:** does it need to exist → stdlib → platform feature → existing dependency → one line → then
+  write the minimum.
+- **`npm test` and `npm run check` before reporting done.** Tests isolate state via `CONDUCTOR_HOME`
+  (`test/_env.mjs`); never touch the real `~/.conductor2`. `check` is `tsc --noEmit` over the whole tree.
+- **Events:** everything the UI sees goes through `core/bus.ts` (`bus.publish(type, data)`). Small payloads.
+- **Secrets** live only in `~/.conductor2/config.json`; `publicConfig()` redacts them. Never log them.
+- **Windows first:** spawn CLIs without a shell (`core/proc.ts`); prefer stdin for long prompts.
 - **This repo is the product, not the project.** Plans, reviews, backlogs, research and dated logs go in the user's
-  notes location (`../WORKSPACE.md` says where) — never in here, not even temporarily. `test/hygiene.test.mjs` fails
-  on a tracked `plans/`, `reviews/` or `notes/` folder. `docs/` is for documentation a stranger who cloned this repo
-  would need; everything about how we decided or what to do next is a note, not a doc.
-- When you add a folder or module, add a short `CONTEXT.md` (purpose, entry points, invariants, how to test) — every
-  folder has one, it is the first thing an agent reads, and the same hygiene test checks it exists.
+  notes location (`../WORKSPACE.md` says where) — never in here. `docs/` is for what a stranger who cloned this repo
+  would need. `test/hygiene.test.mjs` fails on a tracked `plans/`, `reviews/` or `notes/` folder.
+- **A new folder gets a `CONTEXT.md` in the same commit** (the hygiene test checks it exists). A changed import
+  boundary updates both the folder's `CONTEXT.md` and `test/boundaries.test.mjs`.
+- **A code file stays under 500 non-blank lines** (a test file 700, a `CONTEXT.md` 110); the allowance list in
+  `test/size.test.mjs` may only shrink.

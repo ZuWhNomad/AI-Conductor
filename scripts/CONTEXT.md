@@ -1,7 +1,6 @@
 # scripts/ — build helpers, not the app
 
-**New here? Read the root `AGENTS.md` first** (repo rules). Plans, reviews and working notes belong in the user's
-notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** Things that produce an artefact in the repo. Today one: `build-launcher.cmd`, which compiles
 `Conductor.exe` (repo root) from `launcher/Conductor.cs` using the C# compiler that ships with Windows — no SDK, no

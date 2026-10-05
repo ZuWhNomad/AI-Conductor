@@ -1,7 +1,6 @@
 # core/providers/ — how each vendor lists models and reports limits
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 **Purpose.** One module per vendor: detect whether it's installed/authed, list its models, and poll its usage
 windows. This is the *catalog + meter* layer; how a task actually runs lives in `core/workers/`.
@@ -14,13 +13,16 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   (`bin`, `login`, `probe`, `parseModels`, `pollLimits`, `headlessArgs`, `parse`); `providerFor(spec)` turns a spec
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.
 
+**Boundaries.** May import `../proc.ts`, `../paths.ts`, `../config.mjs`, `../models.mjs`. Must not import
+`../workers/`: a spec describes a CLI, the runner in `workers/vendor-cli.mjs` executes it. Enforced by `test/boundaries.test.mjs`.
+
 **Invariants.**
 - A limit window may carry a `models` regex — it then meters only the models it names (Antigravity groups Gemini vs
   Claude+GPT; Claude's per-model weekly windows scope to their family via `familyRe`). `providerWindows(provider,
   model)` in `core/scorecard.mjs` applies that scoping; the whole-provider `blocked` flag comes only from *unscoped*
   windows, so a maxed per-model window blocks just that model.
 - Secrets live only in `~/.conductor2/config.json`; never log them. `publicConfig()` redacts keys and MCP env/url.
-- Windows-first: never spawn a CLI through a shell (`core/proc.mjs` `spawnCli` unwraps npm `.cmd` shims). Long
+- Windows-first: never spawn a CLI through a shell (`core/proc.ts` `spawnCli` unwraps npm `.cmd` shims). Long
   prompts (over `providers.<id>.promptFileThreshold`, default 8000 chars) stay off argv: grok `--prompt-file`; antigravity `--input-format text` on
   stdin.
 - Model-list overrides: a CLI that can't self-list reads `providers.<id>.models` from config.
@@ -30,5 +32,5 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   `(family, effort) → concrete id` via `agyModelArg` (never a `--effort` flag). A model with an empty `efforts` list
   must never carry an effort — the scorecard's `effortForTask` returns null for it, and `createTask` strips a stray one.
 
-**How to test.** `test/workers/vendor-cli.test.mjs` (record each CLI's event shapes), `test/limits.test.mjs`
+**How to test.** `test/workers/vendor-cli.test.mjs` (record each CLI's event shapes), `test/limits/*.test.mjs`
 (window normalization / block semantics), `test/selection.test.mjs`. Tests isolate state via `CONDUCTOR_HOME`.

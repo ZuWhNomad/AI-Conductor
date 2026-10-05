@@ -1,14 +1,16 @@
 # Tests
 
-**New here? Read the root `AGENTS.md` first** (repo rules), then `docs/ARCHITECTURE.md`. Plans, reviews, backlogs and
-working notes belong in the user's notes location, **never in this repo** — a hygiene test enforces it.
+Rules: `AGENTS.md`. This file is the brief for work in this folder.
 
 Node's built-in test runner. Run `npm test` from the repository root (it preloads `test/_env.mjs` with `--import`), or one
-file / folder: `node --import ./test/_env.mjs --test test/tasks.test.mjs`, `… test/workers/`.
+file / folder: `node --import ./test/_env.mjs --test test/tasks/`, `… test/workers/`.
 
-**Layout mirrors the source folders that have tests:** `test/workers/` (`core/workers/*`), `test/smoke/` (`core/smoke/`),
-`test/server/` (`server/`), `test/ui/` (`ui/`). Tests for the flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `git`,
-`selection`, `escalation`, `journal`) stay at the root. Put a new test beside the tests of the folder its module lives in.
+**Layout mirrors the source folders that have tests:** `test/workers/` (`core/workers/*`), `test/tasks/` (`core/tasks.mjs` and
+`core/tasks/`), `test/scorecard/` (`core/scorecard/`, through the facade), `test/limits/` (`core/limits.mjs`), `test/plans/`
+(`core/plans.mjs`), `test/smoke/` (`core/smoke/`), `test/server/` (`server/`), `test/ui/` (`ui/`). Each folder has a
+`_helpers.mjs` for shared setup (not a test file; it still imports `../_env.mjs` first) and a `CONTEXT.md` saying what each file
+covers. Tests for the other flat `core/*.mjs` modules and the cross-cutting ones (`hygiene`, `boundaries`, `git`,
+`selection`, `escalation`, `journal`, `size`) stay at the root. Put a new test beside the tests of the folder its module lives in.
 `ui-settings.test.mjs` runs the settings renderer and Save handler against a minimal DOM stub: configured values
 must reach the form and an unset usage reset must never acquire a guessed hour. Run it with the same `_env.mjs` preload.
 `proc.test.mjs` checks shell-free executable/npm-shim spawning, unresolved Windows script refusal in worker and

@@ -1,5 +1,5 @@
 // Codex (ChatGPT subscription) provider: limits, models and account via `codex app-server` JSON-RPC.
-import { spawnCodex, killTree, onLines, codexCommand } from '../proc.mjs';
+import { spawnCodex, killTree, onLines, codexCommand } from '../proc.ts';
 
 export const id = 'codex';
 export const kind = 'codex'; // the module shape (CLAUDE.md) requires `kind`; was patched in by providers/index.mjs

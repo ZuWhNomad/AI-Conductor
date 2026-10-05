@@ -9,7 +9,7 @@ import { createTask, awaitTask, cancelTask, getTask, flushRecords } from '../tas
 import { rateTask, voidTask, envFailure, providerAvailable, recommend } from '../scorecard.mjs';
 import { getModels } from '../models.mjs';
 import { loadConfig } from '../config.mjs';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 
 export const SMOKE_TASKS = BATTERY.map(({ id, category, difficulty, title }) => ({ id, category, difficulty, title }));
 

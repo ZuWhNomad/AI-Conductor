@@ -1,6 +1,6 @@
 # docs/ — product documentation only
 
-**New here? Read the root `AGENTS.md` first** (repo rules). This folder is **product** documentation: what the thing
+Rules: `AGENTS.md`. This folder is **product** documentation: what the thing
 is and how to use it. The **project** — plans, reviews, backlogs, research, dated logs — lives in the user's notes
 location and **never in this repo**. A hygiene test fails the build if notes appear here.
 

@@ -1,34 +1,42 @@
 // Local HTTP server: static UI, JSON API, SSE event stream. Binds to 127.0.0.1 only.
+// Route handlers live in ./routes/. This file keeps the process lifecycle and the bits tests eval from this source.
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, unlinkSync, openSync, closeSync } from 'node:fs';
-import { readdir, access } from 'node:fs/promises';
-import { join, extname, resolve, dirname, sep } from 'node:path';
-import { homedir } from 'node:os';
+import { readFileSync, existsSync, statSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
+import { join, extname, resolve, sep } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { REPO_ROOT, readJson, writeJson, statePath, redact } from '../core/paths.mjs';
-import { loadConfig, saveConfig, publicConfig } from '../core/config.mjs';
-import { bus } from '../core/bus.mjs';
-import { getModels, findModel, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
-import { getLimits, refreshLimits, startLimitPolling, stopLimitPolling } from '../core/limits.mjs';
-import { killProbes, codexCommand, findCli } from '../core/proc.mjs';
-import { estimateUsage, recordUsage, limitsWithEstimates } from '../core/usage-estimate.mjs';
-import { providerSummaries, PROVIDERS } from '../core/providers/index.mjs';
-import { sessionFlags } from '../core/session-flags.mjs';
-import { listTasks, openTasks, taskSummary, cancelChain, getTask, publicTask, schedule, createTask, abortRunning, recoverTasks, rerunTask, touchTaskAlive, markTaskWakeReported, failHungTask, setDraining, awaitRunning } from '../core/tasks.mjs';
-import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
+import { REPO_ROOT, readJson, writeJson, statePath } from '../core/paths.ts';
+import { loadConfig } from '../core/config.mjs';
+import { bus } from '../core/bus.ts';
+import { getModels, refreshModels, startModelPolling, stopModelPolling } from '../core/models.mjs';
+import { refreshLimits, startLimitPolling, stopLimitPolling } from '../core/limits.mjs';
+import { killProbes, codexCommand, findCli } from '../core/proc.ts';
+import { PROVIDERS } from '../core/providers/index.mjs';
+import { listTasks, openTasks, schedule, abortRunning, recoverTasks, touchTaskAlive, markTaskWakeReported, failHungTask, setDraining, awaitRunning } from '../core/tasks.mjs';
+import { listImprovements, logImprovement, buildReviewPrompt, installGlobalErrorCapture } from '../core/improve.mjs';
 import * as conductor from '../core/conductor.mjs';
 import { conductorToolDefs, toolsAsMcp, waitingTasks } from '../core/tools.mjs';
-import { summarize, formatScores, scoresGrid, benchedCells, migrateScorecard, EFFORTS, scorecardModelId, eligibilityOverrides, setEligibility, recordRun, rateTask } from '../core/scorecard.mjs';
+import { migrateScorecard, scorecardModelId } from '../core/scorecard.mjs';
 import { priceFor } from '../core/priors.mjs';
-import { updateStatus, applyUpdate, lastUpdateStatus, checkForUpdates } from '../core/update.mjs';
+import { lastUpdateStatus, applyUpdate, checkForUpdates } from '../core/update.mjs';
 import { detectCapabilities, capabilityReport } from '../core/capabilities.mjs';
-import { cliUpdateStatus, checkCliUpdate, applyCliUpdate, dailyCheck, CLI_UPDATE_IDS } from '../core/cli-update.mjs';
+import { dailyCheck } from '../core/cli-update.mjs';
 import { DEFAULT_TOOL_TIMEOUT_SEC } from '../core/mcp.mjs';
-import { startBenchQueue, stopBenchQueue, wakeBenchQueue, dueForBench, formatBench } from '../core/bench.mjs';
-import { jobStatus, startJob, cancelJob, listJobs } from '../core/jobs.mjs';
+import { startBenchQueue, stopBenchQueue, wakeBenchQueue } from '../core/bench.mjs';
+import { jobStatus } from '../core/jobs.mjs';
 import { createWatchdog } from '../core/watchdog.mjs';
-import { resourceStatus } from '../core/resources.mjs';
+import { json, readBody } from './routes/_http.mjs';
+import { handle as handleState } from './routes/state.mjs';
+import { handle as handleSessions } from './routes/sessions.mjs';
+import { handle as handleTasks } from './routes/tasks.mjs';
+import { handle as handleModelsLimits } from './routes/models-limits.mjs';
+import { handle as handleScores } from './routes/scores.mjs';
+import { handle as handleSettings } from './routes/settings.mjs';
+import { handle as handleImprovements } from './routes/improvements.mjs';
+import { handle as handleProviders } from './routes/providers.mjs';
+import { handle as handleJobs } from './routes/jobs.mjs';
+import { handle as handleCliUpdate } from './routes/cli-update.mjs';
+import { handle as handleMisc } from './routes/misc.mjs';
 
 const UI = join(REPO_ROOT, 'ui');
 const BOOT = Date.now();
@@ -41,6 +49,8 @@ const watchdog = createWatchdog({
   waitingTasks, resurfacePermissions: conductor.resurfacePermissions, canNudge: conductor.canNudge, nudgeRunaway: conductor.nudgeRunaway,
   interrupt: conductor.interrupt, failHungTask,
 });
+
+const HANDLERS = [handleState, handleSessions, handleTasks, handleModelsLimits, handleScores, handleSettings, handleImprovements, handleProviders, handleCliUpdate, handleMisc];
 
 export function stopBackgroundWork() {
   try { watchdog.stop(); } catch {}
@@ -149,25 +159,31 @@ export function updateWaitingDetail(sessions = conductor.listSessions(), tasks =
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
-// Every API answer is redacted (task records, chat messages, improvements), except the settings, which publicConfig masks
-// in its own round-trippable way (`raw`).
-const json = (res, code, body, raw = false) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); const text = JSON.stringify(body); res.end(raw ? text : redact(text)); return true; };
-// Oversized bodies are drained (not destroyed) so the 413 actually reaches the client.
-const readBody = (req) => new Promise((resolve, reject) => { let d = '', stopped = false; req.on('data', (c) => { if (stopped) return; d += c; if (d.length > 5e6) { stopped = true; d = ''; reject(Object.assign(new Error('body too large'), { status: 413 })); req.resume(); } }); req.on('end', () => { if (stopped) return; try { resolve(d ? JSON.parse(d) : {}); } catch { reject(Object.assign(new Error('invalid JSON body'), { status: 400 })); } }); req.on('error', reject); });
+// POSIX `&` backgrounds logout; `;` runs login after. Windows `&` still runs login if logout errored.
+// Kept here: test/server/server.test.mjs matches this expression in this file.
+function chainShell(logout, login) {
+  return `${logout} ${process.platform === 'win32' ? '&' : ';'} ${login}`;
+}
 
-const isUncPath = (p) => /^[\\/]{2}[^\\/]/.test(String(p || ''));
-const existsAsync = async (p) => { try { await access(p); return true; } catch { return false; } };
+function beginShutdown() {
+  setDraining(true);
+  setTimeout(async () => {
+    try { activeServer?.close(); } catch {}
+    try { stopBackgroundWork(); } catch {}
+    try { abortRunning({ requeue: true }); } catch {}
+    try { await awaitRunning(1200); } catch {}
+    try { unlinkSync(statePath('server.pid')); } catch {}
+    process.exit(0);
+  }, 50);
+}
 
-async function listDirs(p) {
-  const raw = p || homedir();
-  if (isUncPath(raw)) return { path: String(raw), parent: null, dirs: [], error: 'UNC' };
-  const dir = resolve(raw);
-  if (isUncPath(dir)) return { path: dir, parent: null, dirs: [], error: 'UNC' };
-  let entries;
-  try {
-    entries = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules').map((e) => e.name).sort((a, b) => a.localeCompare(b));
-  } catch (e) { return { path: dir, parent: dirname(dir) !== dir ? dirname(dir) : null, dirs: [], error: e.code }; }
-  return { path: dir, parent: dirname(dir) !== dir ? dirname(dir) : null, dirs: entries, hasGit: await existsAsync(join(dir, '.git')), hasClaudeMd: await existsAsync(join(dir, 'CLAUDE.md')) };
+function applySettings(prev, next) {
+  applyPolling(next); applyDetectSweep(next);
+  if (prev.watchdog.intervalMinutes !== next.watchdog.intervalMinutes) watchdog.start();
+  const auChanged = prev.conductor.autoUpdate !== next.conductor.autoUpdate;
+  const hoursChanged = prev.conductor.updateCheckHours !== next.conductor.updateCheckHours;
+  if (auChanged || hoursChanged) startUpdateChecks({ initial: prev.conductor.autoUpdate === 'off' && next.conductor.autoUpdate !== 'off' });
+  schedule(); /* a raised concurrency cap starts queued work now */ wakeBenchQueue(); bus.publish('settings', {});
 }
 
 /** Minimal MCP streamable-HTTP server (JSON responses) so Codex conductors can call the workbench tools. */
@@ -201,33 +217,15 @@ async function route(req, res, url) {
   const seg = p.split('/').filter(Boolean); // ['api', ...]
   if (seg[0] === 'mcp' && seg[1]) return mcpRoute(req, res, seg);
   if (seg[0] !== 'api') return false;
+  const ctx = {
+    req, res, url, p, m, seg, version: VERSION, boot: BOOT,
+    watchSignIn, chainShell, beginShutdown, applySettings, doctorReport,
+    relaunchPort: () => boundPort ?? req.socket.localPort,
+    scheduleRelaunch, workInFlight, publishUpdateWaiting, deferPendingRelaunch,
+    setPendingRelaunch: (r) => { pendingRelaunch = r; },
+  };
 
-  if (m === 'GET' && p === '/api/state') {
-    const resources = resourceStatus();
-    const imps = listImprovements();
-    const open = openTasks();
-    const active = open.map(taskSummary);
-    const activeIds = new Set(active.map((t) => t.id));
-    const visible = new Map(active.map((t) => [t.id, t]));
-    for (const t of listTasks({ limit: Infinity })) if (t.status === 'stale') visible.set(t.id, t);
-    for (const t of listTasks({ limit: 50 })) if (!activeIds.has(t.id)) visible.set(t.id, t);
-    const tasks = [...visible.values()];
-    return json(res, 200, { version: VERSION, boot: BOOT, pid: process.pid, seq: bus.seq, config: publicConfig(), providers: providerSummaries(), models: getModels(), limits: limitsWithEstimates(), resources, sessions: conductor.listSessions(), tasks, improvements: imps.slice(-50), improvementCount: imps.length, update: lastUpdateStatus(), cliUpdates: cliUpdateStatus(), home: homedir(), repoRoot: REPO_ROOT });
-  }
-  if (m === 'POST' && p === '/api/shutdown') { // the UI Quit button — stop this server (in-flight tasks requeue and resume on next start)
-    json(res, 200, { ok: true, stopping: true });
-    setDraining(true);
-    setTimeout(async () => {
-      try { activeServer?.close(); } catch {}
-      try { stopBackgroundWork(); } catch {}
-      try { abortRunning({ requeue: true }); } catch {}
-      try { await awaitRunning(1200); } catch {}
-      try { unlinkSync(statePath('server.pid')); } catch {}
-      process.exit(0);
-    }, 50);
-    return true;
-  }
-
+  // SSE stays inline: test/server/server.test.mjs evals this block up to the jobs marker.
   if (m === 'GET' && p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
     let closed = false;
@@ -260,233 +258,11 @@ async function route(req, res, url) {
   }
 
   if (seg[1] === 'jobs') { // detached long jobs (core/jobs.mjs); `conductor job` calls these from a worker's shell
-    if (m === 'GET' && !seg[2]) return json(res, 200, listJobs());
-    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, startJob({ command: b.command, cwd: b.cwd, gpu: b.gpu })); }
-    const j = m === 'POST' && seg[3] === 'cancel' ? cancelJob(seg[2]) : m === 'GET' && !seg[3] ? jobStatus(seg[2], { tailChars: Number(url.searchParams.get('tail')) || 4000 }) : undefined;
-    if (j === undefined) return false;
-    return j ? json(res, 200, j) : json(res, 404, { error: `unknown job ${seg[2]}` });
+    return handleJobs(ctx); // false → static file, same as the old fall-through
   }
 
-  if (seg[1] === 'sessions') {
-    if (m === 'GET' && !seg[2]) return json(res, 200, conductor.listSessions());
-    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, conductor.createSession({ ...b, overflowApi: b.overflowApi == null ? null : !!b.overflowApi, parallelOverride: !!b.parallelOverride })); }
-    const id = seg[2];
-    if (m === 'GET' && !seg[3]) { const s = await conductor.getSession(id); return s ? json(res, 200, { ...s, seq: bus.seq }) : json(res, 404, { error: 'not found' }); }
-    if (m === 'DELETE' && !seg[3]) return json(res, 200, { ok: conductor.deleteSession(id) });
-    if (m === 'DELETE' && seg[3] === 'queue' && seg[4]) return json(res, 200, { ok: conductor.cancelQueuedMessage(id, seg[4]) });
-    if (m === 'POST' && seg[3] === 'rate') {
-      const session = conductor.listSessions().find((s) => s.id === id);
-      if (!session) return json(res, 404, { error: 'not found' });
-      const b = await readBody(req);
-      if (!b || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'body must be an object' });
-      const verdicts = ['pass', 'close', 'fail', 'void'];
-      const failKinds = ['timeout', 'limit', 'crash', 'lost', 'stuck'];
-      const verdict = b.verdict;
-      const level = b.level ?? 4;
-      const rounds = b.rounds;
-      const durationMs = b.durationMs;
-      const provider = Object.hasOwn(b, 'provider') ? b.provider : session.provider;
-      const model = Object.hasOwn(b, 'model') ? b.model : session.model;
-      const effort = Object.hasOwn(b, 'effort') ? b.effort : session.effort;
-      const notes = b.notes ?? '';
-      if (!verdicts.includes(verdict)) return json(res, 400, { error: `verdict must be one of ${verdicts.join('|')}` });
-      if (!Number.isInteger(level) || level < 1 || level > 5) return json(res, 400, { error: 'level must be 1-5' });
-      if (!Number.isInteger(rounds) || rounds < 0) return json(res, 400, { error: 'rounds must be a nonnegative integer' });
-      if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) return json(res, 400, { error: 'durationMs must be a nonnegative number' });
-      if (b.failKind !== undefined && !failKinds.includes(b.failKind)) return json(res, 400, { error: `failKind must be one of ${failKinds.join('|')}` });
-      if (typeof notes !== 'string' || notes.length > 1000) return json(res, 400, { error: 'notes must be a string of at most 1000 characters' });
-      const registeredModel = typeof provider === 'string' && typeof model === 'string' ? findModel(provider, scorecardModelId(model)) : null;
-      if (!provider || !registeredModel || registeredModel.kind !== 'agent') {
-        return json(res, 400, { error: 'provider/model must identify an agent model' });
-      }
-      if (effort != null && typeof effort !== 'string') return json(res, 400, { error: 'effort must be a string or null' });
-      const taskId = `chat-${id}-${b.n ?? 1}`;
-      const standIn = {
-        id: taskId, provider, model, effort, category: 'conductor', difficulty: level, status: 'done', sessionId: id,
-        source: 'live', title: null, rounds, result: { durationMs, usage: b.usage }, failKind: b.failKind,
-      };
-      const run = recordRun(standIn, { before: null });
-      const rating = rateTask(taskId, verdict, notes);
-      return json(res, 200, { ok: true, taskId, run, rating });
-    }
-    const b = m === 'POST' ? await readBody(req) : {};
-    if (m === 'POST' && seg[3] === 'messages') return json(res, 200, await conductor.sendMessage(id, String(b.text || '')));
-    if (m === 'POST' && seg[3] === 'interrupt') {
-      return json(res, 200, await conductor.interrupt(id, undefined, { returnQueued: true }));
-    }
-    if (m === 'POST' && seg[3] === 'stop') return json(res, 200, { ok: conductor.stopSession(id) });
-    if (m === 'POST' && seg[3] === 'permission') return json(res, 200, { ok: conductor.answerPermission(id, b.requestId, { allow: !!b.allow, message: b.message }) });
-    if (m === 'POST' && seg[3] === 'title') return json(res, 200, conductor.setTitle(id, b.title));
-    if (m === 'POST' && seg[3] === 'model') {
-      if (b.model != null && typeof b.model !== 'string') return json(res, 400, { error: 'model must be a string' });
-      await conductor.setModel(id, b.model || null); return json(res, 200, { ok: true });
-    }
-    if (m === 'POST' && seg[3] === 'effort') {
-      const effort = b.effort || null;
-      if (effort && !EFFORTS.includes(effort)) return json(res, 400, { error: `invalid effort (want ${EFFORTS.join('|')})` });
-      conductor.setEffort(id, effort); return json(res, 200, { ok: true });
-    }
-    if (m === 'POST' && seg[3] === 'mode') {
-      const MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
-      if (!MODES.includes(b.permissionMode)) return json(res, 400, { error: `invalid permissionMode (want ${MODES.join('|')})` });
-      await conductor.setPermissionMode(id, b.permissionMode); return json(res, 200, { ok: true });
-    }
-    if (m === 'POST' && seg[3] === 'overflow') { conductor.setOverflow(id, !!b.overflowApi); return json(res, 200, { ok: true }); }
-    if (m === 'POST' && seg[3] === 'parallel') { conductor.setParallel(id, !!b.parallelOverride); return json(res, 200, { ok: true }); }
-  }
-
-  if (p === '/api/models' && m === 'GET') return json(res, 200, getModels());
-  if (p === '/api/models/refresh' && m === 'POST') { const b = await readBody(req); const only = Array.isArray(b?.only) && b.only.length ? b.only : null; const r = await refreshModels(only ? { only } : undefined); if (!only) detectCapabilities().catch(() => {}); return json(res, 200, r); }
-  if (p === '/api/limits' && m === 'GET') return json(res, 200, limitsWithEstimates());
-  if (seg[1] === 'providers' && seg[2] && seg[3] === 'usage' && m === 'POST') {
-    if (!PROVIDERS[seg[2]]) return json(res, 400, { error: 'unknown provider' });
-    const b = await readBody(req); const pct = Number(b.pct);
-    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return json(res, 400, { error: 'pct must be 0-100' });
-    const row = recordUsage(seg[2], pct); bus.publish('limits', { updatedAt: getLimits().updatedAt });
-    return json(res, 200, { ok: true, recorded: row, estimate: estimateUsage(seg[2], { budgetTokens: loadConfig().scorecard?.usageBudgets?.[seg[2]] || null }) });
-  }
-  if (p === '/api/bench' && m === 'GET') { const due = dueForBench(); return json(res, 200, { due, text: formatBench(due) }); }
-  if (p === '/api/scores/eligibility' && m === 'POST') {
-    const b = await readBody(req);
-    return json(res, 200, { ok: true, eligibility: setEligibility(b.sel, b.category, b.action, b.reason) });
-  }
-  if (p === '/api/scores' && m === 'GET') {
-    const source = url.searchParams.get('source') || null;
-    const archived = url.searchParams.get('archived') === '1';
-    const category = url.searchParams.get('category') || null;
-    const summary = summarize({ source, archived });
-    return json(res, 200, {
-      text: formatScores({ source, category, archived, summary }),
-      grid: archived ? [] : scoresGrid({ source, summary, categories: category ? [category] : undefined }),
-      benched: benchedCells(summary.filter((g) => !category || g.category === category)).map((g) => ({
-        selection: g.sel, category: g.category, level: g.difficulty, quality: g.quality, n: g.rated,
-        weightedN: g.weightedRated ?? g.rated, last: g.last || null, shipped: !!g.shipped,
-        consistency: g.consistency ?? null, repeats: g.repeats ?? null,
-      })),
-      eligibility: archived ? [] : eligibilityOverrides({ category }),
-    });
-  }
-  if (p === '/api/limits/refresh' && m === 'POST') return json(res, 200, await refreshLimits());
-
-  if (seg[1] === 'tasks') {
-    if (m === 'GET' && !seg[2]) return json(res, 200, listTasks({ sessionId: url.searchParams.get('session') || null }));
-    if (m === 'POST' && !seg[2]) { // direct-to-worker (no conductor tokens): the UI's "/worker …" shortcut
-      const b = await readBody(req);
-      if ((!b.followUpOf && (typeof b.cwd !== 'string' || !b.cwd)) || typeof b.spec !== 'string' || !b.spec) return json(res, 400, { error: 'spec must be a nonempty string; cwd is required for new tasks' });
-      const flags = sessionFlags(b.sessionId || null);
-      return json(res, 200, publicTask(createTask({ sessionId: b.sessionId || null, cwd: b.cwd, title: b.title || String(b.spec).slice(0, 50), spec: b.spec, provider: b.provider, model: b.model, effort: b.effort, paths: b.paths, followUpOf: b.followUpOf, sandbox: b.sandbox, isolate: b.isolate, category: b.category, difficulty: b.difficulty, variant: b.variant, noFailover: b.noFailover, avoidFamilies: b.avoidFamilies, parallelOverride: b.parallelOverride == null ? !!flags.parallelOverride : !!b.parallelOverride, overflowApi: b.overflowApi == null ? !!flags.overflowApi : !!b.overflowApi })));
-    }
-    if (m === 'GET' && seg[2] && !seg[3]) { const t = getTask(seg[2]); return t ? json(res, 200, { ...publicTask(t), spec: t.spec }) : json(res, 404, { error: 'not found' }); }
-    if (m === 'POST' && seg[3] === 'rerun') {
-      const t = getTask(seg[2]);
-      if (!t) return json(res, 404, { error: 'unknown task' });
-      if (t.status !== 'stale') return json(res, 409, { error: 'task is not stale' });
-      const rerun = rerunTask(t.id);
-      if (!rerun) return json(res, 409, { error: 'task is not stale' });
-      schedule();
-      return json(res, 200, { ok: true, task: publicTask(rerun) });
-    }
-    if (m === 'POST' && seg[3] === 'cancel') { const r = cancelChain(seg[2]); return r ? json(res, 200, { ok: r.canceled.length > 0, canceled: r.canceled, already: r.already }) : json(res, 404, { error: 'unknown task' }); }
-  }
-
-  if (p === '/api/settings') {
-    if (m === 'GET') return json(res, 200, publicConfig(), true);
-    if (m === 'POST') {
-      const b = await readBody(req);
-      const prev = loadConfig();
-      const next = saveConfig(b);
-      applyPolling(next); applyDetectSweep(next);
-      if (prev.watchdog.intervalMinutes !== next.watchdog.intervalMinutes) watchdog.start();
-      const auChanged = prev.conductor.autoUpdate !== next.conductor.autoUpdate;
-      const hoursChanged = prev.conductor.updateCheckHours !== next.conductor.updateCheckHours;
-      if (auChanged || hoursChanged) startUpdateChecks({ initial: prev.conductor.autoUpdate === 'off' && next.conductor.autoUpdate !== 'off' });
-      schedule(); /* a raised concurrency cap starts queued work now */ wakeBenchQueue(); bus.publish('settings', {}); return json(res, 200, publicConfig(next), true);
-    }
-  }
-
-  if (seg[1] === 'improvements') {
-    if (m === 'GET') return json(res, 200, listImprovements({ includeResolved: url.searchParams.get('all') === '1' }));
-    if (m === 'POST' && !seg[2]) { const b = await readBody(req); return json(res, 200, logImprovement(b.kind || 'idea', 'ui', b.message || '', b.context || {})); }
-    if (m === 'POST' && seg[3] === 'resolve') { resolveImprovement(seg[2]); return json(res, 200, { ok: true }); }
-  }
-  if (p === '/api/review' && m === 'POST') {
-    const b = await readBody(req);
-    const s = conductor.createSession({ cwd: REPO_ROOT, model: b.model || null, title: 'Self-review' });
-    await conductor.sendMessage(s.id, buildReviewPrompt());
-    return json(res, 200, s);
-  }
-  if (p === '/api/browse' && m === 'GET') {
-    const browsePath = url.searchParams.get('path');
-    if (browsePath && isUncPath(browsePath)) return json(res, 400, { error: 'unc paths are not allowed' });
-    const listing = await listDirs(browsePath);
-    if (listing.error === 'ENOENT' || listing.error === 'ENOTDIR') return json(res, 404, { error: listing.error === 'ENOENT' ? 'Folder does not exist' : 'Path is not a folder' });
-    return json(res, 200, listing);
-  }
-  if (seg[1] === 'providers' && seg[2] && ['login', 'relogin', 'install'].includes(seg[3]) && m === 'POST') {
-    const prov = PROVIDERS[seg[2]];
-    if (!prov) return json(res, 400, { error: 'unknown provider' });
-    let command;
-    if (seg[3] === 'install') command = prov.installCommand?.();
-    else { // login / relogin: re-auth clears a stale token first (logout) where the CLI supports it, then signs in
-      const login = prov.loginCommand?.();
-      const logout = seg[3] === 'relogin' ? prov.logoutCommand?.() : null;
-      command = login && logout ? `${logout} ${process.platform === 'win32' ? '&' : ';'} ${login}` : login; // POSIX `&` backgrounds logout; `;` runs login after. Windows `&` still runs login if logout errored.
-    }
-    if (!command) return json(res, 400, { error: `${seg[2]} has no ${seg[3]} command` });
-    const note = seg[3] === 'install' ? 'Wait for the installer to finish in the window that opened — Conductor re-checks by itself.'
-      : (prov.spec?.login?.note || `Finish the ${seg[3] === 'relogin' ? 're-auth (log out, then sign in)' : 'sign-in'} in the window that opened — Conductor re-checks by itself.`);
-    const opened = openTerminal(`Conductor — ${seg[2]} ${seg[3]}`, command);
-    if (opened && !process.env.CONDUCTOR_NO_POLL) watchSignIn(seg[2], { awaitDrop: seg[3] === 'relogin' }); // re-probe until it comes back ok: no manual Refresh
-    return json(res, 200, { ok: opened, command, note: opened ? note : `Could not open a terminal here; run this yourself: ${command}` });
-  }
-  if (p === '/api/update' && m === 'GET') return json(res, 200, url.searchParams.get('fetch') === '1' ? await updateStatus() : lastUpdateStatus() || await updateStatus({ fetch: false }));
-  if (p === '/api/update' && m === 'POST') { // pull, then self-restart into the new version; relaunching:false falls back to the manual-restart message
-    const b = await readBody(req);
-    const r = await applyUpdate();
-    const need = !!(r.updated && r.restartNeeded && !r.npmError);
-    if (!need) return json(res, 200, { ...r, relaunching: false });
-    if (b.force === true || !workInFlight()) {
-      const relaunching = !!scheduleRelaunch({ port: boundPort ?? req.socket.localPort });
-      return json(res, 200, { ...r, relaunching });
-    }
-    pendingRelaunch = r;
-    publishUpdateWaiting();
-    deferPendingRelaunch();
-    return json(res, 200, { ...r, relaunching: 'when idle' });
-  }
-  // Worker CLI updates. POST { provider?, check? }: a check answers at once; an install runs in the background (it waits
-  // for an idle provider and verifies with a real task), and its result lands in providers[id].last.
-  if (p === '/api/cli-update' && m === 'GET') return json(res, 200, cliUpdateStatus());
-  if (p === '/api/cli-update' && m === 'POST') {
-    const b = await readBody(req);
-    const ids = b?.provider ? [String(b.provider)] : CLI_UPDATE_IDS;
-    if (b?.check) return json(res, 200, { providers: await Promise.all(ids.map((id) => checkCliUpdate(id, { manual: true }))) });
-    for (const id of ids) if (!CLI_UPDATE_IDS.includes(id)) return json(res, 400, { error: `no CLI update recipe for "${id}"` });
-    const at = new Date().toISOString();
-    (async () => { for (const id of ids) await applyCliUpdate(id); })().catch(() => {});
-    return json(res, 202, { started: ids, at });
-  }
-  if (p === '/api/doctor' && m === 'GET') return json(res, 200, await doctorReport());
+  for (const handle of HANDLERS) if (await handle(ctx)) return true;
   return json(res, 404, { error: `no route ${m} ${p}` });
-}
-
-/** Open a visible terminal running `command` (sign-in flows need a real console + browser). */
-function openTerminal(title, command) {
-  try {
-    const dir = statePath('tmp'); mkdirSync(dir, { recursive: true });
-    if (process.platform === 'win32') {
-      const file = join(dir, `run-${Date.now()}.cmd`);
-      writeFileSync(file, `@echo off\r\ntitle ${title.replace(/[&|<>^]/g, ' ')}\r\necho ${command.replace(/[&|<>^%]/g, ' ')}\r\n${command}\r\necho.\r\necho Done. You can close this window and press Refresh in Conductor.\r\n`);
-      spawn('cmd.exe', ['/c', 'start', '', file], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-    } else if (process.platform === 'darwin') {
-      const file = join(dir, `run-${Date.now()}.command`);
-      writeFileSync(file, `#!/bin/bash\n${command}\necho; echo "Done. You can close this window and press Refresh in Conductor."\n`, { mode: 0o755 });
-      spawn('open', [file], { detached: true, stdio: 'ignore' }).unref();
-    } else {
-      spawn('x-terminal-emulator', ['-e', 'bash', '-c', `${command}; echo; read -p "Done. Press Enter to close."`], { detached: true, stdio: 'ignore' }).unref();
-    }
-    return true;
-  } catch { return false; }
 }
 
 /** Environment check shared by `conductor doctor` and the UI. */

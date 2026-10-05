@@ -1,34 +1,36 @@
 // Worker tasks: journal on disk, FIFO scheduler with a concurrency cap, and park/resume when a
 // provider hits a usage limit. A task = one worker run (or one follow-up on an existing thread).
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
-import { stat, readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { dirname, join, isAbsolute, relative, resolve } from 'node:path';
-import { statePath, readJson, writeJson, nowIso, shortId, REPO_ROOT } from './paths.mjs';
-import { loadConfig, DEFAULTS, codexSandboxFor, runTimeoutMs } from './config.mjs';
-import { bus } from './bus.mjs';
+//
+// The stateful core stays here: the task Map, journal, scheduler, run lifecycle and the worktree lifecycle that reads
+// or journals tasks. Tests re-import this file with a query string for a fresh instance and hook its own
+// './workers/index.mjs' / './sweep.mjs' imports, so that state and those imports cannot move. The stateless parts live
+// in tasks/ (view, prompt, git; leaves that import nothing from each other) and are re-exported below.
+import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { join, isAbsolute, relative, resolve } from 'node:path';
+import { statePath, readJson, writeJson, nowIso, shortId } from './paths.ts';
+import { loadConfig, codexSandboxFor, runTimeoutMs } from './config.mjs';
+import { bus } from './bus.ts';
 import { runWorker } from './workers/index.mjs';
-import { contextBlock } from './context.mjs';
 import { groupOf, modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';
-import { findCli } from './proc.mjs';
 import { recordRun, rateTask, claimedWrites, isPhantomCompletion, snapshotWindows, windowDelta, CATEGORIES, ROUTED_MAX_DIFFICULTY, classifyCategory, recommend, providerWindows, activeRunRows, EFFORTS, nextScheduledReset, envFailure, reliabilityMetrics } from './scorecard.mjs';
 import { findModel, getModels, familyOf, normFamilies, selsInFamilies } from './models.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { admit, measuredCostByWindow, isBudgetWindow } from './sweep.mjs';
-import { recipeFor } from './recipes.mjs';
-import { capabilityLines, accessProviders } from './capabilities.mjs';
-import { mcpServersFor } from './mcp.mjs';
+import { accessProviders } from './capabilities.mjs';
 import { resourceStatus } from './resources.mjs';
+import { publicTask, taskSummary, countTools } from './tasks/view.mjs';
+import { syncBrief } from './tasks/brief.mjs';
+import { buildPrompt } from './tasks/prompt.mjs';
+import { findGitRoot, gitExec, gitStatus, diffStatus, gitDiffStat, isolatedCwd, linkIsolateDirs, unlinkIsolateLinks, ageLabel, repoSize } from './tasks/git.mjs';
+export * from './tasks/view.mjs';
+export * from './tasks/prompt.mjs';
+export * from './tasks/git.mjs';
 
 const DIR = () => statePath('tasks');
 const INDEX = () => statePath('tasks-index.json');
-const WORKER_PREAMBLE = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'worker.md'), 'utf8').replaceAll('{{conductorCli}}', join(REPO_ROOT, 'bin', 'conductor.mjs'));
-// MSW kernel (necessity test for every claim): measured 2026-09-09 on the battery as 5-15% faster and 3-10% fewer output tokens at equal pass rate.
-const MSW = readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', 'msw.md'), 'utf8');
-const RESUME_NOTE = 'You were interrupted earlier (usage limit or restart). Continue from the current state of the files; do not redo finished work.\n\n';
+
 const FAILOVER_NOTE = 'Note: another worker was stopped by a usage limit part-way through this task and may have left edits in the working tree. Check the current state (git status / diff) first; do not redo finished work.\n';
 const TERMINAL = new Set(['done', 'failed', 'canceled']);
 
@@ -168,6 +170,7 @@ function persist(t) {
   writeJson(join(DIR(), `${t.id}.json`), t);
   indexTask(t); saveIndexSoon(); trimTasks();
   bus.publish('task', { task: taskSummary(t) });
+  syncBrief(t);
 }
 
 /** Journal watchdog-only metadata without publishing a task event or changing updatedAt. */
@@ -190,25 +193,6 @@ export function markTaskWakeReported(ids, at = nowIso()) {
     if (!t || t.wakeReportedAt) continue;
     t.wakeReportedAt = at; persistQuiet(t);
   }
-}
-
-export function publicTask(t) {
-  if (!t) return null;
-  const { spec, ...rest } = t;
-  return { ...rest, specPreview: String(spec ?? '').slice(0, 400) };
-}
-
-/** Fleet/list payload; detail endpoints and scoring keep the full record. */
-export function taskSummary(t) {
-  if (!t) return null;
-  const { paths, diffStat, result, ...summary } = publicTask(t);
-  summary.specPreview = summary.specPreview.slice(0, 120);
-  if (result) {
-    const { items, files, tools, finalMessage, ...small } = result;
-    // The fleet's lastAction preview displays 120 characters.
-    summary.result = { ...small, finalMessage: String(finalMessage || '').slice(0, 120) };
-  } else summary.result = result;
-  return summary;
 }
 
 export function getTask(id) {
@@ -482,28 +466,6 @@ function wake(t) {
   }
   if (pending.length) waiters.set(t.id, pending);
   else waiters.delete(t.id);
-}
-
-export function buildPrompt(t) {
-  if (t.followUpOf) return `${t.resume ? RESUME_NOTE : ''}Follow-up from the conductor on your previous work in this same thread. Address every point, re-run the verification, and report in the same format.\n\n${t.spec}`;
-  const ctx = contextBlock(t.cwd, t.paths);
-  const mcp = t.provider === 'codex' || t.provider === 'claude' ? Object.keys(mcpServersFor(t.category)) : [];
-  const mcpNote = mcp.length ? `\n\nMCP servers available to you: ${mcp.join(', ')}. Use them for data instead of guessing.` : '';
-  const msw = loadConfig().worker.msw === false ? '' : `
-
-${MSW}
-
-Remember to follow the MSW deletion rule for all claims - no exceptions.`;
-  const recipe = recipeFor(t.category, t.variant);
-  // Recipe and capability lines get SEPARATE budgets. They used to share one (`specAppendChars`), which meant a
-  // recipe longer than the cap silently drove capabilityLines to maxChars:0 — the worker lost every tool line while
-  // the recipe was appended unclipped. A long recipe must never be able to starve the tool index.
-  const wcfg = loadConfig().worker;
-  const recipeCap = wcfg.recipeChars;
-  const toolsCap = wcfg.toolLineChars;
-  if (recipe && recipe.length > recipeCap) logImprovement('friction', 'recipes', `recipe for '${t.category}'${t.variant ? ` (variant ${t.variant})` : ''} is ${recipe.length} chars, over the ${recipeCap} budget`, { taskId: t.id, title: t.title });
-  const tools = capabilityLines(t.category, { maxChars: toolsCap, text: `${t.title || ''}\n${t.spec || ''}\n${(t.paths || []).join('\n')}` });
-  return `${WORKER_PREAMBLE}${msw}${mcpNote}\n\n${ctx ? `# Project context notes\n${ctx}\n\n` : ''}${t.resume ? RESUME_NOTE : ''}# Task\n\n${t.spec}\n\nTitle: ${t.title}${recipe ? `\n\n---\n\n${recipe}` : ''}${tools ? `\n\n${tools}` : ''}`;
 }
 
 /** Providers whose CLI is being updated (core/cli-update.mjs): their queued tasks wait; only the update's own check task runs. */
@@ -828,93 +790,6 @@ function score(t, limitsBefore, concurrent, concurrentByWindow) {
 }
 export const flushRecords = () => Promise.allSettled([...pendingRecords]);
 
-// --- git helpers (best effort; silent when not a repo or git is missing). All async: they run on the dispatch path,
-// and a synchronous git call per task (up to 10 s each) stalled every chat and poll when tasks started together. ---
-const execFileP = promisify(execFile);
-// E4: walk parent directories to find a .git file or directory (so a cwd in a repo subdirectory also gets git status).
-// Stops at the filesystem root. Returns null without spawning if no .git found.
-function findGitRoot(cwd) {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, '.git'))) return dir;
-    const parent = resolve(dir, '..');
-    if (parent === dir) return null; // filesystem root
-    dir = parent;
-  }
-}
-let gitBin;
-async function git(cwd, args) {
-  const root = findGitRoot(cwd);
-  if (!root) return null;
-  if (gitBin === undefined) gitBin = findCli('git');
-  if (!gitBin) return null;
-  try { return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout; } catch { return null; }
-}
-async function gitExec(cwd, args, timeout = 10_000) {
-  const root = findGitRoot(cwd) || cwd;
-  if (gitBin === undefined) gitBin = findCli('git');
-  if (!gitBin) throw new Error('git is not installed');
-  try {
-    return (await execFileP(gitBin, ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '--no-optional-locks', ...args], { cwd: root, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 64 * 1024 * 1024 })).stdout;
-  } catch (e) {
-    throw new Error(String(e.stderr || e.message || e).trim() || `git ${args[0]} failed`);
-  }
-}
-async function gitStatus(cwd) {
-  const root = findGitRoot(cwd);
-  if (!root) return null;
-  const out = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
-  if (out == null) return null;
-  const relName = (porcelain) => relative(cwd, join(root, porcelain)).replaceAll('\\', '/');
-  const entries = out.split('\0'); const statusMap = new Map(); const untracked = [], tracked = [];
-  for (let i = 0; i < entries.length; i++) {
-    const l = entries[i]; if (!l) continue;
-    const porcelain = l.slice(3); const status = l.slice(0, 2); const name = relName(porcelain);
-    if (/[RC]/.test(status)) i++; // -z emits the original name after a rename/copy destination.
-    if (status === '??') untracked.push(porcelain);
-    else tracked.push(porcelain);
-    statusMap.set(name, status);
-  }
-  // An untracked file carries its mtime+size, so an edit to it counts as a change too.
-  await Promise.all(untracked.map(async (porcelain) => { try { const s = await stat(join(root, porcelain)); statusMap.set(relName(porcelain), `?? ${s.mtimeMs}:${s.size}`); } catch {} }));
-  // Porcelain stays " M" when a worker edits an already-dirty file; compare its content too.
-  // E5: files above 8 MiB use mtime+size to avoid hashing large files on the main thread (twice per task).
-  // Same-size same-mtime edits are detectable for small files only; the spec pins this at 8 MiB.
-  const LARGE_FILE_BYTES = 8 * 1024 * 1024;
-  await Promise.all(tracked.map(async (porcelain) => {
-    try {
-      const name = relName(porcelain);
-      const s = await stat(join(root, porcelain));
-      let fingerprint;
-      if (s.size >= LARGE_FILE_BYTES) {
-        fingerprint = `${s.mtimeMs}:${s.size}`;
-      } else {
-        fingerprint = createHash('sha256').update(await readFile(join(root, porcelain))).digest('hex');
-      }
-      statusMap.set(name, `${statusMap.get(name)} ${fingerprint}`);
-    } catch {}
-  }));
-  return statusMap;
-}
-/** Pure: files whose status differs between two snapshots (everything, when there was no before). */
-function diffStatus(before, after) {
-  if (!after) return [];
-  if (!before) return [...after.keys()];
-  return [...new Set([...before.keys(), ...after.keys()])].filter((f) => before.get(f) !== after.get(f));
-}
-async function changedSince(cwd, before) { return diffStatus(before, await gitStatus(cwd)); }
-async function gitDiffStat(cwd, status = null, observed = null) {
-  if (observed && !observed.length) return '';
-  const root = findGitRoot(cwd);
-  if (!root) return '';
-  const paths = observed?.map((name) => `:(top,literal)${relative(root, resolve(cwd, name)).replaceAll('\\', '/')}`) || [];
-  const [a, b] = await Promise.all([git(cwd, ['diff', '--stat', '--', ...paths]), git(cwd, ['diff', '--cached', '--stat', '--', ...paths])]);
-  const untracked = [...(status || await gitStatus(cwd) || [])].filter(([name, s]) => s.startsWith('??') && (!observed || observed.includes(name))).map(([name]) => name).slice(0, 50);
-  return [((a || '') + (b || '')).trim().slice(0, 3000), untracked.length ? `untracked: ${untracked.join(', ')}` : ''].filter(Boolean).join('\n');
-}
-
-export const _git = { gitStatus, changedSince, gitDiffStat, diffStatus };
-
 /** Attempt root: walk followUpOf only. A retry_of is a new chain root (fresh worktree). */
 function chainRootId(t) {
   const seen = new Set();
@@ -926,84 +801,6 @@ function chainRootId(t) {
     cur = p;
   }
   return cur.id;
-}
-
-function isolatedCwd(t) {
-  if (!t.isolation?.dir) return t.cwd;
-  const root = findGitRoot(t.cwd);
-  if (!root) return t.isolation.dir;
-  const rel = relative(root, resolve(t.cwd));
-  if (!rel || rel.startsWith('..') || rel === '.') return t.isolation.dir;
-  return join(t.isolation.dir, rel);
-}
-
-function isolateLinkNames() {
-  const names = loadConfig().worker.isolateLinks;
-  return Array.isArray(names) ? names.filter((n) => typeof n === 'string' && n && !/[\\/]/.test(n)) : [...DEFAULTS.worker.isolateLinks];
-}
-
-function isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd) {
-  const rels = [''];
-  const rel = relative(sourceRoot, resolve(taskCwd || sourceRoot));
-  if (rel && !rel.startsWith('..') && rel !== '.') rels.push(rel);
-  const out = [];
-  for (const folder of rels) {
-    for (const name of isolateLinkNames()) {
-      const src = folder ? join(sourceRoot, folder, name) : join(sourceRoot, name);
-      const dst = folder ? join(worktreeDir, folder, name) : join(worktreeDir, name);
-      const pattern = (folder ? `${folder.replaceAll('\\', '/')}/${name}` : name);
-      out.push({ src, dst, pattern });
-    }
-  }
-  return out;
-}
-
-async function ensureExcluded(worktreeDir, pattern) {
-  try { await gitExec(worktreeDir, ['check-ignore', '-q', '--', pattern]); return; } catch {}
-  const gitPath = (await gitExec(worktreeDir, ['rev-parse', '--git-path', 'info/exclude'])).trim();
-  const file = isAbsolute(gitPath) ? gitPath : join(worktreeDir, gitPath);
-  mkdirSync(dirname(file), { recursive: true });
-  let cur = '';
-  try { cur = readFileSync(file, 'utf8'); } catch {}
-  if (cur.split(/\r?\n/).includes(pattern)) return;
-  appendFileSync(file, `${cur && !cur.endsWith('\n') ? '\n' : ''}${pattern}\n`);
-}
-
-async function linkIsolateDirs(t, sourceRoot, worktreeDir) {
-  const type = process.platform === 'win32' ? 'junction' : 'dir';
-  for (const { src, dst, pattern } of isolateLinkSpecs(sourceRoot, worktreeDir, t.cwd)) {
-    let srcDir = false;
-    try { srcDir = statSync(src).isDirectory(); } catch {}
-    if (!srcDir || existsSync(dst)) continue;
-    try {
-      symlinkSync(src, dst, type);
-      await ensureExcluded(worktreeDir, pattern);
-    } catch (e) {
-      t.warning = [t.warning, `isolate link ${pattern} failed: ${e.message}`].filter(Boolean).join(' ');
-    }
-  }
-}
-
-function unlinkIsolateLinks(sourceRoot, worktreeDir, taskCwd) {
-  if (!worktreeDir || !existsSync(worktreeDir)) return;
-  for (const { dst } of isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd)) {
-    let linked = false;
-    try { linked = lstatSync(dst).isSymbolicLink(); }
-    catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot inspect isolate link ${dst}: ${e.message}`); }
-    if (!linked) continue;
-    try { rmdirSync(dst); }
-    catch {
-      try { unlinkSync(dst); } catch {}
-    }
-  }
-  // Fail closed: git worktree remove --force may recursively follow a surviving Windows junction into the source.
-  // Every configured destination must be absent before any worktree removal is allowed to begin.
-  for (const { dst } of isolateLinkSpecs(sourceRoot, worktreeDir, taskCwd)) {
-    let remains = false;
-    try { remains = lstatSync(dst).isSymbolicLink(); } // a real folder (e.g. the worker ran npm ci) cannot reach the source
-    catch (e) { if (e.code === 'ENOENT') continue; throw new Error(`cannot verify isolate link removal ${dst}: ${e.message}`); }
-    if (remains) throw new Error(`isolate link still exists; worktree removal aborted: ${dst}`);
-  }
 }
 
 async function prepareIsolation(t) {
@@ -1060,13 +857,6 @@ function tasksUsingDir(dir) {
   return out;
 }
 
-function ageLabel(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
-}
-
 export async function cleanupWorktree(taskId, { deleteBranch = false } = {}) {
   const t = getTask(taskId);
   if (!t) return `unknown task ${taskId}`;
@@ -1115,66 +905,4 @@ export async function listWorktrees({ pruneDays } = {}) {
     out.push(entry);
   }
   return out;
-}
-
-export function formatWorktrees(entries) {
-  if (!entries.length) return 'no worktrees';
-  return entries.map((e) => `${e.taskId}  ${e.branch || '-'}  ${e.status}  ${e.age}${e.pruned ? '  pruned' : ''}${e.error ? `  ${e.error}` : ''}`).join('\n');
-}
-
-/** Which tools/programs/MCP calls a worker used: { calls, errors, byName } from its items (all of them, not the journaled tail). */
-export function countTools(items) {
-  const out = { calls: 0, errors: 0, byName: {} };
-  for (const i of items || []) {
-    if (!i || !/tool_use|command_execution|mcp_tool_call/.test(i.type || '')) continue;
-    const name = i.type === 'mcp_tool_call' ? `mcp:${i.server || '?'}:${i.tool || '?'}` : i.type === 'command_execution' ? `run:${String(i.command || '').trim().split(/\s+/)[0] || '?'}` : String(i.name || '?');
-    out.calls++; out.byName[name] = (out.byName[name] || 0) + 1;
-    if (i.error || i.isError || (typeof i.exitCode === 'number' && i.exitCode !== 0) || (typeof i.exit_code === 'number' && i.exit_code !== 0) || /^error:/i.test(String(i.output || ''))) out.errors++;
-  }
-  return out.calls ? out : null;
-}
-
-// Tracked-file count and bytes of a task's repo (git ls-tree at HEAD), cached per cwd for ten minutes: the cheap
-// "small project or large repo" signal recorded on every run row, so tool scores can later be split by it.
-const sizeCache = new Map();
-async function repoSize(cwd) {
-  const hit = sizeCache.get(cwd); if (hit && Date.now() - hit.at < 600_000) return hit.v;
-  let v = { repoFiles: null, repoBytes: null };
-  const out = await git(cwd, ['ls-tree', '-r', '-l', 'HEAD']);
-  if (out != null) { let files = 0, bytes = 0; for (const line of out.split('\n')) { const m = /^\S+ blob \S+\s+(\d+|-)\t/.exec(line); if (m) { files++; bytes += Number(m[1]) || 0; } } v = { repoFiles: files, repoBytes: bytes }; }
-  sizeCache.set(cwd, { at: Date.now(), v });
-  return v;
-}
-
-/** One compact, conductor-facing summary of a task. */
-export function describeTask(t) {
-  if (!t) return 'unknown task';
-  const r = t.result || {};
-  const cmds = r.tools?.calls ?? countTools(r.items)?.calls ?? 0;
-  const lines = [
-    `Task ${t.id} [${t.status}] ${t.title} — ${t.provider}${t.model ? `/${t.model}` : ''}${t.effort ? ` (${t.effort})` : ''}, round ${t.rounds + 1}${r.durationMs ? `, ${Math.round(r.durationMs / 1000)}s` : ''}${t.threadId ? `, thread ${t.threadId}` : ''}`,
-  ];
-  if (t.warning) lines.push(`Warning: ${t.warning}`);
-  if (t.isolation) lines.push(`Isolation: worktree ${t.isolation.dir} from ${t.isolation.base}${t.isolation.branch ? `, branch ${t.isolation.branch}` : ''}; uncommitted changes in the main checkout are not in the worktree; remove it with worktree_cleanup, never plain "git worktree remove" (it follows the linked node_modules/.venv junctions and deletes their contents)`);
-  if (t.status === 'stale') lines.push('Stale: interrupted by 2 restarts in a row. Ask the user to Re-run or Discard it.');
-  else if (t.error) lines.push(`Error: ${t.error}`);
-  if (t.failedOverTo) lines.push(`Failed over to task ${t.failedOverTo}: call await_task on it; this id will not complete.`);
-  if (t.status === 'parked') {
-    const source = t.park?.source || 'guess';
-    const detail = source === 'window' ? 'reset reported' : source === 'retry-after' ? 'retry-after' : 'estimated; refined when limits refresh';
-    lines.push(t.efficiencyMode
-      ? `waiting for ${t.provider} reset at ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (efficiency mode)`
-      : `Parked until ${t.resumeAt ? new Date(t.resumeAt).toISOString() : '?'} (${detail}; auto-resumes)`);
-  }
-  if (t.status === 'running') {
-    const p = t.progress, mins = (ms) => `${Math.round(ms / 60_000)} min`;
-    lines.push(`Progress: running ${mins(Date.now() - (Date.parse(t.startedAt) || Date.now()))}${p?.activity ? `; last: ${p.activity}` : ''}${p?.tokens ? `; ${p.tokens} tokens so far` : ''}${p ? ` (as of ${mins(Date.now() - p.at)} ago)` : '; no worker activity yet'}`);
-  }
-  if (t.changedFiles?.length) lines.push(`Changed files: ${t.changedFiles.join(', ')}`);
-  if (t.diffStat) lines.push(`Diff stat:\n${t.diffStat}`);
-  if (r.usage) lines.push(`Usage: ${JSON.stringify(r.usage)}`);
-  if (r.files?.length) lines.push(`Files: ${r.files.join(', ')}`);
-  if (cmds) lines.push(`Actions: ${cmds} commands/tool calls`);
-  if (r.finalMessage) lines.push(`Worker report:\n${r.finalMessage}`);
-  return lines.join('\n');
 }

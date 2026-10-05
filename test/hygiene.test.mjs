@@ -173,23 +173,23 @@ test('worker timeout defaults off and can be enabled per category', async () => 
 });
 
 test('the conductor prompt defers budget percentages to configuration', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   const prompt = readFileSync(join(REPO_ROOT, 'core/policy/prompts/conductor.md'), 'utf8');
   const policy = prompt.split('**Budget classes.**')[1].split('\n- **')[0];
   assert.match(policy, /configured\s+budget caps/);
   assert.doesNotMatch(policy, /\d+%/);
 });
 
-// Guards for folder moves: REPO_ROOT is computed from where core/paths.mjs sits, and a test that forgets _env.mjs
+// Guards for folder moves: REPO_ROOT is computed from where core/paths.ts sits, and a test that forgets _env.mjs
 // touches the real ~/.conductor2.
 test('REPO_ROOT points at the repo (package.json is there)', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   assert.equal(JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).name, 'conductor');
 });
 
 test('every test file imports _env.mjs before any repo module', () => {
   const dir = import.meta.dirname;
-  for (const f of readdirSync(dir, { recursive: true }).filter((n) => n.endsWith('.test.mjs'))) {
+  for (const f of readdirSync(dir, { recursive: true }).filter((n) => /\.test\.(mjs|ts)$/.test(n))) {
     const src = readFileSync(join(dir, f), 'utf8');
     const env = src.search(/import\s[^;]*?['"](?:\.\.?\/)+_env\.mjs['"]/);
     const repo = src.search(/['"](?:\.\.\/)+(?:core|server|bin|ui)\//);
@@ -200,20 +200,31 @@ test('every test file imports _env.mjs before any repo module', () => {
 function isProjectNote(file) {
   // This is product documentation for the review method, not a project's review findings.
   if (file === 'docs/REVIEW-FRAMEWORK.md') return false;
-  return /(^|\/)(plans|reviews|notes)\//i.test(file) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW|ROADMAP)[-_.]/i.test(basename(file));
+  // Basename rule stays active inside the code folders. Only the plans/ segment itself is exempt
+  // for test/plans and core/plans (the suite, not a notes dump). A *.test.mjs there is still the suite
+  // (status-report.test.mjs collides with the STATUS- prefix). A project-notes plans/ folder is still rejected everywhere else.
+  const base = basename(file);
+  const codeSuite = (file.startsWith('test/plans/') || file.startsWith('core/plans/')) && base.endsWith('.test.mjs');
+  if (!codeSuite && /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW|ROADMAP)[-_.]/i.test(base)) return true;
+  const parts = file.split('/');
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (/^(reviews|notes)$/i.test(parts[i])) return true;
+    if (/^plans$/i.test(parts[i]) && parts.slice(0, i + 1).join('/') !== 'test/plans' && parts.slice(0, i + 1).join('/') !== 'core/plans') return true;
+  }
+  return false;
 }
 
 test('project-note names are rejected at every depth; the review method remains product documentation', () => {
-  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md']) {
+  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md', 'docs/plans/work.md', 'test/plans/PLAN-x.md']) {
     assert.equal(isProjectNote(file), true, file);
   }
-  for (const file of ['docs/REVIEW-FRAMEWORK.md', 'docs/ARCHITECTURE.md', 'core/plans.mjs']) {
+  for (const file of ['docs/REVIEW-FRAMEWORK.md', 'docs/ARCHITECTURE.md', 'core/plans.mjs', 'core/plans/validate.mjs', 'test/plans/stages.test.mjs']) {
     assert.equal(isProjectNote(file), false, file);
   }
 });
 
 test('the product repo carries no project notes, and every code folder has a CONTEXT.md', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   const { execFileSync } = await import('node:child_process');
   const { existsSync } = await import('node:fs');
   // Check the working tree, including deletions that have not been staged yet.

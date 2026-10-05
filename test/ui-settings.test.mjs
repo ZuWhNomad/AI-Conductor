@@ -1,12 +1,12 @@
 import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { DEFAULTS, saveConfig, loadConfig } from '../core/config.mjs';
+import { uiSource } from './ui/_source.mjs';
 
 // Exercise the actual settings renderer and Save handler with the DOM surface they use.
-const source = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+const source = uiSource(new URL('../ui/', import.meta.url));
 const start = source.indexOf('function openSettings()');
 const settings = source.slice(start, source.indexOf('\nfunction ', start + 1));
 function render(config = structuredClone(DEFAULTS), updateResponse = null, storage = new Map()) {
