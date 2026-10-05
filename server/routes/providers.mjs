@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { statePath } from '../../core/paths.mjs';
+import { statePath } from '../../core/paths.ts';
 import { PROVIDERS } from '../../core/providers/index.mjs';
 import { json } from './_http.mjs';
 

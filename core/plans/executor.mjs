@@ -1,8 +1,8 @@
 // runPlan on the task scheduler. Mutable registry is per evaluation of this module.
 import { createTask, getTask, cancelTask, cancelChain, awaitTask } from '../tasks.mjs';
 import { accessProviders } from '../capabilities.mjs';
-import { statePath, writeJson, readJson, nowIso, shortId } from '../paths.mjs';
-import { bus } from '../bus.mjs';
+import { statePath, writeJson, readJson, nowIso, shortId } from '../paths.ts';
+import { bus } from '../bus.ts';
 import { normFamilies, selsInFamilies } from '../models.mjs';
 import { existsSync } from 'node:fs';
 import { loadConfig } from '../config.mjs';

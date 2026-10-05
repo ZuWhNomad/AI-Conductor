@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { trackProbe, killProbes } = await import('../../core/proc.mjs');
+const { trackProbe, killProbes } = await import('../../core/proc.ts');
 const { startModelPolling, stopModelPolling } = await import('../../core/models.mjs');
 const { startLimitPolling, stopLimitPolling } = await import('../../core/limits.mjs');
 const { stopBackgroundWork } = await import('../../server/index.mjs');

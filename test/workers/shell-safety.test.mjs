@@ -10,8 +10,8 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { DEFAULTS, loadConfig, saveConfig } from '../../core/config.mjs';
-import { stateDir } from '../../core/paths.mjs';
-import { resolveNpmShim, spawnCli } from '../../core/proc.mjs';
+import { stateDir } from '../../core/paths.ts';
+import { resolveNpmShim, spawnCli } from '../../core/proc.ts';
 import { shellDenied, runDescription, runEnv, runOpenAICompat } from '../../core/workers/openai-compat.mjs';
 
 const WIN = process.platform === 'win32';

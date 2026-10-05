@@ -145,7 +145,7 @@ test('worker gets matching framework through recipe route; conductor index omits
   const { PROMPT } = await import('../core/conductor.mjs');
   const t = createTask({ cwd: tmpDir('framework-worker'), spec: 'spec', category: 'modeling' }, { dispatch: false });
   try {
-    const { statePath, writeJson } = await import('../core/paths.mjs');
+    const { statePath, writeJson } = await import('../core/paths.ts');
     writeJson(statePath('config.json'), {});
     assert.ok(buildPrompt(t).includes('Same goal and rules as recipe A'));
   } finally { cancelTask(t.id); }

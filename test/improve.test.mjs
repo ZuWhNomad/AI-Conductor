@@ -2,8 +2,8 @@ import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readNdjson, appendNdjson, statePath } from '../core/paths.mjs';
-import { bus } from '../core/bus.mjs';
+import { readNdjson, appendNdjson, statePath } from '../core/paths.ts';
+import { bus } from '../core/bus.ts';
 
 const { logImprovement, listImprovements, resolveImprovement, buildReviewPrompt } = await import('../core/improve.mjs');
 const { formatModels, formatLimits, conductorToolDefs } = await import('../core/tools.mjs');
@@ -23,7 +23,7 @@ test('improvement log appends, lists, resolves and feeds the review prompt', () 
 });
 
 test('improvement context uses the message cap while preserving small objects', async () => {
-  const { bus } = await import('../core/bus.mjs');
+  const { bus } = await import('../core/bus.ts');
   const small = { taskId: 'context-test', nested: { status: 'failed' } };
   const normal = logImprovement('error', 'context-test', 'small context', small);
   assert.deepEqual(normal.context, small);
@@ -77,7 +77,7 @@ for (const event of ['uncaughtException', 'unhandledRejection']) {
   test(`global ${event} capture survives a persistence failure`, () => {
     const result = spawnSync(process.execPath, ['--import', './test/_env.mjs', '--input-type=module', '--eval', `
       import { mkdirSync } from 'node:fs';
-      import { statePath } from './core/paths.mjs';
+      import { statePath } from './core/paths.ts';
       import { installGlobalErrorCapture } from './core/improve.mjs';
       mkdirSync(statePath('improvements.ndjson'));
       installGlobalErrorCapture();

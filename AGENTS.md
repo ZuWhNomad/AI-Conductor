@@ -17,9 +17,9 @@ Invariants that hold everywhere:
   write the minimum.
 - **`npm test` and `npm run check` before reporting done.** Tests isolate state via `CONDUCTOR_HOME`
   (`test/_env.mjs`); never touch the real `~/.conductor2`. `check` is `tsc --noEmit` over the whole tree.
-- **Events:** everything the UI sees goes through `core/bus.mjs` (`bus.publish(type, data)`). Small payloads.
+- **Events:** everything the UI sees goes through `core/bus.ts` (`bus.publish(type, data)`). Small payloads.
 - **Secrets** live only in `~/.conductor2/config.json`; `publicConfig()` redacts them. Never log them.
-- **Windows first:** spawn CLIs without a shell (`core/proc.mjs`); prefer stdin for long prompts.
+- **Windows first:** spawn CLIs without a shell (`core/proc.ts`); prefer stdin for long prompts.
 - **This repo is the product, not the project.** Plans, reviews, backlogs, research and dated logs go in the user's
   notes location (`../WORKSPACE.md` says where) — never in here. `docs/` is for what a stranger who cloned this repo
   would need. `test/hygiene.test.mjs` fails on a tracked `plans/`, `reviews/` or `notes/` folder.

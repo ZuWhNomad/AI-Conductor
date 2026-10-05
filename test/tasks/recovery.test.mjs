@@ -7,7 +7,7 @@ import { git, mockCompletions, createTask, cancelTask, awaitTask, getTask, sched
 
 test('recovery keeps a long interrupted task whose watchdog aliveAt is recent', async () => {
   const { recoverTasks } = await import('../../core/tasks.mjs');
-  const { writeJson } = await import('../../core/paths.mjs');
+  const { writeJson } = await import('../../core/paths.ts');
   const id = 'alive-recovery', now = Date.now();
   writeJson(join(HOME, 'tasks', `${id}.json`), {
     id, sessionId: 'alive-recovery-session', cwd: tmpDir('alive-recovery'), title: 'long run', spec: 'x', provider: 'codex', model: 'gpt-6-astra',

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { REPO_ROOT } from '../core/paths.mjs';
+import { REPO_ROOT } from '../core/paths.ts';
 
 const CODE_DIRS = ['core', 'server', 'bin'];
 const LEAVES = ['core/paths', 'core/proc', 'core/bus']; // extension-free: a module may be .mjs or .ts

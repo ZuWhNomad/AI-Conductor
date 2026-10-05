@@ -1,8 +1,8 @@
 // Model registry: what every provider currently offers. Auto-polled, force-refreshable, cached on disk.
 // PROVIDERS is imported lazily inside refreshModels() so that vendors.mjs (which needs findModel from here) can import
 // this module without the providers/index -> vendors -> models -> providers/index cycle tripping over a TDZ at load.
-import { readJson, writeJson, statePath, nowIso } from './paths.mjs';
-import { bus } from './bus.mjs';
+import { readJson, writeJson, statePath, nowIso } from './paths.ts';
+import { bus } from './bus.ts';
 
 const FILE = () => statePath('models.json');
 let cache = readJson(FILE(), { updatedAt: null, providers: {}, models: [] });

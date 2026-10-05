@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const { startJob, jobStatus, cancelJob, formatJob } = await import('../core/jobs.mjs');
-const { killServerFallback } = await import('../core/proc.mjs');
-const { statePath, writeJson } = await import('../core/paths.mjs');
+const { killServerFallback } = await import('../core/proc.ts');
+const { statePath, writeJson } = await import('../core/paths.ts');
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
 const { setMemoryReader } = await import('../core/resources.mjs');
 const node = JSON.stringify(process.execPath);

@@ -13,7 +13,7 @@ process.env.CONDUCTOR_CODEX = process.platform === 'win32' ? 'C:\\definitely\\mi
 after(() => { if (previous === undefined) delete process.env.CONDUCTOR_CODEX; else process.env.CONDUCTOR_CODEX = previous; });
 const { runCodex } = await import('../../core/workers/codex.mjs');
 const { runClaude } = await import('../../core/workers/claude.mjs');
-const { codexCommand } = await import('../../core/proc.mjs');
+const { codexCommand } = await import('../../core/proc.ts');
 const cwd = tmpDir('codex-args');
 
 test('Codex argv disables inherited MCP servers excluded by category or removed in config', async (ctx) => {

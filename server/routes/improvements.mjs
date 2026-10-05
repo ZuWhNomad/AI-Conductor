@@ -1,4 +1,4 @@
-import { REPO_ROOT } from '../../core/paths.mjs';
+import { REPO_ROOT } from '../../core/paths.ts';
 import { listImprovements, logImprovement, resolveImprovement, buildReviewPrompt } from '../../core/improve.mjs';
 import * as conductor from '../../core/conductor.mjs';
 import { json, readBody } from './_http.mjs';

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendNdjson, REPO_ROOT, statePath, writeJson } from '../core/paths.mjs';
+import { appendNdjson, REPO_ROOT, statePath, writeJson } from '../core/paths.ts';
 
 const batteriesFile = join(REPO_ROOT, 'core', 'policy', 'batteries.json');
 const shipped = JSON.parse(readFileSync(batteriesFile, 'utf8'));

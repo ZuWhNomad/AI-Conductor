@@ -1,7 +1,7 @@
 // Policy prompts for a conductor chat: the shared playbook, the framework index, and the per-runtime variant.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT } from '../paths.mjs';
+import { REPO_ROOT } from '../paths.ts';
 import { frameworkIndex } from '../recipes.mjs';
 
 const prompt = (f) => readFileSync(join(REPO_ROOT, 'core', 'policy', 'prompts', f), 'utf8');

@@ -5,12 +5,12 @@
 // installs anything: a missing program is offered to the user with its official link, once.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT, statePath, readJson, writeJson, nowIso } from './paths.mjs';
+import { REPO_ROOT, statePath, readJson, writeJson, nowIso } from './paths.ts';
 import { loadConfig } from './config.mjs';
-import { findCli, spawnCli } from './proc.mjs';
+import { findCli, spawnCli } from './proc.ts';
 import { mcpServers } from './mcp.mjs';
 import { getModels } from './models.mjs';
-import { bus } from './bus.mjs';
+import { bus } from './bus.ts';
 
 const PLATFORM = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux';
 const FILE = join(REPO_ROOT, 'core', 'policy', 'capabilities.json');

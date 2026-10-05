@@ -14,7 +14,7 @@
 // over one inferred window, which cannot express "0% at 8.7M tokens" except as rate 0 — so a reset check-in was
 // averaged against the old high readings and the bar crept down instead of dropping (100% → 11.8% over 15 clicks).
 // A reset schedule is honoured only when the user configured one, because a wrong assumed reset is worse than none.
-import { appendNdjson, readNdjson, statePath } from './paths.mjs';
+import { appendNdjson, readNdjson, statePath } from './paths.ts';
 import { activeRunRows, tokensOf, mean, prevScheduledReset, nextScheduledReset } from './scorecard.mjs';
 import { loadConfig } from './config.mjs';
 import { getLimits } from './limits.mjs';

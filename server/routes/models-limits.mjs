@@ -1,5 +1,5 @@
 import { loadConfig } from '../../core/config.mjs';
-import { bus } from '../../core/bus.mjs';
+import { bus } from '../../core/bus.ts';
 import { getModels, refreshModels } from '../../core/models.mjs';
 import { getLimits, refreshLimits } from '../../core/limits.mjs';
 import { estimateUsage, recordUsage, limitsWithEstimates } from '../../core/usage-estimate.mjs';

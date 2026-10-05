@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const { findCli } = await import('../core/proc.mjs');
+const { findCli } = await import('../core/proc.ts');
 const { _git } = await import('../core/tasks.mjs');
 const { isPhantomCompletion } = await import('../core/scorecard.mjs');
 const git = findCli('git');

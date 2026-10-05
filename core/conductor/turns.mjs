@@ -1,7 +1,7 @@
 // Turn lifecycle. send / interrupt / stop pick a runtime; a non-Claude turn drains the queue it still owns.
-import { writeJson, nowIso, shortId } from '../paths.mjs';
+import { writeJson, nowIso, shortId } from '../paths.ts';
 import { loadConfig } from '../config.mjs';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 import { abortPlans } from '../plans.mjs';
 import { logImprovement } from '../improve.mjs';
 import { turnEventMapper } from './common.mjs';

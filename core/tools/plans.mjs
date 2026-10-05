@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { CATEGORIES, ROUTED_MAX_DIFFICULTY, recommend } from '../scorecard.mjs';
 import { SANDBOX_VALUES, runPlan, getPlan } from '../plans.mjs';
-import { statePath } from '../paths.mjs';
+import { statePath } from '../paths.ts';
 import { sessionFlags } from '../session-flags.mjs';
 import { checkVariant } from '../recipes.mjs';
 

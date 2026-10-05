@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { writeJson } from '../core/paths.mjs';
+import { writeJson } from '../core/paths.ts';
 
 writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' } }, models: [
   { provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent' },

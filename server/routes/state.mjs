@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
-import { REPO_ROOT } from '../../core/paths.mjs';
+import { REPO_ROOT } from '../../core/paths.ts';
 import { publicConfig } from '../../core/config.mjs';
-import { bus } from '../../core/bus.mjs';
+import { bus } from '../../core/bus.ts';
 import { getModels } from '../../core/models.mjs';
 import { limitsWithEstimates } from '../../core/usage-estimate.mjs';
 import { providerSummaries } from '../../core/providers/index.mjs';

@@ -167,7 +167,7 @@ test('modeling is a first-class category (journaled and scored as itself, not as
 });
 
 test('a run recorded from outside Conductor (unmeasured tokens) counts for quality but is unpriced', async () => {
-  const { appendNdjson, statePath } = await import('../../core/paths.mjs');
+  const { appendNdjson, statePath } = await import('../../core/paths.ts');
   appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId: 'ext1', source: 'live', provider: 'codex', model: 'gpt-6-astra', effort: 'ultra', category: 'modeling', difficulty: 4, status: 'done', tokens: { in: 0, out: 0, cached: 0, v: 2 }, costUsd: 0, durationMs: 0, unmeasured: true, title: 'external' });
   sc.rateTask('ext1', 'pass', 'recorded from an external run');
   const a = sc.rootRuns().flatMap((c) => c.attempts).find((x) => x.taskId === 'ext1');
@@ -177,7 +177,7 @@ test('a run recorded from outside Conductor (unmeasured tokens) counts for quali
 });
 
 test('method-c migration voids antigravity rows whose sel carried a spurious effort, idempotently', async () => {
-  const { appendNdjson, statePath } = await import('../../core/paths.mjs');
+  const { appendNdjson, statePath } = await import('../../core/paths.ts');
   const row = (taskId, model, effort) => appendNdjson(statePath('scorecard.ndjson'), { op: 'run', ts: new Date().toISOString(), taskId, source: 'live', provider: 'antigravity', model, effort, category: 'edit', difficulty: 2, status: 'done', tokens: { in: 100, out: 10, cached: 0, v: 2 }, durationMs: 100, title: 'x' });
   row('agy-bad', 'gemini-3.6-flash-low', 'high'); // raw effort-in-id model + spurious effort (the old bug)
   row('agy-good', 'gemini-3.8-flash', 'high');    // Method-C shape: family id + real effort
@@ -189,7 +189,7 @@ test('method-c migration voids antigravity rows whose sel carried a spurious eff
 });
 
 test('scorecard migration voids only harness-error smoke failures and is idempotent', async () => {
-  const { appendNdjson, readNdjson, statePath } = await import('../../core/paths.mjs');
+  const { appendNdjson, readNdjson, statePath } = await import('../../core/paths.ts');
   const source = 'smoke';
   const row = (taskId, runSource = 'smoke') => appendNdjson(statePath('scorecard.ndjson'), {
     op: 'run', ts: new Date().toISOString(), taskId, source: runSource, provider: 'codex', model: 'gpt-6-sol', effort: 'medium',
@@ -226,7 +226,7 @@ test('phantom verdict is distinct: scored 0, counted, surfaced in error rates', 
 });
 
 test('summary reliability fields use known values and leave legacy rows unknown', async () => {
-  const { appendNdjson, statePath } = await import('../../core/paths.mjs');
+  const { appendNdjson, statePath } = await import('../../core/paths.ts');
   const source = 'reliability-summary';
   const add = (id, result, verdict) => {
     sc.recordRun({ id, title: id, status: 'done', provider: 'claude', model: 'haiku', effort: null, category: 'docs', difficulty: 1, source, result });
@@ -308,7 +308,7 @@ test('B3: each retry attempt is scored under its own category/difficulty; untagg
 
 test('P3: rootRuns reuses the runRows size/mtime cache', async (t) => {
   const fs = (await import('node:fs')).default;
-  const paths = await import('../../core/paths.mjs');
+  const paths = await import('../../core/paths.ts');
   const { syncBuiltinESMExports } = await import('node:module');
   sc.runRows();
   const orig = fs.readFileSync;

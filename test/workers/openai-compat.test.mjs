@@ -146,7 +146,7 @@ test('DeepSeek off-peak: half price outside Mon-Fri 01-04 / 06-10 UTC', async ()
 test('runWorker persists and replays conversation history for API worker follow-ups', async (ctx) => {
   const { runWorker } = await import('../../core/workers/index.mjs');
   const { existsSync } = await import('node:fs');
-  const { statePath, readJson } = await import('../../core/paths.mjs');
+  const { statePath, readJson } = await import('../../core/paths.ts');
 
   const requests = [];
   ctx.mock.method(globalThis, 'fetch', async (_url, opts) => {

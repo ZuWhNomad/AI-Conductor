@@ -26,7 +26,7 @@ test('setup, journal and worker failures wake waiters and release scheduler slot
 });
 
 test('dispatch is not serialized on git: two tasks are running before the first git read resolves', async (ctx) => {
-  const { findCli } = await import('../../core/proc.mjs');
+  const { findCli } = await import('../../core/proc.ts');
   if (!findCli('git')) { ctx.skip('git is not installed'); return; }
   const dirs = [tmpDir('inter-a'), tmpDir('inter-b')];
   for (const d of dirs) mkdirSync(join(d, '.git'));
@@ -117,7 +117,7 @@ for (const mode of ['session-reservation', 'weekly-reservation', 'probe', 'soft-
   test(`completion retains budget ownership through a fresh poll and scoring: ${mode}`, async (ctx) => {
     const { getLimits, refreshLimits } = await import('../../core/limits.mjs');
     const { loadConfig, saveConfig } = await import('../../core/config.mjs');
-    const { appendNdjson, statePath } = await import('../../core/paths.mjs');
+    const { appendNdjson, statePath } = await import('../../core/paths.ts');
     const { runRows } = await import('../../core/scorecard.mjs');
     for (const task of listTasks()) cancelTask(task.id);
     const conductor = loadConfig().conductor;

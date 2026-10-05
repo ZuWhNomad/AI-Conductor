@@ -2,7 +2,7 @@
 // and the conductor discover short methods without loading their full text into every prompt.
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT, statePath } from './paths.mjs';
+import { REPO_ROOT, statePath } from './paths.ts';
 import { loadConfig } from './config.mjs';
 
 const DIR = join(REPO_ROOT, 'core', 'policy', 'recipes');

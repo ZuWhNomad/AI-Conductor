@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, join, isAbsolute, relative, resolve } from 'node:path';
 import { loadConfig, DEFAULTS } from '../config.mjs';
-import { findCli } from '../proc.mjs';
+import { findCli } from '../proc.ts';
 
 // --- git helpers (best effort; silent when not a repo or git is missing). All async: they run on the dispatch path,
 // and a synchronous git call per task (up to 10 s each) stalled every chat and poll when tasks started together. ---

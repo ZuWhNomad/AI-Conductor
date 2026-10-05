@@ -2,11 +2,11 @@
 // stuck handling, persisted detached-job watches, and one batched wake for completed background work.
 import { readdirSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { bus } from './bus.mjs';
+import { bus } from './bus.ts';
 import { loadConfig } from './config.mjs';
 import { logImprovement } from './improve.mjs';
-import { ownerProcessSample, snapshotProcesses } from './proc.mjs';
-import { statePath, readJson, writeJson, shortId, nowIso } from './paths.mjs';
+import { ownerProcessSample, snapshotProcesses } from './proc.ts';
+import { statePath, readJson, writeJson, shortId, nowIso } from './paths.ts';
 import { alive as jobAlive } from './jobs.mjs';
 
 const TERMINAL = new Set(['done', 'failed', 'canceled', 'lost']);

@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpDir } from '../_env.mjs';
-import { REPO_ROOT, statePath } from '../../core/paths.mjs';
+import { REPO_ROOT, statePath } from '../../core/paths.ts';
 
 const runCli = (args, env = {}) => spawnSync(process.execPath, ['bin/conductor.mjs', ...args], {
   cwd: REPO_ROOT, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env },

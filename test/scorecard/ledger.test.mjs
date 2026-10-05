@@ -105,7 +105,7 @@ test('window delta ignores rolled-over windows and clamps at zero', () => {
 });
 
 test('voidTask publishes the same score event as rateTask', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const seen = [];
   const on = (e) => { if (e.type === 'score' && e.taskId === 'void-pub') seen.push({ type: e.type, taskId: e.taskId, verdict: e.verdict }); };
   bus.on('event', on);
@@ -241,7 +241,7 @@ test('L13: cache-write tokens are counted and priced at write ?? in*1.25', () =>
 
 test('P16: migrateScorecard reads the ledger cache via allRows', async (t) => {
   const fs = (await import('node:fs')).default;
-  const paths = await import('../../core/paths.mjs');
+  const paths = await import('../../core/paths.ts');
   const { syncBuiltinESMExports } = await import('node:module');
   sc.runRows();
   const orig = fs.readFileSync;

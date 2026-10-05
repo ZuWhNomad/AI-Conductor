@@ -5,9 +5,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { REPO_ROOT, stateDir, statePath, redact, readJson } from '../core/paths.mjs';
+import { REPO_ROOT, stateDir, statePath, redact, readJson } from '../core/paths.ts';
 import { loadConfig } from '../core/config.mjs';
-import { killServerFallback } from '../core/proc.mjs';
+import { killServerFallback } from '../core/proc.ts';
 
 const PID_FILE = () => statePath('server.pid');
 const writePidFile = (info) => { try { writeFileSync(PID_FILE(), JSON.stringify({ pid: process.pid, ...info }, null, 2)); } catch {} };
@@ -189,7 +189,7 @@ if (cmd === 'start') {
   }
   if (flags['void-env']) {
     // Exclude smoke runs the harness failed (sandbox denied the workspace) — the model never got to work.
-    const { readJson } = await import('../core/paths.mjs');
+    const { readJson } = await import('../core/paths.ts');
     let n = 0;
     for (const c of rootRuns({ source: 'smoke' })) for (const a of c.attempts) {
       if (a.verdict !== 'fail') continue;
@@ -343,7 +343,7 @@ if (cmd === 'start') {
 } else if (cmd === 'share') {
   const out = join(desktopDir(), 'Conductor-2.0-share.zip');
   // Zip what git tracks at HEAD, never the disk: local state (.state/), *.local.* files and anything untracked cannot ship.
-  const { findCli } = await import('../core/proc.mjs');
+  const { findCli } = await import('../core/proc.ts');
   try { execFileSync(findCli('git') || 'git', ['-C', REPO_ROOT, 'archive', '--format=zip', '-o', out, 'HEAD'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); }
   catch (e) { console.error(`share needs git and a git checkout of Conductor (${String(e.stderr || e.message).trim().split('\n')[0]}).\nSend your friend the repository link instead: ${JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).repository.url}`); process.exit(1); }
   console.log(`Wrote ${out}\nYour friend unzips it, runs share/install.cmd (or install.sh), then logs in with: claude auth login  and  codex login`);

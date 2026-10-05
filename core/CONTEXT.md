@@ -21,8 +21,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `conductor/` | One chat across the Claude, Codex, and API-loop runtimes. | `conductor/CONTEXT.md` |
 | `tools.mjs` | Re-exports `tools/`. | `tools/CONTEXT.md` |
 | `tools/` | Conductor tools by group. `conductorToolDefs` keeps the model-visible order. | `tools/CONTEXT.md` |
-| `bus.mjs` | Event bus (2000-entry / 8MB byte-bound ring, SSE replay). | this file |
-| `paths.mjs` | State dir, atomic JSON, and `redact` (the one secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result, and the crash log). | this file |
+| `bus.ts` | Event bus (2000-entry / 8MB byte-bound ring, SSE replay). | this file |
+| `paths.ts` | State dir, atomic JSON, and `redact` (the one secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result, and the crash log). | this file |
 | `jobs.mjs` | Detached jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID. On Windows the wrapper starts detached with hidden stdio, giving it a new console process group. GPU-marked jobs are exclusive; starts also obey the shared RAM guard in `resources.mjs`. Detached jobs survive a Conductor stop; to keep a long-lived service independent of Conductor, start it from its own launcher, not from a worker shell. | this file |
 | `resources.mjs` | System RAM headroom for task/job starts and `/api/state` / limits output; transitions logged once. `setMemoryReader()` injects readings for tests. | this file |
 | `watchdog.mjs` | Server-owned liveness loop. It combines bus activity, bounded file walks and one shared OS process/CPU snapshot into deterministic verdicts; journals task `aliveAt` without a `task` event; applies graduated stuck kills and one nudge per looping Claude chat episode (other runtimes are alert-only); persists detached-job/output watches; and wakes an idle chat once after its whole background batch is terminal. It never restarts the server. | this file |
@@ -41,7 +41,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `plans/` | Multi-stage plans: validate, findings, expand, executor. | `plans/CONTEXT.md` |
 | `models.mjs` | Model registry: merges provider lists, auto-poll and force refresh. | this file |
 | `priors.mjs` | API list prices and shipped/configured cold-start tiers. | this file |
-| `proc.mjs` | Spawn/owner registry, portable CPU/RAM snapshots, PID-scoped tree kills. No shell. | this file |
+| `proc.ts` | Spawn/owner registry, portable CPU/RAM snapshots, PID-scoped tree kills. No shell. | this file |
 | `compaction.ts` | Conductor history stays append-only between deliberate compaction cut points. | this file |
 | `policy/` | Orchestration policy and shipped data (text and JSON only). | `policy/CONTEXT.md` |
 | `providers/` | Per-vendor detect, `listModels`, and `pollLimits`. | `providers/CONTEXT.md` |
@@ -57,13 +57,13 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | a worker "succeeded" but changed nothing, or a verdict / score looks wrong | `scorecard.mjs` (`isPhantomCompletion`, `recordRun`, `rateTask`), `tasks.mjs` `run()` |
 | a usage bar is wrong, stale or missing | `providers/<vendor>.mjs` `pollLimits()` → `limits.mjs`; windowless providers (Grok): `usage-estimate.mjs` |
 | a model is missing from the picker, or has the wrong efforts | `providers/<vendor>.mjs` `listModels()` → `models.mjs`; subscription CLIs: `providers/vendors.mjs` (`collapseEffortFamilies`) |
-| a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.mjs` |
+| a worker run fails, hangs or mis-parses output | `workers/<kind>.mjs` (see `workers/CONTEXT.md`); spawning / Windows shims / kill trees: `proc.ts` |
 | a check-in, detached watch or background-completion wake is wrong | `watchdog.mjs`, then `tasks.mjs` wake-consumption markers and `conductor.mjs` session state |
 | the worker got the wrong instructions (notes, recipe, MCP servers, programs) | `tasks/prompt.mjs` (where the spec is built), `context.mjs`, `recipes.mjs` + `policy/recipes/`, `mcp.mjs` (scoped by category), `capabilities.mjs` + `policy/capabilities.json`, `prompts/worker.md` |
 | the conductor chat misbehaves (streaming, permissions, model switch, history) | `conductor.mjs`; what it is told: `policy/prompts/conductor*.md`, `policy/prompts/orchestration.md` |
 | a conductor tool is missing or returns the wrong thing | `tools.mjs` (defined once, served to all three runtimes) |
 | a `run_plan` stage, vote or loop goes wrong | `plans.mjs` |
-| the UI does not update | the event is not published: `bus.mjs` + the publishing module; then `ui/CONTEXT.md` |
+| the UI does not update | the event is not published: `bus.ts` + the publishing module; then `ui/CONTEXT.md` |
 | a setting does not apply or does not persist | `config.mjs` (`DEFAULTS`, `loadConfig`, `saveConfig`) |
 | update / self-restart problems | `update.mjs`, then `server/index.mjs` (`scheduleRelaunch`, `startUpdateChecks`) |
 | a worker CLI is stale, an update failed or was rolled back | `cli-update.mjs` (`RECIPES`, `applyCliUpdate`); history in `<state>/cli-updates.ndjson` |
@@ -76,14 +76,14 @@ worker/MSW instructions before MCP and project context, then the resume note, ta
 keeps a `for_each` stage's title and shared spec before each vote's item JSON, lens and vote index.
 
 **Boundaries.** `core/` imports other `core/` modules and the two runtime deps — never `server/`, `bin/`, `ui/` or
-`test/`. Leaves `paths.mjs`, `proc.mjs`, `bus.mjs` import nothing of the repo but `paths.mjs`. `policy/` is text and
+`test/`. Leaves `paths.ts`, `proc.ts`, `bus.ts` import nothing of the repo but `paths.ts`. `policy/` is text and
 JSON only. `workers/` never imports the orchestration layer (`tasks`, `scorecard`, `sweep`, `limits`, `plans`, `tools`,
 `conductor`, `watchdog`, `jobs`, `bench`); `providers/` never imports `workers/`. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - All UI-visible events go through `bus.publish(type, data)` with small payloads.
 - Non-Claude chat follow-ups live in the session queue and transcript together; a turn drains the whole queue only while it still owns the session. Claude continues to use its SDK inbox.
-- State lives in the state dir via `paths.mjs` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
+- State lives in the state dir via `paths.ts` (atomic `writeJson`): `CONDUCTOR_HOME`, else `<repo>/.state/` when that folder exists (a dev checkout), else `~/.conductor2`. Tests set `CONDUCTOR_HOME`.
 - Graceful stop / relaunch aborts worker tasks and probes; it never cancels detached jobs. The forced stop fallback targets the server PID alone. On Windows, Node/libuv's internal kill-on-close Job Object contains non-detached worker children, while `detached: true` job wrappers skip it; detached does not break out of an external kill-on-close Job Object.
 - `config.json` holds only the user's overrides; `loadConfig()` folds `DEFAULTS` in at read time, so a new default reaches every user. Secrets live only in config and are never logged; `publicConfig()` masks them for the settings UI, and `redact()` strips key shapes and configured key values from everything else written or shown.
 - The usage estimate is advisory — it is never fed to the `admit` gate.

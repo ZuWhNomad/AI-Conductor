@@ -13,7 +13,7 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   (`bin`, `login`, `probe`, `parseModels`, `pollLimits`, `headlessArgs`, `parse`); `providerFor(spec)` turns a spec
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.
 
-**Boundaries.** May import `../proc.mjs`, `../paths.mjs`, `../config.mjs`, `../models.mjs`. Must not import
+**Boundaries.** May import `../proc.ts`, `../paths.ts`, `../config.mjs`, `../models.mjs`. Must not import
 `../workers/`: a spec describes a CLI, the runner in `workers/vendor-cli.mjs` executes it. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
@@ -22,7 +22,7 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
   model)` in `core/scorecard.mjs` applies that scoping; the whole-provider `blocked` flag comes only from *unscoped*
   windows, so a maxed per-model window blocks just that model.
 - Secrets live only in `~/.conductor2/config.json`; never log them. `publicConfig()` redacts keys and MCP env/url.
-- Windows-first: never spawn a CLI through a shell (`core/proc.mjs` `spawnCli` unwraps npm `.cmd` shims). Long
+- Windows-first: never spawn a CLI through a shell (`core/proc.ts` `spawnCli` unwraps npm `.cmd` shims). Long
   prompts (over `providers.<id>.promptFileThreshold`, default 8000 chars) stay off argv: grok `--prompt-file`; antigravity `--input-format text` on
   stdin.
 - Model-list overrides: a CLI that can't self-list reads `providers.<id>.models` from config.

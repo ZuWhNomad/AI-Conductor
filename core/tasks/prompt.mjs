@@ -2,7 +2,7 @@
 // recipe, capability lines) so provider prompt caches hit. Reads policy text once at import; no task state.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO_ROOT } from '../paths.mjs';
+import { REPO_ROOT } from '../paths.ts';
 import { loadConfig } from '../config.mjs';
 import { contextBlock } from '../context.mjs';
 import { logImprovement } from '../improve.mjs';
