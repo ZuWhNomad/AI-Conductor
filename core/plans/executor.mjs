@@ -1,7 +1,6 @@
-// runPlan on the task scheduler. Mutable registry lives in createPlanRuntime (one per facade evaluation).
-// awaitTask and accessProviders are arguments: test/plans/_helpers.mjs replaces ./tasks.mjs and
-// ./capabilities.mjs only when the importer is core/plans.mjs, including its ?tool-fixture copy.
-import { createTask, getTask, cancelTask, cancelChain } from '../tasks.mjs';
+// runPlan on the task scheduler. Mutable registry is per evaluation of this module.
+import { createTask, getTask, cancelTask, cancelChain, awaitTask } from '../tasks.mjs';
+import { accessProviders } from '../capabilities.mjs';
 import { statePath, writeJson, readJson, nowIso, shortId } from '../paths.mjs';
 import { bus } from '../bus.mjs';
 import { normFamilies, selsInFamilies } from '../models.mjs';
@@ -12,7 +11,7 @@ import { validatePlan } from './validate.mjs';
 import { findingsOf, findingKey, parseVerdict, tally, findingLine, hasFindingObjects, structuredOf } from './findings.mjs';
 import { expandStage, RESULTS_CHARS } from './expand.mjs';
 
-export function createPlanRuntime({ awaitTask, accessProviders }) {
+function createPlanRuntime() {
   const MAX_TASKS = 200;
   const activePlans = new Set();
   const livePlans = new Map(); // id -> in-flight record (plan_status + abortPlans)
@@ -257,3 +256,5 @@ export function createPlanRuntime({ awaitTask, accessProviders }) {
 
   return { runPlan, getPlan, abortPlans, noWorkerReason };
 }
+
+export const { runPlan, getPlan, abortPlans, noWorkerReason } = createPlanRuntime();

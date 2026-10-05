@@ -15,8 +15,8 @@ working — new code imports the module it needs.
   permission resurfacing, `reloadSessions`, `sessionContext`. `stop()` lives here (it only clears session fields).
 - `common.mjs` — `turnEventMapper`, the Codex/loop worker-event → UI message translation both runtimes share.
 - `runtime-claude.mjs` — one long-lived Agent SDK query per session (`start`). Streaming input goes through `Inbox`.
-- `runtime-codex.mjs` — one `codex exec` turn (`runCodexTurn`). `setServerUrl` lives here; that string is read only
-  when a Codex turn attaches its `/mcp` endpoint.
+- `runtime-codex.mjs` — one `codex exec` turn (`runCodexTurn`). Imports `runCodex` from `../workers/codex.mjs`.
+  `setServerUrl` lives here; that string is read only when a Codex turn attaches its `/mcp` endpoint.
 - `runtime-loop.mjs` — one OpenAI-compatible tool-loop turn (`runLoopTurn`), including history compaction.
 - `turns.mjs` — `sendMessage`, `interrupt`, `stopSession`, `shutdownSessions`, `resumeInterruptedTurns`, `runOnce`.
   Picks the runtime, drains a non-Claude queue only while the turn still owns the session.
@@ -24,14 +24,12 @@ working — new code imports the module it needs.
 **Boundaries.** `prompt` → `sessions` → `common` → `runtime-claude` → `runtime-codex` → `runtime-loop` → `turns`,
 never backwards. Outside this folder the modules import `paths`, `config`, `bus`, `mcp`, `session-flags`, `tools`,
 `plans`, `improve`, `providers/index`, `recipes`, `workers/claude`, `workers/openai-compat`, `proc`, `models`,
-`compaction.ts`, and `@anthropic-ai/claude-agent-sdk`. `workers/codex` is imported by `../conductor.mjs` (see the
-invariant below). Nothing from `server/`, `bin/`, `ui/` or `test/`. Enforced by `test/boundaries.test.mjs`.
+`compaction.ts`, `workers/codex`, and `@anthropic-ai/claude-agent-sdk`. Nothing from `server/`, `bin/`, `ui/` or
+`test/`. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - The session Map and the `serverUrl` string each live in exactly one module (`sessions.mjs`, `runtime-codex.mjs`).
-- `../conductor.mjs` imports `runCodex` from `./workers/codex.mjs` and passes it to `setRunCodex`. That import stays
-  on the façade: `test/conductor.test.mjs` mocks the specifier `./workers/codex.mjs` only when the parent URL contains
-  `conductor.mjs`.
+- `runtime-codex.mjs` imports `runCodex` from `../workers/codex.mjs`.
 - Non-Claude follow-ups sit in the session queue and the transcript together. A turn drains the whole queue only
   while it still owns the session (`turnAbort`). Claude keeps using its SDK inbox.
 - `stop()` clears `turnAbort` before the aborted turn's `finally` runs, so a session deleted mid-turn does not

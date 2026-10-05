@@ -1,12 +1,12 @@
 // Plan tools: run_plan, plan_status.
 import { z } from 'zod';
-import { CATEGORIES, ROUTED_MAX_DIFFICULTY } from '../scorecard.mjs';
-import { SANDBOX_VALUES } from '../plans.mjs';
+import { CATEGORIES, ROUTED_MAX_DIFFICULTY, recommend } from '../scorecard.mjs';
+import { SANDBOX_VALUES, runPlan, getPlan } from '../plans.mjs';
 import { statePath } from '../paths.mjs';
 import { sessionFlags } from '../session-flags.mjs';
 import { checkVariant } from '../recipes.mjs';
 
-export function defs({ sessionId, cwd, maxBlockMs, recommend, runPlan, getPlan }) {
+export function defs({ sessionId, cwd, maxBlockMs }) {
   return [
     {
       name: 'run_plan',

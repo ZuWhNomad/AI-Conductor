@@ -34,14 +34,23 @@ const sources = {
   scorecard: `export * from ${JSON.stringify(urls.scorecard)}; export const recommend = (...args) => globalThis.toolFixtures.recommend(...args);`,
   capabilities: 'export const accessProviders = () => null, missingFor = () => [], shouldResearch = () => false, researchSpec = () => "", parseResearched = () => [], loadIndex = () => [];',
 };
+// Folder modules import ../tasks.mjs; the facade spelling is ./tasks.mjs. A ?query does not fork
+// cached folder modules, so plans.mjs?tool-fixture's imports of core/plans/* and core/tools/* keep it.
+const MOCKED = { './tasks.mjs': 'tasks', '../tasks.mjs': 'tasks', './scorecard.mjs': 'scorecard', '../scorecard.mjs': 'scorecard', './capabilities.mjs': 'capabilities', '../capabilities.mjs': 'capabilities' };
+const pathOf = (url) => (url || '').split('?')[0];
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (context.parentURL === urls.tools && specifier === './plans.mjs') return { url: `${urls.plans}?tool-fixture`, shortCircuit: true };
-    if ([urls.tools, `${urls.plans}?tool-fixture`].includes(context.parentURL)) {
-      const name = Object.keys(sources).find((name) => specifier === `./${name}.mjs`);
-      if (name) return { url: `tool-fixture:${name}`, shortCircuit: true };
+    const parent = context.parentURL || '';
+    const path = pathOf(parent);
+    if (/\/core\/(?:plans|tools)(\.mjs|\/)/.test(path)) {
+      if (MOCKED[specifier]) return { url: `tool-fixture:${MOCKED[specifier]}`, shortCircuit: true };
+      const plansFromTools = (/\/core\/tools\.mjs$/.test(path) && specifier === './plans.mjs') || (/\/core\/tools\//.test(path) && specifier === '../plans.mjs');
+      if (plansFromTools) return { url: `${urls.plans}?tool-fixture`, shortCircuit: true };
     }
-    return nextResolve(specifier, context);
+    const resolved = nextResolve(specifier, context);
+    const query = parent.includes('?') ? parent.slice(parent.indexOf('?')) : '';
+    if (query && /\/core\/(?:plans|tools)\/[^/?]+$/.test(resolved.url)) return { ...resolved, url: resolved.url + query, shortCircuit: true };
+    return resolved;
   },
   load(url, context, nextLoad) {
     if (url.startsWith('tool-fixture:')) return { format: 'module', source: sources[url.slice('tool-fixture:'.length)], shortCircuit: true };
