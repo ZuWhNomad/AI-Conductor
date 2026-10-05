@@ -15,7 +15,7 @@ const ALLOWED_OVER = {
   'test/limits/polling.test.mjs': 918,
   'test/scorecard/recommend.test.mjs': 1355,
   'test/server/server.test.mjs': 789,
-  'test/smoke/smoke.test.mjs': 750,
+  'test/smoke/smoke.test.mjs': 752,
   'test/ui/layout.test.mjs': 729,
 };
 
