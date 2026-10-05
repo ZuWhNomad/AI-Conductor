@@ -6,9 +6,9 @@ import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { findCli } from '../core/proc.mjs';
-import { REPO_ROOT } from '../core/paths.mjs';
-import { bus } from '../core/bus.mjs';
+import { findCli } from '../core/proc.ts';
+import { REPO_ROOT } from '../core/paths.ts';
+import { bus } from '../core/bus.ts';
 import { uiSource } from './ui/_source.mjs';
 const { updateStatus, applyUpdate, checkForUpdates, formatUpdate, npmCommand } = await import('../core/update.mjs');
 

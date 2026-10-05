@@ -1,7 +1,7 @@
 import { HOME } from '../_env.mjs';
-import { readJson, writeJson, statePath } from '../../core/paths.mjs';
+import { readJson, writeJson, statePath } from '../../core/paths.ts';
 import { saveConfig, loadConfig } from '../../core/config.mjs';
-import { bus } from '../../core/bus.mjs';
+import { bus } from '../../core/bus.ts';
 import { registerHooks } from 'node:module';
 import { setSessionFlags } from '../../core/session-flags.mjs';
 import { createTask, getTask } from '../../core/tasks.mjs';

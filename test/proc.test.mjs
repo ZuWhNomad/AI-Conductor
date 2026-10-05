@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import childProcess from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
-import { spawnCli, spawnCodex, killTree, resolveNpmShim, parseWindowsProcesses, parsePsProcesses, registerProc, registeredPids, ownerProcessSample, spawnTracked } from '../core/proc.mjs';
+import { spawnCli, spawnCodex, killTree, resolveNpmShim, parseWindowsProcesses, parsePsProcesses, registerProc, registeredPids, ownerProcessSample, spawnTracked } from '../core/proc.ts';
 import { capture, providerFor, VENDORS } from '../core/providers/vendors.mjs';
 
 const WIN = process.platform === 'win32';

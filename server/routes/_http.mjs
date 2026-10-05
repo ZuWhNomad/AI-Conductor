@@ -1,5 +1,5 @@
 // Shared response helpers. Route modules import this; they do not import ../index.mjs.
-import { redact } from '../../core/paths.mjs';
+import { redact } from '../../core/paths.ts';
 
 // Every API answer is redacted (task records, chat messages, improvements), except the settings, which publicConfig masks
 // in its own round-trippable way (`raw`).

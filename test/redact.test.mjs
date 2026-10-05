@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const { redact, redactDeep, REDACTED, statePath, writeJson } = await import('../core/paths.mjs');
+const { redact, redactDeep, REDACTED, statePath, writeJson } = await import('../core/paths.ts');
 const { saveConfig, loadConfig } = await import('../core/config.mjs');
-const { bus } = await import('../core/bus.mjs');
+const { bus } = await import('../core/bus.ts');
 const { logImprovement } = await import('../core/improve.mjs');
 const { rateTask, voidTask } = await import('../core/scorecard.mjs');
 

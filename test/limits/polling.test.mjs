@@ -884,7 +884,7 @@ test('polled and event windows are tagged with their usage scope', async () => {
 test('P7: withLimitsSnapshot skips restat until the callback returns', async () => {
   const { withLimitsSnapshot } = await import('../../core/limits.mjs');
   const { writeFileSync, utimesSync } = await import('node:fs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   const { PROVIDERS } = await import('../../core/providers/index.mjs');
   PROVIDERS['p7-ext'] = { id: 'p7-ext' };
   try {

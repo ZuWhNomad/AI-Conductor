@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, userInfo, platform, release, arch } from 'node:os';
-import { REPO_ROOT, redact as redactSecrets } from './paths.mjs';
+import { REPO_ROOT, redact as redactSecrets } from './paths.ts';
 import { listImprovements } from './improve.mjs';
 import { getLimits } from './limits.mjs';
 import { getModels } from './models.mjs';

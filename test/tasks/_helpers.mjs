@@ -18,7 +18,7 @@ const rejectIO = (operation) => {
   throw new Error(`unexpected external I/O: ${operation}`);
 };
 mock.method(globalThis, 'fetch', (url) => rejectIO(`fetch ${url}`));
-const { findCli } = await import('../../core/proc.mjs');
+const { findCli } = await import('../../core/proc.ts');
 const git = findCli('git');
 for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
   const original = childProcess[method];
@@ -35,7 +35,7 @@ const mockCompletions = (ctx, respond) => ctx.mock.method(globalThis, 'fetch', (
 });
 
 const { createTask, cancelTask, failHungTask, cancelChain, awaitTask, getTask, listTasks, openTasks, describeTask, publicTask, taskSummary, schedule, abortRunning, awaitRunning, flushRecords, setDraining, reviewParked } = await import('../../core/tasks.mjs');
-const { bus } = await import('../../core/bus.mjs');
+const { bus } = await import('../../core/bus.ts');
 const { getModels } = await import('../../core/models.mjs');
 const waitForTaskStatus = (id, statuses) => {
   const current = getTask(id);

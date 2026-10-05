@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { registerHooks } from 'node:module';
-import { writeJson, readJson } from '../core/paths.mjs';
+import { writeJson, readJson } from '../core/paths.ts';
 
 writeJson(join(HOME, 'sessions.json'), [{
   id: 'restored-e12', cwd: HOME, title: 'restored', provider: 'claude', runtime: 'claude',
@@ -90,7 +90,7 @@ registerHooks({
 });
 
 const { createSession, deleteSession, getSession, sendMessage, setEffort, listSessions, interrupt, cancelQueuedMessage, stopSession, canNudge, nudgeRunaway, runOnce, shutdownSessions, reloadSessions, resumeInterruptedTurns, answerPermission, recordTaskRestartNote, PROMPT } = await import('../core/conductor.mjs');
-const { bus } = await import('../core/bus.mjs');
+const { bus } = await import('../core/bus.ts');
 const { getModels, findModel } = await import('../core/models.mjs');
 const { listImprovements } = await import('../core/improve.mjs');
 
@@ -559,7 +559,7 @@ test('pendingCount is on publicSession and updated fires when a permission is ad
 });
 
 test('the conductor prompt points at this install\'s review framework, whatever the chat cwd', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   assert.ok(!PROMPT.includes('{{CONDUCTOR_DOCS}}'));
   const path = `${join(REPO_ROOT, 'docs')}/REVIEW-FRAMEWORK.md`;
   assert.ok(PROMPT.includes(path));

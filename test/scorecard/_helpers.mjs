@@ -1,6 +1,6 @@
 import { HOME } from '../_env.mjs';
 import { join } from 'node:path';
-import { appendNdjson, statePath, writeJson } from '../../core/paths.mjs';
+import { appendNdjson, statePath, writeJson } from '../../core/paths.ts';
 
 // Registries are loaded at import time: seed them before importing the scorecard.
 writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: { codex: { status: 'ok' }, claude: { status: 'ok' }, deepseek: { status: 'ok' } }, models: [

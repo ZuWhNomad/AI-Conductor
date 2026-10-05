@@ -1,5 +1,5 @@
 // Codex and loop turns both speak worker events. This maps them onto the one UI message shape.
-import { nowIso } from '../paths.mjs';
+import { nowIso } from '../paths.ts';
 import { emit, persistAll, pushMessage } from './sessions.mjs';
 
 /** Translate worker-style events (codex items / loop tool calls) into the UI's message shapes. */

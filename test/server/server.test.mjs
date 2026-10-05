@@ -37,7 +37,7 @@ for (const method of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'exe
 }
 syncBuiltinESMExports();
 
-const { statePath, readJson, writeJson } = await import('../../core/paths.mjs');
+const { statePath, readJson, writeJson } = await import('../../core/paths.ts');
 const bootRecoveryId = 'server-boot-recovery';
 writeJson(join(statePath('tasks'), `${bootRecoveryId}.json`), {
   id: bootRecoveryId, cwd: tmpDir('server-boot'), title: 'boot recovery', spec: 'resume safely', provider: 'codex', attempts: 1,
@@ -230,7 +230,7 @@ test('task follow-ups inherit cwd without requiring it in the request', async ()
 });
 
 test('SSE hello exposes the oldest retained event when the replay cursor has fallen behind', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const empty = new bus.constructor();
   assert.equal(empty.oldest, empty.seq + 1);
   const cursor = bus.seq;
@@ -258,7 +258,7 @@ test('SSE hello exposes the oldest retained event when the replay cursor has fal
 });
 
 test('R47: large events evict older ones once the byte cap is passed', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   // Create a bus instance with a small byte limit (e.g. 5000 bytes) to test byte eviction
   const capped = new bus.constructor({ max: 2000, maxBytes: 5000 });
   // Publish 3 events with 2000 bytes each
@@ -281,7 +281,7 @@ test('R47: large events evict older ones once the byte cap is passed', async () 
 
 
 test('resolving an improvement over HTTP publishes exactly one event', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const entry = await post('/api/improvements', { kind: 'idea', message: 'resolution route fixture' });
   const seq = bus.seq;
   assert.deepEqual(await post(`/api/improvements/${entry.id}/resolve`), { ok: true });
@@ -292,7 +292,7 @@ test('resolving an improvement over HTTP publishes exactly one event', async () 
 
 test('API answers are redacted, including entries written before redaction existed', async () => {
   const { appendFileSync } = await import('node:fs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   appendFileSync(statePath('improvements.ndjson'), JSON.stringify({ id: 'oldkey01', ts: new Date().toISOString(), kind: 'error', source: 'worker:codex', message: 'Incorrect API key provided: sk-svcac*******************fvMA.', context: {}, resolved: false }) + '\n');
   const text = JSON.stringify(await get('/api/improvements'));
   assert.match(text, /oldkey01/);
@@ -799,7 +799,7 @@ test('stale tasks rerun with a cleared crash guard and can be discarded through 
 });
 
 test('R82: a stub response whose write returns false gets closed and unsubscribes', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const src = readFileSync(new URL('../../server/index.mjs', import.meta.url), 'utf8');
   let closed = false;
   let writeCount = 0;

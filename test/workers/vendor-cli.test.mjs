@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { findCli } from '../../core/proc.mjs';
+import { findCli } from '../../core/proc.ts';
 
 const { runVendorCli } = await import('../../core/workers/vendor-cli.mjs');
 const { VENDORS, providerFor } = await import('../../core/providers/vendors.mjs');
@@ -382,7 +382,7 @@ test('grok: a plan-mode tool cancel (read from the grok session events) is an en
 
 test('grok: the decision comes from http_status, not the text; text is only a logged fallback', async () => {
   const { httpStatusOf } = await import('../../core/providers/vendors.mjs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   const rec = (status) => ({ type: 'result', subtype: 'error_during_execution', is_error: true, usage: { input_tokens: 0, output_tokens: 0 }, errors: [`Internal error: {
   "message": "API error (status ${status})",
   "http_status": ${status}

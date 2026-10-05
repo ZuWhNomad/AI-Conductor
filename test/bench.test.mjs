@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { writeJson } from '../core/paths.mjs';
+import { writeJson } from '../core/paths.ts';
 
 const { loadConfig, saveConfig } = await import('../core/config.mjs');
 const { BENCH_TASK_IDS, dueForBench, noteNewModels, getBenchState, enqueueBench, runBenchQueue, isOffPeak, nextOffPeakStart, nextBenchWakeAt, formatBench } = await import('../core/bench.mjs');

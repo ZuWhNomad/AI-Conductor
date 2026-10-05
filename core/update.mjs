@@ -5,9 +5,9 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { REPO_ROOT } from './paths.mjs';
-import { findCli } from './proc.mjs';
-import { bus } from './bus.mjs';
+import { REPO_ROOT } from './paths.ts';
+import { findCli } from './proc.ts';
+import { bus } from './bus.ts';
 
 let gitBin;
 const execFileAsync = promisify(execFile);

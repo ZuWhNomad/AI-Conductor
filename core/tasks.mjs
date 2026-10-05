@@ -8,9 +8,9 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join, isAbsolute, relative, resolve } from 'node:path';
-import { statePath, readJson, writeJson, nowIso, shortId } from './paths.mjs';
+import { statePath, readJson, writeJson, nowIso, shortId } from './paths.ts';
 import { loadConfig, codexSandboxFor, runTimeoutMs } from './config.mjs';
-import { bus } from './bus.mjs';
+import { bus } from './bus.ts';
 import { runWorker } from './workers/index.mjs';
 import { groupOf, modelBlock, noteLimitAvailable, noteLimitHit, refreshLimits, refreshLimitsWithMeta, withLimitsSnapshot } from './limits.mjs';
 import { logImprovement } from './improve.mjs';

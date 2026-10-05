@@ -3,7 +3,7 @@
 // Read-only over the ledger; recommend.mjs and report.mjs consume these rows.
 import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { readJson, writeJson, nowIso, REPO_ROOT } from '../paths.mjs';
+import { readJson, writeJson, nowIso, REPO_ROOT } from '../paths.ts';
 import { perTaskPct } from '../sweep.mjs';
 import { getModels } from '../models.mjs';
 import { loadConfig } from '../config.mjs';

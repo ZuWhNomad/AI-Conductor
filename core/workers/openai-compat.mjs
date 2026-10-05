@@ -8,11 +8,11 @@ import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import dns from 'node:dns';
 import net from 'node:net';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 import { estimateTokens, recordLearnedContextWindow, contextWindowFor } from '../compaction.ts';
-import { killTree, registerProc } from '../proc.mjs';
+import { killTree, registerProc } from '../proc.ts';
 import { loadConfig } from '../config.mjs';
-import { stateDir } from '../paths.mjs';
+import { stateDir } from '../paths.ts';
 import { SKIP, safePath, readBytes } from './openai-compat-files.mjs';
 
 /**

@@ -1,13 +1,13 @@
 // Claude runtime: one long-lived Agent SDK query per session. Streaming input goes through Inbox.
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadConfig } from '../config.mjs';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 import { mcpServers, forClaudeSdk } from '../mcp.mjs';
 import { conductorTools, CONDUCTOR_AGENTS } from '../tools.mjs';
 import { logImprovement } from '../improve.mjs';
 import { KILL_GUARD_HOOKS } from '../workers/claude.mjs';
-import { spawnTracked } from '../proc.mjs';
-import { nowIso, shortId } from '../paths.mjs';
+import { spawnTracked } from '../proc.ts';
+import { nowIso, shortId } from '../paths.ts';
 import { markUnavailable } from '../models.mjs';
 import { PROMPT } from './prompt.mjs';
 import { emit, persistAll, publicSession, pushMessage, stop } from './sessions.mjs';

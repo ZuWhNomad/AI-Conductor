@@ -1,6 +1,6 @@
 // User configuration: defaults merged with ~/.conductor2/config.json.
 import { statSync, copyFileSync } from 'node:fs';
-import { tryReadJson, writeJson, statePath } from './paths.mjs';
+import { tryReadJson, writeJson, statePath } from './paths.ts';
 import { logImprovement } from './improve.mjs';
 
 export const DEFAULTS = {

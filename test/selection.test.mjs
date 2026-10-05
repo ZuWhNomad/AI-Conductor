@@ -2,8 +2,8 @@ import { HOME, tmpDir } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { readJson, writeJson } from '../core/paths.mjs';
-import { bus } from '../core/bus.mjs';
+import { readJson, writeJson } from '../core/paths.ts';
+import { bus } from '../core/bus.ts';
 
 // The registry is loaded at import time: seed the one model the no-effort test needs (no Codex models, on purpose).
 writeJson(join(HOME, 'models.json'), { updatedAt: 'x', providers: {}, models: [{ provider: 'deepseek', id: 'fixture:3b', kind: 'agent', cost: 'free-local', efforts: [] }] });

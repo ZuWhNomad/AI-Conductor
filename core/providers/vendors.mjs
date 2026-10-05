@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.mjs';
-import { readTail } from '../paths.mjs';
+import { findCli, killTree, trackProbe, resolveNpmShim } from '../proc.ts';
+import { readTail } from '../paths.ts';
 import { loadConfig } from '../config.mjs';
 import { findModel } from '../models.mjs';
 

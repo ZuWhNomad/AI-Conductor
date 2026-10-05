@@ -1,7 +1,7 @@
 // Model context sizes, prompt-size estimates and deterministic conversation compaction.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJson, statePath, writeJson, REPO_ROOT } from './paths.mjs';
+import { readJson, statePath, writeJson, REPO_ROOT } from './paths.ts';
 import { loadConfig } from './config.mjs';
 
 /** One chat-completions style message. `content` may be a string or text blocks; some runtimes use `text` / `blocks`. */

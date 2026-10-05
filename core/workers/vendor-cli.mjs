@@ -1,8 +1,8 @@
 // Generic runner for vendor agent CLIs that run on a consumer subscription (Antigravity `agy`,
 // xAI `grok`). Each vendor is a spec in core/providers/vendors.mjs that
 // says how to invoke headless mode and how to fold its NDJSON/text output into the common result.
-import { killTree, onLines, spawnCli, findCli, registerProc } from '../proc.mjs';
-import { bus } from '../bus.mjs';
+import { killTree, onLines, spawnCli, findCli, registerProc } from '../proc.ts';
+import { bus } from '../bus.ts';
 import { logImprovement } from '../improve.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';

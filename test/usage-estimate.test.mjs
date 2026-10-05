@@ -1,7 +1,7 @@
 import { HOME } from './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendNdjson, statePath } from '../core/paths.mjs';
+import { appendNdjson, statePath } from '../core/paths.ts';
 const { windowTokens, recordUsage, estimateUsage, learnedRate, limitsWithEstimates } = await import('../core/usage-estimate.mjs');
 const { saveConfig, loadConfig } = await import('../core/config.mjs');
 const { nextScheduledReset, prevScheduledReset } = await import('../core/scorecard.mjs');

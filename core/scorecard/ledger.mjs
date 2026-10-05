@@ -2,10 +2,10 @@
 // helpers (selection strings, categories, verdicts, efforts, archived models) every other scorecard module shares.
 // Rows: `run` (recordRun), `rate` (rateTask), `void`, `amend`, `eligibility`. The ledger is never rewritten.
 import { statSync } from 'node:fs';
-import { appendNdjson, readNdjson, statePath, nowIso } from '../paths.mjs';
+import { appendNdjson, readNdjson, statePath, nowIso } from '../paths.ts';
 import { getLimits } from '../limits.mjs';
 import { loadConfig } from '../config.mjs';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 import { logImprovement } from '../improve.mjs';
 import { priceFor, usdFor } from '../priors.mjs';
 import { cliVersionOf } from '../cli-update.mjs';

@@ -33,7 +33,7 @@ test('persist failure after a decided outcome does not overwrite it', async (ctx
 });
 
 test('claimed writes gitignore hides are not phantom when the file landed on disk', async (ctx) => {
-  const { findCli } = await import('../../core/proc.mjs');
+  const { findCli } = await import('../../core/proc.ts');
   const gitBin = findCli('git');
   if (!gitBin) { ctx.skip('git is not installed'); return; }
   const hooks = registerHooks({
@@ -101,7 +101,7 @@ for (const [id, provider] of [['L1', 'codex'], ['L4', 'claude']]) {
 
 test('an auth failure is never scored, and the echoed key never reaches the journal or the improvement log', async (ctx) => {
   const { runRows } = await import('../../core/scorecard.mjs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   const echo = 'unexpected status 401 Unauthorized: Incorrect API key provided: sk-svcac*************************fvMA.';
   const tk = await tasksWithWorker(ctx, async () => ({ ok: false, authFailed: true, error: echo, usage: { input_tokens: 0, output_tokens: 0 } }));
   const t = tk.createTask({ cwd: tmpDir('auth'), provider: 'codex', spec: 'x', category: 'edit', difficulty: 2 });

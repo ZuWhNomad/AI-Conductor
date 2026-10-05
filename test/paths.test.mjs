@@ -5,7 +5,7 @@ import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import fs from 'node:fs';
 
-const { readJson, tryReadJson, writeJson } = await import('../core/paths.mjs');
+const { readJson, tryReadJson, writeJson } = await import('../core/paths.ts');
 
 test('readJson strips a leading BOM and distinguishes missing from unparseable', () => {
   const dir = tmpDir('paths-bom');

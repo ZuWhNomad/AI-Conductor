@@ -50,7 +50,7 @@ test('watchdog hang failure is terminal, labeled hung and journaled', () => {
 });
 
 test('task ID collisions regenerate without overwriting existing journals', async (ctx) => {
-  const { writeJson } = await import('../../core/paths.mjs');
+  const { writeJson } = await import('../../core/paths.ts');
   const samples = [0.125, 0.125, 0.25, 0.375];
   const random = ctx.mock.method(Math, 'random', () => {
     assert.ok(samples.length, 'must stop regenerating once an unused ID is found');
@@ -222,7 +222,7 @@ test('awaitTask is clamped to the Node timer maximum and worker run caps use the
 });
 
 test('a running task shows a coarse progress snapshot, refreshed at most once a minute', async (ctx) => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const finish = Promise.withResolvers(), started = Promise.withResolvers();
   const tk = await tasksWithWorker(ctx, (t) => { started.resolve(t.id); return finish.promise; });
   const t = tk.createTask({ cwd: tmpDir('progress'), provider: 'codex', spec: 'x' });
@@ -274,7 +274,7 @@ test('L10: a live follow-up owns its thread through queued, running and parked s
 });
 
 test('P8: lists and task events omit bulky results while the full record preserves them', async () => {
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const t = createTask({ cwd: tmpDir('task-summary'), paths: ['scope'], imageOptions: { source: 'image' }, spec: 'full spec' });
   t.result = { items: [{ type: 'tool_use', input: { file_path: 'edited.txt', content: 'full contents' } }], finalMessage: 'report'.repeat(40), tools: { calls: 1, byName: { Write: 1 } }, files: ['image.png'], usage: { input_tokens: 3 }, durationMs: 10, costUsd: 2 };
   t.diffStat = 'full diff';

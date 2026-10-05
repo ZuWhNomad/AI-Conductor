@@ -284,7 +284,7 @@ for (const action of ['cancel', 'shutdown']) for (const noFailover of [false, tr
   test(`${action} during quota refresh prevents ${noFailover ? 'parking' : 'failover'}`, async (ctx) => {
     const { loadConfig, saveConfig } = await import('../../core/config.mjs');
     const { getLimits } = await import('../../core/limits.mjs');
-    const { bus } = await import('../../core/bus.mjs');
+    const { bus } = await import('../../core/bus.ts');
     const scorecard = loadConfig().scorecard;
     saveConfig({ scorecard: { minSamples: 1, classes: { deepseek: 'free' } } });
     delete getLimits().providers.deepseek;
@@ -375,7 +375,7 @@ for (const scenario of [
   const { loadConfig, saveConfig } = await import('../../core/config.mjs');
   const { getLimits } = await import('../../core/limits.mjs');
   const { recordRun, rateTask } = await import('../../core/scorecard.mjs');
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const previous = loadConfig(), provider = 'l6-blocked', model = 'l6-alternative';
   const now = Date.now(); ctx.mock.method(Date, 'now', () => now);
   saveConfig({ worker: { efficiencyMode: scenario.global }, scorecard: { minSamples: 1, classOrder: ['free'], classes: { deepseek: 'free' } } });

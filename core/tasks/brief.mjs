@@ -1,7 +1,7 @@
 // Per-task brief: <state>/tasks/<id>.md. Written once, appended once when the task is terminal. No task state.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { redact, statePath } from '../paths.mjs';
+import { redact, statePath } from '../paths.ts';
 import { logImprovement } from '../improve.mjs';
 
 const TERMINAL = new Set(['done', 'failed', 'canceled']);

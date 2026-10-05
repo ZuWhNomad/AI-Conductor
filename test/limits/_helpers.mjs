@@ -1,7 +1,7 @@
 import { HOME } from '../_env.mjs';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { readJson } from '../../core/paths.mjs';
+import { readJson } from '../../core/paths.ts';
 
 export { HOME, join, readJson };
 

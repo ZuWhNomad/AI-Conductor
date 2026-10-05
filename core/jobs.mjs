@@ -4,7 +4,7 @@
 // process that started it. Cancel kills the wrapper's tree by PID, never by image name.
 import { spawn, execFile } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { statePath, readJson, writeJson, shortId, nowIso, redact, readTail } from './paths.mjs';
+import { statePath, readJson, writeJson, shortId, nowIso, redact, readTail } from './paths.ts';
 import { resourceStatus, resourceLine } from './resources.mjs';
 
 const WIN = process.platform === 'win32';

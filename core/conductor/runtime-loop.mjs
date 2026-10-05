@@ -1,5 +1,5 @@
 // Loop runtime: the OpenAI-compatible tool loop. History is compacted between turns.
-import { readJson, writeJson } from '../paths.mjs';
+import { readJson, writeJson } from '../paths.ts';
 import { runTimeoutMs } from '../config.mjs';
 import { PROVIDERS } from '../providers/index.mjs';
 import { conductorToolDefs, toolsAsFunctions } from '../tools.mjs';

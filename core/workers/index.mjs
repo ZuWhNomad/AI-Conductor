@@ -6,7 +6,7 @@ import { runClaude } from './claude.mjs';
 import { runOpenAICompat } from './openai-compat.mjs';
 import { runVendorCli } from './vendor-cli.mjs';
 import { mcpServersFor, forClaudeSdk } from '../mcp.mjs';
-import { readJson, writeJson, statePath, redactDeep } from '../paths.mjs';
+import { readJson, writeJson, statePath, redactDeep } from '../paths.ts';
 
 /**
  * @param {object} t { id, cwd, prompt, provider, model, effort, threadId, timeoutMs, system }

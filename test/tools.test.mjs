@@ -8,7 +8,7 @@ import { createTask, getTask, cancelTask, listTasks } from '../core/tasks.mjs';
 import { abortPlans } from '../core/plans.mjs';
 import { loadConfig, saveConfig } from '../core/config.mjs';
 import { CATEGORIES } from '../core/scorecard.mjs';
-import { bus } from '../core/bus.mjs';
+import { bus } from '../core/bus.ts';
 
 const cwd = () => tmpDir('tools');
 const defs = (opts = {}) => conductorToolDefs({ sessionId: opts.sessionId || 'tools', cwd: opts.cwd || cwd(), maxBlockMs: opts.maxBlockMs });

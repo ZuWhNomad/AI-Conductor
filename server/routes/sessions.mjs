@@ -1,5 +1,5 @@
 import { findModel } from '../../core/models.mjs';
-import { bus } from '../../core/bus.mjs';
+import { bus } from '../../core/bus.ts';
 import * as conductor from '../../core/conductor.mjs';
 import { EFFORTS, scorecardModelId, recordRun, rateTask } from '../../core/scorecard.mjs';
 import { json, readBody } from './_http.mjs';

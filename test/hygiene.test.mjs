@@ -173,17 +173,17 @@ test('worker timeout defaults off and can be enabled per category', async () => 
 });
 
 test('the conductor prompt defers budget percentages to configuration', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   const prompt = readFileSync(join(REPO_ROOT, 'core/policy/prompts/conductor.md'), 'utf8');
   const policy = prompt.split('**Budget classes.**')[1].split('\n- **')[0];
   assert.match(policy, /configured\s+budget caps/);
   assert.doesNotMatch(policy, /\d+%/);
 });
 
-// Guards for folder moves: REPO_ROOT is computed from where core/paths.mjs sits, and a test that forgets _env.mjs
+// Guards for folder moves: REPO_ROOT is computed from where core/paths.ts sits, and a test that forgets _env.mjs
 // touches the real ~/.conductor2.
 test('REPO_ROOT points at the repo (package.json is there)', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   assert.equal(JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).name, 'conductor');
 });
 
@@ -224,7 +224,7 @@ test('project-note names are rejected at every depth; the review method remains 
 });
 
 test('the product repo carries no project notes, and every code folder has a CONTEXT.md', async () => {
-  const { REPO_ROOT } = await import('../core/paths.mjs');
+  const { REPO_ROOT } = await import('../core/paths.ts');
   const { execFileSync } = await import('node:child_process');
   const { existsSync } = await import('node:fs');
   // Check the working tree, including deletions that have not been staged yet.

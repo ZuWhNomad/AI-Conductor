@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from './config.mjs';
-import { REPO_ROOT } from './paths.mjs';
+import { REPO_ROOT } from './paths.ts';
 
 export const AS_OF = '2026-09-09';
 // Tier -> highest difficulty the model is expected to clear (used only by the opt-in prior fallback).

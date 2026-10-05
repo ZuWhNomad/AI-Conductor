@@ -1,7 +1,7 @@
 // Experiment records + A/B compare over tagged scorecard run rows.
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJson, writeJson, statePath, stateDir, nowIso } from './paths.mjs';
+import { readJson, writeJson, statePath, stateDir, nowIso } from './paths.ts';
 import { ledgerOf, tokensOf, runCostUsd, envFailure } from './scorecard.mjs';
 import { familyOf } from './models.mjs';
 

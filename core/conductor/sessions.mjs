@@ -3,9 +3,9 @@
 // runtimes share it without an import cycle.
 import { statSync, rmSync } from 'node:fs';
 import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
-import { statePath, readJson, writeJson, nowIso, shortId } from '../paths.mjs';
+import { statePath, readJson, writeJson, nowIso, shortId } from '../paths.ts';
 import { loadConfig } from '../config.mjs';
-import { bus } from '../bus.mjs';
+import { bus } from '../bus.ts';
 import { setSessionFlags } from '../session-flags.mjs';
 import { abortPlans } from '../plans.mjs';
 import { PROVIDERS } from '../providers/index.mjs';

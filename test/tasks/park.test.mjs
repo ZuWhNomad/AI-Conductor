@@ -68,7 +68,7 @@ test('GP7: a noFailover task that parks on a limit hit is scored after a success
     return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
   });
   const t = createTask({ cwd: tmpDir('gp7-limit'), provider: 'deepseek', model: 'deepseek-flash', spec: 'x', category: 'review', difficulty: 2, noFailover: true });
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const resumed = Promise.withResolvers();
   const watchdog = setTimeout(() => resumed.reject(new Error('resume did not complete')), 15000); // same wait budget as this regression
   const onTask = (e) => { if (e.type === 'task' && e.task.id === t.id && e.task.status === 'done') resumed.resolve(e.task); };
@@ -121,7 +121,7 @@ test('a success that started before a confirmed hit cannot clear it', async (ctx
 
 test('a worker limit is confirmed before the recovery poll starts', async (ctx) => {
   const { getLimits, modelBlockedUntil } = await import('../../core/limits.mjs');
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const provider = 'confirm-before-poll', model = 'opus', reset = Date.now() + 60_000;
   let confirmationSeen = false;
   getLimits().providers[provider] = { provider, blocked: false, windows: [{ id: 'weekly', models: 'opus', usedPercent: 40, resetsAt: reset }] };
@@ -152,7 +152,7 @@ test('a worker limit is confirmed before the recovery poll starts', async (ctx) 
 test('a confirmed Grok limit hit blocks through its configured weekly reset and persists', async (ctx) => {
   const { getLimits } = await import('../../core/limits.mjs');
   const { loadConfig, saveConfig } = await import('../../core/config.mjs');
-  const { statePath } = await import('../../core/paths.mjs');
+  const { statePath } = await import('../../core/paths.ts');
   const previous = loadConfig().scorecard, reset = Date.now() + 7 * 24 * 60 * 60_000;
   saveConfig({ scorecard: { usageResets: { ...previous.usageResets, grok: { periodHours: 168, anchorAt: new Date(reset).toISOString() } } } });
   delete getLimits().providers.grok;
@@ -229,7 +229,7 @@ test('GP: awaitTask keeps a 30 s park inside longer waits and resolves parks pas
 
 test('one wake timer releases due tasks in creation order with one refresh per provider', async (ctx) => {
   const { getLimits, modelBlockedUntil } = await import('../../core/limits.mjs');
-  const { bus } = await import('../../core/bus.mjs');
+  const { bus } = await import('../../core/bus.ts');
   const provider = 'w1-park-poll', timers = new Map(); let nextTimer = 0;
   getLimits().providers[provider] = { provider, blocked: true, blockedUntil: Date.now() + 5000, windows: [] };
   let now = Date.now();
