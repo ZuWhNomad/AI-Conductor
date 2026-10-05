@@ -259,7 +259,7 @@ REVIEW_SHARED_CREDENTIAL = "inherited-fixture"
 });
 
 test('D1: MCP instructions refuse a tagged delegate when no plan qualifies instead of naming a fallback default worker', () => {
-  const src = readFile(fileURLToPath(new URL('../core/tools.mjs', import.meta.url)), 'utf8');
+  const src = readFile(fileURLToPath(new URL('../core/tools/index.mjs', import.meta.url)), 'utf8');
   assert.match(src, /when the scorecard has no qualified plan the delegate is refused/);
   assert.match(src, /name a provider\/model explicitly \(which always runs and seeds the scorecard\) or do small work yourself/);
   assert.doesNotMatch(src, /fallback default worker/);

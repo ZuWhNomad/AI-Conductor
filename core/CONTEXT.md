@@ -18,7 +18,8 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `limits.mjs` | Per-provider window registry (polled, scope-keyed refresh). | this file |
 | `usage-estimate.mjs` | Advisory % for windowless providers (never gates dispatch). | this file |
 | `conductor.mjs` | Chat sessions (Agent SDK / Codex / API). | this file |
-| `tools.mjs` | The tools a conductor session gets. | this file |
+| `tools.mjs` | Re-exports `tools/`. | `tools/CONTEXT.md` |
+| `tools/` | Conductor tools by group. `conductorToolDefs` keeps the model-visible order. | `tools/CONTEXT.md` |
 | `bus.mjs` | Event bus (2000-entry / 8MB byte-bound ring, SSE replay). | this file |
 | `paths.mjs` | State dir, atomic JSON, and `redact` (the one secret redactor: every `writeJson`/`appendNdjson`, `bus.publish`, API answer, worker result, and the crash log). | this file |
 | `jobs.mjs` | Detached jobs (`job_start` / `job_status` / `job_cancel`, `/api/jobs`, `conductor job`): a command that outlives the worker and a server restart; record + log in `<state>/jobs/`, cancel by PID. On Windows the wrapper starts detached with hidden stdio, giving it a new console process group. GPU-marked jobs are exclusive; starts also obey the shared RAM guard in `resources.mjs`. Detached jobs survive a Conductor stop; to keep a long-lived service independent of Conductor, start it from its own launcher, not from a worker shell. | this file |
