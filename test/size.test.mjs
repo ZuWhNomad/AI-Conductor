@@ -32,7 +32,7 @@ function* walk(dir, rel = '') {
 
 function kind(rel) {
   if (rel === 'CONTEXT.md' || rel.endsWith('/CONTEXT.md')) return 'context';
-  if (/^test\/.*\.test\.mjs$/.test(rel)) return 'test';
+  if (/^test\/.*\.test\.(mjs|ts)$/.test(rel)) return 'test';
   if (/^(core|server|bin|ui)\/.*\.(mjs|ts|js)$/.test(rel)) return 'code';
   return null;
 }

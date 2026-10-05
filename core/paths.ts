@@ -95,7 +95,7 @@ export function redact(text: unknown): unknown {
 export function redactDeep<T>(v: T, depth = 0): T {
   if (typeof v === 'string') return redact(v) as T;
   if (!v || typeof v !== 'object' || depth > 12) return v;
-  let out: any = null;
+  let out: any = null; // array or object; built below, redacted field by field
   if (Array.isArray(v)) {
     v.forEach((x, i) => {
       const y = redactDeep(x, depth + 1);

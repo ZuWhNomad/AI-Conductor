@@ -70,9 +70,10 @@ Conductor source does not create an external Windows Job Object. Node/libuv crea
 ```
 bin/conductor.mjs        CLI: start (default), doctor, models [--refresh], limits, scores, smoke, bench, review, feedback, share, update, stop, experiment
 core/
-  paths.ts              state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
+  paths.ts               state dir (CONDUCTOR_HOME | <repo>/.state if present | ~/.conductor2), atomic JSON, ndjson append
   config.mjs             defaults + load/save
-  bus.ts                event bus with ring buffer (SSE replay)
+  bus.ts                 event bus with ring buffer (SSE replay)
+  compaction.ts          model context sizes, prompt-size estimates, deterministic conversation compaction
   conductor.mjs          re-export façade over conductor/ (keeps `./conductor.mjs` imports working)
   conductor/             prompt.mjs (policy prompts) → sessions.mjs (session store) → common.mjs (shared Codex/loop
                          events) → runtime-claude.mjs → runtime-codex.mjs → runtime-loop.mjs → turns.mjs (send / interrupt / stop)
@@ -117,7 +118,7 @@ core/
   session-flags.mjs      per-session toggles (API overflow, parallel), seeded from every session at start and create
   update.mjs             self-update via git + npm (node/npm-cli.js, no shell); the server hands over only to a child that signalled it can start
   cli-update.mjs         worker CLI updates (codex, agy, grok; the Agent SDK in dev): daily check, install when idle, verify, roll back
-  proc.ts               spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
+  proc.ts                spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
 server/routes/           one HTTP resource per file, handle(ctx)

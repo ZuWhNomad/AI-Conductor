@@ -272,7 +272,7 @@ export function killTree(child: ChildProcess | null | undefined): void {
   if (!child) return;
   if (child.pid && child.exitCode === null) {
     try {
-      if (WIN) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true } as { windowsHide: true }, (err: Error | null) => { if (err) try { child.kill(); } catch {} });
+      if (WIN) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, (err: Error | null) => { if (err) try { child.kill(); } catch {} });
       else process.kill(-child.pid, 'SIGTERM');
     } catch { try { child.kill(); } catch {} }
   } else if (child.pid && !WIN) {

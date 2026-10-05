@@ -189,7 +189,7 @@ test('REPO_ROOT points at the repo (package.json is there)', async () => {
 
 test('every test file imports _env.mjs before any repo module', () => {
   const dir = import.meta.dirname;
-  for (const f of readdirSync(dir, { recursive: true }).filter((n) => n.endsWith('.test.mjs'))) {
+  for (const f of readdirSync(dir, { recursive: true }).filter((n) => /\.test\.(mjs|ts)$/.test(n))) {
     const src = readFileSync(join(dir, f), 'utf8');
     const env = src.search(/import\s[^;]*?['"](?:\.\.?\/)+_env\.mjs['"]/);
     const repo = src.search(/['"](?:\.\.\/)+(?:core|server|bin|ui)\//);
