@@ -34,6 +34,7 @@ function rule(from, to) {
   const starts = (p) => from.startsWith(p);
   if (starts('core/') && !to.startsWith('core/')) return 'core/ imports only core/';
   if (starts('server/') && !/^(core|server)\//.test(to)) return 'server/ imports only core/ (ui/ is served as static files)';
+  if (starts('server/routes/') && to === 'server/index.mjs') return 'routes/ never imports server/index.mjs';
   if (starts('core/providers/') && to.startsWith('core/workers/')) return 'providers/ (catalog + meter) must not import workers/ (execution)';
   if (starts('core/workers/') && ORCHESTRATION.test(to)) return 'workers/ run one task and know nothing about the scheduler';
   if (LEAVES.includes(from.replace(/\.(mjs|ts)$/, '')) && !/^core\/paths\.(mjs|ts)$/.test(to)) return 'leaf modules import nothing of the repo but paths';

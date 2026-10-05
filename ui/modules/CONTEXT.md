@@ -27,4 +27,4 @@ Rules: `AGENTS.md`, then `../CONTEXT.md`. No build step. The page loads `../app.
 
 **Invariants.** One `S` object, imported, never copied. Call sites stay bare names. DOM is still built with `el` / `textContent`; assistant HTML still goes through `md`.
 
-**How to test.** `npm test` and `npm run check`. `node --check` on each file. Do not start the workbench server on port 47480.
+**How to test.** `npm test`, which includes `test/ui/imports.test.mjs`: every relative import resolves to a `.js` file, the import graph is acyclic, and a name declared at top level in another module is imported here. `node --check` on each file. `npm run check` does not cover `ui/` (`tsconfig.json` includes `core/`, `server/`, `bin/`, and `test/` only). Do not start the workbench server on port 47480.

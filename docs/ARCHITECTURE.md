@@ -114,10 +114,12 @@ core/
   proc.mjs               spawn/owner registry, portable CPU/RAM process snapshots, PID-scoped tree kills
   smoke/                 self-checking battery that seeds the scorecard (battery.mjs, index.mjs; private/ = hidden grader material)
 server/index.mjs         HTTP + SSE + static UI
+server/routes/           one HTTP resource per file, handle(ctx)
 scripts/                 build the share/ launcher (not the app itself)
 ui/                      index.html, app.js, stt.js, styles.css
+ui/modules/              browser ES modules per section; app.js is boot only
 share/                   install.cmd, install.sh (for friends)
-test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/), the rest flat
+test/                    node --test; mirrors the source folders that have tests (workers/, smoke/, server/, ui/, tasks/, scorecard/, limits/, plans/), the rest flat
 docs/                    product documentation: this file, DRIVE-CONDUCTOR, REVIEW-FRAMEWORK, video-briefing-finance-prompt
 ```
 

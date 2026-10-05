@@ -115,9 +115,8 @@ test('voidTask publishes the same score event as rateTask', async () => {
 });
 
 test('scorecard config is normalized', () => {
-  saveConfig({ scorecard: { minSamples: 1 } }); // was left set by 'thin cells pool harder levels...' (now in recommend.test.mjs)
   const cfg = loadConfig();
-  assert.equal(cfg.scorecard.minSamples, 1) // an earlier test in this file saved 1; the default is DEFAULTS.scorecard.minSamples;
+  assert.equal(cfg.scorecard.minSamples, DEFAULTS.scorecard.minSamples);
   assert.equal(cfg.scorecard.benchMinSamples, 3);
   assert.equal(cfg.scorecard.shippedBatteries, true);
   assert.equal(cfg.scorecard.quality, 0.75);

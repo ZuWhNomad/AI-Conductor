@@ -9,11 +9,8 @@ import { runInNewContext } from 'node:vm';
 import { findCli } from '../core/proc.mjs';
 import { REPO_ROOT } from '../core/paths.mjs';
 import { bus } from '../core/bus.mjs';
+import { uiSource } from './ui/_source.mjs';
 const { updateStatus, applyUpdate, checkForUpdates, formatUpdate, npmCommand } = await import('../core/update.mjs');
-function uiSource(root) {
-  const files = ['modules/core.js', 'modules/markdown.js', 'modules/sidebar.js', 'modules/budget.js', 'modules/chip.js', 'modules/picker.js', 'modules/transcript.js', 'modules/fleet.js', 'modules/sessions.js', 'modules/update.js', 'modules/sse.js', 'modules/modals.js', 'modules/misc.js', 'app.js'];
-  return files.map((f) => readFileSync(new URL(f, root), 'utf8')).join('\n').replace(/^\s*import\b.*$/gm, '').replace(/^\s*export\b.*$/gm, '');
-}
 
 const git = findCli('git');
 const run = (cwd, ...args) => execFileSync(git, args, { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();

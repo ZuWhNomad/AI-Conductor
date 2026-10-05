@@ -101,13 +101,15 @@ test('formatScores surfaces the phantom column and error-rate section', () => {
 });
 
 test('short view: every category@level is a compact pick, capped cell, or no-data cell; benched cells; csv', () => {
-  // The long table used to include rows from tests that now live in the other scorecard files.
+  const shortBefore = sc.formatScoresShort();
+  const fullBefore = sc.formatScores();
   const pad = [];
   for (let i = 0; i < 40; i++) pad.push(...seed('codex', `length-pad-${i}`, 'low', 'implement', 2, ['pass']));
   try {
   const short = sc.formatScoresShort();
   const full = sc.formatScores();
-  assert.ok(short.length < full.length / 2, 'short ' + short.length + ' vs full ' + full.length);
+  assert.equal(short.length, shortBefore.length, 'short view length changed when rows were added');
+  assert.ok(shortBefore.length < fullBefore.length, 'short ' + shortBefore.length + ' vs full ' + fullBefore.length);
   const cfg = loadConfig().scorecard;
   for (const c of sc.CATEGORIES) for (const d of [1, 2, 3, 4, 5, 6, 7]) {
     const r = sc.recommend({ category: c, difficulty: d });
