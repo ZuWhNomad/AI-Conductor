@@ -29,7 +29,7 @@ former section; see `modules/CONTEXT.md`), `stt.js` (speech-to-text via the Web 
 | `quit / misc` | `modules/misc.js` |
 | `boot` | `app.js` |
 
-**Boundaries.** Browser code: imports only its own files (`./stt.js`) and talks to `server/` over HTTP + SSE. No
+**Boundaries.** Browser code: imports only its own files (`./stt.js`, `./modules/*.js`) and talks to `server/` over HTTP + SSE. No
 `core/` import can work here, so none is attempted.
 
 **Invariants.**

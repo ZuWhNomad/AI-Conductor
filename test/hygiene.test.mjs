@@ -200,14 +200,22 @@ test('every test file imports _env.mjs before any repo module', () => {
 function isProjectNote(file) {
   // This is product documentation for the review method, not a project's review findings.
   if (file === 'docs/REVIEW-FRAMEWORK.md') return false;
-  // Suite for core/plans.mjs, and the core/plans/ split. A project-notes plans/ folder is still rejected everywhere else.
-  if (file.startsWith('test/plans/')) return false;
-  if (file.startsWith('core/plans/')) return false;
-  return /(^|\/)(plans|reviews|notes)\//i.test(file) || /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW|ROADMAP)[-_.]/i.test(basename(file));
+  // Basename rule stays active inside the code folders. Only the plans/ segment itself is exempt
+  // for test/plans and core/plans (the suite, not a notes dump). A *.test.mjs there is still the suite
+  // (status-report.test.mjs collides with the STATUS- prefix). A project-notes plans/ folder is still rejected everywhere else.
+  const base = basename(file);
+  const codeSuite = (file.startsWith('test/plans/') || file.startsWith('core/plans/')) && base.endsWith('.test.mjs');
+  if (!codeSuite && /^(FIXES_BACKLOG|LOG|STATUS|PLAN|REVIEW|ROADMAP)[-_.]/i.test(base)) return true;
+  const parts = file.split('/');
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (/^(reviews|notes)$/i.test(parts[i])) return true;
+    if (/^plans$/i.test(parts[i]) && parts.slice(0, i + 1).join('/') !== 'test/plans' && parts.slice(0, i + 1).join('/') !== 'core/plans') return true;
+  }
+  return false;
 }
 
 test('project-note names are rejected at every depth; the review method remains product documentation', () => {
-  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md', 'docs/plans/work.md']) {
+  for (const file of ['PLAN-work.md', 'docs/PLAN-work.md', 'docs/nested/REVIEW-work.md', 'docs/ROADMAP-capabilities.md', 'core/notes/task.md', 'docs/plans/work.md', 'test/plans/PLAN-x.md']) {
     assert.equal(isProjectNote(file), true, file);
   }
   for (const file of ['docs/REVIEW-FRAMEWORK.md', 'docs/ARCHITECTURE.md', 'core/plans.mjs', 'core/plans/validate.mjs', 'test/plans/stages.test.mjs']) {

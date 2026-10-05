@@ -29,6 +29,7 @@ The update gate counts running chats and running/queued tasks, excluding parked 
 | `POST /api/providers/<id>/usage` | `routes/models-limits.mjs` | user check-in that calibrates the usage estimate | `usage-estimate` |
 | `POST /api/providers/<id>/{install,login,relogin}` | `routes/providers.mjs` | opens a visible terminal (`openTerminal`) | `providers/*` |
 | `GET /api/scores`, `GET /api/bench` | `routes/scores.mjs` | scorecard table; models due a re-benchmark | `scorecard`, `bench` |
+| `POST /api/scores/eligibility` | `routes/scores.mjs` | manual allow or block for one selection and category | `scorecard` |
 | `GET\|POST /api/settings` | `routes/settings.mjs` | config (redacted by `publicConfig`); a save re-applies polling, update checks + `schedule()` | `config` |
 | `/api/improvements[/<id>/resolve]`, `POST /api/review` | `routes/improvements.mjs` | improvement log; open a self-review session | `improve` |
 | `GET /api/browse` | `routes/misc.mjs` | folder picker (async; UNC refused; 404 for missing paths or files) | — |

@@ -221,7 +221,7 @@ test('L47: delegate reads loadConfig() inside the handler, not once at tool-tabl
 
 test('L19: auto-picked delegate persists difficulty 2', async () => {
   // Empty scorecard → auto-pick refuses (I2). Pin is not auto-pick. Use a tagged call that
-  // would auto-pick if recommend returned something: covered in plans.test.mjs L19 via runPlan.
+  // would auto-pick if recommend returned something: covered in test/plans/stages.test.mjs L19 via runPlan.
   const schema = defs().find((d) => d.name === 'delegate').schema;
   assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 3 }).difficulty, 3);
   assert.equal(schema.parse({ title: 't', spec: 's', difficulty: 6 }).difficulty, 6);
