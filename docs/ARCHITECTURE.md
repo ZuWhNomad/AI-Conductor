@@ -80,7 +80,9 @@ core/
                          (buildPrompt), git.mjs (git helpers, worktree links, repo size)
   jobs.mjs               detached commands that survive turns and server restarts
   watchdog.mjs           liveness verdicts/actions, persisted watches, restart-safe idle-chat wake-ups
-  plans.mjs              multi-stage plans (the `run_plan` tool) executed on the task scheduler
+  plans.mjs              re-export façade over plans/ (keeps `./plans.mjs` imports working)
+  plans/                 validate.mjs (plan shape) → findings.mjs (findings, verdicts, tallies) → expand.mjs
+                         ({{goal}}, {{seen}}, {{item}}, {{results:<stage>}}) → executor.mjs (runPlan, registry, journal)
   policy/                orchestration policy and shipped data:
     prompts/             conductor.md (+ -codex, -loop), orchestration.md, worker.md, msw.md
     recipes/             category → instruction set handed to a worker (e.g. image-to-3d-model)

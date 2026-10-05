@@ -35,7 +35,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `context.mjs` | `CONTEXT.md` discovery and path-scoped injection into worker specs. | this file |
 | `improve.mjs` | Error/improvement log and the review runner. | this file |
 | `session-flags.mjs` | Per-session toggles (API overflow, parallel), seeded from every session at start and create. | this file |
-| `plans.mjs` | Multi-stage plans (the `run_plan` tool) on the task scheduler. | this file |
+| `plans.mjs` | Multi-stage plans (the `run_plan` tool) on the task scheduler; re-exports `plans/`. | `plans/CONTEXT.md` |
 | `models.mjs` | Model registry: merges provider lists, auto-poll and force refresh. | this file |
 | `priors.mjs` | API list prices and shipped/configured cold-start tiers. | this file |
 | `proc.mjs` | Spawn/owner registry, portable CPU/RAM snapshots, PID-scoped tree kills. No shell. | this file |
