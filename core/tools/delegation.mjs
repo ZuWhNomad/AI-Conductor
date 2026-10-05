@@ -1,11 +1,12 @@
 // Task tools: delegate, follow_up, await_task, task_status, cancel_task, worktree_cleanup, rate_task.
 import { z } from 'zod';
-import { createTask, getTask, cancelChain, describeTask, cleanupWorktree } from '../tasks.mjs';
+import { createTask, getTask, cancelChain, describeTask, cleanupWorktree, awaitTask } from '../tasks.mjs';
 import { familyOf, normFamilies, selsInFamilies } from '../models.mjs';
 import { logImprovement } from '../improve.mjs';
 import { PROVIDERS } from '../providers/index.mjs';
 import { loadConfig, saveConfig } from '../config.mjs';
-import { CATEGORIES, VERDICTS, ROUTED_MAX_DIFFICULTY, rateTask, effortForTask } from '../scorecard.mjs';
+import { CATEGORIES, VERDICTS, ROUTED_MAX_DIFFICULTY, rateTask, effortForTask, recommend } from '../scorecard.mjs';
+import { accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex } from '../capabilities.mjs';
 import { noWorkerReason, SANDBOX_VALUES } from '../plans.mjs';
 import { sessionFlags } from '../session-flags.mjs';
 import { checkVariant } from '../recipes.mjs';
@@ -16,7 +17,7 @@ const offered = new Map(); // sessionId -> Set of capability names already offer
 /**
  * Tool definitions for one conductor session. `rate_task` is last here; index.mjs lifts it to sit after the job tools.
  */
-export function defs({ sessionId, cwd, maxBlockMs, awaitTask, recommend, accessProviders, missingFor, shouldResearch, researchSpec, parseResearched, loadIndex }) {
+export function defs({ sessionId, cwd, maxBlockMs }) {
   const effortDesc = 'Reasoning effort: low|medium|high|xhigh|max (Codex also: ultra). Default from settings.';
   const capWait = (minutes, task = null) => {
     let want = minutes == null ? undefined : minutes * 60_000;

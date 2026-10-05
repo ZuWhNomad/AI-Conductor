@@ -10,15 +10,15 @@ imports keep working — new code imports the module it needs.
 - `_shared.mjs` — what the groups share. `selOf` (re-exported), the task-wait registry (`taskWaits`, `waitingTasks`),
   `resumeAt`, `escalationState`, `atCeiling`, `formatModels`, `formatLimits`.
 - `delegation.mjs` — `defs`: `delegate`, `follow_up`, `await_task`, `task_status`, `cancel_task`, `worktree_cleanup`,
-  `rate_task`. `rate_task` is last in this array; `index.mjs` lists it after the job tools.
+  `rate_task`. `rate_task` is last in this array; `index.mjs` lists it after the job tools. Imports `awaitTask`
+  from `../tasks.mjs`, `recommend` from `../scorecard.mjs`, and the capability readers from `../capabilities.mjs`.
 - `jobs.mjs` — `defs`: `job_start`, `job_status`, `watch_job`, `job_cancel`, `allow_command`.
-- `plans.mjs` — `defs`: `run_plan`, `plan_status`.
+- `plans.mjs` — `defs`: `run_plan`, `plan_status`. Imports `runPlan` and `getPlan` from `../plans.mjs`, and
+  `recommend` from `../scorecard.mjs`.
 - `info.mjs` — `defs`: `model_scores`, `model_eligibility`, `framework`, `smoke_test`, `list_tasks`, `list_models`,
   `limits`, `log_improvement`, `context_tree`.
 - `index.mjs` — `conductorToolDefs` (concatenates the groups), `conductorTools`, `toolsAsMcp`, `toolsAsFunctions`,
-  `CONDUCTOR_AGENTS`. `../tools.mjs` wraps `conductorToolDefs` and `conductorTools` so the task, scorecard,
-  capability and plan bindings they close over are the ones imported by `core/tools.mjs` (that is what
-  `test/plans/_helpers.mjs` mocks).
+  `CONDUCTOR_AGENTS`. `../tools.mjs` re-exports the folder.
 
 **Boundaries.** `_shared` → `delegation` → `jobs` → `plans` → `info` → `index`, never backwards. A module imports
 only earlier ones in that list (it does not have to import the one immediately before it). Outside this folder they
@@ -32,10 +32,10 @@ import `tasks`, `models`, `limits`, `improve`, `context`, `providers/index`, `co
 - Each group exports `defs({ sessionId, cwd, maxBlockMs })` and returns only its own tools. The offered-capability
   set lives in `delegation.mjs`; the task-wait map lives in `_shared.mjs`. Neither is copied.
 - `export *` from `../tools.mjs` drops `defs` (four modules export it). Import a group's `defs` from that module.
-  The facade's own `conductorToolDefs` and `conductorTools` win over the star re-export of the same names.
-  Every name the old `tools.mjs` exported is still exported from the facade.
-- `awaitTask`, `recommend`, `runPlan`, `getPlan` and the capability readers are imported by `../tools.mjs`
-  and passed into `defs`. Moving those imports into a group skips the plan-test mock.
+  `conductorToolDefs` and `conductorTools` come from `index.mjs`. Every name the old `tools.mjs` exported is
+  still exported from the facade.
+- `delegation.mjs` and `plans.mjs` import `awaitTask`, `recommend`, `runPlan`, `getPlan` and the capability
+  readers themselves.
 - `worker.reportInTool` defaults to `full`. `compact` makes the `delegate` / `await_task` / `task_status` text
   (`describeTask`) keep the first 12 non-empty lines of a finished report and the brief path. The brief file is
   written either way.

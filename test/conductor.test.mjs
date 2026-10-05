@@ -84,7 +84,7 @@ const codexUrl = 'data:text/javascript,' + encodeURIComponent(`
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@anthropic-ai/claude-agent-sdk') return { url: sdkUrl, shortCircuit: true };
-    if (specifier === './workers/codex.mjs' && context.parentURL?.includes('conductor.mjs')) return { url: codexUrl, shortCircuit: true };
+    if ((specifier === './workers/codex.mjs' || specifier === '../workers/codex.mjs') && /\/core\/conductor(\.mjs|\/)/.test(context.parentURL || '')) return { url: codexUrl, shortCircuit: true };
     return nextResolve(specifier, context);
   },
 });

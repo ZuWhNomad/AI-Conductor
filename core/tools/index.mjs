@@ -9,7 +9,6 @@ import { defs as infoDefs } from './info.mjs';
 /**
  * The tool table for one conductor session. Each entry: { name, description, schema (zod object), handler(args) -> string }.
  * `rate_task` is defined with the task tools but listed after the job tools, which is where it has always been.
- * `opts` may also carry the task, scorecard, capability and plan bindings imported by `../tools.mjs`.
  */
 export function conductorToolDefs(opts) {
   const delegation = delegationDefs(opts);

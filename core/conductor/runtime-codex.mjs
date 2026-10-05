@@ -1,15 +1,11 @@
 // Codex runtime: one `codex exec` turn per message (thread resumed). Tools come from the /mcp endpoint.
-// runCodex is bound by ../conductor.mjs. The import stays there so the specifier `./workers/codex.mjs`
-// resolves from a module URL containing `conductor.mjs` (test/conductor.test.mjs hooks that pair).
+import { runCodex } from '../workers/codex.mjs';
 import { codexSandboxFor, runTimeoutMs } from '../config.mjs';
 import { mcpServers } from '../mcp.mjs';
 import { PROMPT, PROMPT_CODEX } from './prompt.mjs';
 
 let serverUrl = 'http://127.0.0.1:47474';
 export function setServerUrl(u) { serverUrl = u; }
-
-let runCodex = null;
-export function setRunCodex(fn) { runCodex = fn; }
 
 export async function runCodexTurn(s, text, { cfg, ac, onEvent, mine }) {
   let r;

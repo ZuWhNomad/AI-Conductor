@@ -14,22 +14,20 @@ re-exports the surface so older imports keep working — new code imports the mo
 - `expand.mjs` — `expandStage` and the `{{goal}}` / `{{seen}}` / `{{item}}` / `{{results:<stage>}}` templating
   (`resultsText`, `RESULTS_CHARS`). Imports `findings.mjs` only.
 - `executor.mjs` — `runPlan`, `getPlan`, `abortPlans`, `noWorkerReason`, and the in-flight registry plus the
-  journal under `<state>/plans/`. `createPlanRuntime({ awaitTask, accessProviders })` builds that registry.
-  `../plans.mjs` calls it once per evaluation.
+  journal under `<state>/plans/`. It imports `awaitTask` from `../tasks.mjs` and `accessProviders` from
+  `../capabilities.mjs`. Each evaluation of this module has its own registry.
 
 **Boundaries.** `validate` → `findings` → `expand` → `executor`, never backwards. Outside this folder the
-executor imports `tasks`, `paths`, `bus`, `models`, `config`, `scorecard`, and `node:fs`. `../plans.mjs` is
-the module that imports `awaitTask` from `tasks` and `accessProviders` from `capabilities`: `test/plans/_helpers.mjs`
-replaces `./tasks.mjs` and `./capabilities.mjs` only when the importer is `core/plans.mjs` (including the
-`?tool-fixture` copy). Nothing from `server`, `bin`, `ui`, or `test`. `workers/` must not import `plans`.
-Enforced by `test/boundaries.test.mjs`.
+executor imports `tasks` (including `awaitTask`), `capabilities` (`accessProviders`), `paths`, `bus`, `models`,
+`config`, `scorecard`, and `node:fs`. Nothing from `server`, `bin`, `ui`, or `test`. `workers/` must not import
+`plans`. Enforced by `test/boundaries.test.mjs`.
 
 **Invariants.**
 - The executor never chooses a model. A task carries provider/model/effort, or the caller's `recommend`.
 - One stage shares one deadline; a failover continues that wait.
 - `for_each` groups votes by the item object `expandStage` passed, not by a worker-supplied id.
 - Plan journals are `<state>/plans/<id>.json`. In-flight state is the registry, not the file.
-- Mutable plan state (`activePlans`, `livePlans`) lives only in `executor.mjs`, inside `createPlanRuntime`,
-  so each evaluation of `../plans.mjs` has its own registry.
+- Mutable plan state (`activePlans`, `livePlans`) lives only in `executor.mjs`, so each evaluation of that
+  module has its own registry.
 
 **How to test.** `node --import ./test/_env.mjs --test test/plans/` (`plans.warmupSeconds` is 0 there). Full: `npm test`.
