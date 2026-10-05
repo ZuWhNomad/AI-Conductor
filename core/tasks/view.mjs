@@ -1,5 +1,6 @@
 // Task views: what a task looks like to the fleet list, the detail endpoint and the conductor. No task state.
 // describeTask reads worker.reportInTool when the caller does not pass a report mode.
+import { existsSync } from 'node:fs';
 import { loadConfig } from '../config.mjs';
 import { briefPath } from './brief.mjs';
 
@@ -65,10 +66,18 @@ export function describeTask(t, { reportMode = loadConfig().worker.reportInTool 
   if (cmds) lines.push(`Actions: ${cmds} commands/tool calls`);
   if (r.finalMessage) {
     if (reportMode === 'compact') {
-      const head = String(r.finalMessage).split('\n').filter((line) => line.trim()).slice(0, 12);
-      lines.push(`Worker report:\n${head.join('\n')}\n… (full report in the brief file)`);
+      const raw = String(r.finalMessage).split('\n');
+      let content = 0;
+      let cut = raw.length;
+      for (let i = 0; i < raw.length; i++) {
+        if (!raw[i].trim()) continue;
+        if (++content === 12) { cut = i + 1; break; }
+      }
+      const truncated = raw.slice(cut).some((line) => line.trim());
+      const head = truncated ? raw.slice(0, cut) : raw;
+      lines.push(`Worker report:\n${head.join('\n')}${truncated ? '\n… (full report in the brief file)' : ''}`);
     } else lines.push(`Worker report:\n${r.finalMessage}`);
   }
-  if (t.status === 'done' || t.status === 'failed' || t.status === 'canceled') lines.push(`Brief: ${briefPath(t.id)}`);
+  if ((t.status === 'done' || t.status === 'failed' || t.status === 'canceled') && existsSync(briefPath(t.id))) lines.push(`Brief: ${briefPath(t.id)}`);
   return lines.join('\n');
 }

@@ -202,7 +202,7 @@ test('I7: allow_command names config.json or POST /api/settings, not Settings', 
 });
 
 test('I12: the unreachable configured-default branch is gone', () => {
-  const src = readFileSync(fileURLToPath(new URL('../core/tools.mjs', import.meta.url)), 'utf8');
+  const src = readFileSync(fileURLToPath(new URL('../core/tools/delegation.mjs', import.meta.url)), 'utf8');
   assert.doesNotMatch(src, /configured default \$\{t\.provider\}/);
 });
 

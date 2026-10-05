@@ -10,7 +10,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | module | one line | brief |
 |---|---|---|
 | `tasks.mjs` | Stateful task journal and scheduler; re-exports `tasks/`. | `tasks/CONTEXT.md` |
-| `tasks/` | Stateless view, prompt, and git leaves. | `tasks/CONTEXT.md` |
+| `tasks/` | Stateless `brief.mjs`, view, prompt, and git leaves. | `tasks/CONTEXT.md` |
 | `sweep.mjs` | Budget math: `admit` (every window under target — session 95%, weekly/budget 100%), `measuredCostByWindow`, `targetFor`. | this file |
 | `experiment.mjs` | A/B records (`conductor experiment` new, list, report) over scorecard rows tagged by `CONDUCTOR_EXPERIMENT=<id>:<arm>`. | this file |
 | `scorecard.mjs` | Re-exports `scorecard/`. | `scorecard/CONTEXT.md` |
@@ -18,6 +18,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `limits.mjs` | Per-provider window registry (polled, scope-keyed refresh). | this file |
 | `usage-estimate.mjs` | Advisory % for windowless providers (never gates dispatch). | this file |
 | `conductor.mjs` | Re-exports `conductor/` (chat sessions: Agent SDK / Codex / API). | `conductor/CONTEXT.md` |
+| `conductor/` | One chat across the Claude, Codex, and API-loop runtimes. | `conductor/CONTEXT.md` |
 | `tools.mjs` | Re-exports `tools/`. | `tools/CONTEXT.md` |
 | `tools/` | Conductor tools by group. `conductorToolDefs` keeps the model-visible order. | `tools/CONTEXT.md` |
 | `bus.mjs` | Event bus (2000-entry / 8MB byte-bound ring, SSE replay). | this file |
@@ -37,6 +38,7 @@ scheduling, budget-aware model selection, limits, the chat conductor, and the to
 | `improve.mjs` | Error/improvement log and the review runner. | this file |
 | `session-flags.mjs` | Per-session toggles (API overflow, parallel), seeded from every session at start and create. | this file |
 | `plans.mjs` | Multi-stage plans (the `run_plan` tool) on the task scheduler; re-exports `plans/`. | `plans/CONTEXT.md` |
+| `plans/` | Multi-stage plans: validate, findings, expand, executor. | `plans/CONTEXT.md` |
 | `models.mjs` | Model registry: merges provider lists, auto-poll and force refresh. | this file |
 | `priors.mjs` | API list prices and shipped/configured cold-start tiers. | this file |
 | `proc.mjs` | Spawn/owner registry, portable CPU/RAM snapshots, PID-scoped tree kills. No shell. | this file |

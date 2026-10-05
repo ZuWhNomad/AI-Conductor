@@ -17,10 +17,10 @@ re-exports the surface so older imports keep working — new code imports the mo
   journal under `<state>/plans/`. It imports `awaitTask` from `../tasks.mjs` and `accessProviders` from
   `../capabilities.mjs`. Each evaluation of this module has its own registry.
 
-**Boundaries.** `validate` → `findings` → `expand` → `executor`, never backwards. Outside this folder the
+**Boundaries.** `validate` → `findings` → `expand` → `executor`, never backwards. That internal order is a convention stated here. Outside this folder the
 executor imports `tasks` (including `awaitTask`), `capabilities` (`accessProviders`), `paths`, `bus`, `models`,
 `config`, `scorecard`, and `node:fs`. Nothing from `server`, `bin`, `ui`, or `test`. `workers/` must not import
-`plans`. Enforced by `test/boundaries.test.mjs`.
+`plans`. `test/boundaries.test.mjs` enforces the outward rules (what the folder may import from outside).
 
 **Invariants.**
 - The executor never chooses a model. A task carries provider/model/effort, or the caller's `recommend`.

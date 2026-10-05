@@ -21,10 +21,10 @@ imports keep working — new code imports the module it needs.
   `CONDUCTOR_AGENTS`. `../tools.mjs` re-exports the folder.
 
 **Boundaries.** `_shared` → `delegation` → `jobs` → `plans` → `info` → `index`, never backwards. A module imports
-only earlier ones in that list (it does not have to import the one immediately before it). Outside this folder they
+only earlier ones in that list (it does not have to import the one immediately before it). That internal order is a convention stated here. Outside this folder they
 import `tasks`, `models`, `limits`, `improve`, `context`, `providers/index`, `config`, `scorecard`, `smoke/index`,
 `plans`, `paths`, `session-flags`, `capabilities`, `recipes`, `jobs`, `watchdog`, `resources`, and `bench` (dynamic)
-— never `server/`, `bin/`, `ui/` or `test/`. Enforced by `test/boundaries.test.mjs`.
+— never `server/`, `bin/`, `ui/` or `test/`. `test/boundaries.test.mjs` enforces the outward rules (what the folder may import from outside).
 
 **Invariants.**
 - `conductorToolDefs` order is delegation except `rate_task`, then the job tools, then `rate_task`, then the info
