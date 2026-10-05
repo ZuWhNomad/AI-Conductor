@@ -76,7 +76,12 @@ core/
   conductor.mjs          re-export façade over conductor/ (keeps `./conductor.mjs` imports working)
   conductor/             prompt.mjs (policy prompts) → sessions.mjs (session store) → common.mjs (shared Codex/loop
                          events) → runtime-claude.mjs → runtime-codex.mjs → runtime-loop.mjs → turns.mjs (send / interrupt / stop)
-  tools.mjs              MCP tools exposed to the conductor
+  tools.mjs              re-export façade over tools/ (keeps `./tools.mjs` imports working)
+  tools/                 _shared.mjs (selection, task-wait registry, escalation, formatters) → delegation.mjs
+                         (delegate, follow_up, await_task, task_status, cancel_task, worktree_cleanup, rate_task) →
+                         jobs.mjs (job_start, job_status, watch_job, job_cancel, allow_command) → plans.mjs
+                         (run_plan, plan_status) → info.mjs (scores, models, limits, smoke, list, log, context) →
+                         index.mjs (conductorToolDefs and the MCP / function adapters)
   tasks.mjs              worker task journal, scheduler, run lifecycle, park/resume on limits; re-exports tasks/
   tasks/                 stateless leaves of tasks.mjs: view.mjs (publicTask, taskSummary, describeTask), prompt.mjs
                          (buildPrompt), git.mjs (git helpers, worktree links, repo size)

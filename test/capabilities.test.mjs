@@ -102,7 +102,7 @@ test('unknown programs and MCP entries are absent until detected; access notes r
 });
 
 test('L20: research proposals whose name is already indexed are dropped; timeout logs did not finish', () => {
-  const src = readFileSync(new URL('../core/tools.mjs', import.meta.url), 'utf8');
+  const src = readFileSync(new URL('../core/tools/delegation.mjs', import.meta.url), 'utf8');
   assert.match(src, /did not finish/);
   assert.match(src, /indexed\.has\(e\.name\)/);
   const [tesseract] = cap.parseResearched('```json\n' + JSON.stringify([{
