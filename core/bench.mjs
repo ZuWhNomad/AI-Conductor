@@ -248,9 +248,17 @@ export async function runBenchQueue({ execute = defaultExecute, tasks = defaultO
   const state = getBenchState(), results = [], listed = new Map(registrySelections(reg).map((s) => [seenKey(s), s]));
   const persist = () => saveState(state);
   // If the process died after the smoke row landed but before bench.json advanced, fold that durable evidence first.
-  const attempts = rootRuns({ source: 'smoke' });
+  const attempts = rootRuns({ source: 'smoke' }), listedModels = new Set([...listed.values()].map(modelKey));
   for (const lane of Object.values(state.lanes)) for (let i = lane.queue.length - 1; i >= 0; i--) {
     const item = lane.queue[i], meta = listed.get(seenKey(item.selection));
+    // The model is listed but no longer offers this effort (an SDK update gave it effort levels): the item can never
+    // run and would pause the lane ahead of its replacements. Its pending probe passes to the model's cheapest effort.
+    if (!meta && listedModels.has(modelKey(item.selection))) {
+      lane.queue.splice(i, 1);
+      const heir = item.probePending && lane.queue.find((q) => modelKey(q.selection) === modelKey(item.selection) && q.remaining.includes('read-1'));
+      if (heir) heir.probePending = true;
+      continue;
+    }
     if (!meta) continue;
     const done = coverageFor(item.selection, meta.offeredEfforts, attempts).ids;
     item.remaining = item.remaining.filter((id, index) => !done.has(id) || (index === 0 && item.repeat > 0));

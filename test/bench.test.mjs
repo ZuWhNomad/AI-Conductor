@@ -214,3 +214,20 @@ test('queued archived selections are refused, and live work yields every lane', 
   assert.equal(getBenchState().lanes.codex.queue.length, 1);
   saveConfig({ scorecard: { archived: [] } });
 });
+
+test('an effort a listed model no longer offers is dropped instead of pausing its lane; a missing model still waits', async () => {
+  reset(); saveConfig({ scorecard: { archived: [] } });
+  const before = reg([model('claude', 'h'), model('claude', 'gone')]);
+  enqueueBench([{ provider: 'claude', model: 'h', effort: null }, { provider: 'claude', model: 'gone', effort: null }], { reg: before, taskIds: ['read-1', 'a'] });
+  const after = reg([model('claude', 'h', ['low', 'high'])]); // an update gave h effort levels; gone is a flap
+  enqueueBench([{ provider: 'claude', model: 'h', effort: 'low' }, { provider: 'claude', model: 'h', effort: 'high' }], { reg: after, taskIds: ['read-1', 'a'] });
+  assert.deepEqual(getBenchState().lanes.claude.queue.filter((q) => q.selection.model === 'h').map((q) => q.probePending), [true, false, false], 'only the stale item holds the probe');
+
+  const ran = [];
+  await runBenchQueue({ execute: async (selection, task, { probe }) => { ran.push(`${selection.model}:${selection.effort}:${task}${probe ? ':probe' : ''}`); return { verdict: 'pass' }; }, tasks: () => [], blockedUntil: () => null, reg: after });
+  assert.deepEqual(ran, [], 'the flapping model sorts first and still pauses the lane');
+  assert.deepEqual(getBenchState().lanes.claude.queue.map((q) => `${q.selection.model}:${q.selection.effort}:${q.probePending}`), ['gone:null:true', 'h:low:true', 'h:high:false'], 'the obsolete item is gone and its probe moved to the cheapest effort');
+
+  await runBenchQueue({ execute: async (selection, task, { probe }) => { ran.push(`${selection.model}:${selection.effort}:${task}${probe ? ':probe' : ''}`); return { verdict: 'pass' }; }, tasks: () => [], blockedUntil: () => null, reg: reg([model('claude', 'h', ['low', 'high']), model('claude', 'gone')]) });
+  assert.deepEqual(ran.filter((r) => r.startsWith('h:')), ['h:low:read-1:probe', 'h:low:a', 'h:high:read-1', 'h:high:a']);
+});
