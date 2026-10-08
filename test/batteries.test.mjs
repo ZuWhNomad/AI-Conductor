@@ -71,6 +71,10 @@ test('scores --distill folds local smoke rows and writes stable sorted aggregate
   appendNdjson(statePath('scorecard.ndjson'), { op: 'void', ts: '2026-09-20T12:03:00.000Z', taskId: 'distill-void', reason: 'private reason' });
   run('distill-live', { source: 'live', category: 'edit' });
   appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: '2026-09-20T12:02:00.000Z', taskId: 'distill-live', verdict: 'pass' });
+  for (const id of ['distill-repeat-1', 'distill-repeat-2']) { // one battery task run twice: two runs, one verdict
+    run(id, { category: 'test', smokeId: 'test-2' });
+    appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: '2026-09-20T12:02:00.000Z', taskId: id, verdict: 'pass' });
+  }
   run('distill-archived', { model: 'archived-model', category: 'docs' });
   appendNdjson(statePath('scorecard.ndjson'), { op: 'rate', ts: '2026-09-20T12:02:00.000Z', taskId: 'distill-archived', verdict: 'pass' });
 
@@ -90,6 +94,9 @@ test('scores --distill folds local smoke rows and writes stable sorted aggregate
     const cell = doc.cells.find((c) => c.model === 'distill-model' && c.category === 'debug');
     assert.deepEqual({ rated: cell.rated, pass: cell.pass, fail: cell.fail, avgTokens: cell.avgTokens, lastRunDate: cell.lastRunDate },
       { rated: 1, pass: 1, fail: 0, avgTokens: 15, lastRunDate: '2026-09-20' });
+    const repeated = doc.cells.find((c) => c.model === 'distill-model' && c.category === 'test');
+    assert.deepEqual({ rated: repeated.rated, pass: repeated.pass }, { rated: 2, pass: 1 }, 'repeats are two runs and one verdict, and still a valid file');
+    assert.equal(sc.validBatteriesDocument({ ...doc, cells: [{ ...repeated, pass: 3 }] }), false, 'more verdicts than runs is still refused');
     assert.equal(doc.cells.some((c) => c.category === 'read' && c.model === 'distill-model'), false);
     assert.equal(doc.cells.some((c) => c.category === 'edit' && c.model === 'distill-model'), false);
     assert.equal(doc.cells.some((c) => c.model === 'archived-model'), false);

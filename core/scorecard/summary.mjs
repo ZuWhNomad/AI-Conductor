@@ -28,7 +28,10 @@ const BATTERY_CELL_KEYS = ['provider', 'model', 'effort', 'category', 'difficult
 const finiteOrNull = (v) => v === null || (Number.isFinite(v) && v >= 0);
 const count = (v) => Number.isInteger(v) && v >= 0;
 
-/** Strict aggregate-only schema: no task ids, titles, notes, or paths can be carried by this file. */
+/**
+ * Strict aggregate-only schema: no task ids, titles, notes, or paths can be carried by this file. `rated` counts runs;
+ * the verdict tallies count battery tasks (repeats of one task fold into one verdict), so they may sum to less.
+ */
 export function validBatteriesDocument(doc) {
   if (!plain(doc) || doc.schemaVersion !== BATTERIES_SCHEMA_VERSION || typeof doc.generatedAt !== 'string' || !Array.isArray(doc.cells)) return false;
   if (Object.keys(doc).sort().join('|') !== ['cells', 'generatedAt', 'schemaVersion'].join('|')) return false;
@@ -40,7 +43,7 @@ export function validBatteriesDocument(doc) {
     && typeof c.category === 'string' && c.category.length > 0
     && Number.isInteger(c.difficulty) && c.difficulty > 0
     && ['rated', 'pass', 'fixable', 'fail', 'phantom'].every((k) => count(c[k]))
-    && c.pass + c.fixable + c.fail + c.phantom === c.rated
+    && c.pass + c.fixable + c.fail + c.phantom <= c.rated
     && finiteOrNull(c.avgUsd) && finiteOrNull(c.avgDurationMs) && finiteOrNull(c.avgTokens)
     && /^\d{4}-\d{2}-\d{2}$/.test(c.lastRunDate));
 }
@@ -199,17 +202,18 @@ export function summarize({ source = null, archived = false, shipped = true } = 
 const summarySort = (a, b) => a.category.localeCompare(b.category) || a.difficulty - b.difficulty || a.steps - b.steps || (b.quality ?? -1) - (a.quality ?? -1);
 
 function shippedSummary(c, now) {
-  const sel = selOf(c), quality = c.rated ? (c.pass * SCORE.pass + c.fixable * SCORE.fixable) / c.rated : null;
+  const sel = selOf(c), scored = c.pass + c.fixable + c.fail + c.phantom; // verdicts; c.rated is runs
+  const quality = scored ? (c.pass * SCORE.pass + c.fixable * SCORE.fixable) / scored : null;
   const weightedRated = c.rated * recencyWeight(c.lastRunDate, now);
   return {
     sel, steps: 1, provider: c.provider, model: c.model, effort: c.effort, category: c.category, difficulty: c.difficulty,
     n: c.rated, rated: c.rated, liveN: 0, liveRated: 0, liveWeightedRated: 0, smokeN: c.rated, smokeRated: c.rated, smokeWeightedRated: weightedRated,
     weightedRated, pass: c.pass, fixable: c.fixable, close: c.close || 0, fail: c.fail, phantom: c.phantom,
     cost: modelInRegistry(getModels(), c.provider, c.model)?.cost || null, priorTier: priorFor(c.provider, c.model, c.category)?.tier || null,
-    quality, liveQuality: null, smokeQuality: quality, accept: c.rated ? (c.pass + c.fixable) / c.rated : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
+    quality, liveQuality: null, smokeQuality: quality, accept: scored ? (c.pass + c.fixable) / scored : null, avgTokens: c.avgTokens, avgUsd: c.avgUsd,
     pricedShare: null, avgPct: null, avgDurationMs: c.avgDurationMs, avgRounds: null,
-    consistency: c.rated ? c.pass / c.rated : null, repeats: null,
-    errorRate: c.rated ? (c.fail + c.fixable) / c.rated : null, phantomRate: c.rated ? c.phantom / c.rated : null,
+    consistency: scored ? c.pass / scored : null, repeats: null,
+    errorRate: scored ? (c.fail + c.fixable) / scored : null, phantomRate: scored ? c.phantom / scored : null,
     toolErrorRate: null, avgTurns: null, thrash: null, timeouts: null, costPerSuccess: c.pass ? (c.avgUsd == null ? null : c.avgUsd * c.rated / c.pass) : null,
     last: c.lastRunDate, shipped: true,
   };
