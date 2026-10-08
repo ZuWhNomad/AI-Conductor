@@ -13,7 +13,7 @@ const reg = (models, providers = [...new Set(models.map((m) => m.provider))]) =>
 const model = (provider, id, efforts = [], extra = {}) => ({ provider, id, efforts, kind: 'agent', cost: 'subscription', ...extra });
 const attempt = (provider, modelId, effort, smokeId, verdict = 'pass') => ({ provider, model: modelId, effort, smokeId, verdict, ts: new Date().toISOString() });
 
-test('coverage is per offered effort at 8/11; a probe is not a battery and effortless models accept historical tags', () => {
+test('coverage is per offered effort at 8/15; a probe is not a battery and effortless models accept historical tags', () => {
   const registry = reg([model('codex', 'covered', ['low', 'high']), model('grok', 'effortless')]);
   const runs = [{ attempts: [
     ...BENCH_TASK_IDS.slice(0, 8).map((id) => attempt('codex', 'covered', 'low', id)),
@@ -90,6 +90,8 @@ test('auto mode queues eligible selections but never executes them during detect
     noteNewModels(first, next);
     const state = getBenchState();
     assert.deepEqual(state.lanes.codex.queue.map((q) => `${q.selection.model}:${q.selection.effort}`), ['new:low', 'new:high']);
+    assert.deepEqual(state.lanes.codex.queue[0].remaining.slice(-5), ['debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'], 'a new model gets the L6-L7 tasks too, after the L1-L5 battery');
+    assert.equal(state.lanes.codex.queue[0].remaining.length, 15);
     assert.equal(state.lanes.deepseek, undefined, 'pay-per-token providers are not auto-benched');
     assert.equal('answers' in state, false);
     assert.equal(state.lanes.codex.running, null);

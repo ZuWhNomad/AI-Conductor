@@ -193,7 +193,7 @@ task itself or waits. Adding or dropping a subscription changes the walk by itse
 A key-based provider whose account holds *granted* (promotional) credit is in the `free` class until that
 credit is spent (DeepSeek draws granted balance before topped-up funds), then drops to `api`. DeepSeek's
 off-peak rule (half price outside Mon-Fri 01-04 / 06-10 UTC) is applied to its list price at decision time.
-`conductor bench [--run]` lists every offered effort below the 8-of-11 rated smoke-task coverage bar (or older than
+`conductor bench [--run]` lists every offered effort below the 8-of-15 rated smoke-task coverage bar (the L1-L5 battery plus the four L6-L7 tasks) (or older than
 `rebenchDays`), then sends explicit runs through restart-safe per-provider lanes. `bench.json` retains registry
 selections, decisions and remaining task ids across list flaps and restarts; a queued effort that a still-listed
 model no longer offers is dropped rather than left to pause its lane. Fresh clones default

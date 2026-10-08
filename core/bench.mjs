@@ -10,10 +10,12 @@ import { modelBlockedUntil } from './limits.mjs';
 import { readJson, writeJson, statePath, nowIso } from './paths.ts';
 
 const FILE = () => statePath('bench.json');
-// The scorecard plan's coverage battery is the original eleven L1-L5 tasks. Newer fixtures do not silently move
-// this bar; changing it is a scorecard-policy decision.
-export const BENCH_TASK_IDS = ['read-1', 'search-1', 'edit-1', 'implement-2', 'test-2', 'refactor-3', 'debug-3', 'debug-4', 'implement-4', 'test-4', 'debug-5'];
-export const BENCH_COVERAGE = Object.freeze({ rated: 8, total: 11 });
+// The coverage battery: the original eleven L1-L5 tasks, then the four hidden-test L6-L7 tasks, hardest last, so a
+// newly listed model is measured where ceilings show without a separate run. The bar stays at eight rated tasks:
+// widening the battery makes no already-covered selection due. Newer fixtures do not silently move this bar;
+// changing it is a scorecard-policy decision.
+export const BENCH_TASK_IDS = ['read-1', 'search-1', 'edit-1', 'implement-2', 'test-2', 'refactor-3', 'debug-3', 'debug-4', 'implement-4', 'test-4', 'debug-5', 'refactor-6', 'implement-6', 'implement-7', 'debug-7'];
+export const BENCH_COVERAGE = Object.freeze({ rated: 8, total: BENCH_TASK_IDS.length });
 
 const effortRank = (effort) => effort == null ? -1 : (EFFORTS.indexOf(effort) < 0 ? EFFORTS.length : EFFORTS.indexOf(effort));
 const repeatCount = (value) => {
@@ -101,7 +103,7 @@ function coverageFor(selection, offeredEfforts, runs) {
   return { ids, newest };
 }
 
-/** Every uncovered offered effort. Coverage requires 8/11 distinct, rated, non-voided smoke tasks. */
+/** Every uncovered offered effort. Coverage requires 8/15 distinct, rated, non-voided smoke tasks. */
 export function dueForBench({ days = loadConfig().scorecard.rebenchDays, reg = getModels(), runs = rootRuns({ source: 'smoke' }) } = {}) {
   const cfg = loadConfig(), cutoff = Date.now() - days * 86_400_000, due = [];
   for (const s of registrySelections(reg)) {
