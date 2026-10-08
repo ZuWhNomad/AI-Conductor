@@ -31,6 +31,7 @@
     { "match": "^claude:(sonnet$|.*sonnet-5)", "default": { "tier": "C" } },
     { "match": "^claude:.*sonnet-4-6", "default": { "tier": "C" } },
     { "match": "^claude:.*sonnet-4-5", "default": { "tier": "C" } },
+    { "match": "^claude:.*haiku-5", "default": { "tier": null } },
     { "match": "^claude:.*haiku", "default": { "tier": "D" } },
     { "match": "^antigravity:gemini-3\\.8-flash", "default": { "tier": "A" }, "kind": { "read": { "tier": "B" }, "reason": { "tier": "B" } } },
     { "match": "^antigravity:gemini-3\\.7-flash", "default": { "tier": "B" } },

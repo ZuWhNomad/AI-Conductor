@@ -78,6 +78,10 @@ test('priors: price and tier lookup, config override, shadow dollars', () => {
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5', {}), { in: 4, out: 20, cached: 0.2 });
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5-5[1m]', {}), { in: 4, out: 20, cached: 0.2 });
   assert.deepEqual(pr.priceFor('claude', 'claude-opus-5', {}), { in: 5, out: 25, cached: 0.5 });
+  assert.deepEqual(pr.priceFor('claude', 'claude-haiku-5-5', {}), { in: 0.1, out: 0.5, cached: 0.01 });
+  assert.equal(pr.priorFor('claude', 'claude-haiku-5-5', 'debug', {}).tier, null, 'Haiku 5.5 does not inherit the Haiku 4.5 expectation');
+  assert.deepEqual(pr.priceFor('claude', 'claude-haiku-4-5-20251001', {}), { in: 1, out: 5, cached: 0.1 });
+  assert.equal(pr.priorFor('claude', 'claude-haiku-4-5-20251001', 'debug', {}).tier, 'D');
   assert.equal(pr.priceFor('antigravity', 'gpt-oss-120b', {}), null);
   assert.equal(pr.priorFor('codex', 'gpt-6-sol').tier, null);                    // price only; its tier comes from measurement
   assert.deepEqual(pr.priceFor('codex', 'gpt-5.3-codex-spark', { scorecard: { prices: { 'codex:gpt-5.3-codex-spark': { in: 1, out: 2 } } } }), { in: 1, out: 2, cached: 0.1 });

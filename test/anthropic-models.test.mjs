@@ -2,7 +2,12 @@ import './_env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { exactModels, familyRe } = await import('../core/providers/anthropic.mjs');
+const { exactModels, familyRe, effortsFor } = await import('../core/providers/anthropic.mjs');
+
+test('Haiku has effort levels from 5.x on, so a Models API listing matches what the SDK reports', () => {
+  assert.deepEqual(effortsFor('claude-haiku-4-5-20251001'), []);
+  assert.deepEqual(effortsFor('claude-haiku-5-5'), ['low', 'medium', 'high', 'xhigh', 'max']);
+});
 
 test('the Claude model list holds exact ids only: aliases become the model they resolve to', () => {
   const sdk = [

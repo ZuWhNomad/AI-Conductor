@@ -133,6 +133,7 @@ export const PRIORS = [
   { re: /^claude:(sonnet$|.*sonnet-5)/, tier: 'C', tb21: 80.4, swev: 85.2, gdpval: 1603, price: { in: 2, out: 10, cached: 0.2 } },
   { re: /^claude:.*sonnet-4-6/, tier: 'C', price: { in: 3, out: 15, cached: 0.3 } },
   { re: /^claude:.*sonnet-4-5/, tier: 'C', price: { in: 3, out: 15, cached: 0.3 } },
+  { re: /^claude:.*haiku-5/, tier: null, price: { in: 0.1, out: 0.5, cached: 0.01 } }, // Haiku 5.5, Anthropic list price checked 2026-10-07; >100K prompt: 5x
   { re: /^claude:.*haiku/, tier: 'D', swev: 73.3, price: { in: 1, out: 5, cached: 0.1 } },
   { re: /^antigravity:gemini-3\.8-flash/, tier: 'A', tiers: { read: 'B', reason: 'B' }, tb21: 89.4, gdpval: 1545, price: { in: 0.75, out: 3.75, cached: 0.075 } }, // intro price through 2026-12-31
   { re: /^antigravity:gemini-3\.7-flash/, tier: 'B', tb21: 85.8, price: { in: 0.75, out: 3.75, cached: 0.075 } },

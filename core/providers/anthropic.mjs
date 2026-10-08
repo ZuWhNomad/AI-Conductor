@@ -72,7 +72,7 @@ export function effortsFor(modelId) {
   const m = /claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?/.exec(modelId);
   if (!m) return [];
   const [, family, major, minor] = m; const v = Number(major) + Number(minor || 0) / 10;
-  if (family === 'haiku') return [];
+  if (family === 'haiku' && v < 5) return [];
   if (family === 'fable' || v >= 5 || (family === 'opus' && v >= 4.7)) return ['low', 'medium', 'high', 'xhigh', 'max'];
   if (v >= 4.6) return ['low', 'medium', 'high', 'max'];
   if (family === 'opus' && v >= 4.5) return ['low', 'medium', 'high'];
