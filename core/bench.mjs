@@ -88,7 +88,7 @@ function registrySelections(reg = getModels()) {
 }
 
 function allowed(s, cfg = loadConfig()) {
-  return !isArchived(s.provider, s.model, cfg.scorecard);
+  return !isArchived(s.provider, s.model, cfg.scorecard, s.effort);
 }
 
 function coverageFor(selection, offeredEfforts, runs) {

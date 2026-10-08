@@ -59,7 +59,7 @@ export function defs({ sessionId, cwd, maxBlockMs }) {
         const repeats = a.repeats || 1;
         runSmoke({ models: [sel], tasks: ids, repeats, sessionId }).then((r) => logImprovement('idea', `smoke:${sessionId}`, `smoke ${selOf(sel)} finished\n${formatSmoke(r)}`)).catch((e) => logImprovement('error', 'smoke', String(e?.message || e)));
         const levelText = levels ? ` at levels ${levels.join(',')}` : '';
-        return `Smoke test started: ${selOf(sel)} on ${ids.length} task(s)${levelText} x ${repeats} repeat(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model) ? '\narchived: results show under archived: true' : ''}`;
+        return `Smoke test started: ${selOf(sel)} on ${ids.length} task(s)${levelText} x ${repeats} repeat(s) (${ids.join(', ')}). Each task may take a few minutes; check model_scores with source: "smoke" later.${isArchived(sel.provider, sel.model, undefined, sel.effort) ? '\narchived: results show under archived: true' : ''}`;
       },
     },
     {

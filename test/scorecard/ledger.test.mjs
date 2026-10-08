@@ -284,3 +284,31 @@ test('B10: shipped priors use category then kind then default, with exact config
     ], ['A', 'C', 'D']);
   } finally { saveConfig({ scorecard: cfg }); }
 });
+
+test('one effort of a model can be archived: the other efforts keep routing, measured and by priors', () => {
+  const cfg = loadConfig().scorecard;
+  const reg = { providers: { codex: { status: 'ok' } }, models: [{ provider: 'codex', id: 'gpt-5.6-luna', kind: 'agent', efforts: ['low', 'high'] }] };
+  try {
+    saveConfig({ scorecard: { archived: [], usePriors: false, minSamples: 1, benchMinSamples: 3, classOrder: ['subscription'] } });
+    for (const effort of ['low', 'high']) {
+      run({ id: `archive-effort-${effort}`, source: 'archive-effort', model: 'gpt-5.6-luna', effort, category: 'implement', difficulty: 1 });
+      sc.rateTask(`archive-effort-${effort}`, 'pass');
+    }
+    for (const [gone, kept] of [['low', 'high'], ['high', 'low']]) {
+      saveConfig({ scorecard: { archived: [`CODEX:GPT-5.6-LUNA:${gone.toUpperCase()}`], usePriors: true } });
+      const measured = sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-effort', reg });
+      assert.deepEqual([measured.model, measured.effort], ['gpt-5.6-luna', kept]);
+      const prior = sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-effort-empty', reg });
+      assert.deepEqual([prior.model, prior.effort], ['gpt-5.6-luna', kept]);
+    }
+    saveConfig({ scorecard: { archived: ['codex:gpt-5.6-luna:low', 'codex:gpt-5.6-luna:high'] } });
+    assert.notEqual(sc.recommend({ category: 'implement', difficulty: 1, source: 'archive-effort-empty', reg })?.model, 'gpt-5.6-luna', 'every effort archived one by one leaves nothing to route');
+
+    const list = { archived: ['deepseek:deepseek-flash:none', 'ollama:qwen3.6:latest', 'codex:whole'] };
+    assert.equal(sc.isArchived('deepseek', 'deepseek-flash', list, 'none'), true, 'an effort outside the ranked list still matches');
+    assert.equal(sc.isArchived('deepseek', 'deepseek-flash', list, 'high'), false);
+    assert.equal(sc.isArchived('deepseek', 'deepseek-flash', list), false, 'the model itself is not archived');
+    assert.equal(sc.isArchived('ollama', 'qwen3.6:latest', list), true, 'a model id that contains a colon is still a whole-model entry');
+    assert.equal(sc.isArchived('codex', 'whole', list, 'max'), true, 'a whole-model entry covers every effort');
+  } finally { saveConfig({ scorecard: cfg }); }
+});

@@ -91,7 +91,7 @@ export const DEFAULTS = {
     coldStart: 'off',                 // off | priors: route by hand-picked priors before measured data exists
     priors: {},                       // exact "provider:model" tier overrides: { category, kind, default }
     prices: {},                       // "provider:model": { in, out, cached } $/M tokens; overrides core/priors.mjs
-    archived: [],                     // hidden scorecard selections, exact "provider:model" matched case-insensitively
+    archived: [],                     // hidden scorecard selections: "provider:model", or "provider:model:effort" for one effort; matched case-insensitively
     effortSlackUsd: 0.01,             // a higher effort of the same model dominates a lower one when within max(this $/task, ...
     effortSlackPct: 10,               // ... this % of the lower effort's $/task) and at least as good
     // Shadow dollars are list price; what a token really costs you depends on the budget it comes from.

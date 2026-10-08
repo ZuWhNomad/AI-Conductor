@@ -61,7 +61,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     const resets = capped.map((w) => Number(w.resetsAt)).filter((t) => Number.isFinite(t) && t > Date.now());
     return { sel: g.sel, reason: capped.length ? `${cls} class cap` : 'unavailable', resetAt: resets.length ? Math.min(...resets) : null };
   };
-  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive); }));
+  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive, p.effort); }));
   const cellLiveN = (g) => g.liveN ?? (g.smokeN != null ? 0 : g.n ?? 0); // old and hand-built summaries without source counts are live
   const cellLiveRated = (g) => g.liveRated ?? (g.smokeRated != null ? 0 : g.rated ?? cellLiveN(g));
   const cellSmokeRated = (g) => g.smokeRated ?? 0;
@@ -435,7 +435,9 @@ function priorFallback({ category, difficulty, exclude, cfg, overflowApi = false
     if (!p?.tier || (TIER_CEILING[p.tier] || 0) < difficulty) continue;
     const price = priceFor(m.provider, model, { scorecard: cfg });
     if (!price) continue;
-    const effort = (p.effort && (m.efforts || []).includes(p.effort) ? p.effort : null) || priorEffort(m.efforts, difficulty);
+    const efforts = (m.efforts || []).filter((e) => !isArchived(m.provider, model, archive, e));
+    if (m.efforts?.length && !efforts.length) continue; // every effort is archived one by one
+    const effort = (p.effort && efforts.includes(p.effort) ? p.effort : null) || priorEffort(efforts, difficulty);
     const sel = selOf({ provider: m.provider, model, effort });
     const manual = eligibility.get(eligibilityKey(sel, category));
     if (manual?.action === 'block' || exclude.includes(sel) || failedBelow.has(sel) || !gate(sel)) continue;

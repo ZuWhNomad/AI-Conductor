@@ -214,6 +214,9 @@ test('queued archived selections are refused, and live work yields every lane', 
   await runBenchQueue({ execute: async () => { calls++; return { verdict: 'pass' }; }, tasks: () => [{ source: 'live', status: 'queued', provider: 'grok' }], blockedUntil: () => null, reg: registry });
   assert.equal(calls, 0);
   assert.equal(getBenchState().lanes.codex.queue.length, 1);
+  saveConfig({ scorecard: { archived: ['codex:new:low'] } });
+  const efforts = reg([model('codex', 'new', ['low', 'high'])]);
+  assert.deepEqual(dueForBench({ days: Infinity, reg: efforts, runs: [] }).map((d) => d.effort), ['high'], 'an effort archived on its own is not due');
   saveConfig({ scorecard: { archived: [] } });
 });
 

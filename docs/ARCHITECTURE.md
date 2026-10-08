@@ -197,7 +197,8 @@ off-peak rule (half price outside Mon-Fri 01-04 / 06-10 UTC) is applied to its l
 `rebenchDays`), then sends explicit runs through restart-safe per-provider lanes. `bench.json` retains registry
 selections, decisions and remaining task ids across list flaps and restarts; a queued effort that a still-listed
 model no longer offers is dropped rather than left to pause its lane. Fresh clones default
-`bench.newModels` to `off`; archived selections are never auto-benched.
+`bench.newModels` to `off`; archived selections (`scorecard.archived`: a whole model as `provider:model`, or one
+effort as `provider:model:effort`) are never auto-benched or routed.
 Pay-per-token API selections still require an explicit answer when the designated copy uses `auto`.
 
 Limit windows may be scoped to a model group: Antigravity's `agy -p /usage --output-format json` reports separate

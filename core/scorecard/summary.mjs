@@ -217,7 +217,7 @@ function shippedSummary(c, now) {
 
 function mergeShipped(local, archive, now) {
   const occupied = new Set(local.filter((g) => g.steps === 1).map((g) => [g.sel, g.category, g.difficulty].join('|')));
-  const fallback = shippedCells().filter((c) => !isArchived(c.provider, c.model, archive)).map((c) => shippedSummary(c, now))
+  const fallback = shippedCells().filter((c) => !isArchived(c.provider, c.model, archive, c.effort)).map((c) => shippedSummary(c, now))
     .filter((g) => !occupied.has([g.sel, g.category, g.difficulty].join('|')));
   return [...local, ...fallback].sort(summarySort);
 }
@@ -290,9 +290,9 @@ function summarizeUncached({ source = null, archived = false, shipped = true } =
     };
   };
   for (const c of rootRuns({ source })) {
-    const chainArchived = c.attempts.some((a) => isArchived(a.provider, a.model, archive));
+    const chainArchived = c.attempts.some((a) => isArchived(a.provider, a.model, archive, a.effort));
     for (const a of c.attempts) {
-      if (isArchived(a.provider, a.model, archive) !== archived) continue;
+      if (isArchived(a.provider, a.model, archive, a.effort) !== archived) continue;
       // B3: score each attempt under its own category/difficulty; skip attempts without tags (an untagged
       // head must not silence a tagged replacement). Fall back to chain tags only when the attempt lacks them.
       const cat = a.category || c.category;
@@ -368,7 +368,7 @@ export function distillBatteries({ out = null } = {}) {
 export function errorRates({ source = null, archived = false } = {}) {
   const archive = archivedSet(loadConfig().scorecard);
   const models = new Map(), providers = new Map();
-  for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict && isArchived(a.provider, a.model, archive) === archived) {
+  for (const c of rootRuns({ source })) for (const a of c.attempts) if (a.verdict && isArchived(a.provider, a.model, archive, a.effort) === archived) {
     for (const [map, key] of [[models, a.sel], [providers, a.provider]]) {
       let g = map.get(key); if (!g) { g = { key, rated: 0, fail: 0, fixable: 0, phantom: 0 }; map.set(key, g); }
       g.rated++; if (a.verdict === 'fail') g.fail++; if (a.verdict === 'fixable') g.fixable++; if (a.verdict === 'phantom') g.phantom++;

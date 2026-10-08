@@ -35,9 +35,11 @@ const archiveKey = (value) => {
   return (colon < 0 ? s : `${s.slice(0, colon)}:${scorecardModelId(s.slice(colon + 1))}`).toLowerCase();
 };
 export const archivedSet = (cfg) => new Set((cfg?.scorecard?.archived || cfg?.archived || []).map(archiveKey).filter(Boolean));
-export function isArchived(provider, model, cfg = loadConfig().scorecard) {
+/** Archived as a whole model (`provider:model`) or, when `effort` is given, at that one effort (`provider:model:effort`). */
+export function isArchived(provider, model, cfg = loadConfig().scorecard, effort = null) {
   const set = cfg instanceof Set ? cfg : archivedSet(cfg);
-  return set.has(`${provider}:${scorecardModelId(model) || 'default'}`.toLowerCase());
+  const key = `${provider}:${scorecardModelId(model) || 'default'}`.toLowerCase();
+  return set.has(key) || (!!effort && set.has(`${key}:${String(effort).toLowerCase()}`));
 }
 export const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
 export function claimedWrites(items) { return (items || []).filter((i) => i.type === 'file_change').flatMap((i) => (i.changes || []).map((c) => c.path).filter(Boolean)); }
