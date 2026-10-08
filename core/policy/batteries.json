@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-08T04:46:57.473Z",
+  "generatedAt": "2026-10-08T05:02:42.495Z",
   "cells": [
     {
       "provider": "antigravity",
@@ -22625,22 +22625,6 @@
       "avgDurationMs": 378473,
       "avgTokens": 676189.5,
       "lastRunDate": "2026-09-27"
-    },
-    {
-      "provider": "ollama",
-      "model": "qwen3.8:latest",
-      "effort": "medium",
-      "category": "read",
-      "difficulty": 1,
-      "rated": 1,
-      "pass": 1,
-      "fixable": 0,
-      "fail": 0,
-      "phantom": 0,
-      "avgUsd": null,
-      "avgDurationMs": 272047,
-      "avgTokens": 2448,
-      "lastRunDate": "2026-09-09"
     }
   ]
 }
