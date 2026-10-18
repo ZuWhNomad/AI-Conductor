@@ -14,6 +14,7 @@ dependencies (`@anthropic-ai/claude-agent-sdk`, `zod`).
 | GPT-6 Astra on the ChatGPT subscription | `codex exec --json` (work) + `codex app-server` (limits/models) | Official non-interactive surfaces of the installed Codex CLI. |
 | Speech-to-text | Browser Web Speech API | Free, native in Edge/Chrome on `http://localhost`. No model to install. |
 | DeepSeek | Generic OpenAI-compatible tool loop over `fetch` | Shared chat-completions API runner. |
+| Claude on an API key (`claude-api`) | The same Agent SDK worker, own `CLAUDE_CONFIG_DIR` + an `apiKeyHelper` | In the normal config folder the CLI keeps its claude.ai login and ignores the key; `--bare` would force the key but strips WebSearch/MCP. |
 | UI | Vanilla HTML/JS served by a Node HTTP server, SSE for streaming | No build step, no framework, shareable by zipping the folder. |
 
 ## Process model
@@ -193,6 +194,9 @@ task itself or waits. Adding or dropping a subscription changes the walk by itse
 A key-based provider whose account holds *granted* (promotional) credit is in the `free` class until that
 credit is spent (DeepSeek draws granted balance before topped-up funds), then drops to `api`. DeepSeek's
 off-peak rule (half price outside Mon-Fri 01-04 / 06-10 UTC) is applied to its list price at decision time.
+`claude-api` runs the subscription's models in class `api`; until it has its own cells it borrows the subscription's
+single-model evidence (`evidenceOf`, `withBorrowedEvidence` in `core/scorecard/recommend.mjs`), so with API overflow
+on a capped Claude subscription overflows to the same model on the key. Missing credit = status `no-credit`, not routed.
 `conductor bench [--run]` lists every offered effort below the 8-of-15 rated smoke-task coverage bar (the L1-L5 battery plus the four L6-L7 tasks) (or older than
 `rebenchDays`), then sends explicit runs through restart-safe per-provider lanes. `bench.json` retains registry
 selections, decisions and remaining task ids across list flaps and restarts; a queued effort that a still-listed

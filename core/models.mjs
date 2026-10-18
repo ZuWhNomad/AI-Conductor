@@ -46,7 +46,7 @@ export function refreshModels({ only = null } = {}) {
         const usable = det.installed !== false && det.configured !== false;
         const list = usable ? await p.listModels() : [];
         lists[p.id] = list;
-        fresh[p.id] = { ...det, status: usable && det.loggedIn !== false ? 'ok' : 'unavailable', count: list.length, error: det.error || null, updatedAt: nowIso(), ms: Date.now() - t0 };
+        fresh[p.id] = { ...det, status: usable && det.loggedIn !== false ? 'ok' : (det.status || 'unavailable'), count: list.length, error: det.error || null, updatedAt: nowIso(), ms: Date.now() - t0 };
       } catch (e) {
         fresh[p.id] = { ...(cache.providers[p.id] || {}), status: 'error', error: String(e?.message || e), updatedAt: nowIso(), ms: Date.now() - t0 };
       }

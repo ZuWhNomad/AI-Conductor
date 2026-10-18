@@ -106,6 +106,9 @@ default (ui.autoRefresh: false); when enabled, it runs every pollMinutes (defaul
     picker also has "Other..." for a model id that is not listed yet.
   - Codex: "codex app-server" (account/rateLimits/read, model/list): plan, windows, resets.
   - DeepSeek: /models, with 429 / retry-after learned on the fly.
+  - Claude API (claude-api): the Models API read with your Anthropic API key, plus a 1-token Haiku
+    call that tells whether the key has credit (status "no-credit" until it does). Workers run the same
+    Claude Code harness in their own config folder, billed per token; each task shows its cost.
 
 A worker that hits a limit is PARKED and resumed automatically on the same thread when the window
 resets; the conductor session itself resumes by session id after a restart.
@@ -226,4 +229,5 @@ QUICKSTART FROM A TERMINAL (if you're sadistic and would prefer one)
 
 
    API-key providers (optional)
-       paste keys in Settings
+       paste keys in Settings (DeepSeek; Claude API = an Anthropic key billed per token,
+       routed only in chats with API overflow on, or when a task names it)

@@ -12,6 +12,28 @@ import {
 } from './ledger.mjs';
 import { summarize, RELIABILITY_TOTALS, SMOKE_TOTALS } from './summary.mjs';
 
+const DOWN = new Set(['unavailable', 'no-credit']); // registry statuses that take a provider out of routing
+
+/**
+ * Evidence borrowed by a provider that runs the same models on the same harness (`evidenceOf`: claude-api ← claude).
+ * Each single-model cell of the lender stands for the borrower until the borrower has its own cell there. Class,
+ * availability and weight stay the borrower's, so an API borrower is still routed only with API overflow on.
+ */
+export function withBorrowedEvidence(rows) {
+  const borrowers = Object.values(PROVIDERS).filter((p) => p.evidenceOf);
+  if (!borrowers.length) return rows;
+  const has = new Set(rows.map((g) => `${g.sel}|${g.category}|${g.difficulty}`));
+  const out = [...rows];
+  for (const p of borrowers) {
+    const swap = (sel) => p.id + sel.slice(p.evidenceOf.length);
+    for (const g of rows) {
+      if (g.steps !== 1 || g.provider !== p.evidenceOf || has.has(`${swap(g.sel)}|${g.category}|${g.difficulty}`)) continue;
+      out.push({ ...g, provider: p.id, sel: swap(g.sel), ...(g.stepCosts ? { stepCosts: g.stepCosts.map((c) => ({ ...c, sel: swap(c.sel) })) } : {}), borrowedFrom: g.sel });
+    }
+  }
+  return out;
+}
+
 /**
  * Best plan for a category at a difficulty: max utility = valueOfQuality × expected quality − expected
  * cost ($ at API list prices + optional $/hour of wall clock). Plans are single models that clear the
@@ -45,11 +67,11 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
   const blockedSel = (sel) => sel.split('>').some((s) => {
     const { provider, model } = parseSel(s);
     // A transient registry error retains cached models; explicit unavailability or removal does not.
-    return !Object.hasOwn(PROVIDERS, provider) || reg.providers[provider]?.status === 'unavailable' || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
+    return !Object.hasOwn(PROVIDERS, provider) || DOWN.has(reg.providers[provider]?.status) || modelInRegistry(reg, provider, model)?.kind !== 'agent' || !avail(provider, model);
   });
   const unavailable = (g) => {
     const { provider, model } = g;
-    if (reg.providers[provider]?.status === 'unavailable') return { sel: g.sel, reason: 'provider unavailable', resetAt: null };
+    if (DOWN.has(reg.providers[provider]?.status)) return { sel: g.sel, reason: `provider ${reg.providers[provider].status}`, resetAt: null };
     if (modelInRegistry(reg, provider, model)?.kind !== 'agent') return { sel: g.sel, reason: 'model unavailable', resetAt: null };
     const blockedUntil = modelBlockedUntil(provider, model);
     if (blockedUntil) return { sel: g.sel, reason: 'provider limit', resetAt: blockedUntil };
@@ -61,7 +83,7 @@ function recommendPlan({ category, difficulty = 2, exclude = [], source = null, 
     const resets = capped.map((w) => Number(w.resetsAt)).filter((t) => Number.isFinite(t) && t > Date.now());
     return { sel: g.sel, reason: capped.length ? `${cls} class cap` : 'unavailable', resetAt: resets.length ? Math.min(...resets) : null };
   };
-  const all = (summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive, p.effort); }));
+  const all = withBorrowedEvidence(summary || summarize({ source })).filter((g) => g.difficulty <= ROUTED_MAX_DIFFICULTY && !g.sel.split('>').some((s) => { const p = parseSel(s); return isArchived(p.provider, p.model, archive, p.effort); }));
   const cellLiveN = (g) => g.liveN ?? (g.smokeN != null ? 0 : g.n ?? 0); // old and hand-built summaries without source counts are live
   const cellLiveRated = (g) => g.liveRated ?? (g.smokeRated != null ? 0 : g.rated ?? cellLiveN(g));
   const cellSmokeRated = (g) => g.smokeRated ?? 0;
@@ -235,8 +257,8 @@ export function providerClass(provider, cfg = loadConfig().scorecard) {
   if (cfg.classes?.[provider]) return cfg.classes[provider];
   const p = PROVIDERS[provider];
   if (!p) return 'api';
-  if (provider === 'claude' || p.kind === 'claude') return 'conductor';
   if (p.auth?.type === 'apiKey') return (getLimits().providers[provider]?.balance?.granted || 0) > 0 ? 'free' : 'api'; // granted credit is spent first, so it is free until gone
+  if (provider === 'claude' || p.kind === 'claude') return 'conductor';
   return 'included';
 }
 

@@ -1,12 +1,14 @@
 // Provider registry. A provider = { id, label, kind, auth, detect(), listModels(), pollLimits() }.
 // kind decides which worker runs a model: claude | codex | openai-compat | vendor-cli.
 import * as anthropic from './anthropic.mjs';
+import * as claudeApi from './claude-api.mjs';
 import * as codex from './codex.mjs';
 import { CATALOG, make } from './openai-compat.mjs';
 import { VENDORS, providerFor } from './vendors.mjs';
 
 export const PROVIDERS = {
   claude: anthropic,
+  'claude-api': claudeApi,
   codex: { ...codex, kind: 'codex' },
   ...Object.fromEntries(Object.values(VENDORS).map((v) => [v.id, providerFor(v)])),
   ...Object.fromEntries(Object.keys(CATALOG).map((id) => [id, make(id)])),

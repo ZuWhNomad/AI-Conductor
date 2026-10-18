@@ -15,7 +15,8 @@ the loop keeps stable request prefixes between trims.
   openai-compat, vendor-cli).
 - `codex.mjs` — the Codex CLI (sandbox mode follows task/config, including per-model exceptions; prompt via stdin;
   a transient stream failure resumes the same thread once).
-- `claude.mjs` — the Claude Agent SDK harness.
+- `claude.mjs` — the Claude Agent SDK harness. A provider's `workerOptions()` adds `env` (an `undefined` value drops an
+  inherited variable) and `settings` (claude-api: its apiKeyHelper). "credit balance is too low" / `billing_error` = limit hit.
 - `openai-compat.mjs` — the `/chat/completions` tool loop for DeepSeek. Host execution is not limited
   to openai-compat `run`: Claude workers default to `bypassPermissions`, vendor CLIs run with auto-approve flags,
   and `worker.codexSandboxByModel` can give a Codex model its own sandbox (empty by default). The `run` child env

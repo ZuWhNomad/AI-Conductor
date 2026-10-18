@@ -9,6 +9,9 @@ windows. This is the *catalog + meter* layer; how a task actually runs lives in 
 - `index.mjs` — the registry. Every provider is `{ id, label, kind, auth, detect(), listModels(), pollLimits() }`;
   register a new one here. See [ADD-A-PROVIDER](../../docs/ADD-A-PROVIDER.md) for the full checklist.
 - `anthropic.mjs`, `codex.mjs`, `openai-compat.mjs` — native / API providers.
+- `claude-api.mjs` — Claude on an Anthropic API key: kind `claude` (the SDK worker) with `workerOptions()` = its own
+  `CLAUDE_CONFIG_DIR` under the state dir + `apiKeyHelper` = `claude-api-key.mjs`, which prints the key from config.json
+  at call time. Credit is probed with a 1-token Haiku call; missing credit = detect `status: 'no-credit'` + a blocked limit.
 - `vendors.mjs` — subscription **agent CLIs** (Antigravity `agy`, xAI `grok`). Each is a spec
   (`bin`, `login`, `probe`, `parseModels`, `pollLimits`, `headlessArgs`, `parse`); `providerFor(spec)` turns a spec
   into a provider. Verify a CLI's flags against the real binary before trusting a spec.

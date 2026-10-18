@@ -12,7 +12,7 @@ import { cliVersionOf } from '../cli-update.mjs';
 
 export const ledgerFile = () => statePath('scorecard.ndjson');
 // Only Claude's SDK cost is a meaningful provider-reported list price today.
-export const LIST_COST_PROVIDERS = new Set(['claude']);
+export const LIST_COST_PROVIDERS = new Set(['claude', 'claude-api']);
 export const CATEGORIES = ['read', 'search', 'summarize', 'research', 'writing', 'video-extraction', 'edit', 'implement', 'test', 'refactor', 'debug', 'ui', 'docs', 'review', 'design', 'drafting', 'modeling', 'other'];
 
 // Minimal prompt→category classifier. Today it recognizes only UI/frontend work, so a UI task the user diverts by

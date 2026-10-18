@@ -150,7 +150,8 @@ export const PRIORS = [
   { re: /^deepseek:.*v4-pro|^deepseek:deepseek-reasoner/, tier: 'A', tb21: 87.9, swev: 80.6, price: { in: 1.32, out: 3.96, cached: 0.044 } }, // routes to V4.1 Flash at Flash pricing from 2026-09-14
 ];
 
-const key = (provider, model) => `${provider}:${model || ''}`.toLowerCase();
+const PRIOR_OF = { 'claude-api': 'claude' }; // same models as the subscription: same tiers and list prices
+const key = (provider, model) => `${PRIOR_OF[provider] || provider}:${model || ''}`.toLowerCase();
 
 /** Expectation for a model, for a task category when given: { tier, kind, tb21, swev, gdpval, mrcr, price, note } or null. */
 export function priorFor(provider, model, category = null, cfg = loadConfig()) {

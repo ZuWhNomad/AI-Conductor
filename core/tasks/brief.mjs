@@ -54,6 +54,7 @@ function resultText(t) {
   if (t.changedFiles?.length) lines.push(`Changed files: ${t.changedFiles.join(', ')}`, '');
   if (t.diffStat) lines.push('Diff stat:', t.diffStat, '');
   if (r.usage) lines.push(`Usage: ${JSON.stringify(r.usage)}`, '');
+  if (r.costUsd > 0) lines.push(`Cost: $${r.costUsd.toFixed(4)} (${r.billed ? 'billed to API credits' : 'list-price equivalent'})`, '');
   lines.push(String(r.finalMessage ?? ''), '');
   return lines.join('\n');
 }

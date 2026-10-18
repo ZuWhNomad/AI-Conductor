@@ -71,7 +71,7 @@ export const DEFAULTS = {
   bench: { newModels: 'off', offPeak: { start: '00:00', end: '07:00', weekends: true } }, // local wall-clock window; null/empty disables it
   providers: {
     // API-key providers are optional; keys may also come from env vars named in providers/*.
-    deepseek: { apiKey: null },
+    deepseek: { apiKey: null }, 'claude-api': { apiKey: null }, // claude-api: Anthropic key, config only (no env var)
     // Worker CLI updates (core/cli-update.mjs): 'off' never checks, 'notify' shows "update available X → Y", 'auto' also
     // installs it once the provider is idle (verified, rolled back on failure). Claude is the Agent SDK in package.json:
     // only `conductor cli-update claude` in a dev checkout bumps it, so its 'auto' acts as 'notify'.

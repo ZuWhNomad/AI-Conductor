@@ -5,7 +5,7 @@ import { spawnTracked } from '../proc.ts';
 import { markUnavailable } from '../models.mjs';
 import { logImprovement } from '../improve.mjs';
 
-const LIMIT_RE = /usage limit|rate limit|limit reached|too many requests|\b429\b/i;
+const LIMIT_RE = /usage limit|rate limit|limit reached|too many requests|\b429\b|credit balance is too low/i; // credit: claude-api is out of API credits
 const REQUIRED_VERSION_RE = /version\s+(\d+\.\d+\.\d+)\s+or newer is required/i;
 
 function noteRequiredVersion(t, message) {
@@ -57,7 +57,8 @@ export async function runClaude(t) {
         cwd: t.cwd,
         model: t.model || undefined,
         effort: t.effort || undefined,
-        env: t.env ? { ...process.env, ...t.env } : undefined,
+        env: t.env ? Object.fromEntries(Object.entries({ ...process.env, ...t.env }).filter(([, v]) => v != null)) : undefined, // undefined drops an inherited var
+        settings: t.settings || undefined, // claude-api: its apiKeyHelper
         permissionMode: bypass ? 'bypassPermissions' : (t.permissionMode || 'acceptEdits'),
         allowDangerouslySkipPermissions: bypass || undefined,
         permissionPrompts: 'none',
@@ -78,7 +79,7 @@ export async function runClaude(t) {
       if (m.type === 'system' && m.subtype === 'init') { res.sessionId = m.session_id; res.servedModel = m.model || null; emit('session', { sessionId: m.session_id, model: m.model }); }
       else if (m.type === 'assistant') {
         res.turns++;
-        if (m.error) { res.error = m.error; if (m.error === 'rate_limit') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; if (noteRequiredVersion(t, m.error)) res.envFailed = true; }
+        if (m.error) { res.error = m.error; if (m.error === 'rate_limit' || m.error === 'billing_error') res.limitHit = true; if (m.error === 'authentication_failed') res.authFailed = true; if (noteRequiredVersion(t, m.error)) res.envFailed = true; }
         for (const b of m.message.content || []) {
           if (b.type === 'text' && b.text) { res.items.push({ type: 'agent_message', text: b.text }); emit('item', { item: { type: 'agent_message', text: b.text }, phase: 'completed' }); }
           if (b.type === 'tool_use') { res.items.push({ type: 'tool_use', name: b.name, input: b.input }); emit('item', { item: { type: 'tool_use', name: b.name, input: summarizeInput(b.input) }, phase: 'started' }); }

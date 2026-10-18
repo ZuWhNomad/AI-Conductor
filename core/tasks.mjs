@@ -639,7 +639,7 @@ async function run(t) {
     if (r.timedOut === true || /^timeout(?:\b| after)/i.test(String(r.error || ''))) { t.timedOut = true; t.failKind = 'timeout'; }
     t.httpStatus = r.httpStatus ?? null; t.exitCode = r.exitCode ?? null;
     const reliability = reliabilityMetrics({ ...t, result: r });
-    t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items),
+    t.result = { finalMessage: r.finalMessage || '', servedModel: r.servedModel || null, usage: r.usage || null, costUsd: r.costUsd || 0, billed: PROVIDERS[t.provider]?.auth?.type === 'apiKey', durationMs: r.durationMs || 0, items: (r.items || []).slice(-40), files: r.files, tools: countTools(r.items),
       turns: reliability.turns, toolCalls: reliability.toolCalls, toolErrors: reliability.toolErrors, thrash: reliability.thrash, timedOut: reliability.timedOut,
       httpStatus: r.httpStatus ?? null, exitCode: r.exitCode ?? null, limitHit: !!r.limitHit, authFailed: !!r.authFailed, envFailed: !!r.envFailed };
     const slash = (p) => process.platform === 'win32' ? p.replaceAll('\\', '/') : p; // git reports '/', Windows workers '\\': one file, one entry

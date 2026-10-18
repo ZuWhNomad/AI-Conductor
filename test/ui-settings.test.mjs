@@ -227,7 +227,7 @@ test('Settings tabs place every control once and save hidden panels together', a
   const controls = view.nodes.filter((node) => ['input', 'select'].includes(node.tag));
   assert.equal(new Set(controls.map((node) => node.id)).size, controls.length);
   for (const node of controls) {
-    const expected = /cliUpdate|grok-reset/.test(node.id) ? 'subscriptions' : /providers.deepseek/.test(node.id) ? 'keys' : 'general';
+    const expected = /cliUpdate|grok-reset/.test(node.id) ? 'subscriptions' : /providers.(deepseek|claude-api)/.test(node.id) ? 'keys' : 'general';
     assert.equal(panelOf(node), 'settings-' + expected, node.id);
     assert.ok(view.nodes.some((label) => label.htmlFor === node.id) || node['aria-label'], node.id + ' has a label');
   }

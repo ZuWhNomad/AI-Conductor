@@ -62,6 +62,7 @@ export function describeTask(t, { reportMode = loadConfig().worker.reportInTool 
   if (t.changedFiles?.length) lines.push(`Changed files: ${t.changedFiles.join(', ')}`);
   if (t.diffStat) lines.push(`Diff stat:\n${t.diffStat}`);
   if (r.usage) lines.push(`Usage: ${JSON.stringify(r.usage)}`);
+  if (r.costUsd > 0) lines.push(`Cost: $${r.costUsd.toFixed(4)} (${r.billed ? 'billed to API credits' : 'list-price equivalent'})`);
   if (r.files?.length) lines.push(`Files: ${r.files.join(', ')}`);
   if (cmds) lines.push(`Actions: ${cmds} commands/tool calls`);
   if (r.finalMessage) {
