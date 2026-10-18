@@ -72,7 +72,9 @@ test('worker: own config folder + helper, no inherited credential, cost and toke
   const saved = { ...process.env };
   process.env.ANTHROPIC_API_KEY = 'fake-inherited-value-for-tests';
   process.env.CLAUDE_CODE_OAUTH_TOKEN = 'fake-inherited-token-for-tests';
-  t.after(() => { for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) if (saved[k] == null) delete process.env[k]; else process.env[k] = saved[k]; });
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9';  // a host session's proxy
+  process.env.CLAUDE_CODE_ENTRYPOINT = 'claude-desktop'; // made the CLI refuse the key (2026-10-18)
+  t.after(() => { for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_ENTRYPOINT']) if (saved[k] == null) delete process.env[k]; else process.env[k] = saved[k]; });
   const usage = { 'claude-haiku-5-5': { inputTokens: 12, outputTokens: 34, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.0021 } };
   globalThis.__claudeMessages = [
     { type: 'system', subtype: 'init', session_id: 's1', model: 'claude-haiku-5-5' },
@@ -82,7 +84,7 @@ test('worker: own config folder + helper, no inherited credential, cost and toke
   const o = globalThis.__claudeQueryOpts.options;
   assert.equal(r.ok, true, r.error);
   assert.equal(o.env.CLAUDE_CONFIG_DIR, statePath('claude-api'));
-  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN']) assert.equal(k in o.env, false, k);
+  for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_ENTRYPOINT']) assert.equal(k in o.env, false, k);
   assert.match(o.settings.apiKeyHelper, /claude-api-key\.mjs"$/);
   assert.equal(JSON.stringify(globalThis.__claudeQueryOpts).includes(FAKE('worker')), false, 'the key itself never reaches the CLI options');
   assert.equal(r.costUsd, 0.0021);

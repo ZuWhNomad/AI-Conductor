@@ -20,8 +20,11 @@ const API = 'https://api.anthropic.com/v1';
 export const NO_CREDIT_RE = /credit balance is too low/i;
 const NO_CREDIT = 'API credit balance is too low: add credits at console.anthropic.com/settings/billing';
 const HELPER = fileURLToPath(new URL('./claude-api-key.mjs', import.meta.url));
-// Credentials the server's own environment may carry; any of them would beat the helper or leak the subscription.
-const SECRET_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'];
+// What a server started from inside a Claude session inherits: credentials (ANTHROPIC_API_KEY / AUTH_TOKEN,
+// CLAUDE_CODE_OAUTH_TOKEN), the host's account and proxy (ANTHROPIC_BASE_URL) and its entrypoint: with
+// CLAUDE_CODE_ENTRYPOINT=claude-desktop the CLI answered every key run "Credit balance is too low" while the same key
+// worked on the API and in a clean env (measured 2026-10-18). Any of them beats the helper or bills the wrong account.
+const HOST_ENV = /^ANTHROPIC_|^CLAUDE_CODE_(ENTRYPOINT|OAUTH|ACCOUNT_UUID|ORGANIZATION_UUID|USER_EMAIL|SDK_HAS_HOST_AUTH)/;
 
 export const apiKey = () => loadConfig().providers[id]?.apiKey || null;
 const headers = (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' });
@@ -31,7 +34,7 @@ export function workerOptions() {
   const dir = statePath('claude-api');
   mkdirSync(dir, { recursive: true });
   return {
-    env: { CLAUDE_CONFIG_DIR: dir, ...Object.fromEntries(SECRET_ENV.map((k) => [k, undefined])) },
+    env: { ...Object.fromEntries(Object.keys(process.env).filter((k) => HOST_ENV.test(k)).map((k) => [k, undefined])), CLAUDE_CONFIG_DIR: dir },
     settings: { apiKeyHelper: `"${process.execPath}" "${HELPER}"` },
   };
 }
