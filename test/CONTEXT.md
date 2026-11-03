@@ -20,6 +20,7 @@ vendor-probe paths, and Codex environment forwarding. Fixtures live in temporary
 when messages, sources, kinds and context contain credentials.
 
 `_env.mjs` isolates state (`CONDUCTOR_HOME` = a temp dir, scheduling and polling off) and supplies `HOME` and
-`tmpDir()`. Every test file still imports it first (`./_env.mjs` or `../_env.mjs`) — `test/hygiene.test.mjs` fails
+`tmpDir()`. It points `TEMP`/`TMP`/`TMPDIR` at one per-process root that is removed on exit, so temp dirs need no
+cleanup of their own and nothing is left in the system temp folder. Every test file still imports it first (`./_env.mjs` or `../_env.mjs`) — `test/hygiene.test.mjs` fails
 otherwise — so a file run on its own is isolated too. Scheduler tests must restore the flags they change. Use temporary
 repositories for Git checks and stubs for worker/API calls; never the live state directory or server.
