@@ -368,6 +368,32 @@ test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help',
   assert.ok(VENDORS.grok.headlessArgs(open).args.includes('--always-approve'));
 });
 
+test('antigravity snapshot run (read-only in git): terminal sandbox + accept-edits, never skip-permissions (leak 2026-11-19)', () => {
+  const a = VENDORS.antigravity.headlessArgs({ prompt: 'hi', cwd: 'F:/snap', timeoutMs: 60_000, snapshot: true }).args;
+  assert.ok(a.includes('--sandbox'));
+  assert.equal(a[a.indexOf('--mode') + 1], 'accept-edits');
+  assert.deepEqual(JSON.parse(a[a.indexOf('--settings') + 1]), { permissions: { allow: ['command(*)'] } });
+  assert.ok(!a.includes('--dangerously-skip-permissions'));
+  assert.equal(a.filter((x) => x === '--add-dir').length, 1, 'only the snapshot is a workspace');
+  // grok's snapshot path is unchanged (untested against grok's own sandbox)
+  assert.ok(VENDORS.grok.headlessArgs({ prompt: 'hi', cwd: 'F:/snap', timeoutMs: 60_000, snapshot: true }).args.includes('--always-approve'));
+});
+
+test('antigravity auto-deny (recorded agy 1.5.13 stream): SUCCESS with empty response + denied_actions is an environment failure, not done', async () => {
+  const recorded = { event: 'result', result: { conversation_id: 'd442f4e5-8099-4d59-89fc-c845f669b345', status: 'SUCCESS', response: '', duration_seconds: 2.2998736, num_turns: 1, usage: { input_tokens: 8973, output_tokens: 35, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 9008 }, denied_actions: [{ action: 'command', display_name: 'Bash' }] } };
+  const tool = { event: 'step_update', step_update: { conversation_id: 'd442f4e5-8099-4d59-89fc-c845f669b345', step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'read_file', tool_info: { result: 'ok' } } };
+  const stderr = 'jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.';
+  const r = await runVendorCli(fakeSpec([tool, recorded], { stderr }), { id: 't', cwd: tmpDir('agy-denied'), prompt: 'x' });
+  assert.equal(r.ok, false);
+  assert.equal(r.envFailed, true);
+  assert.match(r.error, /auto-denied Bash/);
+  // a denial the model recovered from (it still answered) stays a success
+  const answered = { ...recorded, result: { ...recorded.result, response: 'Here is the answer.' } };
+  const ok = await runVendorCli(fakeSpec([tool, answered], { stderr }), { id: 't', cwd: tmpDir('agy-denied-ok'), prompt: 'x' });
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(ok.finalMessage, 'Here is the answer.');
+});
+
 test('grok: a 402 exhausted balance (recorded 2026-09-25, reason only in errors[]) is a limit hit with the reason, not error_during_execution', async () => {
   const line = { type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 900, num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, errors: ["Internal error: {\n  \"message\": \"API error (status 402 Payment Required): Grok Build usage balance exhausted\",\n  \"http_status\": 402\n}"] };
   const r = await runVendorCli(fakeSpec([line], { exitCode: 1, parse: VENDORS.grok.parse }), { id: 't', cwd: tmpDir('grok402'), prompt: 'x' });
@@ -458,6 +484,7 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
 
   let seenCwd = null;
   let seenSandbox = 'initial';
+  let seenSnapshot = null;
   let seenPrompt = null;
   let seenWritableRoots = 'unset';
   const extraRoot = tmpDir('vendor-snap-extra');
@@ -487,6 +514,7 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
     headlessArgs: (t) => {
       seenCwd = t.cwd;
       seenSandbox = t.sandbox;
+      seenSnapshot = t.snapshot;
       seenPrompt = t.prompt;
       seenWritableRoots = t.writableRoots;
       return { args: ['-e', script], threadId: null };
@@ -499,6 +527,7 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
   // Ran in snapshot directory, not original repo
   assert.notEqual(seenCwd, cwd);
   assert.equal(seenSandbox, undefined, 'runs in normal (non-plan) mode in snapshot');
+  assert.equal(seenSnapshot, true, 'the spec is told it runs in a snapshot (agy: --sandbox, not skip-permissions)');
   assert.deepEqual(seenWritableRoots, [], 'snapshot runs clear writableRoots so agy gets no --add-dir for original dirs');
   assert.match(seenPrompt, /This is a disposable snapshot of the project/);
   assert.match(seenPrompt, /Use project-relative paths/);

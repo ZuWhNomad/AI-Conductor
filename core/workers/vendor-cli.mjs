@@ -80,7 +80,7 @@ async function runVendorCliSnapshot(spec, t) {
   const workerCwd = prefix ? join(snapshotDir, prefix) : snapshotDir;
   const preamble = `This is a disposable snapshot of the project. Use project-relative paths. Nothing may be written outside the snapshot.\n\n`;
   const prompt = `${preamble}${t.prompt || ''}`;
-  const snapshotTask = { ...t, cwd: workerCwd, sandbox: undefined, prompt, writableRoots: [] };
+  const snapshotTask = { ...t, cwd: workerCwd, sandbox: undefined, snapshot: true, prompt, writableRoots: [] };
 
   let beforeOriginal;
   try { beforeOriginal = new Set((await gitStatusAll(gitBin, gitRoot)).map((e) => e.line)); } catch {}

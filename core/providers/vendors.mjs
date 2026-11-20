@@ -203,7 +203,11 @@ export const VENDORS = {
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
       args.push('--output-format', 'stream-json', '--add-dir', t.cwd, ...(t.writableRoots || []).flatMap((d) => ['--add-dir', d]), '--print-timeout', `${t.timeoutMs ? Math.max(60, Math.round(t.timeoutMs / 1000)) : 7 * 24 * 60 * 60}s`);
-      if (t.sandbox === 'read-only') args.push('--mode', 'plan');
+      // Read-only in a git repo runs in a disposable snapshot (t.snapshot). Skip-permissions there let absolute-path writes
+      // land in the real repo (2026-11-19), so: agy's terminal sandbox, edits auto-approved only inside the workspace
+      // (the snapshot), shell commands allowed (sandboxed). A write elsewhere is auto-denied (see onClose).
+      if (t.snapshot) args.push('--sandbox', '--mode', 'accept-edits', '--settings', JSON.stringify({ permissions: { allow: ['command(*)'] } }));
+      else if (t.sandbox === 'read-only') args.push('--mode', 'plan'); // not a git repo: no snapshot to work in
       else args.push('--dangerously-skip-permissions');
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
       // Effort is encoded in the id (Method C): translate (family, effort) → concrete id here. Never pass --effort:
@@ -236,6 +240,14 @@ export const VENDORS = {
         st.httpStatus ||= httpStatusOf(body) || httpStatusOf(obj);
         if (/^(success|completed|ok|done)$/i.test(String(body.status || ''))) st.finalText = typeof body.response === 'string' ? body.response.trim() : st.text;
         else st.error = String(body.error?.message || body.error || body.message || body.status || 'agy run failed');
+        // agy 1.5.13 headless: a tool call no rule allows is auto-denied and the run ends SUCCESS with an empty response
+        // and `denied_actions` (recorded 2026-11-19). Plan mode denies any shell call; a snapshot run denies a write
+        // outside the snapshot. Without this the task is marked done with no answer.
+        const denied = Array.isArray(body.denied_actions) ? body.denied_actions : [];
+        if (!st.error && !st.finalText && denied.length) {
+          st.envFailed = true;
+          st.error = `agy auto-denied ${denied.map((d) => d.display_name || d.action).join(', ')} and stopped without an answer (read-only run: writes outside the snapshot, and any shell call in plan mode, are refused; environment failure, not scored)`;
+        }
       } else if (obj.error) { st.error = String(obj.error?.message || obj.error); st.httpStatus ||= httpStatusOf(obj); }
     },
   },
