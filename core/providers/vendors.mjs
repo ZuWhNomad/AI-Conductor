@@ -30,8 +30,8 @@ const P = {
 // Antigravity (Method C): effort is baked into the model id (…-low / -medium / -high) and the CLI has no --effort
 // flag. Collapse each such family into ONE logical model exposing efforts:[…] with the concrete id per effort, so
 // the scorecard reasons about effort uniformly; the executor maps (family, effort) → concrete id at dispatch.
-const EFFORT_IN_ID = /-(low|medium|high)$/;
-const EFFORT_ORDER = ['low', 'medium', 'high'];
+const EFFORT_IN_ID = /-(low|medium|high|xhigh)$/; // xhigh: Gemini 4 Neon / Hydrogen (agy 1.5.13)
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh'];
 export function collapseEffortFamilies(models) {
   const fam = new Map(); const out = [];
   for (const m of models) {
@@ -39,7 +39,7 @@ export function collapseEffortFamilies(models) {
     if (!mm) { out.push(m); continue; } // no effort suffix (claude-*, gpt-oss without a level): pass through untouched
     const family = m.id.slice(0, mm.index);
     let g = fam.get(family);
-    if (!g) { g = { id: family, label: String(m.label || family).replace(/\s*\((?:low|medium|high)\)\s*$/i, '').trim() || family, efforts: new Set(), effortIds: {}, isDefault: false }; fam.set(family, g); out.push(g); }
+    if (!g) { g = { id: family, label: String(m.label || family).replace(/\s*\((?:low|medium|high|xhigh)\)\s*$/i, '').trim() || family, efforts: new Set(), effortIds: {}, isDefault: false }; fam.set(family, g); out.push(g); }
     g.efforts.add(mm[1]); g.effortIds[mm[1]] = m.id; if (m.isDefault) g.isDefault = true;
   }
   for (const g of fam.values()) g.efforts = EFFORT_ORDER.filter((e) => g.efforts.has(e));
@@ -104,9 +104,13 @@ export function parseAgyUsage(text) {
   const groups = j?.command?.data?.groups; if (!Array.isArray(groups)) return null;
   const windows = [];
   for (const g of groups) {
-    // "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS" → ^(claude|gpt); falls back to the group name.
-    const names = (String(g.description || '').split(':')[1] || g.name || '').split(',').map((s) => s.trim().split(/[\s-]/)[0].toLowerCase()).filter(Boolean);
-    const models = names.length ? `^(${[...new Set(names)].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})` : null;
+    // "Models within this group: Gemini 4 Neon, Orchestrator (Neon), Gemini 3.8 Flash" → one pattern per name: its words
+    // in order as whole id segments, other segments allowed between (gemini-4-neon-high, gemini-pro-orchestrator-neon,
+    // gemini-3.8-flash-low). Falls back to the group name: agy 1.5.13's "Gemini 4 Argon" group lists no models, and
+    // a first-word pattern (^gemini) put Argon's own weekly limit on every Gemini model.
+    const names = (String(g.description || '').split(':')[1] || g.name || '').split(',');
+    const parts = [...new Set(names.map((n) => n.toLowerCase().replace(/\bmodels?\b/g, ' ').match(/[a-z0-9]+/g)).filter(Boolean).map((w) => w.join('(?:[.-][a-z0-9]+)*?[.-]')))];
+    const models = parts.length ? `(?:^|[.-])(?:${parts.join('|')})(?:[.-]|$)` : null;
     const short = String(g.name || '').replace(/ models?$/i, '');
     for (const b of g.buckets || []) {
       const rem = Number(b.remaining_fraction);
