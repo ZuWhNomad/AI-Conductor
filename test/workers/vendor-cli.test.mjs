@@ -368,24 +368,27 @@ test('read-only sandbox maps to vendor plan flags confirmed on each CLI --help',
   assert.ok(VENDORS.grok.headlessArgs(open).args.includes('--always-approve'));
 });
 
-test('antigravity snapshot run (read-only in git): terminal sandbox + accept-edits, never skip-permissions (leak 2026-11-19)', () => {
+test('antigravity snapshot run (read-only in git): accept-edits + reads only, never skip-permissions or shell (leak 2026-11-19)', () => {
   const a = VENDORS.antigravity.headlessArgs({ prompt: 'hi', cwd: 'F:/snap', timeoutMs: 60_000, snapshot: true }).args;
-  assert.ok(a.includes('--sandbox'));
   assert.equal(a[a.indexOf('--mode') + 1], 'accept-edits');
-  assert.deepEqual(JSON.parse(a[a.indexOf('--settings') + 1]), { permissions: { allow: ['command(*)'] } });
+  // probed: --sandbox + command(*) still let `echo > C:\...` and `> <repo>\shell.txt` land; no command rule may be allowed
+  assert.deepEqual(JSON.parse(a[a.indexOf('--settings') + 1]), { permissions: { allow: ['read_file(*)'] } });
+  assert.ok(!a.includes('--sandbox'));
   assert.ok(!a.includes('--dangerously-skip-permissions'));
   assert.equal(a.filter((x) => x === '--add-dir').length, 1, 'only the snapshot is a workspace');
+  assert.match(VENDORS.antigravity.snapshotNote, /No shell commands, workflows or subagents/);
+  assert.equal(VENDORS.grok.snapshotNote, undefined);
   // grok's snapshot path is unchanged (untested against grok's own sandbox)
   assert.ok(VENDORS.grok.headlessArgs({ prompt: 'hi', cwd: 'F:/snap', timeoutMs: 60_000, snapshot: true }).args.includes('--always-approve'));
 });
 
-test('antigravity auto-deny (recorded agy 1.5.13 stream): SUCCESS with empty response + denied_actions is an environment failure, not done', async () => {
+test('antigravity auto-deny (recorded agy 1.5.13 stream): SUCCESS with empty response + denied_actions is a scored failure, not done', async () => {
   const recorded = { event: 'result', result: { conversation_id: 'd442f4e5-8099-4d59-89fc-c845f669b345', status: 'SUCCESS', response: '', duration_seconds: 2.2998736, num_turns: 1, usage: { input_tokens: 8973, output_tokens: 35, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 9008 }, denied_actions: [{ action: 'command', display_name: 'Bash' }] } };
   const tool = { event: 'step_update', step_update: { conversation_id: 'd442f4e5-8099-4d59-89fc-c845f669b345', step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'read_file', tool_info: { result: 'ok' } } };
   const stderr = 'jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.';
   const r = await runVendorCli(fakeSpec([tool, recorded], { stderr }), { id: 't', cwd: tmpDir('agy-denied'), prompt: 'x' });
   assert.equal(r.ok, false);
-  assert.equal(r.envFailed, true);
+  assert.equal(r.envFailed, false, 'scored: the scorecard should learn agy cannot do read-only work that needs a shell');
   assert.match(r.error, /auto-denied Bash/);
   // a denial the model recovered from (it still answered) stays a success
   const answered = { ...recorded, result: { ...recorded.result, response: 'Here is the answer.' } };
@@ -534,6 +537,7 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
   assert.match(seenPrompt, /Nothing may be written outside the snapshot/);
   assert.equal(seenPrompt.includes(cwd), false, 'preamble must not name the original cwd');
   assert.match(seenPrompt, /audit code/);
+  assert.ok(!/No shell/.test(seenPrompt), 'no snapshotNote on a spec without one');
 
   // Observed tracked changes inside snapshot, but untracked files are not in snapshot
   assert.match(r.finalMessage, /tracked=v2-dirty/);
@@ -556,6 +560,11 @@ test('vendor read-only snapshot lifecycle: creates detached worktree, runs in sn
 
   // Snapshot directory was cleaned up and removed
   assert.equal(existsSync(seenCwd), false);
+
+  // A spec's snapshotNote (agy: no shell) follows the preamble
+  const noted = await runVendorCli({ ...spec, snapshotNote: 'NOTE-X' }, { id: 'snap-2', cwd, sandbox: 'read-only', prompt: 'audit code' });
+  assert.equal(noted.ok, true, noted.error);
+  assert.match(seenPrompt, /snapshot\.\nNOTE-X\n\naudit code/);
 });
 
 test('vendor read-only snapshot: cleans up worktree on run failure and on cancellation', async (ctx) => {

@@ -177,6 +177,7 @@ export const VENDORS = {
   antigravity: {
     id: 'antigravity', label: 'Google Antigravity (Google AI Pro/Ultra)', budgetLabel: 'Google subscription',
     readOnlyViaSnapshot: true,
+    snapshotNote: 'No shell commands, workflows or subagents in this read-only run: any such call ends it with no answer. Use read_file (any path) and web search; there is no list or grep tool, so read the paths the task names.',
     usageInputExclusive: true, // Claude-Code-shaped stream: input_tokens excludes cache reads (Codex-style streams include them)
     bin: () => findCli('agy') || first([join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'), join(home, '.local', 'bin', 'agy')]),
     install: { win: 'powershell -NoProfile -Command "irm https://antigravity.google/cli/install.ps1 | iex"', posix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
@@ -203,10 +204,11 @@ export const VENDORS = {
       if (long) args.push('--input-format', 'text');
       else args.push('-p', t.prompt);
       args.push('--output-format', 'stream-json', '--add-dir', t.cwd, ...(t.writableRoots || []).flatMap((d) => ['--add-dir', d]), '--print-timeout', `${t.timeoutMs ? Math.max(60, Math.round(t.timeoutMs / 1000)) : 7 * 24 * 60 * 60}s`);
-      // Read-only in a git repo runs in a disposable snapshot (t.snapshot). Skip-permissions there let absolute-path writes
-      // land in the real repo (2026-11-19), so: agy's terminal sandbox, edits auto-approved only inside the workspace
-      // (the snapshot), shell commands allowed (sandboxed). A write elsewhere is auto-denied (see onClose).
-      if (t.snapshot) args.push('--sandbox', '--mode', 'accept-edits', '--settings', JSON.stringify({ permissions: { allow: ['command(*)'] } }));
+      // Read-only in a git repo runs in a disposable snapshot (t.snapshot). Skip-permissions there let absolute-path and
+      // shell writes land in the real repo (2026-11-19); --sandbox did not stop shell writes either (probed). So: edits
+      // auto-approved only inside the workspace (the snapshot), reads allowed anywhere, no shell. A denied call ends the
+      // run (see parse).
+      if (t.snapshot) args.push('--mode', 'accept-edits', '--settings', JSON.stringify({ permissions: { allow: ['read_file(*)'] } }));
       else if (t.sandbox === 'read-only') args.push('--mode', 'plan'); // not a git repo: no snapshot to work in
       else args.push('--dangerously-skip-permissions');
       if (t.resumeThreadId) args.push('--conversation', t.resumeThreadId);
@@ -241,12 +243,12 @@ export const VENDORS = {
         if (/^(success|completed|ok|done)$/i.test(String(body.status || ''))) st.finalText = typeof body.response === 'string' ? body.response.trim() : st.text;
         else st.error = String(body.error?.message || body.error || body.message || body.status || 'agy run failed');
         // agy 1.5.13 headless: a tool call no rule allows is auto-denied and the run ends SUCCESS with an empty response
-        // and `denied_actions` (recorded 2026-11-19). Plan mode denies any shell call; a snapshot run denies a write
-        // outside the snapshot. Without this the task is marked done with no answer.
+        // and `denied_actions` (recorded 2026-11-19). Read-only runs deny any shell call and any write outside the
+        // snapshot. Without this the task is marked done with no answer. Scored (not an env failure): agy has no list or
+        // grep tool without the shell, so the scorecard should learn which read-only work it can't do.
         const denied = Array.isArray(body.denied_actions) ? body.denied_actions : [];
         if (!st.error && !st.finalText && denied.length) {
-          st.envFailed = true;
-          st.error = `agy auto-denied ${denied.map((d) => d.display_name || d.action).join(', ')} and stopped without an answer (read-only run: writes outside the snapshot, and any shell call in plan mode, are refused; environment failure, not scored)`;
+          st.error = `agy auto-denied ${denied.map((d) => d.display_name || d.action).join(', ')} and stopped without an answer (read-only run: no shell, no writes outside the snapshot)`;
         }
       } else if (obj.error) { st.error = String(obj.error?.message || obj.error); st.httpStatus ||= httpStatusOf(obj); }
     },
