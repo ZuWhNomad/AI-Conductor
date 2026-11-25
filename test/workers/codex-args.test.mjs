@@ -143,7 +143,8 @@ test('writable_roots reach Codex as --add-dir and Claude as additionalDirectorie
   await runClaude({ cwd, prompt: 'x', writableRoots: [extra], timeoutMs: 5000 });
   const claudeArgv = calls.at(-1);
   assert.notEqual(claudeArgv, argv, 'the Agent SDK spawned the claude CLI');
-  assert.equal(claudeArgv[claudeArgv.indexOf('--add-dir') + 1], extra);
+  // SDK 0.3.293 passed `--add-dir <dir>`; 0.3.332 passes `--add-dir=<dir>`. Either reaches the CLI.
+  assert.ok(claudeArgv.includes(`--add-dir=${extra}`) || claudeArgv[claudeArgv.indexOf('--add-dir') + 1] === extra, JSON.stringify(claudeArgv));
 });
 
 test('a transient Codex stream failure resumes the same thread once and does not loop', async (ctx) => {
