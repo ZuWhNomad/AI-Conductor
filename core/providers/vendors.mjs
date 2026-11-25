@@ -108,8 +108,15 @@ export function parseAgyUsage(text) {
     // in order as whole id segments, other segments allowed between (gemini-4-neon-high, gemini-pro-orchestrator-neon,
     // gemini-3.8-flash-low). Falls back to the group name: agy 1.5.13's "Gemini 4 Argon" group lists no models, and
     // a first-word pattern (^gemini) put Argon's own weekly limit on every Gemini model.
+    // A "X (Y)" name also matches the bare X id exactly: agy 1.5.15 lists "Orchestrator (Carbon)" for the id
+    // gemini-pro-orchestrator, which carries no "carbon" segment.
     const names = (String(g.description || '').split(':')[1] || g.name || '').split(',');
-    const parts = [...new Set(names.map((n) => n.toLowerCase().replace(/\bmodels?\b/g, ' ').match(/[a-z0-9]+/g)).filter(Boolean).map((w) => w.join('(?:[.-][a-z0-9]+)*?[.-]')))];
+    const words = (s) => s.toLowerCase().replace(/\bmodels?\b/g, ' ').match(/[a-z0-9]+/g);
+    const seq = (w) => w.join('(?:[.-][a-z0-9]+)*?[.-]');
+    const parts = [...new Set(names.flatMap((n) => {
+      const all = words(n); const bare = /\(.*\)/.test(n) && words(n.replace(/\(.*?\)/g, ' '));
+      return [all && seq(all), bare && `${seq(bare)}(?:[.-](?:low|medium|high|xhigh))?$`];
+    }).filter(Boolean))];
     const models = parts.length ? `(?:^|[.-])(?:${parts.join('|')})(?:[.-]|$)` : null;
     const short = String(g.name || '').replace(/ models?$/i, '');
     for (const b of g.buckets || []) {

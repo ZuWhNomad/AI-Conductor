@@ -162,6 +162,28 @@ test('antigravity 1.5.13 (recorded 2026-11-19): the Argon-only weekly group mete
   delete lim.getLimits().providers.antigravity;
 });
 
+test('antigravity 1.5.15 (recorded 2026-11-23): one Gemini group meters Carbon, Argon and every orchestrator, incl. the bare gemini-pro-orchestrator', async () => {
+  const { parseAgyUsage, collapseEffortFamilies } = await import('../../core/providers/vendors.mjs');
+  // The real line, fractions changed: Gemini group 60 % used, the Claude/GPT group untouched.
+  const rec = '{"conversation_id":"","status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.4,"reset_time":"2026-12-01T03:27:05Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.4,"reset_time":"2026-11-24T08:27:05Z"}]},{"name":"Claude and GPT models","description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":1,"reset_time":"2026-12-01T03:27:05Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-11-24T08:27:05Z"}]}]}}}';
+  const u = parseAgyUsage(rec);
+  const lim = await import('../../core/limits.mjs');
+  const sc = await import('../../core/scorecard.mjs');
+  lim.getLimits().providers.antigravity = { provider: 'antigravity', windows: u.windows.map((w) => ({ ...w, resetsAt: Date.now() + 60_000 })) };
+  for (const m of ['gemini-4-carbon', 'gemini-4-carbon-high', 'gemini-4-argon-low', 'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon', 'gemini-pro-orchestrator-neon', 'gemini-4-hydrogen-xhigh', 'gemini-3.8-flash']) {
+    assert.equal(sc.providerUsedPct('antigravity', { model: m }), 60, m);
+  }
+  for (const m of ['claude-opus-5-5-high', 'gpt-oss-120b-medium']) assert.equal(sc.providerUsedPct('antigravity', { model: m }), 0, m);
+  // The bare-name match is exact: it must not catch an unlisted id that merely contains "orchestrator".
+  assert.ok(!new RegExp(u.windows[0].models).test('gemini-pro-orchestrator-xenon'));
+  delete lim.getLimits().providers.antigravity;
+  const out = 'gemini-4-carbon-medium\tGemini 4 Carbon (Medium)\ngemini-4-carbon-high\tGemini 4 Carbon (High)\ngemini-4-carbon-low\tGemini 4 Carbon (Low)\ngemini-pro-orchestrator\tOrchestrator (Carbon)\ngemini-pro-orchestrator-argon\tOrchestrator (Argon)\n';
+  const ms = collapseEffortFamilies(VENDORS.antigravity.parseModels(out));
+  assert.deepEqual(ms.map((m) => m.id), ['gemini-4-carbon', 'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon']);
+  assert.deepEqual(ms[0].efforts, ['low', 'medium', 'high']);
+  assert.equal(ms[1].label, 'Orchestrator (Carbon)');
+});
+
 test('antigravity 1.5.13 `agy models` (recorded 2026-11-19): xhigh folds into its family; orchestrators pass through', async () => {
   const { collapseEffortFamilies } = await import('../../core/providers/vendors.mjs');
   const out = 'gemini-4-neon-high\tGemini 4 Neon (High)\ngemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\ngemini-4-neon-medium\tGemini 4 Neon (Medium)\ngemini-4-neon-low\tGemini 4 Neon (Low)\ngemini-4-argon-medium\tGemini 4 Argon (Medium)\ngemini-4-argon-high\tGemini 4 Argon (High)\ngemini-4-argon-low\tGemini 4 Argon (Low)\ngemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\ngemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)\ngemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)\ngemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)\ngemini-pro-orchestrator-neon\tOrchestrator (Neon)\ngemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)\n';
